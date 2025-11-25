@@ -7,6 +7,17 @@ import { logCatchError } from '../../utils/errorHandler.js';
 export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
   if (stat?.programId) hop.programId = stat.programId;
+  
+  // Read market info from executionCache first (populated during GraphQL normalization)
+  if (stat?.market_id && !hop.market) hop.market = stat.market_id;
+  if (stat?.market_program_id && !hop.serumProgramId) hop.serumProgramId = stat.market_program_id;
+  if (stat?.vault_a && !hop.vaultA) hop.vaultA = stat.vault_a;
+  if (stat?.vault_b && !hop.vaultB) hop.vaultB = stat.vault_b;
+  if (stat?.open_orders && !(hop as any).openOrders) (hop as any).openOrders = stat.open_orders;
+  if (stat?.target_orders && !(hop as any).targetOrders) (hop as any).targetOrders = stat.target_orders;
+  if (stat?.authority && !hop.ammAuthority) hop.ammAuthority = stat.authority;
+  if (stat?.lp_mint && !(hop as any).lpMint) (hop as any).lpMint = stat.lp_mint;
+  
   try {
     const pools = peekRaydiumPools();
     const id = hop.poolId.replace(/[#-]rev$/, '');

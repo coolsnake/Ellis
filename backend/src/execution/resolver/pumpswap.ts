@@ -4,7 +4,18 @@ import { determineSwapOrientation } from '../../server/pools/orientation.js';
 
 export async function resolvePumpswap(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
+  
+  // Read cached fields for zero-RPC transaction building
   if (stat?.programId) hop.programId = stat.programId;
+  if (stat?.creator && !(hop as any).creator) (hop as any).creator = stat.creator;
+  if (stat?.metadata_creator && !(hop as any).metadataCreator) (hop as any).metadataCreator = stat.metadata_creator;
+  if (stat?.protocol_fee_recipient && !(hop as any).protocolFeeRecipient) (hop as any).protocolFeeRecipient = stat.protocol_fee_recipient;
+  if (stat?.vault_a && !hop.vaultA) hop.vaultA = stat.vault_a;
+  if (stat?.vault_b && !hop.vaultB) hop.vaultB = stat.vault_b;
+  if (stat?.onchain_base_mint && !(hop as any).onchainBaseMint) (hop as any).onchainBaseMint = stat.onchain_base_mint;
+  if (stat?.onchain_quote_mint && !(hop as any).onchainQuoteMint) (hop as any).onchainQuoteMint = stat.onchain_quote_mint;
+  if (stat?.onchain_base_vault && !(hop as any).onchainBaseVault) (hop as any).onchainBaseVault = stat.onchain_base_vault;
+  if (stat?.onchain_quote_vault && !(hop as any).onchainQuoteVault) (hop as any).onchainQuoteVault = stat.onchain_quote_vault;
   
   try {
     // Import Pumpswap pools from server cache

@@ -1144,6 +1144,18 @@ async function ensureWhirlpoolTickArrays(
       }
     }
 
+    // Check if tick arrays exist on-chain (only if RPC allowed)
+    // If RPC is disabled, trust that cached tick arrays exist
+    if (!allowBuilderRpcFallback) {
+      try {
+        logger.debug('orca.tick_array.verification.skipped', {
+          cat: 'tx',
+          ctx: { pool: hop.poolId, reason: 'rpc_disabled', tickArrayCount: requiredKeys.length },
+        });
+      } catch (e) { logCatchError('ix.build', e); }
+      return []; // Assume tick arrays exist when from cache
+    }
+    
     const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
     const infos = await withRpcLimit(
       () => ctx.connection.getMultipleAccountsInfo(requiredKeys),
@@ -1642,17 +1654,18 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     }
     
     // Get the original on-chain mint and vault order (before canonicalization)
-    const poolBaseMint = String((poolData as any)?.onchain_base_mint || '');
-    const poolQuoteMint = String((poolData as any)?.onchain_quote_mint || '');
-    const onchainBaseVault = String((poolData as any)?.onchain_base_vault || '');
-    const onchainQuoteVault = String((poolData as any)?.onchain_quote_vault || '');
-    const creator = String((poolData as any)?.creator || '');
+    // Prefer hop fields (populated from executionCache by resolver) with poolData fallback
+    const poolBaseMint = String((hop as any)?.onchainBaseMint || (poolData as any)?.onchain_base_mint || '');
+    const poolQuoteMint = String((hop as any)?.onchainQuoteMint || (poolData as any)?.onchain_quote_mint || '');
+    const onchainBaseVault = String((hop as any)?.onchainBaseVault || (poolData as any)?.onchain_base_vault || '');
+    const onchainQuoteVault = String((hop as any)?.onchainQuoteVault || (poolData as any)?.onchain_quote_vault || '');
+    const creator = String((hop as any)?.creator || (poolData as any)?.creator || '');
     let coinCreatorVaultAta = String((poolData as any)?.coin_creator_vault_ata || '');
     let coinCreatorVaultAuthority = String((poolData as any)?.coin_creator_vault_authority || '');
     
     // Get protocol_fee_recipient from pool data (extracted from pool account at offset 243)
-    // If not available, fall back to a list of known recipients
-    let protocolFeeRecipientAddress = String((poolData as any)?.protocol_fee_recipient || '');
+    // Prefer hop field (populated from executionCache by resolver) with poolData fallback
+    let protocolFeeRecipientAddress = String((hop as any)?.protocolFeeRecipient || (poolData as any)?.protocol_fee_recipient || '');
     
     if (!protocolFeeRecipientAddress || protocolFeeRecipientAddress.length < 32) {
       // Fallback to known protocol fee recipients if not extracted from pool data
@@ -1820,20 +1833,34 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           });
         } catch (e) { logCatchError('ix.build', e); }
         
-        // Fetch metadata account to get the real creator
-        const connection = getBuilderConnectionOrFail(
-          'PUMPSWAP',
-          hop,
-          'metadata_fetch',
-        );
-        
+        // Use cached metadata_creator first (populated during pool fetch)
+        // This eliminates the RPC call for metadata fetch
+        // Prefer hop field (from resolver/executionCache) with poolData fallback
         let actualCreator: string = creator;
-        try {
-          const metadataAccount = await connection.getAccountInfo(metadataPda);
-          if (metadataAccount && metadataAccount.data.length > 0) {
-            // Parse Metaplex metadata to extract creator
-            // The update authority (bytes 1-33) is often the creator for pump.fun tokens
-            if (metadataAccount.data.length >= 33) {
+        const cachedMetadataCreator = String((hop as any)?.metadataCreator || (poolData as any)?.metadata_creator || '');
+        
+        if (cachedMetadataCreator && cachedMetadataCreator.length >= 32) {
+          actualCreator = cachedMetadataCreator;
+          try {
+            logger.info('pumpswap.metadata_creator.from_cache', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId.slice(0, 12),
+                actualCreator: actualCreator.slice(0, 12),
+                source: 'cache',
+              }
+            });
+          } catch (e) { logCatchError('ix.build', e); }
+        } else if (allowBuilderRpcFallback) {
+          // Fallback: Fetch metadata account to get the real creator (only if RPC allowed)
+          try {
+            const connection = getBuilderConnectionOrFail(
+              'PUMPSWAP',
+              hop,
+              'metadata_fetch',
+            );
+            const metadataAccount = await connection.getAccountInfo(metadataPda);
+            if (metadataAccount && metadataAccount.data.length >= 33) {
               const updateAuthority = new PublicKey(metadataAccount.data.subarray(1, 33));
               actualCreator = updateAuthority.toBase58();
               
@@ -1843,20 +1870,31 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
                   ctx: {
                     poolId: hop.poolId.slice(0, 12),
                     actualCreator: actualCreator.slice(0, 12),
-                    wasSystemProgram: creator === SYSTEM_PROGRAM_ID,
+                    source: 'rpc_fallback',
                   }
                 });
               } catch (e) { logCatchError('ix.build', e); }
             }
+          } catch (metadataErr: any) {
+            try {
+              logger.warn('pumpswap.metadata_fetch_failed', {
+                cat: 'tx',
+                ctx: {
+                  poolId: hop.poolId.slice(0, 12),
+                  error: String(metadataErr?.message || metadataErr),
+                  willUseFallback: true,
+                }
+              });
+            } catch (e) { logCatchError('ix.build', e); }
           }
-        } catch (metadataErr: any) {
+        } else {
+          // No cached metadata_creator and RPC not allowed - use pool's coin_creator
           try {
-            logger.warn('pumpswap.metadata_fetch_failed', {
+            logger.debug('pumpswap.metadata_creator.not_cached', {
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId.slice(0, 12),
-                error: String(metadataErr?.message || metadataErr),
-                willUseFallback: true,
+                usingPoolCreator: true,
               }
             });
           } catch (e) { logCatchError('ix.build', e); }
@@ -5047,8 +5085,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       } catch (e) { logCatchError('ix.build', e); }
     }
     
-    // Verify all critical accounts exist before proceeding
-    if (ixs && ixs.length) {
+    // Verify all critical accounts exist before proceeding (only if RPC allowed)
+    if (ixs && ixs.length && allowBuilderRpcFallback) {
       // Batch fetch observation and exBitmap accounts together to reduce RPC calls
       try {
         const connection = getBuilderConnectionOrFail(
@@ -5107,6 +5145,14 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         if (e instanceof Error && e.message.includes('RAYDIUM_CLMM_BUILD_FAILED')) throw e;
         try { logger.warn('raydium.clmm.observation.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch (e) { logCatchError('ix.build', e); }
       }
+    } else if (ixs && ixs.length && !allowBuilderRpcFallback) {
+      // RPC disabled - trust cached observation_state from pool fetch
+      try {
+        logger.debug('raydium.clmm.observation.verification.skipped', {
+          cat: 'tx',
+          ctx: { pool: hop.poolId, reason: 'rpc_disabled', observation: observationId.toBase58() },
+        });
+      } catch (e) { logCatchError('ix.build', e); }
       
       // Verify all accounts in each instruction to catch missing accounts early
       // But skip accounts that don't need to exist yet (signers, writable accounts that can be created)
@@ -5443,9 +5489,9 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       }
     } catch (e) { logCatchError('ix.build', e); }
     
-    // Fallback: If not in cache, try fetching from chain (backward compatibility)
-    try {
-      if (!hop.market || !hop.serumProgramId) {
+    // Fallback: If not in cache, try fetching from chain (only if RPC fallback allowed)
+    if (allowBuilderRpcFallback && (!hop.market || !hop.serumProgramId)) {
+      try {
         const connection = getBuilderConnectionOrFail(
           'RAYDIUM_AMM',
           hop,
@@ -5479,8 +5525,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             } catch (e) { logCatchError('ix.build', e); }
           }
         }
-      }
-    } catch (e) { logCatchError('ix.build', e); }
+      } catch (e) { logCatchError('ix.build', e); }
+    }
     // Optional: validate vault accounts exist (best-effort, don't block on RPC errors)
     if (hop.vaultA || hop.vaultB) {
       try {

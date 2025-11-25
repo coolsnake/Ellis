@@ -541,6 +541,125 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
     cat: 'pumpswap' 
   }); } catch (e) { logCatchError('pools.pumpswap', e); }
   
+  // Phase 2: Fetch Metaplex metadata for meme tokens to cache metadata_creator
+  // This eliminates RPC calls during transaction building
+  const enableMetadataFetch = ((CONFIG as any)?.pumpswap?.enableMetadataFetch !== false);
+  let metadataFetched = 0;
+  
+  if (enableMetadataFetch) {
+    try {
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      const METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
+      
+      // Collect unique meme token mints (not SOL/USDC)
+      const memeTokenMints = new Map<string, number[]>(); // mint -> pool indices
+      for (let i = 0; i < enriched.length; i++) {
+        const pool = enriched[i];
+        const baseMint = pool.base_mint;
+        const quoteMint = pool.quote_mint;
+        
+        // Identify meme token (not SOL or USDC)
+        let memeMint: string | null = null;
+        if (baseMint && baseMint !== SOL_MINT && baseMint !== USDC_MINT) {
+          memeMint = baseMint;
+        } else if (quoteMint && quoteMint !== SOL_MINT && quoteMint !== USDC_MINT) {
+          memeMint = quoteMint;
+        }
+        
+        if (memeMint) {
+          if (!memeTokenMints.has(memeMint)) {
+            memeTokenMints.set(memeMint, []);
+          }
+          memeTokenMints.get(memeMint)!.push(i);
+        }
+      }
+      
+      if (memeTokenMints.size > 0) {
+        logger.info('pumpswap.metadata.fetch.start', {
+          uniqueMints: memeTokenMints.size,
+          cat: 'pumpswap'
+        });
+        
+        // Fetch metadata in batches
+        const mintList = Array.from(memeTokenMints.keys());
+        const metadataCreators = new Map<string, string>(); // mint -> creator
+        
+        for (let i = 0; i < mintList.length; i += batchSize) {
+          const batch = mintList.slice(i, i + batchSize);
+          
+          try {
+            // Derive metadata PDAs
+            const metadataPdas: PublicKey[] = [];
+            for (const mint of batch) {
+              try {
+                const mintPk = new PublicKey(mint);
+                const [pda] = PublicKey.findProgramAddressSync(
+                  [
+                    Buffer.from('metadata'),
+                    METADATA_PROGRAM_ID.toBuffer(),
+                    mintPk.toBuffer(),
+                  ],
+                  METADATA_PROGRAM_ID
+                );
+                metadataPdas.push(pda);
+              } catch {}
+            }
+            
+            if (metadataPdas.length > 0) {
+              const metadataAccounts = await withRpcLimit(
+                () => connection.getMultipleAccountsInfo(metadataPdas),
+                Math.max(1, Math.ceil(metadataPdas.length / 100)),
+                { module: 'pools', method: 'getMultipleAccountsInfo' }
+              );
+              
+              for (let j = 0; j < batch.length; j++) {
+                const mint = batch[j];
+                const account = metadataAccounts[j];
+                
+                if (account?.data && account.data.length >= 33) {
+                  try {
+                    // Update authority is at bytes 1-33 in Metaplex metadata
+                    const updateAuthority = new PublicKey(account.data.subarray(1, 33));
+                    metadataCreators.set(mint, updateAuthority.toBase58());
+                    metadataFetched++;
+                  } catch {}
+                }
+              }
+            }
+          } catch (e: any) {
+            logger.debug('pumpswap.metadata.batch.failed', {
+              batch: Math.floor(i / batchSize) + 1,
+              error: String(e?.message || e),
+              cat: 'pumpswap'
+            });
+          }
+        }
+        
+        // Apply metadata_creator to pools
+        for (const [mint, poolIndices] of memeTokenMints.entries()) {
+          const metadataCreator = metadataCreators.get(mint);
+          if (metadataCreator) {
+            for (const idx of poolIndices) {
+              enriched[idx].metadata_creator = metadataCreator;
+            }
+          }
+        }
+        
+        logger.info('pumpswap.metadata.fetch.complete', {
+          uniqueMints: memeTokenMints.size,
+          metadataFetched,
+          cat: 'pumpswap'
+        });
+      }
+    } catch (e: any) {
+      logger.warn('pumpswap.metadata.fetch.failed', {
+        error: String(e?.message || e),
+        cat: 'pumpswap'
+      });
+    }
+  }
+  
   return { pools: enriched, metrics: { success: successCount, fail: failCount, ms, feesExtracted, protocolRecipientsExtracted } };
 }
 
@@ -845,6 +964,7 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
         onchain_base_vault: pool.pool_base_token_account,  // Original base vault
         onchain_quote_vault: pool.pool_quote_token_account, // Original quote vault
         creator: pool.onchain_creator || pool.creator, // On-chain pool creator (extracted from pool account data during enrichment)
+        metadata_creator: pool.metadata_creator || undefined, // Metaplex metadata update authority (for deriving creator vaults)
         protocol_fee_recipient: pool.protocol_fee_recipient || undefined, // On-chain protocol fee recipient (offset 243)
       } as any);
     } catch (e: any) {
@@ -901,6 +1021,54 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
       canon 
     });
   } catch (e) { logCatchError('pools.pumpswap', e); }
+  
+  // Populate executionCache for Pumpswap pools (enables zero-RPC builds)
+  try {
+    const { executionCache } = await import('../../execution/cache.js');
+    let pumpswapCached = 0;
+    let withMetadataCreator = 0;
+    
+    for (const pool of ammCanon) {
+      try {
+        const existing = executionCache.getStatic(pool.id) || {};
+        executionCache.setStatic(pool.id, {
+          ...existing,
+          programId: PUMPSWAP_PROGRAM_ID,
+          dex: 'Pumpswap',
+          pool_kind: 'amm',
+          mint_a: pool.mint_a,
+          mint_b: pool.mint_b,
+          decimals_a: pool.decimals_a,
+          decimals_b: pool.decimals_b,
+          vault_a: pool.account_a,
+          vault_b: pool.account_b,
+          // Critical: Store on-chain order fields for transaction building
+          onchain_base_mint: (pool as any).onchain_base_mint,
+          onchain_quote_mint: (pool as any).onchain_quote_mint,
+          onchain_base_vault: (pool as any).onchain_base_vault,
+          onchain_quote_vault: (pool as any).onchain_quote_vault,
+          creator: (pool as any).creator,
+          metadata_creator: (pool as any).metadata_creator,
+          protocol_fee_recipient: (pool as any).protocol_fee_recipient,
+          lp_mint: pool.lp_mint,
+        });
+        pumpswapCached++;
+        if ((pool as any).metadata_creator) withMetadataCreator++;
+      } catch {}
+    }
+    
+    logger.info('pumpswap.execution_cache.populated', {
+      pumpswapCached,
+      withMetadataCreator,
+      total: ammCanon.length,
+      cat: 'pumpswap'
+    });
+  } catch (cacheErr) {
+    logger.debug('pumpswap.execution_cache.failed', {
+      error: String((cacheErr as any)?.message || cacheErr),
+      cat: 'pumpswap'
+    });
+  }
   
   return { amm: ammCanon, clmm: [] };
 }

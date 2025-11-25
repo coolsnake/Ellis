@@ -283,6 +283,98 @@ export async function fetchAmmConfigFeeRates(
   return result;
 }
 
+/**
+ * Fetch raw account data for CLMM pools and extract observation_state, amm_config, etc.
+ * This enables zero-RPC transaction building by caching these fields during pool fetch.
+ */
+async function fetchClmmPoolRawData(
+  poolIds: string[],
+  opts: { batchSize: number; delayMs: number }
+): Promise<Map<string, { observationState?: string; ammConfig?: string; oracle?: string; vaultA?: string; vaultB?: string; tickSpacing?: number }>> {
+  const result = new Map<string, any>();
+  if (!poolIds.length) return result;
+  
+  const { deriveRaydiumClmmCacheFields } = await import('../pools.derivation.js');
+  const connection = getConnection();
+  const batchSize = Math.min(opts.batchSize, 100);
+  const delayMs = opts.delayMs;
+  
+  logger.info('raydium.clmm.raw_data.fetch.start', {
+    total: poolIds.length,
+    batchSize,
+    cat: 'raydium-clmm',
+  });
+  
+  for (let i = 0; i < poolIds.length; i += batchSize) {
+    const batch = poolIds.slice(i, i + batchSize);
+    const publicKeys = batch.map(id => new PublicKey(id));
+    
+    try {
+      const accountInfos = await withRpcLimit(
+        () => connection.getMultipleAccountsInfo(publicKeys),
+        Math.max(1, Math.ceil(batch.length / 10)),
+        { module: 'raydium-clmm', method: 'getMultipleAccountsInfo' }
+      );
+      
+      for (let j = 0; j < batch.length; j++) {
+        const poolId = batch[j];
+        const accountInfo = accountInfos[j];
+        
+        if (!accountInfo?.data) continue;
+        
+        try {
+          const derived = await deriveRaydiumClmmCacheFields(
+            poolId,
+            Buffer.from(accountInfo.data),
+            { programId: accountInfo.owner?.toBase58() }
+          );
+          
+          if (derived) {
+            result.set(poolId, {
+              observationState: derived.observationState,
+              ammConfig: derived.ammConfig,
+              oracle: derived.oracle,
+              vaultA: derived.vaultA,
+              vaultB: derived.vaultB,
+              tickSpacing: derived.tickSpacing,
+            });
+          }
+        } catch (err) {
+          logger.debug('raydium.clmm.raw_data.decode.failed', {
+            pool: poolId.slice(0, 8),
+            error: String(err),
+            cat: 'raydium-clmm',
+          });
+        }
+      }
+      
+      logger.debug('raydium.clmm.raw_data.batch', {
+        batchIndex: Math.floor(i / batchSize),
+        decoded: result.size,
+        cat: 'raydium-clmm',
+      });
+    } catch (err) {
+      logger.warn('raydium.clmm.raw_data.batch.failed', {
+        batchIndex: Math.floor(i / batchSize),
+        error: String(err),
+        cat: 'raydium-clmm',
+      });
+    }
+    
+    if (delayMs > 0 && i + batchSize < poolIds.length) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  
+  logger.info('raydium.clmm.raw_data.fetch.complete', {
+    total: poolIds.length,
+    decoded: result.size,
+    cat: 'raydium-clmm',
+  });
+  
+  return result;
+}
+
 export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-graphql-raw.json');
   const retries = Number((CONFIG as any)?.raydium?.maxHttpRetries || 2);
@@ -1249,6 +1341,102 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     ammConfigs: configFeeRates.size,
     cat: 'raydium' 
   });
+  
+  // Populate executionCache for Raydium AMM pools (enables zero-RPC builds)
+  try {
+    const { executionCache } = await import('../../execution/cache.js');
+    let ammCached = 0;
+    
+    for (const pool of amm) {
+      try {
+        const existing = executionCache.getStatic(pool.id) || {};
+        executionCache.setStatic(pool.id, {
+          ...existing,
+          programId: (CONFIG as any)?.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+          dex: 'Raydium',
+          pool_kind: 'amm',
+          mint_a: pool.mint_a,
+          mint_b: pool.mint_b,
+          decimals_a: pool.decimals_a,
+          decimals_b: pool.decimals_b,
+          vault_a: pool.account_a,
+          vault_b: pool.account_b,
+          market_id: pool.market_id,
+          market_program_id: pool.market_program_id,
+          open_orders: pool.open_orders,
+          target_orders: pool.target_orders,
+          authority: pool.authority,
+          lp_mint: pool.lp_mint,
+        });
+        ammCached++;
+      } catch {}
+    }
+    
+    logger.info('raydium.amm.execution_cache.populated', {
+      ammCached,
+      total: amm.length,
+      cat: 'raydium'
+    });
+  } catch (cacheErr) {
+    logger.debug('raydium.amm.execution_cache.failed', {
+      error: String((cacheErr as any)?.message || cacheErr),
+      cat: 'raydium'
+    });
+  }
+  
+  // Populate executionCache for Raydium CLMM pools (enables zero-RPC builds)
+  try {
+    const { executionCache } = await import('../../execution/cache.js');
+    
+    // Fetch raw data for CLMM pools to extract observation_state and other fields
+    // This is critical for zero-RPC transaction building
+    const clmmPoolIds = clmm.map((p: any) => p.id);
+    const rawDataMap = await fetchClmmPoolRawData(clmmPoolIds, {
+      batchSize: 50,
+      delayMs: 100,
+    });
+    
+    let clmmCached = 0;
+    let clmmWithObservation = 0;
+    
+    for (const pool of clmm) {
+      try {
+        const existing = executionCache.getStatic(pool.id) || {};
+        const rawData = rawDataMap.get(pool.id);
+        
+        executionCache.setStatic(pool.id, {
+          ...existing,
+          programId: (CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
+          dex: 'Raydium',
+          pool_kind: 'clmm',
+          mint_a: pool.mint_a,
+          mint_b: pool.mint_b,
+          decimals_a: pool.decimals_a,
+          decimals_b: pool.decimals_b,
+          vault_a: pool.account_a,
+          vault_b: pool.account_b,
+          tick_spacing: pool.tick_spacing,
+          amm_config: rawData?.ammConfig || (pool as any).amm_config || (pool as any).ammConfig,
+          observation_state: rawData?.observationState,
+          oracle: rawData?.oracle,
+        });
+        clmmCached++;
+        if (rawData?.observationState) clmmWithObservation++;
+      } catch {}
+    }
+    
+    logger.info('raydium.clmm.execution_cache.populated', {
+      clmmCached,
+      clmmWithObservation,
+      total: clmm.length,
+      cat: 'raydium'
+    });
+  } catch (cacheErr) {
+    logger.debug('raydium.clmm.execution_cache.failed', {
+      error: String((cacheErr as any)?.message || cacheErr),
+      cat: 'raydium'
+    });
+  }
   
   return { amm: amm, clmm: clmm };
 }
