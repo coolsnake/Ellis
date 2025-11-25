@@ -57,6 +57,14 @@ export interface ExecutorConfig {
   maxExecutionsPerMinute?: number;
   blacklistedPaths?: string[];
   requireStartBalance?: boolean;
+  // Dynamic sizing - calculates trade size based on bottleneck liquidity
+  dynamicSizing?: {
+    enabled: boolean;
+    minSizeUsd: number;      // Floor for trade size
+    maxSizeUsd: number;      // Ceiling for trade size
+    bottleneckFraction: number; // Fraction of bottleneck liquidity (e.g., 0.10 = 10%)
+    profitScaling: boolean;  // Scale size up with higher profit margins
+  };
 }
 
 interface ExecutionState {
@@ -603,15 +611,18 @@ export class ArbExecutor {
       let execCfg: any;
       
       try {
+        // Calculate dynamic size based on opportunity characteristics
+        const sizeUsd = this.calculateDynamicSize(opp);
+        
         // Log what we're passing to the resolver
         logger.debug('arb.executor.resolving_plan', {
           cat: 'arb',
           path: executionPath.join('->'),
-          sizeUsd: this.config.sizeUsd,
+          sizeUsd,
           slippageBps: this.config.slippageBps,
-          configSizeUsd: this.config.sizeUsd,
-          configSizeUsdType: typeof this.config.sizeUsd,
-          configSizeUsdFinite: Number.isFinite(this.config.sizeUsd),
+          bottleneckUsd: opp.est_capacity ?? opp.min_edge_liquidity,
+          profitBps: opp.net_bps ?? opp.profit_bps,
+          dynamicSizingEnabled: !!this.config.dynamicSizing?.enabled,
         });
         
         // Resolve execution plan
@@ -620,7 +631,7 @@ export class ArbExecutor {
             path: executionPath,
             hopPoolIds: opp.hop_pool_ids || [],
             dexes: executionDexes,
-            sizeUsd: this.config.sizeUsd,
+            sizeUsd,
             slippageBps: this.config.slippageBps,
           } as any,
           {} as any
@@ -1094,6 +1105,65 @@ export class ArbExecutor {
       // Best effort - don't throw
       logger.warn('arb.executor.notify_failed', { cat: 'arb' });
     }
+  }
+
+  /**
+   * Calculate dynamic trade size based on opportunity characteristics.
+   * Uses bottleneck liquidity and profit margin to determine optimal size.
+   */
+  private calculateDynamicSize(opp: Opportunity): number {
+    const dynamicCfg = this.config.dynamicSizing;
+    
+    // If dynamic sizing disabled, use fixed config
+    if (!dynamicCfg?.enabled) {
+      return this.config.sizeUsd || 10;
+    }
+    
+    const minSize = dynamicCfg.minSizeUsd || 5;
+    const maxSize = dynamicCfg.maxSizeUsd || this.config.sizeUsd || 200;
+    const baseFraction = dynamicCfg.bottleneckFraction || 0.10;
+    
+    // Get bottleneck liquidity (USD)
+    const bottleneckUsd = opp.est_capacity ?? opp.min_edge_liquidity ?? 0;
+    
+    if (bottleneckUsd <= 0) {
+      // No liquidity info - use minimum safe size
+      logger.debug('arb.executor.sizing.no_liquidity', {
+        cat: 'arb',
+        path: opp.path.join('->'),
+        fallbackSize: minSize,
+      });
+      return minSize;
+    }
+    
+    // Base size: fraction of bottleneck liquidity
+    let sizeUsd = bottleneckUsd * baseFraction;
+    
+    // Optional: Scale based on profit margin
+    // Higher profit = can afford more slippage = larger size
+    if (dynamicCfg.profitScaling) {
+      const profitBps = opp.net_bps ?? opp.profit_bps;
+      
+      // Scaling factor: 0.5x at 10bps profit, 1.0x at 50bps, 1.5x at 100bps+
+      // This is conservative - we size down when margins are thin
+      const profitMultiplier = Math.min(1.5, Math.max(0.5, profitBps / 50));
+      sizeUsd *= profitMultiplier;
+    }
+    
+    // Clamp to configured bounds
+    sizeUsd = Math.max(minSize, Math.min(maxSize, sizeUsd));
+    
+    logger.debug('arb.executor.sizing.calculated', {
+      cat: 'arb',
+      path: opp.path.join('->'),
+      bottleneckUsd,
+      baseFraction,
+      profitBps: opp.net_bps ?? opp.profit_bps,
+      calculatedSize: sizeUsd,
+      dynamicSizingEnabled: true,
+    });
+    
+    return sizeUsd;
   }
 
   private getOpportunityKey(opp: Opportunity): string {

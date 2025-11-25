@@ -51,6 +51,22 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           if (typeof j.maxExecutionsPerMinute === 'number') {
             set('executor_max_per_minute', j.maxExecutionsPerMinute);
           }
+          // Load dynamic sizing config
+          if (j.dynamicSizing) {
+            set('dynamic_sizing_enabled', !!j.dynamicSizing.enabled);
+            if (typeof j.dynamicSizing.minSizeUsd === 'number') {
+              set('dynamic_sizing_min_usd', j.dynamicSizing.minSizeUsd);
+            }
+            if (typeof j.dynamicSizing.maxSizeUsd === 'number') {
+              set('dynamic_sizing_max_usd', j.dynamicSizing.maxSizeUsd);
+            }
+            if (typeof j.dynamicSizing.bottleneckFraction === 'number') {
+              set('dynamic_sizing_bottleneck_fraction', j.dynamicSizing.bottleneckFraction);
+            }
+            if (typeof j.dynamicSizing.profitScaling === 'boolean') {
+              set('dynamic_sizing_profit_scaling', j.dynamicSizing.profitScaling);
+            }
+          }
         } 
       } catch {}
     })();
@@ -108,6 +124,14 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             slippageBps: toOptNum(det.executor_slippage_bps),
             minReservesUsd: toOptNum(det.executor_min_reserves_usd),
             maxExecutionsPerMinute: toOptNum(det.executor_max_per_minute),
+            // Dynamic sizing config
+            dynamicSizing: {
+              enabled: !!det.dynamic_sizing_enabled,
+              minSizeUsd: toNum(det.dynamic_sizing_min_usd) || 5,
+              maxSizeUsd: toNum(det.dynamic_sizing_max_usd) || 200,
+              bottleneckFraction: Number(det.dynamic_sizing_bottleneck_fraction) || 0.10,
+              profitScaling: det.dynamic_sizing_profit_scaling !== false,
+            },
           }) 
         }),
       ]);
@@ -210,15 +234,6 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                 />
               </div>
               <div>
-                <label className="block mb-1 text-gray-300">Execution Size (USD)</label>
-                <input 
-                  type="number" 
-                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
-                  value={det.executor_size_usd ?? 100} 
-                  onChange={e=>set('executor_size_usd', Number(e.target.value)||0)} 
-                />
-              </div>
-              <div>
                 <label className="block mb-1 text-gray-300">Slippage (bps)</label>
                 <input 
                   type="number" 
@@ -243,6 +258,139 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                   className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
                   value={det.executor_max_per_minute ?? 10} 
                   onChange={e=>set('executor_max_per_minute', Number(e.target.value)||0)} 
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Dynamic Trade Sizing Section */}
+          <div className="bg-gray-700 rounded p-4 border-2 border-emerald-500/30">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-lg font-semibold text-white">Dynamic Trade Sizing</h3>
+              <label className="flex items-center gap-2 text-sm">
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4"
+                  checked={!!det.dynamic_sizing_enabled} 
+                  onChange={e=>set('dynamic_sizing_enabled', e.target.checked)} 
+                />
+                <span className="text-emerald-400">Enabled</span>
+              </label>
+            </div>
+            <p className="text-xs text-gray-400 mb-3">
+              When enabled, trade size is calculated dynamically based on bottleneck liquidity instead of using a fixed size.
+              Size = <code className="bg-gray-600 px-1 rounded">bottleneckLiquidity × fraction × profitMultiplier</code>
+            </p>
+            
+            <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${!det.dynamic_sizing_enabled ? 'opacity-50' : ''}`}>
+              <div>
+                <label className="block mb-1 text-gray-300">
+                  Min Size (USD)
+                  <span className="text-xs text-gray-500 ml-2">Floor for all trades</span>
+                </label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.dynamic_sizing_min_usd ?? 5} 
+                  onChange={e=>set('dynamic_sizing_min_usd', Number(e.target.value)||5)} 
+                  disabled={!det.dynamic_sizing_enabled}
+                />
+              </div>
+              <div>
+                <label className="block mb-1 text-gray-300">
+                  Max Size (USD)
+                  <span className="text-xs text-gray-500 ml-2">Ceiling for all trades</span>
+                </label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.dynamic_sizing_max_usd ?? 200} 
+                  onChange={e=>set('dynamic_sizing_max_usd', Number(e.target.value)||200)} 
+                  disabled={!det.dynamic_sizing_enabled}
+                />
+              </div>
+              <div>
+                <label className="block mb-1 text-gray-300">
+                  Bottleneck Fraction
+                  <span className="text-xs text-gray-500 ml-2">0.05 = 5%, 0.15 = 15%</span>
+                </label>
+                <input 
+                  type="number" 
+                  step="0.01"
+                  min="0.01"
+                  max="0.50"
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.dynamic_sizing_bottleneck_fraction ?? 0.10} 
+                  onChange={e=>set('dynamic_sizing_bottleneck_fraction', Number(e.target.value)||0.10)} 
+                  disabled={!det.dynamic_sizing_enabled}
+                />
+              </div>
+              <div className="flex items-end pb-1">
+                <label className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4"
+                    checked={det.dynamic_sizing_profit_scaling !== false} 
+                    onChange={e=>set('dynamic_sizing_profit_scaling', e.target.checked)} 
+                    disabled={!det.dynamic_sizing_enabled}
+                  />
+                  <span className="text-gray-300">
+                    Scale by profit margin
+                    <span className="text-xs text-gray-500 block">Higher profit → larger size</span>
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {/* Visual example when enabled */}
+            {det.dynamic_sizing_enabled && (
+              <div className="mt-4 p-3 bg-gray-800/50 rounded text-xs text-gray-400">
+                <strong className="text-gray-300">Example sizing:</strong>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">
+                  <div className="bg-gray-700/50 p-2 rounded">
+                    <div className="text-gray-500">$1K bottleneck</div>
+                    <div className="text-emerald-400 font-mono">
+                      ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, 1000 * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
+                    </div>
+                  </div>
+                  <div className="bg-gray-700/50 p-2 rounded">
+                    <div className="text-gray-500">$5K bottleneck</div>
+                    <div className="text-emerald-400 font-mono">
+                      ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, 5000 * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
+                    </div>
+                  </div>
+                  <div className="bg-gray-700/50 p-2 rounded">
+                    <div className="text-gray-500">$10K bottleneck</div>
+                    <div className="text-emerald-400 font-mono">
+                      ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, 10000 * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
+                    </div>
+                  </div>
+                  <div className="bg-gray-700/50 p-2 rounded">
+                    <div className="text-gray-500">$50K bottleneck</div>
+                    <div className="text-emerald-400 font-mono">
+                      ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, 50000 * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Fixed Trade Size - shown as fallback when dynamic sizing is disabled */}
+          <div className={`bg-gray-700 rounded p-4 ${det.dynamic_sizing_enabled ? 'opacity-50' : ''}`}>
+            <h3 className="text-lg font-semibold text-white mb-2">
+              Fixed Trade Size
+              {det.dynamic_sizing_enabled && <span className="text-xs text-gray-400 ml-2">(ignored when dynamic sizing enabled)</span>}
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block mb-1 text-gray-300">Execution Size (USD)</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.executor_size_usd ?? 100} 
+                  onChange={e=>set('executor_size_usd', Number(e.target.value)||0)} 
+                  disabled={det.dynamic_sizing_enabled}
                 />
               </div>
             </div>
