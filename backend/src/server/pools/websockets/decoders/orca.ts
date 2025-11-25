@@ -256,7 +256,9 @@ export async function handleOrcaUpdate(
       // Store static pool data with CANONICAL orientation
       executionCache.setStatic(poolId, {
         ...existingStatic,
-        programId: parsed.whirlpoolsConfig?.toBase58?.() || (CONFIG as any).orca?.programId || ORCA_WHIRLPOOL_PROGRAM,
+        // IMPORTANT: whirlpoolsConfig is NOT the program ID - it's a config PDA
+        // Always use the actual Orca Whirlpool program ID
+        programId: (CONFIG as any).orca?.programId || ORCA_WHIRLPOOL_PROGRAM,
         // Store vaults in CANONICAL order (matching mint_a/mint_b)
         vaults: {
           a: processedPrice.wasSwapped ? nativeVaultB : nativeVaultA,

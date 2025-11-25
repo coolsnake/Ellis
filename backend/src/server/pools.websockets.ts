@@ -1684,7 +1684,9 @@ function runWebsocketRefreshLoop(): void {
                     // Store static pool data with CANONICAL orientation
                     executionCache.setStatic(id, {
                       ...existing,
-                      programId: parsed.whirlpoolsConfig ? parsed.whirlpoolsConfig.toBase58() : (CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'),
+                      // IMPORTANT: whirlpoolsConfig is NOT the program ID - it's a config PDA
+                      // Always use the actual Orca Whirlpool program ID
+                      programId: CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
                       // Store vaults in CANONICAL order (matching mint_a/mint_b)
                       vaults: {
                         a: processedPrice.wasSwapped ? nativeVaultB : nativeVaultA,
