@@ -848,8 +848,10 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
   
   // Get cached pool data (NO RPC!)
   const { executionCache } = await import('../cache.js');
-  const staticData = executionCache.getStatic(hop.poolId);
-  const hot = executionCache.getHot(hop.poolId);
+  // Strip #rev or -rev suffix for cache lookup (pools are stored with base ID)
+  const cacheKey = hop.poolId.replace(/[#-]rev$/, '');
+  const staticData = executionCache.getStatic(cacheKey);
+  const hot = executionCache.getHot(cacheKey);
   
   if (!staticData || !hot) {
     throw createBuilderError('ORCA', 'Pool data not in execution cache - cannot build locally', hop);
