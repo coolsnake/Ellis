@@ -964,7 +964,7 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
         onchain_base_vault: pool.pool_base_token_account,  // Original base vault
         onchain_quote_vault: pool.pool_quote_token_account, // Original quote vault
         creator: pool.onchain_creator || pool.creator, // On-chain pool creator (extracted from pool account data during enrichment)
-        metadata_creator: pool.metadata_creator || undefined, // Metaplex metadata update authority (for deriving creator vaults)
+        metadata_creator: (pool as any).metadata_creator || undefined, // Metaplex metadata update authority (for deriving creator vaults)
         protocol_fee_recipient: pool.protocol_fee_recipient || undefined, // On-chain protocol fee recipient (offset 243)
       } as any);
     } catch (e: any) {

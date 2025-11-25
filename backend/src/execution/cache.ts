@@ -4,6 +4,7 @@ import { ensureDir, readJson, writeJson, joinPath } from '../utils/fs.js';
 type PoolStatic = {
   programId?: string;
   dex?: string;
+  pool_kind?: 'amm' | 'clmm';
   vaults?: { a?: string; b?: string };
   // Common execution accounts
   authorities?: Record<string, string>;
@@ -45,6 +46,12 @@ type PoolStatic = {
   amm_open_orders?: string;
   amm_target_orders?: string;
   lp_mint?: string;
+  // Generic vault/account references (used across DEXes)
+  vault_a?: string;
+  vault_b?: string;
+  open_orders?: string;
+  target_orders?: string;
+  authority?: string;
   // CLMM execution-critical accounts (cached to avoid RPC calls during instruction building)
   // Meteora DLMM: bitmap_extension is handled automatically by the SDK, no need to cache
   // Raydium CLMM-specific
@@ -64,6 +71,14 @@ type PoolStatic = {
   // Meteora-specific
   bin_array_lower?: string;
   bin_array_upper?: string;
+  // Pumpswap-specific
+  creator?: string;
+  metadata_creator?: string;
+  protocol_fee_recipient?: string;
+  onchain_base_mint?: string;
+  onchain_quote_mint?: string;
+  onchain_base_vault?: string;
+  onchain_quote_vault?: string;
 };
 
 type PoolHot = {

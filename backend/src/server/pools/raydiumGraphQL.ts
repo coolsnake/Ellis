@@ -1363,9 +1363,9 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           vault_b: pool.account_b,
           market_id: pool.market_id,
           market_program_id: pool.market_program_id,
-          open_orders: pool.open_orders,
-          target_orders: pool.target_orders,
-          authority: pool.authority,
+          open_orders: pool.amm_open_orders,
+          target_orders: pool.amm_target_orders,
+          authority: pool.amm_authority || pool.owner,
           lp_mint: pool.lp_mint,
         });
         ammCached++;

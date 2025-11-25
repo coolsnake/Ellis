@@ -626,8 +626,10 @@ async function handleAmmUpdate(
     const existingStatic = executionCache.getStatic(poolId) || {};
     
     // Extract market_id and market_program_id from the decoded pool state
-    const marketId = toB58(decoded.marketId || decoded.market_id);
-    const marketProgramId = toB58(decoded.marketProgramId || decoded.market_program_id);
+    // Use (decoded as any) because these fields come from Raydium SDK decoding
+    const decodedAny = decoded as any;
+    const marketId = toB58(decodedAny.marketId || decodedAny.market_id);
+    const marketProgramId = toB58(decodedAny.marketProgramId || decodedAny.market_program_id);
     
     executionCache.setStatic(poolId, {
       ...existingStatic,
@@ -636,10 +638,10 @@ async function handleAmmUpdate(
       // AMM-specific fields for transaction building
       market_id: marketId || existingStatic.market_id,
       market_program_id: marketProgramId || existingStatic.market_program_id,
-      vault_a: existingStatic.vault_a || (decoded.baseVault ? toB58(decoded.baseVault) : undefined),
-      vault_b: existingStatic.vault_b || (decoded.quoteVault ? toB58(decoded.quoteVault) : undefined),
-      mint_a: existingStatic.mint_a || (decoded.baseMint ? toB58(decoded.baseMint) : undefined),
-      mint_b: existingStatic.mint_b || (decoded.quoteMint ? toB58(decoded.quoteMint) : undefined),
+      vault_a: (existingStatic as any).vault_a || (decodedAny.baseVault ? toB58(decodedAny.baseVault) : undefined),
+      vault_b: (existingStatic as any).vault_b || (decodedAny.quoteVault ? toB58(decodedAny.quoteVault) : undefined),
+      mint_a: existingStatic.mint_a || (decodedAny.baseMint ? toB58(decodedAny.baseMint) : undefined),
+      mint_b: existingStatic.mint_b || (decodedAny.quoteMint ? toB58(decodedAny.quoteMint) : undefined),
     });
   } catch {}
 

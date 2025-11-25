@@ -17,6 +17,10 @@ export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
   if (stat?.target_orders && !(hop as any).targetOrders) (hop as any).targetOrders = stat.target_orders;
   if (stat?.authority && !hop.ammAuthority) hop.ammAuthority = stat.authority;
   if (stat?.lp_mint && !(hop as any).lpMint) (hop as any).lpMint = stat.lp_mint;
+  // Fallback to amm_ prefixed fields if available
+  if (stat?.amm_open_orders && !(hop as any).openOrders) (hop as any).openOrders = stat.amm_open_orders;
+  if (stat?.amm_target_orders && !(hop as any).targetOrders) (hop as any).targetOrders = stat.amm_target_orders;
+  if (stat?.amm_authority && !hop.ammAuthority) hop.ammAuthority = stat.amm_authority;
   
   try {
     const pools = peekRaydiumPools();
