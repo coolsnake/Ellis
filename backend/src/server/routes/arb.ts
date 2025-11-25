@@ -2509,6 +2509,46 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Get slippage configuration
+  api.get('/arb/slippage/config', async (_req: Request, res: Response) => {
+    try {
+      const { getSlippageConfig, DEFAULT_SLIPPAGE_CONFIG } = await import('../../execution/slippage/index.js');
+      const config = getSlippageConfig();
+      res.json({ config, defaults: DEFAULT_SLIPPAGE_CONFIG });
+    } catch (e: any) {
+      logger.error('arb.slippage.api.config_read_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Update slippage configuration
+  api.post('/arb/slippage/config', async (req: Request, res: Response) => {
+    try {
+      const { updateSlippageConfig, getSlippageConfig } = await import('../../execution/slippage/index.js');
+      updateSlippageConfig(req.body);
+      const updated = getSlippageConfig();
+      logger.info('arb.slippage.api.config_updated', { cat: 'arb', updates: req.body, config: updated });
+      res.json({ status: 'updated', config: updated });
+    } catch (e: any) {
+      logger.error('arb.slippage.api.config_update_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Reset slippage configuration to defaults
+  api.post('/arb/slippage/config/reset', async (_req: Request, res: Response) => {
+    try {
+      const { resetSlippageConfig, getSlippageConfig, DEFAULT_SLIPPAGE_CONFIG } = await import('../../execution/slippage/index.js');
+      resetSlippageConfig();
+      const config = getSlippageConfig();
+      logger.info('arb.slippage.api.config_reset', { cat: 'arb', config });
+      res.json({ status: 'reset', config, defaults: DEFAULT_SLIPPAGE_CONFIG });
+    } catch (e: any) {
+      logger.error('arb.slippage.api.config_reset_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

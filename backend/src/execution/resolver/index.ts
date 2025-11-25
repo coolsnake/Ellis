@@ -6,6 +6,16 @@ import { getTokenMeta } from './tokenMeta.js';
 import { CONFIG } from '../../utils/config.js';
 import { applySlippage } from '../limits.js';
 import { logCatchError } from '../../utils/errorHandler.js';
+import {
+  estimateSlippage,
+  getPoolFeeBps,
+  getPoolLiquidityUsd,
+  getTradeSizeUsd,
+  getDlmmPoolInfo,
+  getClmmPoolInfo,
+  getPoolType,
+  type SlippageEstimateInput,
+} from '../slippage/index.js';
 
 export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConfig): Promise<ExecutionPlan> {
   const path = Array.isArray(input.path) ? input.path : [];
@@ -538,7 +548,84 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       }
 
       // Compute effective slippage and minOut even if out=0n
+      // Use per-hop slippage estimation based on pool type, fee, and trade size
       let eff = slippage;
+      try {
+        // Build input for per-hop slippage estimation
+        const hop = hops[i];
+        const dex = String(hop.dex || '');
+        const variant = String(hop.variant || '');
+        const poolId = String(hop.poolId || '');
+        const poolType = getPoolType(dex, variant);
+
+        // Get pool-specific info
+        const poolFeeBps = await getPoolFeeBps(dex, variant || undefined, poolId);
+        const poolLiquidityUsd = await getPoolLiquidityUsd(dex, variant || undefined, poolId);
+        const tradeSizeUsd = await getTradeSizeUsd(
+          hop.amountInRaw,
+          hop.inputMint,
+          Number(hop.inputDecimals || 0)
+        );
+
+        // Build slippage input
+        const slippageInput: SlippageEstimateInput = {
+          dex,
+          variant,
+          poolType,
+          poolFeeBps,
+          poolLiquidityUsd,
+          tradeSizeUsd,
+        };
+
+        // Add pool-type specific info
+        if (poolType === 'dlmm') {
+          const dlmmInfo = await getDlmmPoolInfo(poolId);
+          if (dlmmInfo) {
+            slippageInput.binStep = dlmmInfo.binStep;
+            slippageInput.activeBinLiquidityUsd = dlmmInfo.activeBinLiquidityUsd;
+          }
+        } else if (poolType === 'clmm') {
+          const clmmInfo = await getClmmPoolInfo(dex, poolId);
+          if (clmmInfo) {
+            slippageInput.tickSpacing = clmmInfo.tickSpacing;
+            slippageInput.concentratedLiquidityUsd = clmmInfo.concentratedLiquidityUsd;
+          }
+        }
+
+        // Estimate slippage
+        const estimate = estimateSlippage(slippageInput);
+        eff = estimate.totalBps;
+
+        // Log the estimation for debugging
+        logger.debug('tx.resolve.hop.slippage.estimated', {
+          cat: 'tx',
+          code: LogCode.TX_RESOLVE_OK,
+          ctx: {
+            hopIndex: i,
+            poolId,
+            dex,
+            poolType,
+            poolFeeBps: estimate.poolFeeBps,
+            priceImpactBps: estimate.priceImpactBps,
+            safetyBufferBps: estimate.safetyBufferBps,
+            totalBps: estimate.totalBps,
+            formula: estimate.breakdown.formula,
+            tradeSizeUsd,
+            poolLiquidityUsd,
+            fallbackSlippageBps: slippage,
+          }
+        });
+      } catch (e) {
+        // Fall back to global slippage on any error
+        logCatchError('resolver.slippage.estimate', e);
+        logger.warn('tx.resolve.hop.slippage.fallback', {
+          cat: 'tx',
+          code: LogCode.TX_RESOLVE_OK,
+          ctx: { hopIndex: i, fallbackBps: slippage, error: String((e as any)?.message || e) }
+        });
+      }
+
+      // Apply Token-2022 bump on top of estimated slippage
       try {
         const sys = (CONFIG.system as any) || {};
         const bump = Number(sys.token2022ExtraSlippageBps ?? 0);
