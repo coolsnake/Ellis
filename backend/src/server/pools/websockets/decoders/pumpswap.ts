@@ -53,10 +53,11 @@ async function scheduleDexApply(source: 'pumpswap', baseline: PoolsPayload): Pro
     pumpswapApplyState.timer = setTimeout(async () => {
       try {
         const gmod: any = await import('../../../graph.js');
-        if (typeof gmod?.applyDexIncremental === 'function') {
-          const current = pumpswapCache.data;
-          if (current && pumpswapApplyState.baseline) {
-            await gmod.applyDexIncremental(source, pumpswapApplyState.baseline, current);
+        const current = pumpswapCache.data;
+        if (current && pumpswapApplyState.baseline) {
+          // Use applyPoolUpdates for incremental graph updates
+          if (typeof gmod?.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(pumpswapApplyState.baseline, current, { pushToArb: false });
           }
         }
       } catch (e) {

@@ -61,10 +61,11 @@ async function scheduleDexApply(source: 'raydium', baseline: PoolsPayload): Prom
     raydiumApplyState.timer = setTimeout(async () => {
       try {
         const gmod: any = await import('../../../graph.js');
-        if (typeof gmod?.applyDexIncremental === 'function') {
-          const current = raydiumCache.data;
-          if (current && raydiumApplyState.baseline) {
-            await gmod.applyDexIncremental(source, raydiumApplyState.baseline, current);
+        const current = raydiumCache.data;
+        if (current && raydiumApplyState.baseline) {
+          // Use applyPoolUpdates for incremental graph updates
+          if (typeof gmod?.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(raydiumApplyState.baseline, current, { pushToArb: false });
           }
         }
       } catch (e) {

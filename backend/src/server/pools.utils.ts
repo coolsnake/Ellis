@@ -57,10 +57,15 @@ export function diffNormalizedPools(prev: PoolsPayload | null | undefined, next:
     };
     const changedClmm = (a?: ClmmPool, b?: ClmmPool): boolean => {
         if (!a || !b) return true;
+        // Check sqrt_price_x64_raw for Raydium/Orca CLMM pools
         const rawChanged = ((a as any).sqrt_price_x64_raw && (b as any).sqrt_price_x64_raw)
             ? (a as any).sqrt_price_x64_raw !== (b as any).sqrt_price_x64_raw
             : false;
         if (rawChanged) return true;
+        // Check active_id for Meteora DLMM pools (their primary price-determining field)
+        const activeIdA = (a as any).active_id;
+        const activeIdB = (b as any).active_id;
+        if (Number.isFinite(activeIdA) && Number.isFinite(activeIdB) && activeIdA !== activeIdB) return true;
         const ratioChanged = ((a as any).price_a_per_b_num && (a as any).price_a_per_b_den && (b as any).price_a_per_b_num && (b as any).price_a_per_b_den)
             ? ((a as any).price_a_per_b_num !== (b as any).price_a_per_b_num || (a as any).price_a_per_b_den !== (b as any).price_a_per_b_den)
             : false;

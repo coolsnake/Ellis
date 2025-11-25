@@ -47,10 +47,11 @@ async function scheduleDexApply(source: 'orca', baseline: PoolsPayload): Promise
     orcaApplyState.timer = setTimeout(async () => {
       try {
         const gmod: any = await import('../../../graph.js');
-        if (typeof gmod?.applyDexIncremental === 'function') {
-          const current = orcaCache.data;
-          if (current && orcaApplyState.baseline) {
-            await gmod.applyDexIncremental(source, orcaApplyState.baseline, current);
+        const current = orcaCache.data;
+        if (current && orcaApplyState.baseline) {
+          // Use applyPoolUpdates for incremental graph updates
+          if (typeof gmod?.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(orcaApplyState.baseline, current, { pushToArb: false });
           }
         }
       } catch (e) {

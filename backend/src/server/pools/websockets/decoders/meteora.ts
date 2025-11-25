@@ -81,10 +81,11 @@ async function scheduleDexApply(source: 'meteora', baseline: PoolsPayload): Prom
     meteoraApplyState.timer = setTimeout(async () => {
       try {
         const gmod: any = await import('../../../graph.js');
-        if (typeof gmod?.applyDexIncremental === 'function') {
-          const current = meteoraCache.data;
-          if (current && meteoraApplyState.baseline) {
-            await gmod.applyDexIncremental(source, meteoraApplyState.baseline, current);
+        const current = meteoraCache.data;
+        if (current && meteoraApplyState.baseline) {
+          // Use applyPoolUpdates for incremental graph updates
+          if (typeof gmod?.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(meteoraApplyState.baseline, current, { pushToArb: false });
           }
         }
       } catch (e) {

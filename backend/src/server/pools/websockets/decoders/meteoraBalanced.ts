@@ -51,10 +51,11 @@ async function scheduleDexApply(source: 'meteora_balanced', baseline: PoolsPaylo
     metbalApplyState.timer = setTimeout(async () => {
       try {
         const gmod: any = await import('../../../graph.js');
-        if (typeof gmod?.applyDexIncremental === 'function') {
-          const current = metbalCache.data;
-          if (current && metbalApplyState.baseline) {
-            await gmod.applyDexIncremental(source, metbalApplyState.baseline, current);
+        const current = metbalCache.data;
+        if (current && metbalApplyState.baseline) {
+          // Use applyPoolUpdates for incremental graph updates
+          if (typeof gmod?.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(metbalApplyState.baseline, current, { pushToArb: false });
           }
         }
       } catch (e) {
