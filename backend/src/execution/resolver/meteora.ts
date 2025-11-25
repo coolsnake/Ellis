@@ -66,6 +66,25 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
       if (binLower && !hop.binArrayLower) hop.binArrayLower = binLower;
       if (binUpper && !hop.binArrayUpper) hop.binArrayUpper = binUpper;
       
+      // Extract token programs from pool cache if not in executionCache
+      // This eliminates RPC calls in the builder for token program detection
+      if (!tokenProgramA || !tokenProgramB) {
+        const poolTokenA = (p as any)?.token_program_a as 'spl-token' | 'token-2022' | undefined;
+        const poolTokenB = (p as any)?.token_program_b as 'spl-token' | 'token-2022' | undefined;
+        if (poolTokenA) (hop as any).tokenProgramA = poolTokenA;
+        if (poolTokenB) (hop as any).tokenProgramB = poolTokenB;
+        
+        // Also populate executionCache for future lookups
+        if (poolTokenA || poolTokenB) {
+          const existingStatic = executionCache.getStatic(id) || {};
+          executionCache.setStatic(id, {
+            ...existingStatic,
+            token_program_a: poolTokenA || (existingStatic as any).token_program_a,
+            token_program_b: poolTokenB || (existingStatic as any).token_program_b,
+          });
+        }
+      }
+      
       // Debug logging for vaults and bitmap extension
       try {
         const { logger } = await import('../../utils/logger.js');

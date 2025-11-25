@@ -483,6 +483,14 @@ export async function handleMeteoraUpdate(
       const prevPool = prev.clmm.find(p => p.id === item.id);
       if (prevPool) {
         const reasons: string[] = [];
+        // Check active_id first (primary price field for Meteora DLMM)
+        const prevActiveId = (prevPool as any).active_id;
+        const newActiveId = (item as any).active_id;
+        if (Number.isFinite(prevActiveId) && Number.isFinite(newActiveId) && prevActiveId === newActiveId) {
+          reasons.push('active_id_unchanged');
+        } else if (!Number.isFinite(prevActiveId) || !Number.isFinite(newActiveId)) {
+          reasons.push('active_id_missing');
+        }
         if ((prevPool as any).sqrt_price_x64_raw === item.sqrt_price_x64_raw) reasons.push('sqrt_price_unchanged');
         if ((prevPool as any).liquidity_raw === item.liquidity_raw) reasons.push('liquidity_raw_unchanged');
         if (Math.abs((prevPool.liquidity || 0) - (item.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');

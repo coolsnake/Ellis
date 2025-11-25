@@ -727,97 +727,72 @@ export function applyMinOut(outRaw: bigint, slippageBps: number): bigint {
 
 /**
  * Quote Orca Whirlpool CLMM swap using cached pool state (no RPC calls)
- * Uses CLMM constant product formula with concentrated liquidity
+ * Uses CLMM price formula with mint-based direction detection
  */
 async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<bigint> {
   if (!(amountInRaw > 0n)) return 0n;
   
   try {
     const { executionCache } = await import('../cache.js');
-    
-    // Get cached pool state
     const poolId = hop.poolId?.replace(/[#-]rev$/, '') || '';
     if (!poolId) return 0n;
     
+    // Get cached state - both hot (prices) and static (mints)
     const cached = executionCache.getHot(poolId);
-    if (!cached?.sqrtPriceX64 || !cached?.liquidity) {
-      // Cache miss - fallback to SDK quote
-      try {
-        const { logger } = await import('../../utils/logger.js');
-        logger.debug('orca.quote.local.cache_miss', {
-          cat: 'tx',
-          ctx: {
-            pool: poolId,
-            hasSqrtPrice: !!cached?.sqrtPriceX64,
-            hasLiquidity: !!cached?.liquidity,
-            msg: 'Falling back to SDK quote'
-          }
-        });
-      } catch (e) { logCatchError('resolver.quotes', e); }
+    const staticData = executionCache.getStatic(poolId);
+    
+    if (!cached?.sqrtPriceX64) {
+      // Cache miss - SDK fallback will be used
       return 0n;
     }
     
-    const { sqrtPriceX64, liquidity, feeRate } = cached;
+    const sqrtPriceX64 = cached.sqrtPriceX64;
+    const feeBps = cached.feeRate || 30; // Default 30 bps
     
-    // Determine swap direction
-    const isRev = /[#-]rev$/.test(hop.poolId || '');
+    // Determine direction from MINTS (authoritative), not pool ID suffix
+    const mintA = staticData?.mint_a || '';
+    const mintB = staticData?.mint_b || '';
+    const aToB = hop.inputMint === mintA && hop.outputMint === mintB;
+    const bToA = hop.inputMint === mintB && hop.outputMint === mintA;
     
-    // Get decimals (should be available from hop or fetch from cache)
-    const decIn = hop.inputDecimals;
-    const decOut = hop.outputDecimals;
-    
-    if (!Number.isFinite(decIn) || !Number.isFinite(decOut)) {
+    if (!aToB && !bToA) {
+      // Mint mismatch - cannot determine direction
       return 0n;
     }
     
-    // CLMM Quote Formula (simplified constant product for small swaps)
-    // For exact calculation, we'd need to iterate through tick ranges
-    // This is an approximation that works well for swaps within the current tick
+    const decIn = hop.inputDecimals ?? 0;
+    const decOut = hop.outputDecimals ?? 0;
+    if (!Number.isFinite(decIn) || !Number.isFinite(decOut)) return 0n;
     
     // Apply fee
-    const feeBps = feeRate || 25; // Default to 25 bps (0.25%) if not available
-    const feeMultiplier = 10000 - feeBps;
-    const amountInAfterFee = (amountInRaw * BigInt(feeMultiplier)) / 10000n;
+    const amountInAfterFee = (amountInRaw * BigInt(10000 - feeBps)) / 10000n;
     
-    // Convert sqrtPriceX64 to price ratio
-    // sqrtPrice = sqrt(tokenB / tokenA) * 2^64
-    // price = (sqrtPrice / 2^64)^2
+    // CLMM price formula: price = (sqrtPriceX64 / 2^64)^2
+    // For A->B: outB = inA * price
+    // For B->A: outA = inB / price
     const Q64 = 1n << 64n;
-    
-    // For small swaps, use linear approximation based on current price
-    // out = in * price * (1 - fee)
-    // This is similar to Raydium/Meteora simple price-based calculation
+    const sqrtPrice = sqrtPriceX64;
     
     let outRaw: bigint;
-    
-    if (isRev) {
-      // Swapping B -> A: multiply by price
-      // price_b_per_a = (sqrtPrice / 2^64)^2
-      const sqrtPrice = sqrtPriceX64;
-      const numerator = amountInAfterFee * Q64 * Q64;
-      const denominator = sqrtPrice * sqrtPrice;
-      
-      if (denominator === 0n) return 0n;
-      
-      // Adjust for decimals
-      const decimalAdjustment = BigInt(Math.pow(10, decOut as number)) * 10n ** 18n;
-      const decimalDivisor = BigInt(Math.pow(10, decIn as number)) * 10n ** 18n;
-      
-      outRaw = (numerator * decimalAdjustment) / (denominator * decimalDivisor);
+    if (aToB) {
+      // A -> B: multiply by price
+      // out = in * (sqrtPrice^2 / Q64^2) * 10^(decOut-decIn)
+      const decimalShift = decOut - decIn;
+      if (decimalShift >= 0) {
+        outRaw = (amountInAfterFee * sqrtPrice * sqrtPrice * BigInt(10 ** decimalShift)) / (Q64 * Q64);
+      } else {
+        outRaw = (amountInAfterFee * sqrtPrice * sqrtPrice) / (Q64 * Q64 * BigInt(10 ** (-decimalShift)));
+      }
     } else {
-      // Swapping A -> B: divide by price  
-      // price_a_per_b = 1 / ((sqrtPrice / 2^64)^2)
-      const sqrtPrice = sqrtPriceX64;
-      const numerator = amountInAfterFee * sqrtPrice * sqrtPrice;
-      const denominator = Q64 * Q64;
-      
-      if (denominator === 0n) return 0n;
-      
-      // Adjust for decimals
-      const decimalAdjustment = BigInt(Math.pow(10, decOut as number)) * 10n ** 18n;
-      const decimalDivisor = BigInt(Math.pow(10, decIn as number)) * 10n ** 18n;
-      
-      outRaw = (numerator * decimalAdjustment) / (denominator * decimalDivisor);
+      // B -> A: divide by price
+      // out = in * (Q64^2 / sqrtPrice^2) * 10^(decOut-decIn)
+      if (sqrtPrice === 0n) return 0n;
+      const decimalShift = decOut - decIn;
+      if (decimalShift >= 0) {
+        outRaw = (amountInAfterFee * Q64 * Q64 * BigInt(10 ** decimalShift)) / (sqrtPrice * sqrtPrice);
+      } else {
+        outRaw = (amountInAfterFee * Q64 * Q64) / (sqrtPrice * sqrtPrice * BigInt(10 ** (-decimalShift)));
+      }
     }
     
     if (outRaw > 0n) {
@@ -830,7 +805,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<
             amountIn: amountInRaw.toString(),
             amountOut: outRaw.toString(),
             feeBps,
-            isRev,
+            direction: aToB ? 'AtoB' : 'BtoA',
             sqrtPriceX64: sqrtPriceX64.toString()
           }
         });

@@ -2473,6 +2473,15 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     } catch (e) { logCatchError('ix.build', e); }
     
+    // Fallback: read token programs from hop if resolver populated them
+    // This eliminates RPC calls when cache is empty but resolver found them in pool cache
+    if (!poolTokenProgramLabelA) {
+      poolTokenProgramLabelA = (hop as any).tokenProgramA;
+    }
+    if (!poolTokenProgramLabelB) {
+      poolTokenProgramLabelB = (hop as any).tokenProgramB;
+    }
+    
     // STEP 2: Only fallback to RPC if cache is missing critical data
     if (!tokenXMintPk || !tokenYMintPk) {
       // Check if RPC fallback is allowed before attempting RPC call

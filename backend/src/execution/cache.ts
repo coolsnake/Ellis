@@ -128,7 +128,25 @@ export class ExecutionCache {
     return e.value;
   }
   setHot(poolId: string, val: PoolHot): void {
-    this.hotByPool.set(poolId, { value: val, expiresAt: Date.now() + this.ttlHotMs });
+    // Automatically merge with existing data to prevent loss of tickArrays/binArrays
+    const existingEntry = this.hotByPool.get(poolId);
+    const existing = (existingEntry && Date.now() <= existingEntry.expiresAt) ? existingEntry.value : {};
+    
+    const merged: PoolHot = {
+      ...existing,
+      ...val,
+      // Deep merge nested objects to preserve existing tick/bin array data
+      tickArrays: val.tickArrays ? {
+        ...(existing.tickArrays || {}),
+        ...val.tickArrays,
+      } : existing.tickArrays,
+      binArrays: val.binArrays ? {
+        ...(existing.binArrays || {}),
+        ...val.binArrays,
+      } : existing.binArrays,
+    };
+    
+    this.hotByPool.set(poolId, { value: merged, expiresAt: Date.now() + this.ttlHotMs });
   }
 
   getTokenMeta(mint: string): { decimals: number; program: 'spl-token'|'token-2022' } | undefined {

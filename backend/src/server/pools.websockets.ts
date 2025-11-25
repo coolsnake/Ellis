@@ -2981,10 +2981,11 @@ function runWebsocketRefreshLoop(): void {
           const configPk = new PublicKey(String(CONFIG.orca?.configPubkey));
           const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
           // Build target set from current graph snapshot edges
+          // Force a fresh snapshot to ensure we have the fully filtered graph
           const edgePoolIds = new Set<string>();
           try {
             const gmod: any = await import('./graph.js');
-            const snap = await gmod.getGraphSnapshot(false);
+            const snap = await gmod.getGraphSnapshot(true);
             for (const e of (snap?.edges || [])) {
               const dex = String((e as any)?.dex || '');
               if (dex !== 'Orca') continue;
@@ -2997,6 +2998,7 @@ function runWebsocketRefreshLoop(): void {
                 }
               }
             }
+            try { logger.info('pools.ws targets.orca from graph', { size: edgePoolIds.size }); } catch {}
           } catch {}
           const SOL = 'So11111111111111111111111111111111111111112';
           const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -3005,26 +3007,60 @@ function runWebsocketRefreshLoop(): void {
           if (edgePoolIds.size > 0) {
             uniq = Array.from(edgePoolIds);
             targetedWsActive = true;
-            try { logger.info('pools.ws targets.orca from graph', { size: uniq.length }); } catch {}
           } else {
-            // Fallback: derive from watchlist pairs (legacy behavior)
-            const pairs: Array<[string, string]> = [];
-            const watchMints: string[] = Array.from(new Set(wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean)));
-            for (const m of watchMints.slice(0, 100)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
-            pairs.push([SOL, USDC]);
-            const poolAddrs: string[] = [];
-            if (PDAUtil) {
-              for (const [a, b] of pairs) {
-                const [mintA, mintB] = String(a) < String(b) ? [a, b] : [b, a];
-                for (const ts of tickSpacings) {
-                  try {
-                    const pda = PDAUtil.getWhirlpool(programId, configPk, new PublicKey(mintA), new PublicKey(mintB), ts);
-                    poolAddrs.push(pda.publicKey.toBase58());
-                  } catch {}
+            // If no graph edges found, retry with fresh snapshot (like Meteora does)
+            // This handles the case where subscriptions start before graph is fully built
+            const maxRetries = Math.max(1, Number(((CONFIG.system as any)?.orcaWsRetryCount) || 2));
+            const delayMs = Math.max(200, Number(((CONFIG.system as any)?.orcaWsRetryDelayMs) || 600));
+            for (let i = 0; i < maxRetries && edgePoolIds.size === 0; i++) {
+              try {
+                const gmod: any = await import('./graph.js');
+                const snap = await gmod.getGraphSnapshot(true);
+                for (const e of (snap?.edges || [])) {
+                  const dex = String((e as any)?.dex || '');
+                  if (dex !== 'Orca') continue;
+                  const pid = String((e as any)?.pool_id || '');
+                  if (pid) {
+                    const base = pid.replace(/[#-]rev$/,'');
+                    if (isValidPublicKey(base)) {
+                      edgePoolIds.add(base);
+                    }
+                  }
                 }
+                if (edgePoolIds.size > 0) {
+                  uniq = Array.from(edgePoolIds);
+                  targetedWsActive = true;
+                  try { logger.info('pools.ws targets.orca from graph (retry)', { size: uniq.length, attempt: i + 1 }); } catch {}
+                  break;
+                }
+              } catch {}
+              if (edgePoolIds.size === 0 && i < maxRetries - 1) {
+                await new Promise(r => setTimeout(r, delayMs));
               }
             }
-            uniq = Array.from(new Set(poolAddrs));
+            
+            // Only fallback to watchlist derivation if graph still has no Orca pools after retries
+            // This should rarely happen if graph is properly built
+            if (uniq.length === 0) {
+              try { logger.warn('pools.ws targets.orca no graph edges, using watchlist fallback', { cat: 'pools' }); } catch {}
+              const pairs: Array<[string, string]> = [];
+              const watchMints: string[] = Array.from(new Set(wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean)));
+              for (const m of watchMints.slice(0, 100)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
+              pairs.push([SOL, USDC]);
+              const poolAddrs: string[] = [];
+              if (PDAUtil) {
+                for (const [a, b] of pairs) {
+                  const [mintA, mintB] = String(a) < String(b) ? [a, b] : [b, a];
+                  for (const ts of tickSpacings) {
+                    try {
+                      const pda = PDAUtil.getWhirlpool(programId, configPk, new PublicKey(mintA), new PublicKey(mintB), ts);
+                      poolAddrs.push(pda.publicKey.toBase58());
+                    } catch {}
+                  }
+                }
+              }
+              uniq = Array.from(new Set(poolAddrs));
+            }
           }
           const startTsOrca = Date.now();
           let attached = 0;
