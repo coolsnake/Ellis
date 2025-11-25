@@ -1,5 +1,6 @@
 import { canonicalOrientation, swapPoolFields } from './canonical.js';
 import { logger } from '../../utils/logger.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 /**
  * Centralized price canonicalization function
@@ -107,7 +108,7 @@ export function ensurePriceOrientation(
           price: p,
           hint: 'Mints not in canonical order but expected canonical price - price may be inverted',
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.priceCanonical', e); }
       return p;
     }
     // Mints are canonical, price should be correct

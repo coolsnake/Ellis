@@ -8,6 +8,7 @@
  */
 
 import { sqrtPriceX64ToPriceRatio } from './precision.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -60,7 +61,7 @@ export function calculateAmmPrice(
         reserveB: String(reserveB),
         cat: 'price.formula'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.priceFormulas', e); }
     return undefined;
   }
 }
@@ -125,7 +126,7 @@ export function calculateClmmPrice(
         decimalsB,
         cat: 'price.formula'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.priceFormulas', e); }
     return undefined;
   }
 }
@@ -211,7 +212,7 @@ export function calculateMeteoraPrice(
           mintB: mintB.slice(0, 8),
           cat: 'price.formula'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.priceFormulas', e); }
       return undefined;
     }
     
@@ -246,7 +247,7 @@ export function calculateMeteoraPrice(
         orientationBranch,
         cat: 'price.formula'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.priceFormulas', e); }
 
     return priceAperB_whole;
   } catch (error) {
@@ -257,7 +258,7 @@ export function calculateMeteoraPrice(
         binStep,
         cat: 'price.formula'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.priceFormulas', e); }
     return undefined;
   }
 }

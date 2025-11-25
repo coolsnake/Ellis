@@ -243,6 +243,14 @@ mod tests {
             dex: dex.clone(),
             pool_id: String::new(),
             liquidity_display: 1.0,
+            native_mint_a: None,
+            native_mint_b: None,
+            native_decimals_a: None,
+            native_decimals_b: None,
+            native_account_a: None,
+            native_account_b: None,
+            native_reserve_a_raw: None,
+            native_reserve_b_raw: None,
         };
         g.upsert_edge(&dex, "0", "1", e(1.0));
         g.upsert_edge(&dex, "1", "2", e(1.0));
@@ -274,6 +282,14 @@ mod tests {
             dex: dex.clone(),
             pool_id: "POOL123".to_string(),
             liquidity_display: 1.0,
+            native_mint_a: None,
+            native_mint_b: None,
+            native_decimals_a: None,
+            native_decimals_b: None,
+            native_account_a: None,
+            native_account_b: None,
+            native_reserve_a_raw: None,
+            native_reserve_b_raw: None,
         };
         let edge_synth = EdgeData {
             rate_effective: 1.0,
@@ -282,6 +298,14 @@ mod tests {
             dex: dex.clone(),
             pool_id: String::new(),
             liquidity_display: 1.0,
+            native_mint_a: None,
+            native_mint_b: None,
+            native_decimals_a: None,
+            native_decimals_b: None,
+            native_account_a: None,
+            native_account_b: None,
+            native_reserve_a_raw: None,
+            native_reserve_b_raw: None,
         };
         g.upsert_edge(&dex, "A", "B", edge_pool);
         g.upsert_edge(&dex, "A", "B", edge_synth);

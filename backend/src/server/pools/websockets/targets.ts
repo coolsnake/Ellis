@@ -7,6 +7,7 @@
 import { logger } from '../../../utils/logger.js';
 import { CONFIG } from '../../../utils/config.js';
 import { emit } from '../../realtime.js';
+import { logCatchError } from '../../../utils/errorHandler.js';
 
 /**
  * Compute target counts for WS subscriptions based on current graph edges per source
@@ -47,7 +48,7 @@ export async function getWsTargets(): Promise<{
       pumpswap: { target: pump.size }
     };
     
-    try { (getWsTargets as any)._last = out; } catch {}
+    try { (getWsTargets as any)._last = out; } catch (e) { logCatchError('pools.ws.targets', e); }
     return out;
   } catch {
     const out = {
@@ -57,7 +58,7 @@ export async function getWsTargets(): Promise<{
       meteora_balanced: { target: 0 },
       pumpswap: { target: 0 }
     };
-    try { (getWsTargets as any)._last = out; } catch {}
+    try { (getWsTargets as any)._last = out; } catch (e) { logCatchError('pools.ws.targets', e); }
     return out;
   }
 }
@@ -90,10 +91,10 @@ export async function retargetPoolWebsockets(
       timestamp: new Date().toISOString(),
       context: { cat: 'pools' }
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.ws.targets', e); }
 
   // Step 1: Unsubscribe all existing subscriptions
-  try { disableRefreshes(); } catch {}
+  try { disableRefreshes(); } catch (e) { logCatchError('pools.ws.targets', e); }
 
   // Step 2: Wait for websocket cleanup to complete before starting new subscriptions
   try {
@@ -102,7 +103,7 @@ export async function retargetPoolWebsockets(
       await closePromise.catch(() => {});
       clearClosePromise();
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.ws.targets', e); }
 
   // Step 3: Cooldown period to let RPC limiter refill tokens after unsubscribe burst
   const cooldownMs = Number((CONFIG.system as any)?.wsRetargetCooldownMs || 2000);
@@ -114,11 +115,11 @@ export async function retargetPoolWebsockets(
       timestamp: new Date().toISOString(),
       context: { cat: 'pools' }
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.ws.targets', e); }
   await new Promise(r => setTimeout(r, cooldownMs));
 
   // Step 4: Re-enable subscriptions (will trigger new setup)
-  try { enableRefreshes(); } catch {}
+  try { enableRefreshes(); } catch (e) { logCatchError('pools.ws.targets', e); }
 
   // Step 5: Wait briefly for setup to attach subscriptions
   await new Promise(r => setTimeout(r, 500));

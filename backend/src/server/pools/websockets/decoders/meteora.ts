@@ -1,26 +1,546 @@
 /**
  * Meteora DLMM pool decoder
  * 
- * Handles decoding and WebSocket updates for Meteora DLMM pools
+ * Handles decoding and WebSocket updates for Meteora DLMM (Dynamic Liquidity Market Maker) pools.
+ * 
+ * Meteora DLMM uses bin-based pricing with activeId and binStep instead of sqrt price.
  */
 
 import { logger } from '../../../../utils/logger.js';
+import { logCatchError, logCatchDebug } from '../../../../utils/errorHandler.js';
+import { anyToBigInt } from '../../precision.js';
+import { processPriceThroughPipeline } from '../../pricePipeline.js';
+import { diffNormalizedPools } from '../../../pools.utils.js';
+import { meteoraCache } from '../../../pools.cache.js';
+import { deriveMeteoraBinArrayAddresses } from '../../../pools.derivation.js';
+import { emit } from '../../../realtime.js';
+import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
+import { validateDecodedPool } from '../validation.js';
+import { CONFIG } from '../../../../utils/config.js';
+import type { 
+  DecodedPool, 
+  UpdateResult, 
+  AccountInfo, 
+  ProcessedPriceResult,
+  DerivedAccountInfo 
+} from './types.js';
+import type { ClmmPool, PoolsPayload } from '../../types.js';
+
+// Program ID
+const METEORA_DLMM_PROGRAM = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+
+// Debounce state for graph updates
+let meteoraApplyState: { baseline: PoolsPayload | null; timer: NodeJS.Timeout | null } = { baseline: null, timer: null };
+const DEBOUNCE_MS = 50;
+
+// Meteora program instance cache
+let meteoraProgramInstance: any = null;
 
 /**
- * Placeholder for Meteora DLMM decoder
- * Will be populated during refactoring with:
- * - decodePool(accountData, poolId)
- * - handleAccountUpdate(account, poolId)
- * - Related constants and helpers
- * - Bin array handling logic
+ * Convert value to base58 string safely
  */
-
-export function decodeMeteoraPool(accountData: Buffer, poolId: string): any | null {
-  // Will be implemented during refactoring
-  return null;
+function toB58(val: any): string {
+  if (!val) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val.toBase58 === 'function') return val.toBase58();
+  return String(val);
 }
 
-export async function handleMeteoraAccountUpdate(account: any, poolId: string): Promise<void> {
-  // Will be implemented during refactoring
+/**
+ * Ensure Meteora program is initialized
+ */
+async function ensureMeteoraProgram(): Promise<any> {
+  if (meteoraProgramInstance) return meteoraProgramInstance;
+  
+  try {
+    const { createProgram } = await import('@meteora-ag/dlmm');
+    const { Connection } = await import('@solana/web3.js');
+    
+    const rpcUrl = (CONFIG as any).rpc?.url || (CONFIG as any).rpcUrl || 'https://api.mainnet-beta.solana.com';
+    const conn = new Connection(rpcUrl);
+    
+    meteoraProgramInstance = createProgram(conn);
+    return meteoraProgramInstance;
+  } catch (e) {
+    logCatchDebug('meteora.ensureProgram', e);
+    return null;
+  }
 }
+
+/**
+ * Schedule debounced graph update for Meteora
+ */
+async function scheduleDexApply(source: 'meteora', baseline: PoolsPayload): Promise<void> {
+  try {
+    if (!meteoraApplyState.baseline) {
+      meteoraApplyState.baseline = baseline;
+    }
+    if (meteoraApplyState.timer) {
+      clearTimeout(meteoraApplyState.timer);
+    }
+    meteoraApplyState.timer = setTimeout(async () => {
+      try {
+        const gmod: any = await import('../../../graph.js');
+        if (typeof gmod?.applyDexIncremental === 'function') {
+          const current = meteoraCache.data;
+          if (current && meteoraApplyState.baseline) {
+            await gmod.applyDexIncremental(source, meteoraApplyState.baseline, current);
+          }
+        }
+      } catch (e) {
+        logCatchDebug('meteora.scheduleDexApply', e);
+      } finally {
+        meteoraApplyState.baseline = null;
+        meteoraApplyState.timer = null;
+      }
+    }, DEBOUNCE_MS);
+  } catch (e) {
+    logCatchDebug('meteora.scheduleDexApply.setup', e);
+  }
+}
+
+/**
+ * Decode Meteora DLMM lbPair from account data
+ */
+export async function decodeMeteoraLbPair(
+  data: Buffer,
+  poolId: string
+): Promise<{ state: any; isBinArray: boolean } | null> {
+  try {
+    const program = await ensureMeteoraProgram();
+    if (!program || !data) return null;
+
+    let state: any = null;
+    let isBinArray = false;
+
+    try {
+      state = program.coder.accounts.decode('lbPair', data);
+      logger.debug('meteora.decoder.lbPair.decoded', {
+        id: poolId.slice(0, 8) + '…',
+        keys: Object.keys(state || {}).slice(0, 10),
+        cat: 'pools'
+      });
+    } catch (err: any) {
+      logger.debug('meteora.decoder.lbPair.fail', {
+        id: poolId,
+        error: String(err?.message || err),
+        cat: 'pools'
+      });
+
+      // Try decoding as binArray
+      try {
+        const bin = program.coder.accounts.decode('binArray', data);
+        if (bin) {
+          isBinArray = true;
+          logger.debug('meteora.decoder.binArray.decoded', {
+            id: poolId.slice(0, 8) + '…',
+            keys: Object.keys(bin || {}).slice(0, 10),
+            cat: 'pools'
+          });
+          return { state: bin, isBinArray: true };
+        }
+      } catch {}
+      
+      return null;
+    }
+
+    if (!state) return null;
+    
+    return { state, isBinArray };
+  } catch (e) {
+    logCatchDebug('meteora.decodeLbPair', e, { poolId });
+    return null;
+  }
+}
+
+/**
+ * Decode Meteora bin array from account data
+ */
+export async function decodeMeteoraBinArray(
+  data: Buffer,
+  poolId: string
+): Promise<any | null> {
+  try {
+    const program = await ensureMeteoraProgram();
+    if (!program || !data) return null;
+
+    const bin = program.coder.accounts.decode('binArray', data);
+    return bin || null;
+  } catch (e) {
+    logCatchDebug('meteora.decodeBinArray', e, { poolId });
+    return null;
+  }
+}
+
+/**
+ * Handle Meteora WebSocket account update
+ * 
+ * This is the main entry point for processing Meteora DLMM updates from WebSocket.
+ */
+export async function handleMeteoraUpdate(
+  info: AccountInfo,
+  poolId: string,
+  derivedAccountToPool: Map<string, DerivedAccountInfo> = new Map(),
+  accountPubkey?: any
+): Promise<UpdateResult> {
+  try {
+    wsDecodeStats.meteora.attempts += 1;
+    
+    const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
+    
+    if (!data || data.length === 0) {
+      return { success: false, error: 'no_data', skipped: true };
+    }
+
+    // Decode the pool
+    const decoded = await decodeMeteoraLbPair(data, poolId);
+    if (!decoded) {
+      wsDecodeStats.meteora.failures += 1;
+      return { success: false, error: 'decode_failed', skipped: true };
+    }
+
+    const { state, isBinArray } = decoded;
+
+    // If it's a bin array, we don't process it as a pool
+    if (isBinArray) {
+      logger.debug('meteora.ws.binArray.ignored', {
+        pool: poolId.slice(0, 8) + '…',
+        reason: 'option1_reserves_only',
+        cat: 'pools'
+      });
+      return { success: true, skipped: true, skipReason: 'bin_array' };
+    }
+
+    if (!state) {
+      logger.warn('meteora.ws.state.missing', { id: poolId, cat: 'pools' });
+      return { success: false, error: 'state_missing', skipped: true };
+    }
+
+    // Extract pool fields
+    let tokenX: string | undefined;
+    let tokenY: string | undefined;
+    let activeId: number | undefined;
+    let binStep: number | undefined;
+
+    try { tokenX = state?.tokenXMint?.toBase58?.() || state?.mint_x || state?.tokenXMint || state?.tokenA; } catch {}
+    try { tokenY = state?.tokenYMint?.toBase58?.() || state?.mint_y || state?.tokenYMint || state?.tokenB; } catch {}
+    try { activeId = Number(state?.activeId ?? state?.active_id); } catch {}
+    try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
+
+    const accountA = toB58(state?.reserveX);
+    const accountB = toB58(state?.reserveY);
+
+    if (!tokenX || !tokenY) {
+      wsDeltaStats.meteora.skipped += 1;
+      incrementSkipReason('meteora', 'missing_tokens');
+      return { success: false, error: 'missing_tokens', skipped: true };
+    }
+
+    // Get decimals from cache
+    const cachedPools = meteoraCache.data || { amm: [], clmm: [] };
+    const existing = cachedPools.clmm.find(p => p.id === poolId);
+    
+    let decA = existing?.native_decimals_a ?? existing?.decimals_a;
+    let decB = existing?.native_decimals_b ?? existing?.decimals_b;
+
+    // Fallback to execution cache
+    if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+      try {
+        const { executionCache } = await import('../../../../execution/cache.js');
+        const cached = executionCache.getStatic(poolId);
+        if (!Number.isFinite(decA)) decA = cached?.native_decimals_a ?? cached?.decimals_a;
+        if (!Number.isFinite(decB)) decB = cached?.native_decimals_b ?? cached?.decimals_b;
+      } catch {}
+    }
+
+    // Fallback to resolver
+    if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+      try {
+        const { resolveDecimals } = await import('../../decimals.js');
+        if (!Number.isFinite(decA)) decA = await resolveDecimals(tokenX);
+        if (!Number.isFinite(decB)) decB = await resolveDecimals(tokenY);
+      } catch {
+        if (!Number.isFinite(decA)) decA = 9;
+        if (!Number.isFinite(decB)) decB = 6;
+      }
+    }
+
+    // Ensure valid numbers
+    if (Number.isFinite(decA)) decA = Number(decA);
+    if (Number.isFinite(decB)) decB = Number(decB);
+    if (!Number.isFinite(decA)) decA = undefined;
+    if (!Number.isFinite(decB)) decB = undefined;
+
+    // Process through price pipeline
+    let processedPrice: ProcessedPriceResult | null = null;
+    if (Number.isFinite(activeId) && Number.isFinite(binStep) && decA != null && decB != null) {
+      processedPrice = processPriceThroughPipeline({
+        mintA: tokenX,
+        mintB: tokenY,
+        decimalsA: decA,
+        decimalsB: decB,
+        poolId,
+        dex: 'Meteora',
+        poolType: 'clmm',
+        activeId: Number(activeId),
+        binStep: Number(binStep),
+        tokenXMint: tokenX,
+        tokenYMint: tokenY,
+      });
+
+      if (!processedPrice) {
+        logger.warn('meteora.ws.price.pipeline_failed', {
+          id: poolId,
+          activeId: Number(activeId),
+          binStep: Number(binStep),
+          tokenX: tokenX?.slice(0, 8),
+          tokenY: tokenY?.slice(0, 8),
+          cat: 'pools'
+        });
+      }
+    }
+
+    if (!processedPrice) {
+      wsDeltaStats.meteora.skipped += 1;
+      const tokenReason = `missing_${!tokenX ? 'tokenX' : ''}${!tokenY ? 'tokenY' : ''}_priceCalc`;
+      incrementSkipReason('meteora', tokenReason);
+      return { success: false, error: 'price_calc_failed', skipped: true, skipReason: tokenReason };
+    }
+
+    const tickSpacing = Number.isFinite(binStep) ? Number(binStep) : 0;
+    const liquidityRaw = anyToBigInt(state?.liquidity ?? 0);
+    const liquidity = liquidityRaw ? Number(liquidityRaw) : Number(state?.liquidity ?? 0);
+    const sqrtPriceRaw = anyToBigInt(state?.sqrtPriceX64 ?? state?.sqrt_price_x64 ?? 0);
+    const feeBps = Number(state?.tradeFeeRate ?? state?.feeRate ?? state?.fee_rate ?? state?.fees ?? 0);
+
+    // Check for derived account (vault) confusion
+    if (derivedAccountToPool.has(poolId)) {
+      const derivedMeta = derivedAccountToPool.get(poolId);
+      logger.warn('meteora.ws.derived_as_pool.prevented', {
+        account: poolId.slice(0, 8) + '…',
+        accountType: derivedMeta?.accountType,
+        parentPool: derivedMeta?.poolId?.slice(0, 8) + '…',
+        reason: 'account_is_derived_not_pool',
+        cat: 'pools'
+      });
+      return { success: false, error: 'derived_as_pool', skipped: true };
+    }
+
+    // Derive bin array addresses
+    const program = await ensureMeteoraProgram();
+    const binArrayAddresses = await deriveMeteoraBinArrayAddresses(
+      accountPubkey,
+      program?.programId,
+      typeof activeId === 'number' ? Number(activeId) : undefined
+    );
+
+    // Build the pool item with pipeline-processed prices
+    const item: ClmmPool = {
+      id: poolId,
+      dex: 'Meteora',
+      mint_a: processedPrice.mintA,
+      mint_b: processedPrice.mintB,
+      fee_bps: Number.isFinite(feeBps) ? feeBps : 0,
+      sqrt_price_x64: sqrtPriceRaw ? Number(sqrtPriceRaw) : Number(state?.sqrtPriceX64 ?? state?.sqrt_price_x64 ?? 0),
+      sqrt_price_x64_raw: sqrtPriceRaw?.toString(),
+      liquidity: Number.isFinite(liquidity) ? liquidity : 0,
+      liquidity_raw: liquidityRaw?.toString(),
+      tick_spacing: tickSpacing,
+      updated_ms: Date.now(),
+      pool_kind: 'clmm',
+      price_a_per_b: processedPrice.priceForward,
+      decimals_a: processedPrice.decimalsA,
+      decimals_b: processedPrice.decimalsB,
+      // Store vault accounts in canonical order
+      account_a: processedPrice.wasSwapped ? accountB : accountA,
+      account_b: processedPrice.wasSwapped ? accountA : accountB,
+      price_a_per_b_exact: processedPrice.priceForward?.toString(),
+      was_swapped: processedPrice.wasSwapped,
+      native_mint_a: tokenX,
+      native_mint_b: tokenY,
+      native_decimals_a: decA,
+      native_decimals_b: decB,
+      native_account_a: accountA,
+      native_account_b: accountB,
+      _pipelineProcessed: true,
+    } as ClmmPool;
+
+    // Add Meteora-specific fields
+    if (Number.isFinite(activeId)) (item as any).active_id = Number(activeId);
+    if (tickSpacing) (item as any).bin_step = tickSpacing;
+    if (binArrayAddresses.lower) (item as any).bin_array_lower = binArrayAddresses.lower;
+    if (binArrayAddresses.upper) (item as any).bin_array_upper = binArrayAddresses.upper;
+
+    // Update execution cache
+    try {
+      const { executionCache } = await import('../../../../execution/cache.js');
+      const existingStatic = executionCache.getStatic(poolId) || {};
+      
+      const nextStatic: any = {
+        ...existingStatic,
+        programId: String(program?.programId?.toBase58?.() || METEORA_DLMM_PROGRAM),
+        vaults: { a: accountA, b: accountB },
+        binStep: tickSpacing,
+        mint_a: processedPrice.mintA,
+        mint_b: processedPrice.mintB,
+        decimals_a: processedPrice.decimalsA,
+        decimals_b: processedPrice.decimalsB,
+        token_program_a: (existingStatic as any)?.token_program_a,
+        token_program_b: (existingStatic as any)?.token_program_b,
+        account_a: processedPrice.wasSwapped ? accountB : accountA,
+        account_b: processedPrice.wasSwapped ? accountA : accountB,
+        bin_array_bitmap_extension: (existingStatic as any)?.bin_array_bitmap_extension,
+        native_mint_a: tokenX,
+        native_mint_b: tokenY,
+        native_decimals_a: decA,
+        native_decimals_b: decB,
+        native_account_a: accountA,
+        native_account_b: accountB,
+        rawAccountData: data,
+        rawAccountDataUpdatedMs: Date.now()
+      };
+
+      if (binArrayAddresses.lower) nextStatic.bin_array_lower = binArrayAddresses.lower;
+      if (binArrayAddresses.upper) nextStatic.bin_array_upper = binArrayAddresses.upper;
+      executionCache.setStatic(poolId, nextStatic);
+
+      // Store hot pool data
+      if (Number.isFinite(activeId) || binArrayAddresses.lower || binArrayAddresses.upper) {
+        const existingHot = executionCache.getHot(poolId) || {};
+        executionCache.setHot(poolId, {
+          ...existingHot,
+          activeId: Number.isFinite(activeId) ? Number(activeId) : existingHot.activeId,
+          sqrtPriceX64: sqrtPriceRaw ?? existingHot.sqrtPriceX64,
+          liquidity: liquidityRaw ?? existingHot.liquidity,
+          feeRate: Number.isFinite(feeBps) ? feeBps : existingHot.feeRate,
+          binArrays: {
+            ...(existingHot.binArrays || {}),
+            ...binArrayAddresses,
+          },
+        });
+
+        logger.debug('meteora.ws.cache_updated', {
+          pool: poolId.slice(0, 8) + '…',
+          activeId: Number(activeId),
+          binStep: tickSpacing,
+          hasRawData: !!data,
+          cat: 'pools'
+        });
+      }
+    } catch (cacheErr) {
+      logger.warn('meteora.ws.cache_update_failed', {
+        pool: poolId.slice(0, 8) + '…',
+        error: String((cacheErr as Error)?.message || cacheErr),
+        cat: 'pools'
+      });
+    }
+
+    // Validate decoded pool
+    const validation = validateDecodedPool('meteora', item, poolId);
+    if (!validation.valid) {
+      wsDecodeStats.meteora.failures += 1;
+      incrementSkipReason('meteora', `validation_failed:${validation.reasons.join(',')}`);
+      logger.warn('meteora.ws.validation.failed', { id: poolId, reasons: validation.reasons, cat: 'pools' });
+      return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
+    }
+
+    // Update cache
+    const prev = meteoraCache.data || { amm: [], clmm: [] };
+    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+    const idx = next.clmm.findIndex(p => p.id === item.id);
+
+    if (idx >= 0) {
+      const prevPool = next.clmm[idx];
+      const orientationChanged = prevPool.mint_a !== item.mint_a || prevPool.mint_b !== item.mint_b;
+      if (orientationChanged) {
+        const orientationIndependentFields = {
+          tvl_usd: prevPool.tvl_usd,
+          liquidity_display: prevPool.liquidity_display,
+          pool_liquidity_raw: prevPool.pool_liquidity_raw,
+        };
+        next.clmm[idx] = { ...item, ...orientationIndependentFields };
+      } else {
+        next.clmm[idx] = { ...next.clmm[idx], ...item };
+      }
+    } else {
+      next.clmm.push(item);
+    }
+
+    // Update stats and cache
+    wsDecodeStats.meteora.successes += 1;
+    wsDeltaStats.meteora.decoded += 1;
+    
+    const delta = diffNormalizedPools(prev, next);
+    meteoraCache.data = next;
+    meteoraCache.ts = Date.now();
+
+    const hasDelta = delta.amm.length || delta.clmm.length || delta.addedAmm || delta.removedAmm || delta.addedClmm || delta.removedClmm;
+    if (hasDelta) {
+      wsDeltaStats.meteora.applied += 1;
+    } else {
+      wsDeltaStats.meteora.skipped += 1;
+      const prevPool = prev.clmm.find(p => p.id === item.id);
+      if (prevPool) {
+        const reasons: string[] = [];
+        if ((prevPool as any).sqrt_price_x64_raw === item.sqrt_price_x64_raw) reasons.push('sqrt_price_unchanged');
+        if ((prevPool as any).liquidity_raw === item.liquidity_raw) reasons.push('liquidity_raw_unchanged');
+        if (Math.abs((prevPool.liquidity || 0) - (item.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');
+        if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
+        incrementSkipReason('meteora', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+      } else {
+        incrementSkipReason('meteora', 'prev_pool_missing');
+      }
+    }
+
+    // Emit update event
+    try {
+      const sample = { amm: [], clmm: delta.clmm.slice(0, 20) };
+      emit('pool-updates', {
+        source: 'meteora',
+        updatedAmm: delta.amm.length,
+        updatedClmm: delta.clmm.length,
+        addedAmm: delta.addedAmm,
+        removedAmm: delta.removedAmm,
+        addedClmm: delta.addedClmm,
+        removedClmm: delta.removedClmm,
+        sample,
+        ts: Date.now(),
+        canon: (CONFIG.system as any)?.canonicalizePairs || 'none'
+      });
+    } catch {}
+
+    // Schedule graph update
+    if (hasDelta) {
+      await scheduleDexApply('meteora', prev);
+    }
+
+    logger.debug('meteora.ws.clmm.fields', {
+      id: poolId,
+      priceForward: processedPrice.priceForward,
+      binStep: tickSpacing,
+      activeId,
+      decimals: { a: processedPrice.decimalsA, b: processedPrice.decimalsB },
+      wasSwapped: processedPrice.wasSwapped,
+      cat: 'pools'
+    });
+
+    return { success: true, pool: item as DecodedPool, delta };
+  } catch (e) {
+    wsDecodeStats.meteora.failures += 1;
+    logCatchError('meteora.handleUpdate', e, { poolId: poolId.slice(0, 8) + '…' });
+    return { success: false, error: String((e as Error)?.message || e) };
+  }
+}
+
+/**
+ * Check if an owner is the Meteora DLMM program
+ */
+export function isMeteoraOwner(owner: string): boolean {
+  return owner === METEORA_DLMM_PROGRAM || owner === String((CONFIG as any)?.meteora?.programId || '').trim();
+}
+
+/**
+ * Get Meteora program ID
+ */
+export const METEORA_PROGRAM = METEORA_DLMM_PROGRAM;
 

@@ -6,6 +6,7 @@
 
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason, wsDebugCounters, wsTargetDebugCounters } from '../../pools.metrics.js';
 import type { DexSource } from './types.js';
+import { logCatchError } from '../../../utils/errorHandler.js';
 
 /**
  * Re-export metrics from pools.metrics for convenience
@@ -61,7 +62,7 @@ export function resetAllWsCounts(): void {
 export function recordDecodeSuccess(dex: DexSource): void {
   try {
     wsDecodeStats[dex].successes += 1;
-  } catch {}
+  } catch (e) { logCatchError('pools.ws.metrics', e); }
 }
 
 /**
@@ -70,7 +71,7 @@ export function recordDecodeSuccess(dex: DexSource): void {
 export function recordDecodeFailure(dex: DexSource): void {
   try {
     wsDecodeStats[dex].failures += 1;
-  } catch {}
+  } catch (e) { logCatchError('pools.ws.metrics', e); }
 }
 
 /**
@@ -79,6 +80,6 @@ export function recordDecodeFailure(dex: DexSource): void {
 export function recordDelta(dex: DexSource): void {
   try {
     wsDeltaStats[dex].decoded += 1;
-  } catch {}
+  } catch (e) { logCatchError('pools.ws.metrics', e); }
 }
 

@@ -2,6 +2,7 @@ import type { ExecutionPlan, DirectHop } from '../types.js';
 import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildPumpswapSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal, buildPumpswapSwapIxReal, buildMeteoraDammSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { buildCreateAtaIx, deriveAta, isSolMint, buildWrapSolIxs, buildUnwrapSolIx } from '../accounts.js';
 import { ensureWallet } from '../../wallet/wallet.js';
@@ -81,7 +82,7 @@ function logTimingMetrics(
         ctx: summary as any,
       });
     }
-  } catch {}
+  } catch (e) { logCatchError('builder.tx', e); }
 }
 
 /**
@@ -95,7 +96,7 @@ async function getCachedWallet(): Promise<{ publicKey: PublicKey; secretKey: Uin
         cat: 'tx',
         ctx: { owner: cachedWallet.publicKey.toBase58() },
       });
-    } catch {}
+    } catch (e) { logCatchError('builder.tx', e); }
   }
   return cachedWallet;
 }
@@ -119,7 +120,7 @@ async function getCachedExecConfig(): Promise<any> {
           wrapSolInTx: cachedExecConfig.wrapSolInTx,
         },
       });
-    } catch {}
+    } catch (e) { logCatchError('builder.tx', e); }
   }
   return cachedExecConfig;
 }
@@ -246,10 +247,10 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       hopMetrics.variant = hop.variant || '';
       hopMetrics.poolId = hop.poolId || '';
       
-      try { logger.debug('tx.build.hop', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
+      try { logger.debug('tx.build.hop', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
       try {
         logger.info('tx.build.hop.start', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), userSourceAta: hop.userSourceAta ? 'set' : 'missing', userDestAta: hop.userDestAta ? 'set' : 'missing' } as any });
-      } catch {}
+      } catch (e) { logCatchError('builder.tx', e); }
       try {
         // --- Pre-hop account prep: ATAs and optional SOL wrapping ---
         const accountPrepStart = Date.now();
@@ -265,16 +266,16 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               hop.userSourceAta = prevHopDestAta;
               try {
                 logger.info('tx.build.hop.chain', { cat: 'tx', ctx: { traceId, hopIndex: i, chainedAta: hop.userSourceAta, mint: hop.inputMint } as any });
-              } catch {}
+              } catch (e) { logCatchError('builder.tx', e); }
             }
           }
           
           // Derive ATAs when missing
           if (!hop.userSourceAta) {
-            try { hop.userSourceAta = deriveAta(owner, new PublicKey(hop.inputMint), hop.inputTokenProgram).toBase58(); } catch {}
+            try { hop.userSourceAta = deriveAta(owner, new PublicKey(hop.inputMint), hop.inputTokenProgram).toBase58(); } catch (e) { logCatchError('builder.tx', e); }
           }
           if (!hop.userDestAta) {
-            try { hop.userDestAta = deriveAta(owner, new PublicKey(hop.outputMint), hop.outputTokenProgram).toBase58(); } catch {}
+            try { hop.userDestAta = deriveAta(owner, new PublicKey(hop.outputMint), hop.outputTokenProgram).toBase58(); } catch (e) { logCatchError('builder.tx', e); }
           }
 
           if (hop.userDestAta && !ensuredAtas.has(hop.userDestAta)) {
@@ -285,7 +286,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               const { getTokenAccountManager } = await import('../../wallet/tokenAccountManager.js');
               const manager = getTokenAccountManager(getConnection());
               await manager.markTokenAccountUsed(new PublicKey(hop.userDestAta));
-            } catch {}
+            } catch (e) { logCatchError('builder.tx', e); }
           }
 
           if (!isSolMint(hop.inputMint) && hop.userSourceAta && !ensuredAtas.has(hop.userSourceAta)) {
@@ -296,7 +297,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               const { getTokenAccountManager } = await import('../../wallet/tokenAccountManager.js');
               const manager = getTokenAccountManager(getConnection());
               await manager.markTokenAccountUsed(new PublicKey(hop.userSourceAta));
-            } catch {}
+            } catch (e) { logCatchError('builder.tx', e); }
           }
         }
         // SOL wrapping/unwrap if configured
@@ -323,7 +324,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                 hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.outputMint), hop.outputTokenProgram));
                 ensuredAtas.add(hop.userDestAta);
               }
-            } catch {}
+            } catch (e) { logCatchError('builder.tx', e); }
           }
         }
         
@@ -352,7 +353,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                   outputMint: prevHop.outputMint,
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('builder.tx', e); }
             
             // Always prefer quotedOutputRaw for multi-hop swaps when available
             if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
@@ -378,7 +379,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                       prevHopQuotedOutputRaw: exactAmount.toString(),
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('builder.tx', e); }
                 // CRITICAL: Set amountInRaw to the exact quotedOutputRaw from previous hop
                 // This ensures perfect amount propagation without any rounding errors
                 hop.amountInRaw = exactAmount;
@@ -404,7 +405,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                       outputMint: prevHop.outputMint,
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('builder.tx', e); }
                 // Force correct amount even if something tried to modify it
                 hop.amountInRaw = exactAmount;
               }
@@ -424,7 +425,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                     outputMint: prevHop.outputMint,
                   }
                 });
-              } catch {}
+              } catch (e) { logCatchError('builder.tx', e); }
             } else {
               // Fallback: if quotedOutputRaw not available, try other sources
               // CRITICAL: Always try to fix amount for multi-hop swaps, even if amountInRaw is already set
@@ -459,7 +460,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                       outputMint: prevHop.outputMint,
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('builder.tx', e); }
                 hop.amountInRaw = newAmount;
               }
             }
@@ -475,7 +476,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                 code: LogCode.TX_BUILD_ERR,
                 ctx: { traceId, hopIndex: i, error: String((propErr as any)?.message || propErr) }
               });
-            } catch {}
+            } catch (e) { logCatchError('builder.tx', e); }
           }
         }
         hopMetrics.amountPropagation = Date.now() - amountPropStart;
@@ -538,7 +539,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                     outputMint: prevHop.outputMint,
                   }
                 });
-              } catch {}
+              } catch (e) { logCatchError('builder.tx', e); }
               // Force correct amount before building instruction
               hop.amountInRaw = expectedAmount;
             }
@@ -553,17 +554,17 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         } else if (hop.dex === 'raydium' && hop.variant === 'clmm') {
           ixs = await buildRaydiumClmmSwapIxReal(hop);
         } else if (hop.dex === 'orca') {
-          try { logger.info('tx.build.hop.orca.start', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, variant: hop.variant, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: hop.amountInRaw?.toString() } as any }); } catch {}
+          try { logger.info('tx.build.hop.orca.start', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, variant: hop.variant, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: hop.amountInRaw?.toString() } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildOrcaSwapIx(hop) as any[];
-          try { logger.info('tx.build.hop.orca.complete', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, instructionCount: ixs.length } as any }); } catch {}
+          try { logger.info('tx.build.hop.orca.complete', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, instructionCount: ixs.length } as any }); } catch (e) { logCatchError('builder.tx', e); }
         } else if (hop.dex === 'pumpswap') {
-          try { logger.info('tx.build.hop.pumpswap.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}
+          try { logger.info('tx.build.hop.pumpswap.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildPumpswapSwapIxReal(hop);
         } else if (hop.dex === 'meteora_balanced') {
-          try { logger.info('tx.build.hop.meteora.damm.real', { cat: 'tx', ctx: { poolId: hop.poolId, variant: hop.variant } as any }); } catch {}
+          try { logger.info('tx.build.hop.meteora.damm.real', { cat: 'tx', ctx: { poolId: hop.poolId, variant: hop.variant } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildMeteoraDammSwapIxReal(hop);
         } else if (hop.dex === 'meteora') {
-          try { logger.info('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}
+          try { logger.info('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildMeteoraDlmmSwapIxReal(hop);
         }
         hopMetrics.instructionBuilding = Date.now() - instructionStart;
@@ -586,11 +587,11 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         hopMetrics.total = Date.now() - hopStart;
         metrics.hops.push(hopMetrics);
         
-        try { logger.info('tx.build.hop.ok', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
+        try { logger.info('tx.build.hop.ok', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
       } catch (e) {
         hopMetrics.total = Date.now() - hopStart;
         metrics.hops.push(hopMetrics);
-        try { logger.error('tx.build.hop.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId, error: String((e as any)?.message || e) } as any }); } catch {}
+        try { logger.error('tx.build.hop.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId, error: String((e as any)?.message || e) } as any }); } catch (e) { logCatchError('builder.tx', e); }
         throw e;
       }
     }
@@ -647,7 +648,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               isDynamic: calculatedFees.isDynamic,
             } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('builder.tx', e); }
       } catch (error) {
         try {
           logger.warn('tx.build.priority.fee.error', {
@@ -657,7 +658,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               error: String((error as any)?.message || error),
             } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('builder.tx', e); }
       }
     }
     
@@ -673,7 +674,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               // For now, we'll estimate based on instruction count
               // Full conversion would require the toInstruction function
             }
-          } catch {}
+          } catch (e) { logCatchError('builder.tx', e); }
         }
         
         // Collect all accounts from instructions for ALT determination
@@ -755,7 +756,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               isMultiHop,
             } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('builder.tx', e); }
       } catch (error) {
         try {
           logger.warn('tx.build.compute.measure.error', {
@@ -765,7 +766,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               error: String((error as any)?.message || error),
             } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('builder.tx', e); }
         // Fallback to estimation
         const dexTypes = Array.from(new Set(plan.hops.map(h => h.dex)));
         measuredComputeUnits = estimateComputeUnits(
@@ -802,12 +803,12 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       const programCounts: Record<string, number> = {};
       for (const it of all) {
         let pid = (it as any)?.programId;
-        try { if (pid && typeof pid.toBase58 === 'function') pid = pid.toBase58(); } catch {}
+        try { if (pid && typeof pid.toBase58 === 'function') pid = pid.toBase58(); } catch (e) { logCatchError('builder.tx', e); }
         const key = String(pid || 'unknown');
         programCounts[key] = (programCounts[key] || 0) + 1;
       }
       logger.info('tx.build.detail', { cat: 'tx', ctx: { traceId, ixCount: all.length, programs: programCounts } as any });
-    } catch {}
+    } catch (e) { logCatchError('builder.tx', e); }
     
     // Log success with timing metrics
     logTimingMetrics(metrics, traceId, true, undefined, {
@@ -815,7 +816,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       sizeBytes,
     });
     
-    try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { traceId, ms: Date.now() - t0, ixCount: all.length, sizeBytes, computeUnits: finalComputeBudget.computeUnitLimit } as any }); } catch {}
+    try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { traceId, ms: Date.now() - t0, ixCount: all.length, sizeBytes, computeUnits: finalComputeBudget.computeUnitLimit } as any }); } catch (e) { logCatchError('builder.tx', e); }
     
     // Collect ALT addresses for the transaction
     const allAccounts: (PublicKey | string)[] = [];
@@ -885,7 +886,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
             altAddresses,
           } as any,
         });
-      } catch {}
+      } catch (e) { logCatchError('builder.tx', e); }
     }
     
     // After transaction is built, schedule closures and mark accounts as used:
@@ -913,7 +914,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         for (const ataStr of tokenAccountsUsed) {
           try {
             await manager.markTokenAccountUsed(new PublicKey(ataStr));
-          } catch {}
+          } catch (e) { logCatchError('builder.tx', e); }
         }
         
         try {
@@ -925,7 +926,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               accountsUsedCount: tokenAccountsUsed.size,
             } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('builder.tx', e); }
       } catch (error) {
         try {
           logger.warn('tx.build.accounts.schedule.error', {
@@ -935,7 +936,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               error: String((error as any)?.message || error),
             } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('builder.tx', e); }
       }
     }
 
@@ -958,7 +959,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       error: errorMsg,
     });
     
-    try { logger.error('tx.build.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { traceId, error: errorMsg, ms: Date.now() - t0 } as any }); } catch {}
+    try { logger.error('tx.build.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { traceId, error: errorMsg, ms: Date.now() - t0 } as any }); } catch (e) { logCatchError('builder.tx', e); }
     throw error;
   }
 }

@@ -1,4 +1,5 @@
 import { PublicKey } from '@solana/web3.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 /**
  * Sanitizes a key string by trimming and removing reverse suffix
@@ -62,7 +63,7 @@ export function coerceToPublicKey(value: any, fallback?: any): PublicKey {
       }
       return pk;
     }
-  } catch {}
+  } catch (e) { logCatchError('builder.utils', e); }
 
   const fb = sanitizeKeyString(fallback);
   if (fb) {
@@ -71,7 +72,7 @@ export function coerceToPublicKey(value: any, fallback?: any): PublicKey {
       if (isValidPublicKey(pk)) {
         return pk;
       }
-    } catch {}
+    } catch (e) { logCatchError('builder.utils', e); }
   }
 
   throw new Error(`Invalid PublicKey: primary=${String(value)}, fallback=${String(fallback)}`);
@@ -95,13 +96,13 @@ export function normalizePublicKey(value: any): PublicKey {
     if (inner && typeof inner.toBytes === 'function') {
       try {
         return new PublicKey(inner.toBytes());
-      } catch {}
+      } catch (e) { logCatchError('builder.utils', e); }
     }
 
     if (inner && typeof inner.toBuffer === 'function') {
       try {
         return new PublicKey(inner.toBuffer());
-      } catch {}
+      } catch (e) { logCatchError('builder.utils', e); }
     }
 
     // Handle PublicKey-like objects from different web3.js instances
@@ -109,7 +110,7 @@ export function normalizePublicKey(value: any): PublicKey {
     if (inner && typeof inner.toBase58 === 'function') {
       try {
         return new PublicKey(inner.toBase58());
-      } catch {}
+      } catch (e) { logCatchError('builder.utils', e); }
     }
 
     // Handle BN-like internals (some SDKs use BN internally)
@@ -120,12 +121,12 @@ export function normalizePublicKey(value: any): PublicKey {
         if (typeof bn.toArrayLike === 'function') {
           try {
             return new PublicKey(bn.toArrayLike(Uint8Array, 'be', 32));
-          } catch {}
+          } catch (e) { logCatchError('builder.utils', e); }
         }
         if (typeof bn.toArray === 'function') {
           try {
             return new PublicKey(Uint8Array.from(bn.toArray('be', 32)));
-          } catch {}
+          } catch (e) { logCatchError('builder.utils', e); }
         }
         
         // Handle plain BN structures (deserialized BN without methods)
@@ -145,7 +146,7 @@ export function normalizePublicKey(value: any): PublicKey {
             // Now we can use toArrayLike on the proper BN instance
             const bytes = reconstructed.toArrayLike(Uint8Array, 'be', 32);
             return new PublicKey(bytes);
-          } catch {}
+          } catch (e) { logCatchError('builder.utils', e); }
         }
       }
     }
@@ -154,7 +155,7 @@ export function normalizePublicKey(value: any): PublicKey {
     if (Array.isArray(inner) && inner.length >= 32) {
       try {
         return new PublicKey(Uint8Array.from(inner));
-      } catch {}
+      } catch (e) { logCatchError('builder.utils', e); }
     }
 
     // String fallback

@@ -8,6 +8,9 @@ import { canonicalizePools } from './canonical.js';
 import { resolveManyDecimals } from './decimals.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
 import { verifyCanonicalization } from './validation.js';
+import type { RaydiumPoolApiResponse, RaydiumApiListResponse, RaydiumMintInfo } from './api-types.js';
+import { extractRaydiumMint, extractRaydiumDecimals, isValidRaydiumPool } from './api-types.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 let rayProbeOffset = 0;
 
@@ -65,11 +68,11 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
             });
             const url = `${baseUrl}?${qs.toString()}`;
             const started = Date.now();
-            try { logger.debug('raydium.http list request', { page, pageSize, cat: 'raydium' }); } catch {}
+            try { logger.debug('raydium.http list request', { page, pageSize, cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); }
             const res = await fetchFn(url, { headers: { accept: 'application/json' } });
             if (res?.status === 429) {
-              try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info.list', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-              try { logger.warn('raydium.http 429 list', { page, cat: 'raydium' }); } catch {}
+              try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info.list', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch (e) { logCatchError('pools.raydium', e); }
+              try { logger.warn('raydium.http 429 list', { page, cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); }
               break; // fallback to mint-mode
             }
             if (!res?.ok) {
@@ -82,7 +85,7 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
             if (arr.length) collected.push(...arr);
             const hasNext = !!json?.data?.hasNextPage;
             page += 1;
-            try { logger.debug('raydium.http list page ok', { page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch {}
+            try { logger.debug('raydium.http list page ok', { page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); }
             if (!hasNext) break;
           } catch (e: any) {
             const msg = String(e?.message || e);
@@ -92,12 +95,12 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
         }
         if (collected.length) {
           logger.info('raydium.http.list.fetch ok', { count: collected.length, cat: 'raydium' });
-          try { await writeJson(RAYDIUM_RAW_PATH, { data: collected }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch {} }
+          try { await writeJson(RAYDIUM_RAW_PATH, { data: collected }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); } }
           return { data: collected };
         }
         logger.warn('raydium.http list returned 0; falling back to mint-mode');
       }
-    } catch {}
+    } catch (e) { logCatchError('pools.raydium', e); }
 
     // Collect mint universe from configured tokenUniverseMode; fallback to Jupiter token map, then watchlist
     let mints: string[] = [];
@@ -105,13 +108,13 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
       const { computeTokenUniverse } = await import('../universe.js');
       const uni = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
       mints = Array.from(uni);
-    } catch {}
+    } catch (e) { logCatchError('pools.raydium', e); }
     if (!mints.length) {
       try {
         const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
         const jmap = await loadJupiterTokenMap();
         mints = Object.keys(jmap || {});
-      } catch {}
+      } catch (e) { logCatchError('pools.raydium', e); }
     }
     if (!mints.length) {
       const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
@@ -155,14 +158,14 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
             });
             const url = `${baseUrl}?${qs.toString()}`;
             const started = Date.now();
-            try { logger.info('raydium.http request', { mint, page, pageSize, cat: 'raydium' }); } catch {}
+            try { logger.info('raydium.http request', { mint, page, pageSize, cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); }
             // retry loop
             let res: any = null; let attempt = 0;
             for (; attempt <= maxRetries; attempt++) {
               res = await fetchFn(url, { headers: { accept: 'application/json' } });
               if (res?.status === 429) {
-                try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-                try { logger.warn('raydium.http 429', { mint, page, cat: 'raydium' }); } catch {}
+                try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch (e) { logCatchError('pools.raydium', e); }
+                try { logger.warn('raydium.http 429', { mint, page, cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); }
                 await sleep(backoffMs * (attempt + 1));
                 continue;
               }
@@ -185,7 +188,7 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
             hasNext = !!json?.data?.hasNextPage;
             page += 1;
             globalPagesFetched += 1;
-            try { logger.info('raydium.http page ok', { mint, page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch {}
+            try { logger.info('raydium.http page ok', { mint, page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); }
           } catch (e: any) {
             const msg = String(e?.message || e);
             logger.warn('raydium.http fetch failed', { error: msg, cat: 'raydium' });
@@ -203,16 +206,16 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
 
     if (collected.length) {
       logger.info('raydium.http.fetch ok', { count: collected.length, cat: 'raydium' });
-      try { await writeJson(RAYDIUM_RAW_PATH, { data: collected }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch {} }
+      try { await writeJson(RAYDIUM_RAW_PATH, { data: collected }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); } }
       return { data: collected };
     }
     logger.warn('raydium.http returned 0');
-    try { await writeJson(RAYDIUM_RAW_PATH, { data: [] }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch {} }
+    try { await writeJson(RAYDIUM_RAW_PATH, { data: [] }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); } }
     return { data: [] };
   } catch (e: any) {
     const msg = String(e?.message || e);
     logger.warn('raydium.http failed', { error: msg, cat: 'raydium' });
-    try { await writeJson(joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json'), { data: [] }); } catch (e2: any) { try { logger.warn('raydium.cache write failed', { file: joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json'), error: String(e2?.message || e2), cat: 'raydium' }); } catch {} }
+    try { await writeJson(joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json'), { data: [] }); } catch (e2: any) { try { logger.warn('raydium.cache write failed', { file: joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json'), error: String(e2?.message || e2), cat: 'raydium' }); } catch (e) { logCatchError('pools.raydium', e); } }
     return { data: [] };
   }
 }
@@ -290,7 +293,7 @@ async function fetchRaydiumAmmPoolAccounts(poolId: string): Promise<{
         cat: 'pools',
         ctx: { poolId: poolId.slice(0, 8) + '...', error: String((err as any)?.message || err) }
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.raydium', e); }
     return null;
   }
 }
@@ -362,7 +365,7 @@ async function fetchSerumMarketAccounts(marketId: string, marketProgramId: strin
           new PublicKey(marketProgramId)
         );
         authority = vaultSigner.toBase58();
-      } catch {}
+      } catch (e) { logCatchError('pools.raydium', e); }
       
       return {
         bids,
@@ -379,7 +382,7 @@ async function fetchSerumMarketAccounts(marketId: string, marketProgramId: strin
           cat: 'pools',
           ctx: { marketId: marketId.slice(0, 8) + '...', error: String((decodeErr as any)?.message || decodeErr) }
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.raydium', e); }
       return null;
     }
   } catch (err) {
@@ -388,7 +391,7 @@ async function fetchSerumMarketAccounts(marketId: string, marketProgramId: strin
         cat: 'pools',
         ctx: { marketId: marketId.slice(0, 8) + '...', error: String((err as any)?.message || err) }
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.raydium', e); }
     return null;
   }
 }
@@ -422,7 +425,7 @@ async function batchFetchRaydiumPoolAccounts(
       batchSize: BATCH_SIZE,
       cat: 'pools' 
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.raydium', e); }
   
   // Load decoder layouts once
   const rmod: any = await import('@raydium-io/raydium-sdk-v2');
@@ -489,7 +492,7 @@ async function batchFetchRaydiumPoolAccounts(
             decoded: results.size,
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.raydium', e); }
       
       // Small delay between batches
       if (i + BATCH_SIZE < poolIds.length) {
@@ -505,7 +508,7 @@ async function batchFetchRaydiumPoolAccounts(
             error: String((err as any)?.message || err) 
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.raydium', e); }
     }
   }
   
@@ -515,7 +518,7 @@ async function batchFetchRaydiumPoolAccounts(
       decoded: results.size,
       cat: 'pools' 
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.raydium', e); }
   
   return results;
 }
@@ -549,7 +552,7 @@ async function batchFetchSerumMarketAccounts(
       batchSize: BATCH_SIZE,
       cat: 'pools' 
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.raydium', e); }
   
   for (let i = 0; i < marketIds.length; i += BATCH_SIZE) {
     const batch = marketIds.slice(i, i + BATCH_SIZE);
@@ -597,7 +600,7 @@ async function batchFetchSerumMarketAccounts(
                 new PublicKey(marketProgramId)
               );
               authority = vaultSigner.toBase58();
-            } catch {}
+            } catch (e) { logCatchError('pools.raydium', e); }
           }
           
           results.set(marketId, {
@@ -615,7 +618,7 @@ async function batchFetchSerumMarketAccounts(
               cat: 'pools',
               ctx: { marketId, error: String((err as any)?.message || err) }
             });
-          } catch {}
+          } catch (e) { logCatchError('pools.raydium', e); }
         }
       }
       
@@ -628,7 +631,7 @@ async function batchFetchSerumMarketAccounts(
             decoded: results.size,
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.raydium', e); }
       
       // Small delay between batches
       if (i + BATCH_SIZE < marketIds.length) {
@@ -644,7 +647,7 @@ async function batchFetchSerumMarketAccounts(
             error: String((err as any)?.message || err) 
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.raydium', e); }
     }
   }
   
@@ -654,26 +657,35 @@ async function batchFetchSerumMarketAccounts(
       decoded: results.size,
       cat: 'pools' 
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.raydium', e); }
   
   return results;
 }
 
 
-export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
+export async function normalizeRaydiumPools(raw: RaydiumApiListResponse | { data?: RaydiumPoolApiResponse[] } | RaydiumPoolApiResponse[] | unknown): Promise<PoolsPayload> {
   const now = Date.now();
   const amm: AmmPool[] = [];
   const clmm: ClmmPool[] = [];
 
-  const arr: any[] = Array.isArray(raw?.data?.data)
-    ? raw.data.data
-    : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
+  // Extract array from various response formats
+  const rawArr: unknown[] = (() => {
+    if (Array.isArray(raw)) return raw;
+    const r = raw as { data?: { data?: unknown[] } | unknown[] };
+    if (Array.isArray(r?.data)) {
+      if (Array.isArray((r.data as { data?: unknown[] })?.data)) {
+        return (r.data as { data: unknown[] }).data;
+      }
+      return r.data as unknown[];
+    }
+    return [];
+  })();
   
-  const toMint = (v: any): string => {
-    if (!v) return '';
-    if (typeof v === 'string') return v;
-    if ((v as any)?.address) return String((v as any).address);
-    return '';
+  // Filter to only valid Raydium pools
+  const arr = rawArr.filter(isValidRaydiumPool);
+  
+  const toMint = (v: RaydiumMintInfo | string | undefined): string => {
+    return extractRaydiumMint(v);
   };
 
   const allMints = new Set<string>();
@@ -690,7 +702,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     normalizeMode: true
   });
   
-  const toFeeBps = (v: any): number => {
+  const toFeeBps = (v: number | string | undefined): number => {
     const n = Number(v);
     if (!Number.isFinite(n)) return 30;
     return n <= 1 ? Math.round(n * 10_000) : Math.round(n);
@@ -699,24 +711,24 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   const { processPriceThroughPipeline } = await import('./pricePipeline.js');
 
   for (const it of arr) {
-    if (!it) continue;
-    const id = String(it?.id || it?.address || it?.pool_id || it?.ammId || '');
-    const mintA = toMint(it?.mintA);
-    const mintB = toMint(it?.mintB);
+    const pool = it as RaydiumPoolApiResponse;
+    const id = String(pool.id || pool.address || pool.pool_id || pool.ammId || '');
+    const mintA = toMint(pool.mintA);
+    const mintB = toMint(pool.mintB);
     if (!id || !mintA || !mintB) continue;
 
-    const isClmm = (it as any)?.poolType === 'CLMM' || (it as any)?.type?.toLowerCase().includes('concentrated') || (it as any)?.sqrtPriceX64 != null;
+    const isClmm = pool.poolType === 'CLMM' || pool.type?.toLowerCase().includes('concentrated') || pool.sqrtPriceX64 != null;
 
-    const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
-    const decA = decimalsMap.get(mintA) ?? Number((it?.mintA as any)?.decimals);
-    const decB = decimalsMap.get(mintB) ?? Number((it?.mintB as any)?.decimals);
+    const fee_bps = toFeeBps(pool.feeRate ?? pool.tradeFeeRate ?? pool.feeBps ?? pool.tradeFeeBps);
+    const decA = decimalsMap.get(mintA) ?? extractRaydiumDecimals(pool.mintA);
+    const decB = decimalsMap.get(mintB) ?? extractRaydiumDecimals(pool.mintB);
     
     if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
       continue;
     }
 
     if (isClmm) {
-      const sqrtPriceX64 = anyToBigInt((it as any)?.sqrtPriceX64 ?? (it as any)?.sqrtPrice);
+      const sqrtPriceX64 = anyToBigInt(pool.sqrtPriceX64 ?? pool.sqrtPrice);
       const processed = processPriceThroughPipeline({
         mintA,
         mintB,
@@ -736,11 +748,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           mint_a: processed.mintA,
           mint_b: processed.mintB,
           fee_bps,
-          sqrt_price_x64: Number((it as any)?.sqrtPrice ?? (it as any)?.sqrtPriceX64 ?? 0),
+          sqrt_price_x64: Number(pool.sqrtPrice ?? pool.sqrtPriceX64 ?? 0),
           sqrt_price_x64_raw: sqrtPriceX64?.toString(),
-          liquidity: Number((it as any)?.liquidity ?? 0),
-          liquidity_raw: anyToBigInt((it as any)?.liquidity)?.toString(),
-          tick_spacing: Number((it as any)?.tickSpacing),
+          liquidity: Number(pool.liquidity ?? 0),
+          liquidity_raw: anyToBigInt(pool.liquidity)?.toString(),
+          tick_spacing: Number(pool.tickSpacing),
           updated_ms: now,
           price_a_per_b: processed.priceForward,
           decimals_a: processed.decimalsA,
@@ -751,13 +763,13 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           native_decimals_a: decA,
           native_decimals_b: decB,
           pool_kind: 'clmm',
-          tvl_usd: (it as any)?.tvl,
+          tvl_usd: pool.tvl,
           _pipelineProcessed: true,
         } as ClmmPool);
       }
     } else { // AMM
-      const reserveA = anyToBigInt((it as any)?.reserveA ?? (it as any)?.mintAmountA);
-      const reserveB = anyToBigInt((it as any)?.reserveB ?? (it as any)?.mintAmountB);
+      const reserveA = anyToBigInt(pool.reserveA ?? pool.mintAmountA);
+      const reserveB = anyToBigInt(pool.reserveB ?? pool.mintAmountB);
 
       const processed = processPriceThroughPipeline({
         mintA,
@@ -782,8 +794,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           price_a_per_b: processed.priceForward,
           updated_ms: now,
           pool_kind: 'amm',
-          liquidity_base: Number((it as any)?.liquidity_base ?? (it as any)?.liquidity ?? 0),
-          tvl_usd: (it as any)?.tvl,
+          liquidity_base: Number(pool.liquidity ?? 0),
+          tvl_usd: pool.tvl,
           decimals_a: processed.decimalsA,
           decimals_b: processed.decimalsB,
           reserve_a_raw: reserveA?.toString(),

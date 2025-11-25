@@ -1,6 +1,7 @@
 import { logger } from '../../utils/logger.js';
 import { emit } from '../realtime.js';
 import { LogCat, LogSubcat, LogCode } from '../../utils/logging.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 export type HttpLogCtx = {
   source: 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'meteora_balanced' | 'meteora_balanced_v1' | 'meteora_balanced_v2' | 'pumpswap';
@@ -13,23 +14,23 @@ export function httpLogStart(ctx: HttpLogCtx): string {
   const cid = ctx.cid || `http-${Math.random().toString(36).slice(2, 8)}`;
   try {
     logger.debug('pools.http request', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_REQUEST, cid, source: ctx.source, url: ctx.url, ...(ctx.extra || {}) });
-  } catch {}
+  } catch (e) { logCatchError('pools.httpLog', e); }
   return cid;
 }
 
 export function httpLogResponse(ctx: HttpLogCtx & { cid: string; status: number; ms: number; count?: number }): void {
   try {
     logger.debug('pools.http response', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_RESPONSE, cid: ctx.cid, source: ctx.source, url: ctx.url, status: ctx.status, ms: ctx.ms, ...(ctx.count != null ? { count: ctx.count } : {}), ...(ctx.extra || {}) });
-  } catch {}
+  } catch (e) { logCatchError('pools.httpLog', e); }
 }
 
 export function httpLog429(ctx: HttpLogCtx & { cid: string }): void {
-  try { emit('log', { level: 'warn', message: `arb:429 source=${ctx.source} kind=http`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-  try { logger.warn('pools.http 429', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_429, cid: ctx.cid, source: ctx.source, url: ctx.url }); } catch {}
+  try { emit('log', { level: 'warn', message: `arb:429 source=${ctx.source} kind=http`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch (e) { logCatchError('pools.httpLog', e); }
+  try { logger.warn('pools.http 429', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_429, cid: ctx.cid, source: ctx.source, url: ctx.url }); } catch (e) { logCatchError('pools.httpLog', e); }
 }
 
 export function httpLogNonOk(ctx: HttpLogCtx & { cid: string; status: number; bodySample?: string }): void {
-  try { logger.warn('pools.http non-ok', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_NON_OK, cid: ctx.cid, source: ctx.source, url: ctx.url, status: ctx.status, body: ctx.bodySample }); } catch {}
+  try { logger.warn('pools.http non-ok', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_NON_OK, cid: ctx.cid, source: ctx.source, url: ctx.url, status: ctx.status, body: ctx.bodySample }); } catch (e) { logCatchError('pools.httpLog', e); }
 }
 
 

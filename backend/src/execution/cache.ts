@@ -2,7 +2,7 @@ import { CONFIG } from '../utils/config.js';
 import { ensureDir, readJson, writeJson, joinPath } from '../utils/fs.js';
 
 type PoolStatic = {
-  programId: string;
+  programId?: string;
   dex?: string;
   vaults?: { a?: string; b?: string };
   // Common execution accounts
@@ -26,6 +26,10 @@ type PoolStatic = {
   native_mint_b?: string;
   native_decimals_a?: number;
   native_decimals_b?: number;
+  native_vault_a?: string;
+  native_vault_b?: string;
+  native_account_a?: string;
+  native_account_b?: string;
   token_program_a?: 'spl-token' | 'token-2022';
   token_program_b?: 'spl-token' | 'token-2022';
   // Raydium AMM market accounts (required for swaps)
@@ -57,6 +61,9 @@ type PoolStatic = {
   account_b?: string;
   tick_spacing?: number;
   bin_array_bitmap_extension?: string;
+  // Meteora-specific
+  bin_array_lower?: string;
+  bin_array_upper?: string;
 };
 
 type PoolHot = {

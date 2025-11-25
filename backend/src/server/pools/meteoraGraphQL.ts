@@ -8,6 +8,7 @@ import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
 import { Connection, PublicKey } from '@solana/web3.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { executionCache } from '../../execution/cache.js';
 import { isValidPublicKey } from '../../execution/builder/utils.js';
@@ -85,7 +86,7 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
       found: bitmapExtCount,
       cat: 'meteora'
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
 
   const merged: any[] = [];
   for (const [id, summary] of poolsMap.entries()) {
@@ -365,7 +366,7 @@ async function fetchMeteoraChunkWithRetry(
       
       try {
         poolsMetrics.meteora.detailBatches += 1;
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
       
       logger.debug('meteora.graphql.detail.chunk', {
         idx: chunkIndex,
@@ -440,7 +441,7 @@ async function fetchMeteoraChunkWithRetry(
   
   try {
     poolsMetrics.meteora.detailFailures += 1;
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
 }
 
 async function fetchMeteoraPoolsByAddress(
@@ -542,7 +543,7 @@ async function fetchVaultBalances(addresses: string[]): Promise<Map<string, bigi
             const buf = Buffer.from(acc.data);
             const amount = buf.readBigUInt64LE(64);
             results.set(batch[idx], amount);
-          } catch {}
+          } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
         }
       });
     } catch (e) {
@@ -605,7 +606,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
             hasBaseKey: !!pool.baseKey,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
       }
       return id;
     })
@@ -659,7 +660,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       toCheckRPC: poolsToCheck.length,
       cat: 'meteora'
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
 
   const [vaultBalances, decimalsMap, bitmapExtensionMap] = await Promise.all([
     vaultBalancesPromise, 
@@ -681,7 +682,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
             reserveY: pool.reserveY?.slice(0, 8) + '…',
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
         continue; // Skip this pool
       }
       
@@ -720,7 +721,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         if (binStep > 0 && binStep <= 1000) {
           fee_bps = binStep; // binStep is already in bps
         }
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
       
       // Process price through pipeline with raw Meteora DLMM data
       let price_a_per_b = 0;
@@ -768,7 +769,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
               tvl_usd = amountB * priceB * 2;
             }
           }
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
         
         if (activeId != null && binStep != null && tokenXMint && tokenYMint) {
           const processed = processPriceThroughPipeline({
@@ -794,7 +795,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
             wasSwapped = processed.wasSwapped;
           }
         }
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
       
       // Swap amounts if pipeline swapped mints
       const finalAmountA = wasSwapped ? amount_b_whole : amount_a_whole;

@@ -8,6 +8,7 @@ import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
 import { Connection, PublicKey } from '@solana/web3.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { isValidPublicKey } from '../../execution/builder/utils.js';
 
@@ -329,7 +330,7 @@ async function fetchOrcaChunkWithRetry(
       
       try {
         poolsMetrics.orca.detailBatches += 1;
-      } catch {}
+      } catch (e) { logCatchError('pools.orcaGraphQL', e); }
       
       logger.debug('orca.graphql.detail.chunk', {
         idx: chunkIndex,
@@ -404,7 +405,7 @@ async function fetchOrcaChunkWithRetry(
   
   try {
     poolsMetrics.orca.detailFailures += 1;
-  } catch {}
+  } catch (e) { logCatchError('pools.orcaGraphQL', e); }
 }
 
 async function fetchOrcaPoolsByAddress(
@@ -506,7 +507,7 @@ async function fetchVaultBalances(addresses: string[]): Promise<Map<string, bigi
             const buf = Buffer.from(acc.data);
             const amount = buf.readBigUInt64LE(64);
             results.set(batch[idx], amount);
-          } catch {}
+          } catch (e) { logCatchError('pools.orcaGraphQL', e); }
         }
       });
     } catch (e) {
@@ -573,7 +574,7 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
             tokenVaultB: pool.tokenVaultB?.slice(0, 8) + '…',
             cat: 'orca'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.orcaGraphQL', e); }
         continue; // Skip this pool
       }
       
@@ -590,7 +591,7 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
       try {
         const feeRate = Number(pool.feeRate || 0);
         fee_bps = Math.round(feeRate / 100); // Convert from hundredths
-      } catch {}
+      } catch (e) { logCatchError('pools.orcaGraphQL', e); }
       
       // Calculate amounts and TVL from vault balances
       let amount_a_whole: number | undefined;
@@ -619,7 +620,7 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
             tvl_usd = wholeB * priceB * 2; // Assume balanced
           }
         }
-      } catch {}
+      } catch (e) { logCatchError('pools.orcaGraphQL', e); }
       
       // Process price through pipeline with raw sqrtPriceX64 data
       let price_a_per_b = 0;
@@ -660,7 +661,7 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
             }
           }
         }
-      } catch {}
+      } catch (e) { logCatchError('pools.orcaGraphQL', e); }
       
       // Swap account/vault fields if pipeline swapped mints
       const finalTokenVaultA = wasSwapped ? pool.tokenVaultB : pool.tokenVaultA;

@@ -29,7 +29,7 @@ use opportunities::{
 mod graph;
 use graph::{expand_nodes_by_hops, ArbGraph, EdgeData};
 mod algos;
-use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered, detect_negative_cycles_from_anchors};
+use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered, detect_negative_cycles_from_anchors, detect_negative_cycles_spfa, detect_negative_cycles_spfa_filtered};
 
 const REJECTED_DEBUG_LIMIT: usize = 15;
 const REJECTED_DEBUG_TTL_MS: u64 = 30_000;
@@ -65,6 +65,8 @@ struct ArbConfig {
     filtered_node_ratio: f64,
     filtered_expand_hops: Option<usize>,
     periodic_full_ms: Option<u64>,
+    // Algorithm selection: use SPFA (Shortest Path Faster Algorithm) instead of standard Bellman-Ford
+    use_spfa: bool,
     // Pruning of competitive paths
     // Limit number of SOL<->stable hops allowed per cycle; None means unlimited
     max_sol_stable_hops: Option<usize>,
@@ -881,9 +883,19 @@ async fn main() -> anyhow::Result<()> {
                             detect_negative_cycles_from_anchors(&s.graph, &anchor_set, max_hops)
                         }
                     } else if use_filtered {
-                        detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops)
+                        // Use SPFA or standard Bellman-Ford for filtered detection
+                        if s.config.use_spfa {
+                            detect_negative_cycles_spfa_filtered(&s.graph, &affected_nodes, max_hops)
+                        } else {
+                            detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops)
+                        }
                     } else {
-                        detect_negative_cycles(&s.graph, max_hops)
+                        // Use SPFA or standard Bellman-Ford for full graph detection
+                        if s.config.use_spfa {
+                            detect_negative_cycles_spfa(&s.graph, max_hops)
+                        } else {
+                            detect_negative_cycles(&s.graph, max_hops)
+                        }
                     };
                     let cycles_count = cycles.len();
                     // Prepare metrics snapshot, then drop read lock before taking write lock to avoid deadlock
@@ -4333,6 +4345,7 @@ struct ConfigReq {
     filtered_node_ratio: Option<f64>,
     filtered_expand_hops: Option<usize>,
     periodic_full_ms: Option<u64>,
+    use_spfa: Option<bool>,
     max_sol_stable_hops: Option<usize>,
     drop_stable_stable_hops: Option<bool>,
     stable_mints: Option<Vec<String>>,
@@ -4468,6 +4481,9 @@ async fn set_config(
     if let Some(v) = cfg.periodic_full_ms {
         s.config.periodic_full_ms = Some(v);
     }
+    if let Some(v) = cfg.use_spfa {
+        s.config.use_spfa = v;
+    }
     if let Some(v) = cfg.max_sol_stable_hops {
         s.config.max_sol_stable_hops = Some(v);
     }
@@ -4568,6 +4584,11 @@ fn default_config() -> ArbConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .or(Some(1000)),
+        // Algorithm selection: SPFA is generally faster on sparse graphs
+        use_spfa: std::env::var("ARB_USE_SPFA")
+            .ok()
+            .map(|v| v == "true")
+            .unwrap_or(false),
         // Pruning defaults
         max_sol_stable_hops: Some(
             std::env::var("ARB_MAX_SOL_STABLE_HOPS")

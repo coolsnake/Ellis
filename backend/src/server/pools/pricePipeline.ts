@@ -18,6 +18,7 @@
 import { canonicalOrientation } from './canonical.js';
 import { logger } from '../../utils/logger.js';
 import { calculateAmmPrice, calculateClmmPrice, calculateMeteoraPrice } from './priceFormulas.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 /**
  * Raw price input from DEX-specific calculation
@@ -165,7 +166,7 @@ export function processPriceThroughPipeline(
         wasSwapped: canonical.wasSwapped,
         cat: 'price.pipeline'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.pricePipeline', e); }
     
     // STEP 2: Use the price directly - NO calibration, NO rescaling
     const forward = canonical.price;
@@ -193,7 +194,7 @@ export function processPriceThroughPipeline(
             deviation: Math.abs(product - 1),
             cat: 'price.pipeline'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.pricePipeline', e); }
       }
     }
 
@@ -214,7 +215,7 @@ export function processPriceThroughPipeline(
         pool_id: input.poolId?.slice(0, 12),
         cat: 'price.pipeline'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.pricePipeline', e); }
     return undefined;
   }
 }

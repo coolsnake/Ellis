@@ -1,6 +1,7 @@
 import { CONFIG } from '../../utils/config.js';
 import { logger } from '../../utils/logger.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 type SupportedDex = 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'pumpswap';
 
@@ -160,7 +161,7 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
               errors: JSON.stringify(errors).slice(0, 300), // Truncate for general errors
             });
           }
-        } catch {}
+        } catch (e) { logCatchError('pools.shyftHelpers', e); }
         
         // Don't retry validation errors - they won't succeed
         if (isValidationError && !isDatabaseError) {
@@ -212,7 +213,7 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
           attempt,
           error: String((err as any)?.message || err),
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.shyftHelpers', e); }
       if (attempt < retries) {
         await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
         continue;

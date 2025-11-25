@@ -11,6 +11,9 @@ import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpL
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
 import { getPriceByMint } from '../../server/priceStore.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
+import type { OrcaPoolApiResponse } from './api-types.js';
+import { isValidOrcaPool } from './api-types.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 const FEERATE_FIELDS = ['tradingFeeRate', 'tradeFeeRate', 'feeRate', 'tradeFee', 'fee', 'makerFee', 'takerFee'];
 const FEEBPS_FIELDS = ['fee_bps', 'feeBps', 'fee_in_bps'];
@@ -103,7 +106,7 @@ export async function fetchOrcaHttp(): Promise<any> {
     if (tokensBothOf) params.tokensBothOf = String(tokensBothOf);
     if (addresses) params.addresses = String(addresses);
     if (includeBlocked != null) params.includeBlocked = String(includeBlocked);
-  } catch {}
+  } catch (e) { logCatchError('pools.orca', e); }
   const buildUrl = (cursor?: string) => {
     const sp = new URLSearchParams(params);
     if (cursor) sp.append('cursor', cursor);
@@ -120,8 +123,8 @@ export async function fetchOrcaHttp(): Promise<any> {
       const res = await ((globalThis as any).fetch || fetch)(url);
       const ms = Date.now() - started;
       if (res.status === 429) {
-        try { emit('log', { level: 'warn', message: 'arb:429 source=orca kind=http', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-        try { httpLog429({ source: 'orca', url, cid: `http-${Date.now()}` }); } catch {}
+        try { emit('log', { level: 'warn', message: 'arb:429 source=orca kind=http', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch (e) { logCatchError('pools.orca', e); }
+        try { httpLog429({ source: 'orca', url, cid: `http-${Date.now()}` }); } catch (e) { logCatchError('pools.orca', e); }
         ok = false; break;
       }
       if (!res.ok) {
@@ -136,7 +139,7 @@ export async function fetchOrcaHttp(): Promise<any> {
       merged.push(...data);
       pageCount += 1;
       nextCursor = (json && typeof json === 'object') ? (json.cursor || json.nextCursor || json.next) : undefined;
-      try { httpLogResponse({ source: 'orca', url, cid: `http-${Date.now()}`, status: res.status, ms, count: data.length }); } catch {}
+      try { httpLogResponse({ source: 'orca', url, cid: `http-${Date.now()}`, status: res.status, ms, count: data.length }); } catch (e) { logCatchError('pools.orca', e); }
       if (!nextCursor) break;
       if (pageCount >= maxPages) break;
     }
@@ -151,32 +154,39 @@ export async function fetchOrcaHttp(): Promise<any> {
     if (!res.ok) throw new Error(`http ${res.status}`);
     const json: any = await res.json();
     const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-    try { httpLogResponse({ source: 'orca', url, cid: `http-${Date.now()}`, status: res.status, ms, count: data.length }); } catch {}
-    try { await writeJson(ORCA_RAW_PATH, data); } catch (e: any) { try { logger.warn('orca.cache write failed', { file: ORCA_RAW_PATH, error: String(e?.message || e), cat: 'orca' }); } catch {} }
+    try { httpLogResponse({ source: 'orca', url, cid: `http-${Date.now()}`, status: res.status, ms, count: data.length }); } catch (e) { logCatchError('pools.orca', e); }
+    try { await writeJson(ORCA_RAW_PATH, data); } catch (e: any) { try { logger.warn('orca.cache write failed', { file: ORCA_RAW_PATH, error: String(e?.message || e), cat: 'orca' }); } catch (e) { logCatchError('pools.orca', e); } }
     return data;
   }
-  try { await writeJson(ORCA_RAW_PATH, merged); } catch (e: any) { try { logger.warn('orca.cache write failed', { file: ORCA_RAW_PATH, error: String(e?.message || e), cat: 'orca' }); } catch {} }
+  try { await writeJson(ORCA_RAW_PATH, merged); } catch (e: any) { try { logger.warn('orca.cache write failed', { file: ORCA_RAW_PATH, error: String(e?.message || e), cat: 'orca' }); } catch (e) { logCatchError('pools.orca', e); } }
   return merged;
 }
 
-export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
+export async function normalizeOrcaHttp(raw: OrcaPoolApiResponse[] | { data?: OrcaPoolApiResponse[]; pools?: OrcaPoolApiResponse[]; whirlpools?: OrcaPoolApiResponse[] } | unknown): Promise<PoolsPayload> {
   const now = Date.now();
   const clmm: ClmmPool[] = [];
   let resolveMintFn: undefined | ((s: string) => Promise<{ mint: string; decimals: number }>);
   const symbolToMintCache = new Map<string, { mint?: string; decimals?: number; tried: boolean }>();
-  let tokenModule: any = null;
+  let tokenModule: { resolveMint?: (s: string) => Promise<{ mint: string; decimals: number }> } | null = null;
   try {
     tokenModule = await import('../../utils/tokens.js');
-    if (typeof (tokenModule as any).resolveMint === 'function') {
-      resolveMintFn = (tokenModule as any).resolveMint as any;
+    if (typeof tokenModule?.resolveMint === 'function') {
+      resolveMintFn = tokenModule.resolveMint;
     }
-  } catch {}
-  const arrCandidates: any[] = [];
-  if (Array.isArray(raw)) arrCandidates.push(raw);
-  if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
-  if (Array.isArray(raw?.pools)) arrCandidates.push(raw.pools);
-  if (Array.isArray(raw?.whirlpools)) arrCandidates.push(raw.whirlpools);
-  const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
+  } catch (e) { logCatchError('pools.orca', e); }
+  
+  // Extract array from various response formats
+  const rawArr: unknown[] = (() => {
+    if (Array.isArray(raw)) return raw;
+    const r = raw as { data?: unknown[]; pools?: unknown[]; whirlpools?: unknown[] };
+    if (Array.isArray(r?.pools)) return r.pools;
+    if (Array.isArray(r?.whirlpools)) return r.whirlpools;
+    if (Array.isArray(r?.data)) return r.data;
+    return [];
+  })();
+  
+  // Filter to only valid Orca pools
+  const arr = rawArr.filter(isValidOrcaPool);
   
   // Extract all unique mints for batch decimal resolution
   const allMints = new Set<string>();
@@ -196,13 +206,14 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   });
   
   for (const it of arr) {
-    const id = String(it?.address || it?.id || '');
-    const tokenA = it?.tokenA || it?.token_a || {};
-    const tokenB = it?.tokenB || it?.token_b || {};
+    const pool = it as OrcaPoolApiResponse;
+    const id = String(pool.address || pool.id || '');
+    const tokenA = pool.tokenA || pool.token_a || {};
+    const tokenB = pool.tokenB || pool.token_b || {};
     
     // Extract vault addresses early for validation
-    const vaultA = String((it as any)?.tokenVaultA ?? (it as any)?.token_vault_a ?? (it as any)?.vaultA ?? '');
-    const vaultB = String((it as any)?.tokenVaultB ?? (it as any)?.token_vault_b ?? (it as any)?.vaultB ?? '');
+    const vaultA = String(pool.tokenVaultA ?? pool.token_vault_a ?? pool.vaultA ?? '');
+    const vaultB = String(pool.tokenVaultB ?? pool.token_vault_b ?? pool.vaultB ?? '');
     
     // VALIDATION: Ensure pool ID is not a vault address
     if (id === vaultA || id === vaultB) {
@@ -213,13 +224,13 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           vaultB: vaultB.slice(0, 8) + '…',
           cat: 'orca'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.orca', e); }
       continue; // Skip this pool
     }
     
     // FIXED: Orca API returns tokenMintA/tokenMintB (not mintA/mintB)
-    let mint_a = String(tokenA?.mint || it?.tokenMintA || it?.mintA || '');
-    let mint_b = String(tokenB?.mint || it?.tokenMintB || it?.mintB || '');
+    let mint_a = String(tokenA?.mint || pool.tokenMintA || pool.mintA || '');
+    let mint_b = String(tokenB?.mint || pool.tokenMintB || pool.mintB || '');
     
     // Try to resolve mints from symbols if needed
     if (!mint_a && resolveMintFn && typeof tokenA?.symbol === 'string' && tokenA.symbol.trim()) {
@@ -252,8 +263,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     }
     
     // Get decimals from centralized resolver
-    const apiDecA = Number((tokenA?.decimals ?? it?.decimalsA ?? it?.tokenDecimalsA));
-    const apiDecB = Number((tokenB?.decimals ?? it?.decimalsB ?? it?.tokenDecimalsB));
+    const apiDecA = Number((tokenA?.decimals ?? pool.decimalsA ?? pool.tokenDecimalsA));
+    const apiDecB = Number((tokenB?.decimals ?? pool.decimalsB ?? pool.tokenDecimalsB));
     
     let decA = decimalsMap.get(mint_a) ?? apiDecA;
     let decB = decimalsMap.get(mint_b) ?? apiDecB;
@@ -268,17 +279,17 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     // Clamp to reasonable integer bounds
     decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
     decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
-    const fee_bps = deriveOrcaFeeBps(it);
-    const poolType = String(it?.type || it?.poolType || '').toLowerCase();
-    const isWhirlpool = poolType.includes('whirlpool') || poolType.includes('concentrated') || typeof it?.tickSpacing === 'number' || typeof it?.state?.tickSpacing === 'number';
-    const sqrtPriceStr = (it?.sqrtPrice ?? it?.sqrtPriceX64 ?? it?.state?.sqrtPriceX64 ?? it?.state?.sqrtPrice ?? 0);
+    const fee_bps = deriveOrcaFeeBps(pool);
+    const poolType = String(pool.type || pool.poolType || '').toLowerCase();
+    const isWhirlpool = poolType.includes('whirlpool') || poolType.includes('concentrated') || typeof pool.tickSpacing === 'number' || typeof pool.state?.tickSpacing === 'number';
+    const sqrtPriceStr = (pool.sqrtPrice ?? pool.sqrtPriceX64 ?? pool.state?.sqrtPriceX64 ?? pool.state?.sqrtPrice ?? 0);
     let sqrt_price_x64 = Number(typeof sqrtPriceStr === 'string' ? Number(sqrtPriceStr) : sqrtPriceStr || 0);
-    const liquidityVal = (it?.liquidity ?? it?.state?.liquidity ?? 0);
+    const liquidityVal = (pool.liquidity ?? pool.state?.liquidity ?? 0);
     const liquidity = Number(typeof liquidityVal === 'string' ? Number(liquidityVal) : liquidityVal || 0);
     const liquidityRaw = anyToBigInt(liquidityVal);
-    const tick_spacing = Number((it?.tickSpacing ?? it?.state?.tickSpacing) || 0);
-    const amtAraw = (it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.token_a_amount ?? it?.amountA ?? it?.baseAmount ?? 0);
-    const amtBraw = (it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.token_b_amount ?? it?.amountB ?? it?.quoteAmount ?? 0);
+    const tick_spacing = Number((pool.tickSpacing ?? pool.state?.tickSpacing) || 0);
+    const amtAraw = (pool.tokenBalanceA ?? pool.tokenAAmount ?? pool.token_a_amount ?? pool.amountA ?? pool.baseAmount ?? 0);
+    const amtBraw = (pool.tokenBalanceB ?? pool.tokenBAmount ?? pool.token_b_amount ?? pool.amountB ?? pool.quoteAmount ?? 0);
     let amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
     let amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
     let amount_a_atomic = anyToBigInt(amtAraw);
@@ -318,7 +329,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       
       const wholeA = Number.isFinite(finalDecA) ? (amount_a / Math.pow(10, finalDecA as number)) : undefined;
       const wholeB = Number.isFinite(finalDecB) ? (amount_b / Math.pow(10, finalDecB as number)) : undefined;
-      const tvlUsdcRaw = (it as any)?.tvlUsdc;
+      const tvlUsdcRaw = pool.tvlUsdc ?? pool.tvlUsd;
       const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
       const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
       const pool_liquidity_raw = (tvl_usd != null)
@@ -333,7 +344,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       let account_b: string | undefined;
       try {
         // Extract oracle if present in API response
-        const oracleFromApi = String((it as any)?.oracle ?? '');
+        const oracleFromApi = String(pool.oracle ?? '');
         if (oracleFromApi && oracleFromApi !== '11111111111111111111111111111111') {
           oracle = oracleFromApi;
         } else {
@@ -347,7 +358,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
               programId
             );
             oracle = oraclePda.toBase58();
-          } catch {}
+          } catch (e) { logCatchError('pools.orca', e); }
         }
         
         // Extract vault accounts from API response
@@ -367,7 +378,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
             cat: 'orca',
             ctx: { pool: id, error: String(e?.message || e) }
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.orca', e); }
       }
 
       const finalAccountA = wasSwapped ? account_b : account_a;
@@ -420,7 +431,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   try {
     const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'lex');
     logger.info('orca.http normalized', { clmm: clmm.length, cat: 'orca', canon });
-  } catch {}
+  } catch (e) { logCatchError('pools.orca', e); }
   
   // OPTIMIZATION: Pre-cache Orca pool states to eliminate RPC calls during transaction building
   await populateOrcaPoolStates(clmm);
@@ -446,7 +457,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
     const PriceMath = sdkAny?.PriceMath;
     let BN = sdkAny?.BN;
     if (!BN) {
-      try { BN = (await import('bn.js')).default; } catch {}
+      try { BN = (await import('bn.js')).default; } catch (e) { logCatchError('pools.orca', e); }
     }
     const connection = getConnection();
     
@@ -487,7 +498,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                 expected: pubkeys.length
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('pools.orca', e); }
         }
         
         for (let j = 0; j < Math.min(accounts.length, batch.length); j++) {
@@ -506,7 +517,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   hint: 'pool missing on-chain'
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.orca', e); }
             continue;
           }
           
@@ -522,7 +533,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   accountLamports: acc.lamports || 0
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.orca', e); }
             continue;
           }
           
@@ -541,7 +552,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
             
             let parsed: any = null;
             if (ParsableWhirlpool && typeof ParsableWhirlpool.parse === 'function') {
-              try { parsed = ParsableWhirlpool.parse(poolPk, acc); } catch {}
+              try { parsed = ParsableWhirlpool.parse(poolPk, acc); } catch (e) { logCatchError('pools.orca', e); }
             }
             
             if (parsed) {
@@ -633,7 +644,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   if (Number.isFinite(priceNum) && priceNum > 0) {
                     derivedPrice = priceNum;
                   }
-                } catch {}
+                } catch (e) { logCatchError('pools.orca', e); }
               }
               
               if (!derivedPrice && PriceMath && BN && Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(tickIndex)) {
@@ -646,7 +657,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   if (Number.isFinite(priceNum) && priceNum > 0) {
                     derivedPrice = priceNum;
                   }
-                } catch {}
+                } catch (e) { logCatchError('pools.orca', e); }
               }
               
               if (derivedPrice && derivedPrice > 0) {
@@ -671,7 +682,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   price_source: hasExistingPrice ? 'preserved_from_normalization' : 'recalculated_from_onchain'
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.orca', e); }
           } catch (readErr) {
             failed++;
             try {
@@ -682,7 +693,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   error: String((readErr as any)?.message || readErr)
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.orca', e); }
           }
         }
       } catch (batchErr) {
@@ -696,7 +707,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               error: String((batchErr as any)?.message || batchErr)
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.orca', e); }
       }
     }
     
@@ -714,7 +725,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
           avgMs
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.orca', e); }
   } catch (err) {
     try {
       logger.error('orca.poolState.cache_error', {
@@ -724,7 +735,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
           stack: (err as any)?.stack
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.orca', e); }
   }
 }
 

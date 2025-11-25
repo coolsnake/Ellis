@@ -8,7 +8,9 @@ export const pumpswapCache: { data: PoolsPayload | null; ts: number; inflight?: 
 
 export const vaultBalanceCache: Map<string, bigint> = new Map();
 
-export function findPoolInCache(poolId: string): { pool: AmmPool | ClmmPool; source: 'raydium' | 'orca' | 'meteora' } | null {
+export type PoolCacheSource = 'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+
+export function findPoolInCache(poolId: string): { pool: AmmPool | ClmmPool; source: PoolCacheSource } | null {
   // Check Orca
   const orcaPools = orcaCache.data;
   if (orcaPools) {
@@ -27,13 +29,27 @@ export function findPoolInCache(poolId: string): { pool: AmmPool | ClmmPool; sou
     if (rayClmm) return { pool: rayClmm, source: 'raydium' };
   }
   
-  // Check Meteora
+  // Check Meteora DLMM
   const meteoraPools = meteoraCache.data;
   if (meteoraPools) {
     const metAmm = meteoraPools.amm.find(p => p.id === poolId);
     if (metAmm) return { pool: metAmm, source: 'meteora' };
     const metClmm = meteoraPools.clmm.find(p => p.id === poolId);
     if (metClmm) return { pool: metClmm, source: 'meteora' };
+  }
+  
+  // Check Pumpswap
+  const pumpswapPools = pumpswapCache.data;
+  if (pumpswapPools) {
+    const pumpAmm = pumpswapPools.amm.find(p => p.id === poolId);
+    if (pumpAmm) return { pool: pumpAmm, source: 'pumpswap' };
+  }
+  
+  // Check Meteora Balanced (DAMM)
+  const metbalPools = metbalCache.data;
+  if (metbalPools) {
+    const metbalAmm = metbalPools.amm.find(p => p.id === poolId);
+    if (metbalAmm) return { pool: metbalAmm, source: 'meteora_balanced' };
   }
   
   return null;

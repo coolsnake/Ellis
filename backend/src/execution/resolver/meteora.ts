@@ -2,6 +2,7 @@ import type { DirectHop } from '../../execution/types.js';
 import { CONFIG } from '../../utils/config.js';
 import { executionCache } from '../cache.js';
 import { peekMeteoraPools } from '../../server/pools.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
@@ -19,12 +20,12 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
           hasB: !!tokenProgramB,
         },
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.meteora', e); }
   }
   (hop as any).tokenProgramA = tokenProgramA;
   (hop as any).tokenProgramB = tokenProgramB;
   // Fallback to configured DLMM programId if still missing (helps builder)
-  try { if (!hop.programId && (CONFIG as any)?.meteora?.programId) hop.programId = String((CONFIG as any)?.meteora?.programId); } catch {}
+  try { if (!hop.programId && (CONFIG as any)?.meteora?.programId) hop.programId = String((CONFIG as any)?.meteora?.programId); } catch (e) { logCatchError('resolver.meteora', e); }
   try {
     const pools = peekMeteoraPools();
     const id = hop.poolId.replace(/[#-]rev$/, '');
@@ -42,7 +43,7 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
           poolCount: (pools.clmm || []).length
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.meteora', e); }
     
     if (p) {
       hop.binStep = Number((p as any)?.bin_step || (p as any)?.binStep || hop.binStep || 0);
@@ -80,7 +81,7 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
             hasBitmapExtension: !!bitmapExt
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.meteora', e); }
     } else {
       // Debug logging for pool not found
       try {
@@ -92,7 +93,7 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
             strippedId: id
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.meteora', e); }
     }
   } catch (e: any) {
     try {
@@ -104,7 +105,7 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
           error: String(e?.message || e)
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.meteora', e); }
   }
   return hop;
 }

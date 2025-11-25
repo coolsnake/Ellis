@@ -3,6 +3,7 @@ import { executionCache } from '../cache.js';
 import { peekRaydiumPools } from '../../server/pools.js';
 import { logger } from '../../utils/logger.js';
 import { getClmmStatic } from '../../execution/clmmCache.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   // Prefer statics from in-memory exec cache.
@@ -38,7 +39,7 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
           upper: hop.tickArrayUpper?.slice(0, 8) + '…' || 'none'
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.raydiumClmm', e); }
   }
 
   // Load from CLMM static cache (authoritative for arrays/oracle).
@@ -99,9 +100,9 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
           if (cfg) hop.ammConfig = String(cfg);
         }
       }
-    } catch {}
+    } catch (e) { logCatchError('resolver.raydiumClmm', e); }
   }
-  try { logger.info('raydium.clmm.resolve', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch {}
+  try { logger.info('raydium.clmm.resolve', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch (e) { logCatchError('resolver.raydiumClmm', e); }
   return hop;
 }
 

@@ -1,5 +1,6 @@
 import { logger } from '../../utils/logger.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 /**
  * Cross-DEX validation: Compare prices for pools with the same mint pair across different DEXes.
@@ -61,14 +62,14 @@ export function validateCrossDexPrices(
               other_dexes: pools.filter(p => p.dex !== dex).map(p => ({ dex: p.dex, price: p.price })),
               cat: 'pools.validation'
             });
-          } catch {}
+          } catch (e) { logCatchError('pools.validation', e); }
         }
       }
     }
   } catch (e: any) {
     try {
       logger.warn('pools.crossdex.validation.failed', { error: String(e?.message || e), cat: 'pools.validation' });
-    } catch {}
+    } catch (e) { logCatchError('pools.validation', e); }
   }
 }
 
@@ -182,7 +183,7 @@ export function filterAnomalousPrices(
               ...anomaly,
               cat: 'pools.validation'
             });
-          } catch {}
+          } catch (e) { logCatchError('pools.validation', e); }
         }
       }
     }
@@ -229,7 +230,7 @@ export function filterAnomalousPrices(
           recommendation: 'Check normalizers for DEXes with high exclusion counts',
           cat: 'pools.validation'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.validation', e); }
       
       // Additional detailed log for deep analysis (debug level)
       try {
@@ -237,14 +238,14 @@ export function filterAnomalousPrices(
           anomalies: anomalyDetails,
           cat: 'pools.validation'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.validation', e); }
     }
     
     return filtered;
   } catch (e: any) {
     try {
       logger.warn('pools.crossdex.filter.failed', { error: String(e?.message || e), cat: 'pools.validation' });
-    } catch {}
+    } catch (e) { logCatchError('pools.validation', e); }
     return poolsByDex; // Return unfiltered on error
   }
 }

@@ -1,4 +1,5 @@
 import type { ClmmPool } from './types.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 const TWO_POW_64 = 2n ** 64n;
 const TWO_POW_128 = TWO_POW_64 ** 2n;
@@ -57,7 +58,7 @@ export function anyToBigInt(value: any): bigint | null {
         }
       }
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.precision', e); }
   return null;
 }
 

@@ -1,6 +1,7 @@
 import type { DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { address } from '@solana/kit';
@@ -52,7 +53,7 @@ function requireRpcFallbackAllowed(
         ...context,
       },
     });
-  } catch {}
+  } catch (e) { logCatchError('ix.build', e); }
   throw createBuilderError(
     dex,
     `RPC_FALLBACK_DISABLED: ${reason}`,
@@ -99,7 +100,7 @@ function requireRpcOrThrow(
           ...context,
         },
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     throw createBuilderError(
       dex,
       `RPC_FALLBACK_DISABLED: ${reason}`,
@@ -157,7 +158,7 @@ async function calculateRequiredBinArrays(
         cat: 'tx',
         ctx: { error: String((fetchErr as any)?.message || fetchErr) }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
   }
   
   // Method 1: Try to use swapQuote if available (most accurate)
@@ -195,7 +196,7 @@ async function calculateRequiredBinArrays(
               maxBinId: quote.maxBinId.toString()
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         
         return {
           lowerBinId: minLower,
@@ -213,7 +214,7 @@ async function calculateRequiredBinArrays(
         cat: 'tx',
         ctx: { error: String((quoteErr as any)?.message || quoteErr) }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
   }
   
   // Method 2: Estimate based on swap amount and average bin liquidity
@@ -287,7 +288,7 @@ async function calculateRequiredBinArrays(
           swapAmount: swapAmount.toString()
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     return {
       lowerBinId,
@@ -303,7 +304,7 @@ async function calculateRequiredBinArrays(
         cat: 'tx',
         ctx: { error: String((estimateErr as any)?.message || estimateErr) }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     const activeBinIdx = binIdToBinArrayIndex(activeBinId);
     const [currentLower, currentUpper] = getBinArrayLowerUpperBinId(activeBinIdx);
@@ -337,7 +338,7 @@ async function calculateRequiredBinArrays(
           direction: isXToY ? 'X->Y (down)' : isYToX ? 'Y->X (up)' : 'unknown'
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     return {
       lowerBinId,
@@ -371,7 +372,7 @@ async function injectBinArrayMetas(
         if (val?.publicKey instanceof PublicKey) return val.publicKey;
         if (typeof val?.address === 'string') return new PublicKey(val.address);
         if (val?.address instanceof PublicKey) return val.address;
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       return undefined;
     };
     
@@ -394,7 +395,7 @@ async function injectBinArrayMetas(
                 isWritable: true,
                 isSigner: false
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
           
           if (hot.binArrays.upper) {
@@ -404,7 +405,7 @@ async function injectBinArrayMetas(
                 isWritable: true,
                 isSigner: false
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
           
           if (cachedMetas.length > 0) {
@@ -419,7 +420,7 @@ async function injectBinArrayMetas(
                   upper: hot.binArrays.upper?.slice(0, 8) + '...'
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
         }
       } catch (cacheErr) {
@@ -428,7 +429,7 @@ async function injectBinArrayMetas(
             cat: 'tx',
             ctx: { error: String((cacheErr as any)?.message || cacheErr) }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
     }
     
@@ -465,9 +466,9 @@ async function injectBinArrayMetas(
                           cat: 'tx',
                           ctx: { pool: poolId.slice(0, 8) + '...', activeId: String(activeId) }
                         });
-                      } catch {}
+                      } catch (e) { logCatchError('ix.build', e); }
                     }
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 }
                 
                 // Fallback to RPC if not in cache
@@ -489,10 +490,10 @@ async function injectBinArrayMetas(
                             cat: 'tx',
                             ctx: { pool: poolPk.toBase58().slice(0, 8) + '...', activeId: String(activeId) }
                           });
-                        } catch {}
+                        } catch (e) { logCatchError('ix.build', e); }
                       }
                     }
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 }
                 
                 // Try to get active bin from pool state to use a small range
@@ -511,20 +512,20 @@ async function injectBinArrayMetas(
                     // Limit to max 5 bin arrays - sufficient for active bin + adjacents
                     metas = rawMetas.slice(0, 5);
                   }
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 // Fallback removed - don't use huge default ranges that return hundreds
               }
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           } else {
             try {
               metas = getMetas(poolPk, programId) || [];
               // Limit results if it's an array
               if (Array.isArray(metas)) metas = metas.slice(0, 5);
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
         }
       } catch (e: any) {
-        try { logger.debug('meteora.dlmm.inject.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+        try { logger.debug('meteora.dlmm.inject.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
       }
     }
     
@@ -541,7 +542,7 @@ async function injectBinArrayMetas(
           metas = Array.isArray(raw) ? raw.slice(0, 5) : [];
         }
       } catch (e: any) {
-        try { logger.debug('meteora.dlmm.inject.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+        try { logger.debug('meteora.dlmm.inject.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
       }
     }
     
@@ -559,7 +560,7 @@ async function injectBinArrayMetas(
           if (s) existing.add(s);
         }
       } catch (e: any) {
-        try { logger.debug('meteora.dlmm.inject.existing.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+        try { logger.debug('meteora.dlmm.inject.existing.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
       }
       
       // Safety limit - should already be limited but cap at 12 total (10 arrays + bitmap + overhead)
@@ -579,17 +580,17 @@ async function injectBinArrayMetas(
             injected += 1;
           }
         } catch (e: any) {
-          try { logger.debug('meteora.dlmm.inject.meta.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+          try { logger.debug('meteora.dlmm.inject.meta.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
       if (injected > 0) {
-        try { logger.debug('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {}
+        try { logger.debug('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch (e) { logCatchError('ix.build', e); }
       }
       return injected;
     }
   } catch (e: any) {
-    try { logger.warn('meteora.dlmm.inject.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+    try { logger.warn('meteora.dlmm.inject.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
   }
   return 0;
 }
@@ -601,7 +602,7 @@ function resolveRaydiumAmmVersion(programIdStr?: string): 4 | 5 {
     const v5 = sanitizeKeyString((CONFIG as any)?.raydium?.ammV5Program);
     if (pid && v5 && pid === v5) return 5;
     if (pid && v4 && pid === v4) return 4;
-  } catch {}
+  } catch (e) { logCatchError('ix.build', e); }
   return 4;
 }
 
@@ -612,7 +613,7 @@ export function computeSlippageBps(amountInRaw?: bigint, minOutRaw?: bigint): nu
       const bps = Math.max(0, Math.min(9900, Math.round((1 - ratio) * 10000)));
       return bps;
     }
-  } catch {}
+  } catch (e) { logCatchError('ix.build', e); }
   return 100; // default 1%
 }
 
@@ -624,7 +625,7 @@ function safeCoercePublicKey(value: any): PublicKey | undefined {
       if (value instanceof Uint8Array) return coerceToPublicKey(value);
       if (value && typeof value.address === 'string') return coerceToPublicKey(value.address);
       if (Array.isArray(value) && value.length > 0) {
-        try { return coerceToPublicKey(value[0]); } catch {}
+        try { return coerceToPublicKey(value[0]); } catch (e) { logCatchError('ix.build', e); }
       }
     }
     if (typeof value?.toBase58 === 'function') {
@@ -710,7 +711,7 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
         }
         return;
       } catch (e: any) {
-        try { logger.warn('orca.whirlpool.compressIx.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, error: String(e?.message || e) } }); } catch {}
+        try { logger.warn('orca.whirlpool.compressIx.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         return;
       }
     }
@@ -739,7 +740,7 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
           || item.address;
         const programId = safeCoercePublicKey(programIdRaw);
         if (!programId) {
-          try { logger.warn('orca.whirlpool.ix.missing_program', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, kind: typeof programIdRaw } }); } catch {}
+          try { logger.warn('orca.whirlpool.ix.missing_program', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, kind: typeof programIdRaw } }); } catch (e) { logCatchError('ix.build', e); }
           return;
         }
     const rawKeys = Array.isArray(item.keys)
@@ -782,7 +783,7 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
         out.push(new TransactionInstruction({ programId, keys, data }));
         return;
       } catch (coerceErr: any) {
-        try { logger.warn('orca.whirlpool.coerce_ix.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, error: String(coerceErr?.message || coerceErr) } }); } catch {}
+        try { logger.warn('orca.whirlpool.coerce_ix.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, error: String(coerceErr?.message || coerceErr) } }); } catch (e) { logCatchError('ix.build', e); }
         return;
       }
     }
@@ -801,9 +802,9 @@ async function ensureOrcaSdkConfig(): Promise<void> {
           await OrcaWhirlpools.setWhirlpoolsConfig(address(cfg));
         }
       } catch (e: any) {
-        try { logger.warn('orca.whirlpool.config.set.failed', { cat: 'tx', ctx: { error: String((e as any)?.message || e) } }); } catch {}
+        try { logger.warn('orca.whirlpool.config.set.failed', { cat: 'tx', ctx: { error: String((e as any)?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
       }
-      try { if (typeof OrcaWhirlpools.setNativeMintWrappingStrategy === 'function') OrcaWhirlpools.setNativeMintWrappingStrategy('ata'); } catch {}
+      try { if (typeof OrcaWhirlpools.setNativeMintWrappingStrategy === 'function') OrcaWhirlpools.setNativeMintWrappingStrategy('ata'); } catch (e) { logCatchError('ix.build', e); }
     })();
   }
   await orcaWhirlpoolConfigPromise;
@@ -873,7 +874,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
         hasTickArrays: !!(tickArrayLower && tickArrayCenter && tickArrayUpper),
       } as any
     });
-  } catch {}
+  } catch (e) { logCatchError('ix.build', e); }
   
   // Determine swap direction
   const inputMintStr = String(hop.inputMint);
@@ -912,7 +913,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
           cat: 'tx',
           ctx: { pool: hop.poolId, error: String(e?.message || e) } as any
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       // Continue without oracle if derivation fails - but this should rarely happen
     }
   }
@@ -941,7 +942,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
         cat: 'tx',
         ctx: { pool: hop.poolId, warning: 'Oracle not found in cache and derivation failed' } as any
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
   }
   
   // Encode swap instruction data
@@ -999,7 +1000,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
         accountCount: keys.length,
       } as any
     });
-  } catch {}
+  } catch (e) { logCatchError('ix.build', e); }
   
   // Create a minimal quote object for compatibility
   const quote = {
@@ -1041,7 +1042,7 @@ async function buildOrcaSwapViaSdk(hop: DirectHop, kp: { publicKey: PublicKey; s
         slippageBps
       } as any
     });
-  } catch {}
+  } catch (e) { logCatchError('ix.build', e); }
   
   const params: any = { inputAmount: amountIn, mint: inputMintAddr };
   if (typeof OrcaWhirlpools.swapInstructions !== 'function') {
@@ -1084,7 +1085,7 @@ async function ensureWhirlpoolTickArrays(
           requiredSet.add(key);
           requiredKeys.push(pk);
         }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     };
     addRequired((quote as any)?.tickArray0);
     addRequired((quote as any)?.tickArray1);
@@ -1111,14 +1112,14 @@ async function ensureWhirlpoolTickArrays(
           ctx.program.programId,
           whirlpoolPk,
         ) || [];
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
     const startIndexByAddress = new Map<string, number>();
     const registerEntry = (entry: { pubkey: PublicKey; startTickIndex: number }) => {
       if (!entry) return;
       try {
         startIndexByAddress.set(entry.pubkey.toBase58(), Number(entry.startTickIndex));
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     };
     if (Array.isArray(pathEntries) && pathEntries.length) {
       for (const entry of pathEntries) registerEntry(entry);
@@ -1135,7 +1136,7 @@ async function ensureWhirlpoolTickArrays(
             const start = tickUtil.getStartTickIndex(current + shift, tickSpacing, offset);
             const pda = PDAUtil.getTickArray(ctx.program.programId, whirlpoolPk, start);
             if (pda?.publicKey) registerEntry({ pubkey: pda.publicKey, startTickIndex: start });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           offset = aToB ? offset - 1 : offset + 1;
         }
       }
@@ -1175,7 +1176,7 @@ async function ensureWhirlpoolTickArrays(
             cat: 'tx',
             ctx: { pool: whirlpoolPk.toBase58(), tickArray: item.pubkey.toBase58(), startTick: item.startTick },
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       } catch (e: any) {
         throw createBuilderError('ORCA', `failed to build tick array init for ${item.pubkey.toBase58()}: ${String((e as any)?.message || e)}`, hop);
       }
@@ -1189,15 +1190,15 @@ async function ensureWhirlpoolTickArrays(
 
 // Placeholders to satisfy wiring; concrete implementations will target specific programs
 export function buildRaydiumAmmSwapIx(hop: DirectHop): any[] {
-  try { logger.info('ix.build raydium.amm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.info('ix.build raydium.amm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   return [{ programId: hop.programId || 'RaydiumAmmV4', type: 'raydium.amm.swap', keys: { poolId: hop.poolId, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, vaultA: hop.vaultA, vaultB: hop.vaultB }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
 }
 export function buildRaydiumClmmSwapIx(hop: DirectHop): any[] {
-  try { logger.info('ix.build raydium.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.info('ix.build raydium.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   return [{ programId: hop.programId || 'RaydiumClmm', type: 'raydium.clmm.swap', keys: { poolId: hop.poolId, tickArrayLower: hop.tickArrayLower, tickArrayCenter: hop.tickArrayCenter, tickArrayUpper: hop.tickArrayUpper, oracle: hop.oracle, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, vaultA: hop.vaultA, vaultB: hop.vaultB }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw, sqrtPriceLimitX64: hop.sqrtPriceLimitX64 || 0n } }];
 }
 export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
-  try { logger.debug('ix.build orca.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.debug('ix.build orca.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   try {
     const kp = await ensureWallet(CONFIG.walletPath);
     // Strip -rev suffix before using poolId (similar to Raydium/Meteora)
@@ -1224,9 +1225,9 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           const mintA = parsed.tokenMintA?.toBase58?.();
           const mintB = parsed.tokenMintB?.toBase58?.();
           const inMint = String(hop.inputMint);
-          try { logger.debug('orca.whirlpool.pool.tokens', { cat: 'tx', ctx: { pool: String(hop.poolId), mintA, mintB, inputMint: inMint } }); } catch {}
+          try { logger.debug('orca.whirlpool.pool.tokens', { cat: 'tx', ctx: { pool: String(hop.poolId), mintA, mintB, inputMint: inMint } }); } catch (e) { logCatchError('ix.build', e); }
           if (inMint !== mintA && inMint !== mintB) {
-            try { logger.warn('orca.whirlpool.input_mint_mismatch', { cat: 'tx', ctx: { pool: String(hop.poolId), inputMint: inMint, mintA, mintB } }); } catch {}
+            try { logger.warn('orca.whirlpool.input_mint_mismatch', { cat: 'tx', ctx: { pool: String(hop.poolId), inputMint: inMint, mintA, mintB } }); } catch (e) { logCatchError('ix.build', e); }
             throw createBuilderError('ORCA', 'input mint does not match pool tokens', hop);
           }
         }
@@ -1236,7 +1237,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         throw preErr;
       }
       // Log but continue - pool validation is best-effort
-      try { logger.warn('orca.whirlpool.pool.precheck.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((preErr as any)?.message || preErr) } }); } catch {}
+      try { logger.warn('orca.whirlpool.pool.precheck.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((preErr as any)?.message || preErr) } }); } catch (e) { logCatchError('ix.build', e); }
     }
     
     // Calculate slippage from the configured value, not by comparing minOutRaw to amountInRaw
@@ -1265,7 +1266,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           minOutRaw: String(hop.minOutRaw ?? 0n),
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // PRIMARY PATH: Try local builder first (NO RPC calls!)
     try {
@@ -1291,7 +1292,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
                 mode: 'local',
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         } else if (quoteInputAmount === hop.amountInRaw) {
           try {
             logger.info('orca.local.exact_amount.verified', {
@@ -1302,14 +1303,14 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
                 mode: 'local',
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
       if (estOut !== null && estOut !== undefined) {
-        try { logger.info('orca.local.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'local' } as any }); } catch {}
+        try { logger.info('orca.local.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'local' } as any }); } catch (e) { logCatchError('ix.build', e); }
       }
-      try { logger.info('orca.local.ix.ready', { cat: 'tx', ctx: { count: localResult.instructions.length, mode: 'local' } as any }); } catch {}
+      try { logger.info('orca.local.ix.ready', { cat: 'tx', ctx: { count: localResult.instructions.length, mode: 'local' } as any }); } catch (e) { logCatchError('ix.build', e); }
       return localResult.instructions;
     } catch (localErr) {
       const msg = String((localErr as any)?.message || localErr);
@@ -1326,7 +1327,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
             reason: 'Local build failed, falling back to SDK (will make RPC calls)'
           } as any 
         }); 
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
     
     // FALLBACK PATH: Try SDK if local build failed
@@ -1356,7 +1357,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
                 mode: 'swapInstructions',
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         } else if (quoteInputAmount === hop.amountInRaw) {
           try {
             logger.debug('orca.whirlpool.exact_amount.verified', {
@@ -1367,21 +1368,21 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
                 mode: 'swapInstructions',
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
       if (estOut !== null && estOut !== undefined) {
-        try { logger.debug('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'swapInstructions' } as any }); } catch {}
+        try { logger.debug('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'swapInstructions' } as any }); } catch (e) { logCatchError('ix.build', e); }
       }
-      try { logger.debug('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: sdkResult.instructions.length, mode: 'swapInstructions' } as any }); } catch {}
+      try { logger.debug('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: sdkResult.instructions.length, mode: 'swapInstructions' } as any }); } catch (e) { logCatchError('ix.build', e); }
       return sdkResult.instructions;
     } catch (sdkErr) {
       const msg = String((sdkErr as any)?.message || sdkErr);
       if (msg.includes('ORCA_BUILD_FAILED')) {
         throw sdkErr;
       }
-      try { logger.warn('orca.whirlpool.swapInstructions.fallback', { cat: 'tx', ctx: { pool: hop.poolId, error: msg } as any }); } catch {}
+      try { logger.warn('orca.whirlpool.swapInstructions.fallback', { cat: 'tx', ctx: { pool: hop.poolId, error: msg } as any }); } catch (e) { logCatchError('ix.build', e); }
     }
     
     // Use context-based SDK approach instead of global state
@@ -1399,7 +1400,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
             warning: 'Orca fallback (client.getPool) makes RPC calls - implement local building',
           } as any
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
       const { Percentage } = await import('@orca-so/common-sdk');
@@ -1447,7 +1448,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
             quotedOutputRaw: hop.quotedOutputRaw?.toString() || 'N/A',
           } 
         }); 
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       // Primary path: use swapQuoteByInputToken
       const quote = await (swapQuoteByInputToken as any)(
@@ -1482,7 +1483,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
                 mode: 'swapQuoteByInputToken',
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -1492,7 +1493,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       const tradeTs: any = (quote as any)?.tradeEnableTimestamp;
       if (typeof tradeTs === 'bigint') {
         const nowSec = BigInt(Math.floor(Date.now() / 1000));
-        try { logger.info('orca.whirlpool.trade.ts', { cat: 'tx', ctx: { tradeEnableTimestamp: tradeTs.toString() } as any }); } catch {}
+        try { logger.info('orca.whirlpool.trade.ts', { cat: 'tx', ctx: { tradeEnableTimestamp: tradeTs.toString() } as any }); } catch (e) { logCatchError('ix.build', e); }
         if (tradeTs > nowSec) {
           throw createBuilderError('ORCA', `trade disabled until ${tradeTs.toString()}`, hop);
         }
@@ -1503,7 +1504,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         throw createBuilderError('ORCA', 'quote returned zero output amount', hop);
       }
       
-      try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: estimatedOut.toString() } as any }); } catch {}
+      try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: estimatedOut.toString() } as any }); } catch (e) { logCatchError('ix.build', e); }
       
       const preIx = await ensureWhirlpoolTickArrays(ctx, pool, quote, kp.publicKey, hop);
       
@@ -1516,7 +1517,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         try {
           swapIx = await (pool as any).swap(quote);
         } catch (e: any) {
-          try { logger.warn('orca.whirlpool.swap.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+          try { logger.warn('orca.whirlpool.swap.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -1525,7 +1526,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         try {
           swapIx = await (pool as any).swapIx(quote);
         } catch (e: any) {
-          try { logger.warn('orca.whirlpool.swapIx.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+          try { logger.warn('orca.whirlpool.swapIx.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -1537,7 +1538,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
             swapIx = await (buildSwapInstruction as any)(pool, quote, kp.publicKey);
           }
         } catch (e: any) {
-          try { logger.warn('orca.whirlpool.buildSwapInstruction.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+          try { logger.warn('orca.whirlpool.buildSwapInstruction.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -1546,7 +1547,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         try {
           swapIx = await (pool as any).buildSwapInstruction(quote);
         } catch (e: any) {
-          try { logger.warn('orca.whirlpool.buildSwapInstruction.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+          try { logger.warn('orca.whirlpool.buildSwapInstruction.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -1559,7 +1560,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         throw createBuilderError('ORCA', 'swap builder returned no executable instructions', hop);
       }
 
-      try { logger.debug('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: instructions.length } }); } catch {}
+      try { logger.debug('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: instructions.length } }); } catch (e) { logCatchError('ix.build', e); }
       return instructions;
     } catch (inner) {
       // Wrap errors with context
@@ -1577,17 +1578,17 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
   }
 }
 export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
-  try { logger.debug('ix.build meteora.dlmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.debug('ix.build meteora.dlmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   return [{ programId: hop.programId || 'meteoraDLMM', type: 'meteora.dlmm.swap', keys: { poolId: hop.poolId, binArrayLower: hop.binArrayLower, binArrayUpper: hop.binArrayUpper, reserveX: hop.reserveX, reserveY: hop.reserveY, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
 }
 
 export function buildPumpswapSwapIx(hop: DirectHop): any[] {
-  try { logger.info('ix.build pumpswap.amm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.info('ix.build pumpswap.amm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   return [{ programId: hop.programId || 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', type: 'pumpswap.amm.swap', keys: { poolId: hop.poolId, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, vaultA: hop.vaultA, vaultB: hop.vaultB }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
 }
 
 export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build pumpswap.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.info('ix.build pumpswap.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   try {
     // Pre-build validation: amounts
     validateHopAmounts(hop, { dex: 'pumpswap', variant: 'amm', poolId: hop.poolId });
@@ -1675,7 +1676,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
             reason: 'not_in_cache',
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     } else {
       try {
         logger.info('pumpswap.protocol_recipient.from_cache', {
@@ -1685,7 +1686,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
             protocolRecipient: protocolFeeRecipientAddress.slice(0, 12),
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
     
     const protocolFeeRecipient = toPublicKey(protocolFeeRecipientAddress);
@@ -1702,7 +1703,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           last12: creator.slice(-12),
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     if (!poolBaseMint || !poolQuoteMint || !onchainBaseVault || !onchainQuoteVault || !creator) {
       throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint/vault/creator data in cache', hop);
@@ -1724,7 +1725,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
             creator: creator.slice(0, 12),
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       const { PublicKey, SystemProgram } = await import('@solana/web3.js');
       
@@ -1741,7 +1742,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
             matches: creator === SYSTEM_PROGRAM_ID,
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       // CRITICAL FIX: Identify which mint is the pump.fun meme token
       // After canonicalization, poolBaseMint might be SOL/USDC instead of the meme token
@@ -1772,7 +1773,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
               note: 'will_use_pool_creator_directly',
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
       
       if (!isStablecoinPair && memeTokenMint) {
@@ -1788,7 +1789,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
               isBaseTheMeme: memeTokenMint === poolBaseMint,
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         
         // For Pumpswap pools, we need to fetch the creator from the meme token's Metaplex metadata
         const memeTokenMintPk = toPublicKey(memeTokenMint);
@@ -1815,7 +1816,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
               poolCoinCreator: creator.slice(0, 12),
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         
         // Fetch metadata account to get the real creator
         const connection = getBuilderConnectionOrFail(
@@ -1843,7 +1844,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
                     wasSystemProgram: creator === SYSTEM_PROGRAM_ID,
                   }
                 });
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
             }
           }
         } catch (metadataErr: any) {
@@ -1856,7 +1857,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
                 willUseFallback: true,
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
         
         // Now derive the creator vault accounts using the actual creator
@@ -1870,7 +1871,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
                 note: 'using_bonding_curve_authority_as_fallback',
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           
           // Use the bonding curve PDA as creator
           const [bondingCurvePda] = PublicKey.findProgramAddressSync(
@@ -1913,7 +1914,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
               quoteMint: poolQuoteMint.slice(0, 12),
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       } else {
         // Stablecoin pair (SOL/USDC) - use pool creator directly
         // For SOL/USDC pools, if creator is System Program, use System Program for creator vaults
@@ -1936,7 +1937,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
                 coinCreatorVaultAta: SYSTEM_PROGRAM_ID.slice(0, 12),
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         } else {
           // Pool has a valid creator - derive creator vault accounts normally
           const creatorPubkey = toPublicKey(creator);
@@ -1965,7 +1966,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
                 derivedAta: coinCreatorVaultAta.slice(0, 12),
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
     }
@@ -1985,7 +1986,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           authLen: coinCreatorVaultAuthority?.length,
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     const creatorVaultAta = toPublicKey(coinCreatorVaultAta);
     const creatorVaultAuthority = toPublicKey(coinCreatorVaultAuthority);
@@ -2004,7 +2005,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           quoteVaultLen: onchainQuoteVault?.length,
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Validate vault addresses before conversion
     if (!onchainBaseVault || onchainBaseVault.length < 32) {
@@ -2033,7 +2034,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           poolQuoteVault: onchainQuoteVault.slice(0, 8) + '...',
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Validate that we have valid mint addresses
     if (!poolBaseMint || poolBaseMint.length < 32) {
@@ -2054,7 +2055,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           poolQuoteMintLen: poolQuoteMint.length,
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Determine swap direction and choose instruction
     const isSellingBase = hop.inputMint === poolBaseMint && hop.outputMint === poolQuoteMint;
@@ -2169,7 +2170,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           fullAccountOrder: keys.map((k, i) => `${i+1}:${k.pubkey.toBase58().slice(0,8)}`).join(','),
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     const swapIx = new TransactionInstruction({
       programId,
@@ -2190,7 +2191,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           direction: isSellingBase ? 'base→quote' : 'quote→base',
         } as any,
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     return [swapIx];
   } catch (e: any) {
@@ -2204,7 +2205,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           stack: String(e?.stack || '').slice(0, 200),
         } as any,
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     wrapBuilderError(e, 'PUMPSWAP', 'build failed', hop);
     throw e;
   }
@@ -2218,7 +2219,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
       cat: 'tx', 
       code: LogCode.TX_BUILD_HOP 
     }); 
-  } catch {}
+  } catch (e) { logCatchError('ix.build', e); }
   
   try {
     // Pre-build validation: amounts
@@ -2280,7 +2281,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
                       ixCount: swapResult.transaction.instructions.length,
                     } as any,
                   });
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 return swapResult.transaction.instructions;
               }
             }
@@ -2291,7 +2292,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
               cat: 'tx',
               ctx: { error: String(e?.message || e), pool: hop.poolId } as any,
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -2321,7 +2322,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
                       ixCount: swapResult.instructions.length,
                     } as any,
                   });
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 return swapResult.instructions;
               }
             }
@@ -2332,7 +2333,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
               cat: 'tx',
               ctx: { error: String(e?.message || e), pool: hop.poolId } as any,
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
     } catch (sdkErr: any) {
@@ -2341,7 +2342,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
           cat: 'tx',
           ctx: { error: String(sdkErr?.message || sdkErr) } as any,
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
     */
 
@@ -2355,7 +2356,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
           pool: hop.poolId,
         } as any,
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     const { TransactionInstruction } = await import('@solana/web3.js');
     const { TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
@@ -2400,7 +2401,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
           note: 'This may fail - install SDK for production use',
         } as any,
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     return [swapIx];
   } catch (e: any) {
@@ -2415,7 +2416,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
           stack: String(e?.stack || '').slice(0, 200),
         } as any,
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     wrapBuilderError(e, 'METEORA_BALANCED', 'build failed', hop);
     throw e;
   }
@@ -2423,7 +2424,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
 
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try {
-    try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+    try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
     
     // Pre-build validation: amounts
     validateHopAmounts(hop, { dex: 'meteora', variant: 'dlmm', poolId: hop.poolId });
@@ -2433,7 +2434,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const kp = await ensureWallet(CONFIG.walletPath);
     const poolPk = toPublicKey(hop.poolId);
     const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
-    try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } as any }); } catch {}
+    try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } as any }); } catch (e) { logCatchError('ix.build', e); }
 
     // Determine swap direction early for use in fast path
     const inputMintPk = toPublicKey(hop.inputMint);
@@ -2468,9 +2469,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               rpcCallAvoided: true
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // STEP 2: Only fallback to RPC if cache is missing critical data
     if (!tokenXMintPk || !tokenYMintPk) {
@@ -2489,7 +2490,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               hasMintB: !!tokenYMintPk
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         throw createBuilderError('METEORA_DLMM', errorMsg, hop);
       }
       
@@ -2507,7 +2508,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 hint: 'Check if pool was fetched in GraphQL or WebSocket feeds'
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           
           const mints = await DLMM.DLMM.getTokensMintFromPoolAddress(connection, poolPk);
           tokenXMintPk = mints?.tokenXMint ? toPublicKey(mints.tokenXMint) : null;
@@ -2523,7 +2524,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               error: String(e?.message || e)
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         throw createBuilderError('METEORA_DLMM', `Failed to fetch pool mints: ${String(e?.message || e)}`, hop);
       }
     }
@@ -2546,7 +2547,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             poolId: hop.poolId
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
 
     // Standardized SDK import: prefer ESM dynamic import, cache module
@@ -2564,13 +2565,13 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         try {
           mod = await import(spec);
           if (mod) {
-            try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(mod || {}) } }); } catch {}
+            try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(mod || {}) } }); } catch (e) { logCatchError('ix.build', e); }
             // Cache the module
             (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
             break;
           }
         } catch (e: any) {
-          try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {}
+          try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -2581,17 +2582,17 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           // @ts-expect-error - ts-client path may not exist, handled by catch
           mod = await import('@meteora-ag/dlmm/ts-client').catch(() => null);
           if (mod) {
-            try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec: '@meteora-ag/dlmm/ts-client' } }); } catch {}
+            try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec: '@meteora-ag/dlmm/ts-client' } }); } catch (e) { logCatchError('ix.build', e); }
             (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
           }
         } catch (e: any) {
-          try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec: '@meteora-ag/dlmm/ts-client', error: String(e?.message || e) } }); } catch {}
+          try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec: '@meteora-ag/dlmm/ts-client', error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
     }
 
     if (!mod) {
-      try { logger.error('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}
+      try { logger.error('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch (e) { logCatchError('ix.build', e); }
       throw createBuilderError('METEORA_DLMM', 'failed to load SDK module', hop);
     }
 
@@ -2612,7 +2613,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
           binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
         } as any;
-        try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapForY } }); } catch {}
+        try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapForY } }); } catch (e) { logCatchError('ix.build', e); }
         const ixResult = await (DLMM as any).swapIx(connection, kp.publicKey, params);
         if (ixResult) {
           // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
@@ -2633,7 +2634,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   msg: errorMsg
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
             throw createBuilderError('METEORA', errorMsg, hop);
           }
           
@@ -2646,12 +2647,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 binArraysPresent: totalAccounts >= 16
               } 
             }); 
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           return [ixResult];
         }
       }
     } catch (e: any) {
-      try { logger.warn('meteora.dlmm.swapIx.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+      try { logger.warn('meteora.dlmm.swapIx.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
       // Continue to fallback path
     }
 
@@ -2665,7 +2666,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const createProgram = (DLMM as any)?.createProgram || (mod as any)?.createProgram;
       if (!createProgram) throw new Error('DLMM_CREATE_PROGRAM_MISSING');
       const program = createProgram(connection, programId);
-      try { logger.debug('meteora.dlmm.program.ok', { cat: 'tx' }); } catch {}
+      try { logger.debug('meteora.dlmm.program.ok', { cat: 'tx' }); } catch (e) { logCatchError('ix.build', e); }
 
       // Derive optional accounts
       let binArrayLower: PublicKey | undefined = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
@@ -2709,7 +2710,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           //         activeBinId = new BN(String(stateActive));
           //       }
           //     }
-          //   } catch {}
+          //   } catch (e) { logCatchError('ix.build', e); }
           // }
           
           if (activeBinId) {
@@ -2744,10 +2745,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     // } catch {
                     //   // Account doesn't exist or error fetching - skip it
                     // }
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
                 }
               }
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
         }
       }
@@ -2770,14 +2771,14 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           if (coverageSet.has(key)) return;
           coverageSet.add(key);
           coverageMetas.push({ pubkey: pk, isWritable: writable, isSigner: false });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       };
 
-      try { if (binArrayLower) pushMeta(binArrayLower); } catch {}
-      try { if (binArrayUpper) pushMeta(binArrayUpper); } catch {}
+      try { if (binArrayLower) pushMeta(binArrayLower); } catch (e) { logCatchError('ix.build', e); }
+      try { if (binArrayUpper) pushMeta(binArrayUpper); } catch (e) { logCatchError('ix.build', e); }
 
       let lbPairState: any = null;
-      try { lbPairState = await program.account.lbPair.fetch(poolPk); } catch {}
+      try { lbPairState = await program.account.lbPair.fetch(poolPk); } catch (e) { logCatchError('ix.build', e); }
 
       // Note: Do NOT manually derive bin arrays here - we need to verify they exist on-chain
       // The SDK's getBinArrayAccountMetasCoverage will return only the bin arrays that are
@@ -2790,7 +2791,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // The SDK includes the correct bitmap extension PDA when building swap instructions.
 
       binArrayMetas = coverageMetas.length ? coverageMetas : null;
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
 
       const BN = (await import('bn.js')).default as any;
       const amountIn = new BN(String(hop.amountInRaw ?? 0n));
@@ -2816,7 +2817,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           poolId: hop.poolId
         } 
       });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       // Validate token accounts - batch fetch both at once to reduce RPC calls
       let tokenInfos: any[] | null = null;
@@ -2844,7 +2845,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               inputTokenProgram: hop.inputTokenProgram
             } 
           }); 
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         accounts.userTokenIn = correctAtaIn;
         try { 
           logger.debug('meteora.dlmm.userTokenIn.corrected', { 
@@ -2855,7 +2856,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               mint: expectedInputMint.toBase58()
             } 
           }); 
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
       
       if (!userTokenOutPk.equals(correctAtaOut)) {
@@ -2870,7 +2871,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               outputTokenProgram: hop.outputTokenProgram
             } 
           }); 
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         accounts.userTokenOut = correctAtaOut;
         try { 
           logger.debug('meteora.dlmm.userTokenOut.corrected', { 
@@ -2881,7 +2882,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               mint: expectedMint.toBase58()
             } 
           }); 
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
       
       // Batch fetch both token accounts at once to reduce RPC calls
@@ -2912,7 +2913,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     inputMint: hop.inputMint
                   } 
                 }); 
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
               accounts.userTokenIn = correctAtaIn;
               try { 
                 logger.debug('meteora.dlmm.userTokenIn.mint_corrected', { 
@@ -2923,7 +2924,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     mint: expectedInputMint.toBase58()
                   } 
                 }); 
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
             }
           } catch (parseErr) {
             accounts.userTokenIn = correctAtaIn;
@@ -2949,7 +2950,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     outputMint: hop.outputMint
                   } 
                 }); 
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
               accounts.userTokenOut = correctAtaOut;
               try { 
                 logger.debug('meteora.dlmm.userTokenOut.mint_corrected', { 
@@ -2960,7 +2961,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     mint: expectedMint.toBase58()
                   } 
                 }); 
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
             }
           } catch (parseErr) {
             accounts.userTokenOut = correctAtaOut;
@@ -2974,7 +2975,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           cat: 'tx', 
           ctx: { error: String((validateErr as any)?.message || validateErr) } 
         }); 
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       }
       
       // NOTE: Do NOT set binArrayLower/binArrayUpper in accounts object
@@ -3001,7 +3002,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             usingProgramIdFallback: !hop.bitmapExtension
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
 
       // Extend with host/referral fee handling and reserves when available
       // hostFeeIn must be a valid token account for the input token
@@ -3048,7 +3049,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (accounts.userTokenIn) {
         acctBase.hostFeeIn = accounts.userTokenIn;
       }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       // Map vaultA/vaultB to reserveX/reserveY based on pool's token order
       // vaultA/vaultB represent the pool's natural mint_a/mint_b order
@@ -3060,9 +3061,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         acctBase.reserveX = toPublicKey(hop.vaultA as any);
         acctBase.reserveY = toPublicKey(hop.vaultB as any);
       }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
 
-      try { acctBase.memoProgram = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'); } catch {}
+      try { acctBase.memoProgram = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'); } catch (e) { logCatchError('ix.build', e); }
       try {
       const getTokensMintFromPoolAddress = (DLMM as any)?.getTokensMintFromPoolAddress;
       if (getTokensMintFromPoolAddress) {
@@ -3077,7 +3078,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 error: String(e?.message || e)
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           return null;
         });
         
@@ -3178,7 +3179,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               cat: 'tx',
               ctx: { error: String(e?.message || e) }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       } else {
         // SDK doesn't have getTokensMintFromPoolAddress - this is a problem
@@ -3202,7 +3203,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           cat: 'tx', 
           ctx: { error: String(e?.message || e) } 
         }); 
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       }
       // Derive reserves if not already provided
       try {
@@ -3217,14 +3218,14 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           if (ry) acctBase.reserveY = (ry as any).publicKey || ry;
         }
       }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       try {
       const deriveOracle = (DLMM as any)?.deriveOracle;
       if (deriveOracle) {
         const orc = await deriveOracle(programId, poolPk).catch(() => null as any);
         if (orc) acctBase.oracle = (orc as any).publicKey || orc;
       }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
 
       // CRITICAL FIX: Correct reserve mapping for all pools (SDK-independent)
       // This runs even if getTokensMintFromPoolAddress wasn't available
@@ -3266,7 +3267,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   acctBase.tokenYMint = (tkY.publicKey || tkY);
                 }
               }
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
           
           if (poolMintA && poolMintB && tokenXMint && tokenYMint) {
@@ -3285,7 +3286,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   cat: 'tx',
                   ctx: { poolId: hop.poolId, mapping: 'natural', tokenX: 'mint_a' }
                 });
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
             } else if (tokenXIsMintB) {
               // tokenX=mint_b, tokenY=mint_a => reserveX=vaultB, reserveY=vaultA (swapped!)
               acctBase.reserveX = toPublicKey(hop.vaultB);
@@ -3295,7 +3296,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   cat: 'tx',
                   ctx: { poolId: hop.poolId, mapping: 'swapped', tokenX: 'mint_b' }
                 });
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
             }
             assignTokenProgramsFromPool({ tokenXIsMintA, tokenXIsMintB, tokenYIsMintA, tokenYIsMintB });
           } else {
@@ -3307,7 +3308,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 cat: 'tx',
                 ctx: { poolId: hop.poolId, mapping: 'fallback_natural', reason: 'missing_token_info' }
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
         }
       }
@@ -3317,7 +3318,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           cat: 'tx',
           ctx: { poolId: hop.poolId, error: String(e?.message || e) }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       }
 
       // CRITICAL FIX: Ensure token mints are explicitly set before building instruction
@@ -3350,7 +3351,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   tokenYMint: tokenYMintPk.toBase58()
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
             acctBase.tokenXMint = tokenXMintPk;
             acctBase.tokenYMint = tokenYMintPk;
           }
@@ -3365,12 +3366,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 outputMint: hop.outputMint
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           // Don't set tokenXMint/tokenYMint from hop mints - let the SDK derive from pool
           // Setting them incorrectly could cause the "Invalid token mint" error
         }
       }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
 
       // Fetch token program IDs AFTER token mints are confirmed
       // Detect correct token program IDs per mint (Token-2022 support)
@@ -3386,7 +3387,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               hasCacheB: !!poolTokenProgramLabelB,
             },
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         logger.info('meteora.dlmm.token_programs.fetch_start', { cat: 'tx', ctx: { poolId: hop.poolId } });
         const getTokenProgramId = (DLMM as any)?.getTokenProgramId;
         logger.info('meteora.dlmm.token_programs.sdk_function', { cat: 'tx', ctx: { poolId: hop.poolId, exists: !!getTokenProgramId } });
@@ -3485,7 +3486,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram || ''),
             },
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
       } catch (err) {
       logger.error('meteora.dlmm.token_programs.fetch_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(err) } });
@@ -3511,20 +3512,20 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram)
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       // NOTE: Anchor methods don't take swapForY - direction is inferred from accounts (reserveX/reserveY)
       // PREFER swap2 if available (newer, more robust) regardless of Token-2022
       // swap2 handles bitmap extension edge cases better than the older swap method
       if (typeof (methods as any)?.swap2 === 'function') {
         builder = methods.swap2(amountIn, minOut, { slices: [] });
-        try { logger.info('meteora.dlmm.using_swap2', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch {}
+        try { logger.info('meteora.dlmm.using_swap2', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch (e) { logCatchError('ix.build', e); }
       } else if (typeof (methods as any)?.swap === 'function') {
         builder = methods.swap(amountIn, minOut);
-        try { logger.info('meteora.dlmm.using_swap', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch {}
+        try { logger.info('meteora.dlmm.using_swap', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch (e) { logCatchError('ix.build', e); }
       } else if (typeof (methods as any)?.swapExactIn === 'function') {
         builder = methods.swapExactIn(amountIn, minOut);
-        try { logger.info('meteora.dlmm.using_swapExactIn', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch {}
+        try { logger.info('meteora.dlmm.using_swapExactIn', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch (e) { logCatchError('ix.build', e); }
       } else {
         const error = new Error('DLMM_SWAP_METHOD_MISSING');
         try {
@@ -3539,7 +3540,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               hasSwapExactIn: typeof (methods as any)?.swapExactIn === 'function'
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         throw error;
       }
       
@@ -3558,7 +3559,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             stack: e?.stack
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       // Re-throw to prevent continuing with invalid builder
       throw wrapBuilderError(e, 'METEORA_DLMM', 'method selection failed', hop);
       }
@@ -3581,7 +3582,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           userTokenOut: acctBase.userTokenOut ? (acctBase.userTokenOut instanceof PublicKey ? acctBase.userTokenOut.toBase58() : String(acctBase.userTokenOut)) : 'missing'
         }
       });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       // Debug: Log ALL fields in acctBase to identify missing accounts
       try {
@@ -3598,7 +3599,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
       }
       logger.info('meteora.dlmm.acctBase.all_fields', { cat: 'tx', ctx: { poolId: hop.poolId, fields: acctDebug } });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       
       if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
       else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
@@ -3627,7 +3628,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 inputMint: hop.inputMint
               } 
             }); 
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           
           acctBase.userTokenIn = correctInputAta;
           accounts.userTokenIn = correctInputAta;
@@ -3653,7 +3654,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 outputMint: hop.outputMint
               } 
             }); 
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           
           // Force correct ATA in accounts
           acctBase.userTokenOut = correctAta;
@@ -3669,7 +3670,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 mint: expectedMint.toBase58()
               } 
             }); 
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -3681,7 +3682,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           } else if (typeof (builder as any).accounts === 'function') {
             builder = (builder as any).accounts(acctBase);
           }
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
       } catch (finalValErr) {
       try { 
@@ -3689,7 +3690,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           cat: 'tx', 
           ctx: { error: String((finalValErr as any)?.message || finalValErr) } 
         }); 
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       }
 
       // Enhanced validation: ensure userTokenOut matches pool's tokenX/tokenY based on swap direction
@@ -3732,7 +3733,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     outputMint: hop.outputMint
                   } 
                 }); 
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
               
               acctBase.userTokenOut = correctOutputAta;
               accounts.userTokenOut = correctOutputAta;
@@ -3744,7 +3745,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 } else if (typeof (builder as any).accounts === 'function') {
                   builder = (builder as any).accounts(acctBase);
                 }
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
               
               try { 
                 logger.info('meteora.dlmm.userTokenOut.pool_token_corrected', { 
@@ -3755,7 +3756,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     token: expectedOutputToken.toBase58()
                   } 
                 }); 
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
             }
           }
         } else {
@@ -3770,7 +3771,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 tokenYMint: tokenYMint.toBase58()
               } 
             }); 
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
       } catch (poolValErr) {
@@ -3779,7 +3780,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           cat: 'tx', 
           ctx: { error: String((poolValErr as any)?.message || poolValErr) } 
         }); 
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       }
 
       // Log key accounts for DLMM swap for observability
@@ -3795,7 +3796,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         binArrayUpper: to58(binArrayUpper),
         note: 'bitmap_extension handled automatically by SDK'
       }});
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
 
       // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
       try {
@@ -3871,7 +3872,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       arrayRange: `${lowerArrayIdx.toString()}..${upperArrayIdx.toString()}`
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 
                 // Derive bin arrays using bin array indexes directly (matching working code in meteora.ts)
                 // First check cache for pre-computed bin arrays, then derive if needed
@@ -3912,7 +3913,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                               });
                             }
                           } catch (e: any) {
-                            try { logger.debug('meteora.dlmm.cached_array.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+                            try { logger.debug('meteora.dlmm.cached_array.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
                           }
                         }
                         
@@ -3927,11 +3928,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                               range: `${startIdx}..${endIdx}`
                             }
                           });
-                        } catch {}
+                        } catch (e) { logCatchError('ix.build', e); }
                       }
                     }
                   } catch (cacheErr) {
-                    try { logger.debug('meteora.dlmm.cache_lookup.failed', { cat: 'tx', ctx: { error: String((cacheErr as any)?.message || cacheErr) } }); } catch {}
+                    try { logger.debug('meteora.dlmm.cache_lookup.failed', { cat: 'tx', ctx: { error: String((cacheErr as any)?.message || cacheErr) } }); } catch (e) { logCatchError('ix.build', e); }
                   }
                 }
                 
@@ -3965,7 +3966,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       });
                     } catch (e: any) {
                       // Skip invalid derivations
-                      try { logger.debug('meteora.dlmm.derive_bin_array.failed', { cat: 'tx', ctx: { index: i, error: String(e?.message || e) } }); } catch {}
+                      try { logger.debug('meteora.dlmm.derive_bin_array.failed', { cat: 'tx', ctx: { index: i, error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
                     }
                   }
                 }
@@ -4001,7 +4002,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                                   cat: 'tx', 
                                   ctx: { account: accountAddress?.slice(0, 8) + '...', index: binArrayIndex } 
                                 }); 
-                              } catch {}
+                              } catch (e) { logCatchError('ix.build', e); }
                             } else {
                               // Store uncached metas for fallback
                               uncachedMetas.push(meta);
@@ -4010,13 +4011,13 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                                   cat: 'tx', 
                                   ctx: { account: accountAddress?.slice(0, 8) + '...', index: binArrayIndex } 
                                 }); 
-                              } catch {}
+                              } catch (e) { logCatchError('ix.build', e); }
                             }
                           }
                         }
                       } catch (e: any) {
                         // Skip invalid meta entries
-                        try { logger.debug('meteora.dlmm.validate_meta.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+                        try { logger.debug('meteora.dlmm.validate_meta.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
                       }
                     }
                     
@@ -4036,7 +4037,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                             total: validatedMetas.length
                           }
                         });
-                      } catch {}
+                      } catch (e) { logCatchError('ix.build', e); }
                     } else if (validatedMetas.length === 0) {
                       // No validated metas at all - add active bin array and adjacent ones as fallback
                       // This ensures the transaction has at least the required bin arrays
@@ -4055,11 +4056,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                               note: 'No cached bin arrays found, using active + adjacent as fallback'
                             }
                           });
-                        } catch {}
+                        } catch (e) { logCatchError('ix.build', e); }
                       }
                     }
                   } catch (e: any) {
-                    try { logger.debug('meteora.dlmm.validate_metas.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+                    try { logger.debug('meteora.dlmm.validate_metas.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
                     // If validation fails, still include active bin array as fallback
                     const activeMeta = metas.find((m: any) => m?.binArrayIndex === activeBinArrayIdxNum);
                     if (activeMeta) {
@@ -4086,7 +4087,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         arrayRange: `${lowerArrayIdx.toString()}..${upperArrayIdx.toString()}`
                       } 
                     }); 
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 } else {
                   try {
                     logger.warn('meteora.dlmm.no_valid_bin_arrays', {
@@ -4098,15 +4099,15 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         calculatedNeeded: binArrayCount
                       }
                     });
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 }
               } catch (e: any) {
-                try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+                try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
               }
             }
           }
         } catch (e: any) {
-          try { logger.debug('meteora.dlmm.remaining.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+          try { logger.debug('meteora.dlmm.remaining.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
       
@@ -4121,15 +4122,15 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             const metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
             if (Array.isArray(metas) && metas.length) {
               builder = (builder as any).remainingAccounts(metas);
-              try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: metas.length } }); } catch {}
+              try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: metas.length } }); } catch (e) { logCatchError('ix.build', e); }
             }
           }
         } catch (e: any) {
-          try { logger.debug('meteora.dlmm.remaining.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+          try { logger.debug('meteora.dlmm.remaining.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
         }
       }
       } catch (e: any) {
-      try { logger.warn('meteora.dlmm.remaining.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+      try { logger.warn('meteora.dlmm.remaining.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
       }
       
       // Add pre-computed bin array metas as remaining accounts (already limited to ~5 max)
@@ -4140,9 +4141,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const limited = binArrayMetas.slice(0, 5);
         if (limited.length) {
           builder = (builder as any).remainingAccounts(limited);
-          try { logger.debug('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch {}
+          try { logger.debug('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch (e) { logCatchError('ix.build', e); }
         }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       }
       
       ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
@@ -4180,7 +4181,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 warning: 'Bin array count exceeded safety cap - this may indicate a bug in calculation'
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         } else {
           // Within safety limits - log success
           try {
@@ -4193,29 +4194,29 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 maxBinArrays: MAX_BIN_ARRAYS
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       }
     } catch (e: any) {
       // Catch errors from ts-client fallback path
-      try { logger.warn('meteora.dlmm.tsclient.fallback.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+      try { logger.warn('meteora.dlmm.tsclient.fallback.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
       // Don't throw here - let execution continue to final error handling below
     }
     
     if (ix) {
-      try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}
+      try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch (e) { logCatchError('ix.build', e); }
       return [...setupIxs, ix];
     }
     
-    try { logger.warn('meteora.dlmm.tsclient.swap.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+    try { logger.warn('meteora.dlmm.tsclient.swap.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch (e) { logCatchError('ix.build', e); }
     
     // Wrap final error with context (only reached if no successful return)
     throw wrapBuilderError(new Error('METEORA_DLMM_BUILD_FAILED'), 'METEORA_DLMM', 'build failed', hop);
   } catch (e: any) {
     // Catch any errors thrown from the entire function body
     // This ensures all errors (including early validation/connection errors) get Meteora-specific logging
-    try { logger.warn('meteora.dlmm.tsclient.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+    try { logger.warn('meteora.dlmm.tsclient.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch (e) { logCatchError('ix.build', e); }
     throw wrapBuilderError(e, 'METEORA_DLMM', 'build failed', hop);
   }
 }
@@ -4230,7 +4231,7 @@ export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
 
 // Real Raydium builders (best-effort via SDK; fallback to placeholders on error)
 export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]> {
-  try { logger.debug('ix.build raydium.clmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.debug('ix.build raydium.clmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   try {
     // Ensure required CLMM fields; derive oracle/tick arrays on the fly if missing
     const preMissing: string[] = [];
@@ -4240,7 +4241,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (!hop.userDestAta) preMissing.push('userDestAta');
     if (preMissing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: missing ${preMissing.join(',')}`);
     // Final validation - require cache-provided arrays/oracle
-    try { logger.info('raydium.clmm.builder.arrays', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch {}
+    try { logger.info('raydium.clmm.builder.arrays', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch (e) { logCatchError('ix.build', e); }
     const missingRequired: string[] = [];
     const missingOptional: string[] = [];
     if (!hop.tickArrayLower) missingRequired.push('tickArrayLower');
@@ -4260,7 +4261,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
       // One-shot refresh: attempt to hydrate CLMM statics (oracle/tick arrays) from chain
       try {
-        try { logger.warn('raydium.clmm.refresh.attempt', { cat: 'tx', ctx: { pool: hop.poolId, missingRequired: missingRequired.join('/'), missingOptional: missingOptional.join('/') } as any }); } catch {}
+        try { logger.warn('raydium.clmm.refresh.attempt', { cat: 'tx', ctx: { pool: hop.poolId, missingRequired: missingRequired.join('/'), missingOptional: missingOptional.join('/') } as any }); } catch (e) { logCatchError('ix.build', e); }
         const poolBase = String(hop.poolId || '').replace(/[#-]rev$/, '');
         try {
           const mod = await import('../../server/tasks/refreshClmm.js');
@@ -4268,7 +4269,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             await (mod as any).refreshRaydiumClmm(poolBase);
           }
         } catch (e: any) {
-          try { logger.warn('raydium.clmm.refresh.err', { cat: 'tx', ctx: { pool: poolBase, error: String(e?.message || e) } as any }); } catch {}
+          try { logger.warn('raydium.clmm.refresh.err', { cat: 'tx', ctx: { pool: poolBase, error: String(e?.message || e) } as any }); } catch (e) { logCatchError('ix.build', e); }
         }
         try {
           const cacheMod: any = await import('../clmmCache.js');
@@ -4285,9 +4286,9 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             hop.observationId = hop.observationId || cached.observationId;
             hop.ammConfig = hop.ammConfig || cached.ammConfig;
           }
-          try { logger.info('raydium.clmm.refresh.result', { cat: 'tx', ctx: { pool: poolBase, oracle: hop.oracle || '', lower: hop.tickArrayLower || '', upper: hop.tickArrayUpper || '' } as any }); } catch {}
-        } catch {}
-      } catch {}
+          try { logger.info('raydium.clmm.refresh.result', { cat: 'tx', ctx: { pool: poolBase, oracle: hop.oracle || '', lower: hop.tickArrayLower || '', upper: hop.tickArrayUpper || '' } as any }); } catch (e) { logCatchError('ix.build', e); }
+        } catch (e) { logCatchError('ix.build', e); }
+      } catch (e) { logCatchError('ix.build', e); }
       const stillMissingRequired: string[] = [];
       if (!hop.tickArrayLower) stillMissingRequired.push('tickArrayLower');
       if (!hop.tickArrayUpper) stillMissingRequired.push('tickArrayUpper');
@@ -4296,7 +4297,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     // Log warning for missing optional fields, but don't fail
     if (missingOptional.length && !hop.oracle) {
-      try { logger.warn('raydium.clmm.oracle.missing', { cat: 'tx', ctx: { pool: hop.poolId } as any }); } catch {}
+      try { logger.warn('raydium.clmm.oracle.missing', { cat: 'tx', ctx: { pool: hop.poolId } as any }); } catch (e) { logCatchError('ix.build', e); }
     }
     try {
       logger.info('raydium.clmm.accounts', { cat: 'tx', ctx: {
@@ -4310,7 +4311,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         vaultA: hop.vaultA,
         vaultB: hop.vaultB,
       }});
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
@@ -4346,7 +4347,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     try {
       logger.info('raydium.clmm.config.verify.start', { cat: 'tx', ctx: { pool: hop.poolId, ammConfig: configIdPk.toBase58() } as any });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Verify critical accounts exist before building instruction
     // Use account cache to avoid per-transaction RPC calls
@@ -4361,10 +4362,10 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // We just verify it exists - the SDK will validate program ownership during instruction execution
       try {
         logger.debug('raydium.clmm.config.verified', { cat: 'tx', ctx: { pool: hop.poolId, config: configIdPk.toBase58(), owner: configAcc.owner.toBase58() } as any });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     } catch (e: any) {
       if (e instanceof Error && e.message.includes('RAYDIUM_CLMM_BUILD_FAILED')) throw e;
-      try { logger.warn('raydium.clmm.config.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
+      try { logger.warn('raydium.clmm.config.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch (e) { logCatchError('ix.build', e); }
     }
 
     // Try to use SDK's getClmmPoolKeys for proper structure (if API available)
@@ -4384,14 +4385,14 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         if (typeof clmm.getClmmPoolKeys === 'function') {
           poolKeysFromApi = await clmm.getClmmPoolKeys(poolId).catch(() => null);
         }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     } else {
       try {
         logger.debug('raydium.clmm.get_pool_keys.skipped', {
           cat: 'tx',
           ctx: { pool: hop.poolId },
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
 
     // CRITICAL: Get pool's actual mint orientation from cache
@@ -4415,7 +4416,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         if (poolMintA) poolDecA = await resolveDecimals(poolMintA) ?? cached.decimals_a;
         if (poolMintB) poolDecB = await resolveDecimals(poolMintB) ?? cached.decimals_b;
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // If pool mints not in cache, try to get from poolKeysFromApi
     if ((!poolMintA || !poolMintB) && poolKeysFromApi) {
@@ -4435,7 +4436,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             note: 'Using hop.inputMint/outputMint as fallback - this may cause constraint violations on reverse swaps'
           } as any
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       poolMintA = poolMintA || hop.inputMint;
       poolMintB = poolMintB || hop.outputMint;
     }
@@ -4470,7 +4471,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           outputIsB: orientation.outputIsB,
         } as any
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Use pool's ACTUAL mintA/mintB orientation (not swapped based on swap direction)
     const mintAAddress = toPublicKey(poolMintA).toBase58();
@@ -4564,7 +4565,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 tickArray: pk.toBase58(),
               } as any 
             }); 
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         } catch (e: any) {
           try { 
             logger.debug('raydium.clmm.tickarray.invalid_address', { 
@@ -4575,7 +4576,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 error: String(e?.message || e) 
               } as any 
             }); 
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
     }
@@ -4596,7 +4597,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           upper: hop.tickArrayUpper?.slice(0, 8) + '…'
         } as any
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Sort tick arrays: center first (most likely needed), then others
     const centerPk = hop.tickArrayCenter ? toPublicKey(hop.tickArrayCenter) : null;
@@ -4630,9 +4631,9 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             cat: 'tx',
             ctx: { pool: hop.poolId, address: exBitmapPk.toBase58() }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // If not cached, derive it using SDK
     if (!exBitmapPk) {
@@ -4650,7 +4651,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 note: 'Will check existence later - SDK determines if needed in instruction',
               } as any,
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       } catch (e: any) {
         try {
@@ -4661,7 +4662,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               error: String(e?.message || e),
             } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
     }
 
@@ -4687,7 +4688,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           outputMint: hop.outputMint,
         } as any,
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     const res = (ClmmInstrument as any).makeSwapBaseInInstructions({
       poolInfo,
@@ -4728,7 +4729,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           })) || [],
         } as any,
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // CRITICAL: Immediately verify all accounts in SDK-generated instructions to catch missing accounts
     // This catches issues before any processing that might mask the error
@@ -4739,7 +4740,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             cat: 'tx',
             ctx: { pool: hop.poolId, reason: 'rpc_disabled' },
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       } else {
         try {
           logger.info('raydium.clmm.sdk.verification.start', {
@@ -4749,7 +4750,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               instructionCount: ixs.length,
             } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         const connection = getBuilderConnectionOrFail(
           'RAYDIUM_CLMM',
           hop,
@@ -4852,7 +4853,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       reason: 'signer_account',
                     } as any,
                   });
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 continue;
               }
               
@@ -4878,7 +4879,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       reason: 'well_known_system_account',
                     } as any,
                   });
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 continue;
               }
               
@@ -4900,7 +4901,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         reason: 'user_token_account_may_be_created',
                       } as any,
                     });
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                   continue;
                 }
                 
@@ -4924,7 +4925,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         reason: 'writable_non_pool_account_may_be_created',
                       } as any,
                     });
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                   continue;
                 }
               }
@@ -4976,7 +4977,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         // Critical: This account is missing and will cause ProgramAccountNotFound
                       } as any,
                     });
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 } else {
                   // Verify account owner matches expected program
                   const actualOwner = acc.owner.toBase58();
@@ -5016,7 +5017,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         } as any,
                       });
                     }
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 }
               }
             } else {
@@ -5030,7 +5031,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     actualCount: accountInfos?.length || 0,
                   } as any,
                 });
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
               // Still add all accounts as missing since we couldn't verify them
               for (const { pkStr, ixIdx, accIdx, ixProgramId } of accountsToVerify) {
                 missingAccounts.push({
@@ -5052,7 +5053,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   error: String(e?.message || e),
                 } as any,
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
             // Still add all accounts as missing since we couldn't verify them
             for (const { pkStr, ixIdx, accIdx, ixProgramId } of accountsToVerify) {
               missingAccounts.push({
@@ -5094,7 +5095,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             });
             // Small delay to ensure log is written before throwing
             await new Promise(resolve => setTimeout(resolve, 10));
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           throw createBuilderError('RAYDIUM_CLMM', `SDK-generated instruction contains missing accounts: ${missingList}`, hop);
         } else {
           // Log success summary with account details
@@ -5115,7 +5116,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 verifiedAccounts: verifiedAccountsSummary,
               } as any,
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
     }
@@ -5146,7 +5147,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             note: 'exBitmap included in SDK instruction - do not remove (instruction data has encoded indices)',
           } as any,
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
     
     // Verify all critical accounts exist before proceeding
@@ -5177,7 +5178,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
         try {
           logger.debug('raydium.clmm.observation.verified', { cat: 'tx', ctx: { pool: hop.poolId, observation: observationId.toBase58() } as any });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         
         // Check exBitmap if it was included
         if (exBitmapPk && accountInfos.length >= 2) {
@@ -5203,11 +5204,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 } as any,
               });
             }
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       } catch (e: any) {
         if (e instanceof Error && e.message.includes('RAYDIUM_CLMM_BUILD_FAILED')) throw e;
-        try { logger.warn('raydium.clmm.observation.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
+        try { logger.warn('raydium.clmm.observation.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch (e) { logCatchError('ix.build', e); }
       }
       
       // Verify all accounts in each instruction to catch missing accounts early
@@ -5221,7 +5222,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             cat: 'tx',
             ctx: { pool: hop.poolId, reason: 'trusting_cached_data (CONFIG.execution.skipAccountVerification!=false)' } as any,
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
       
       const verifiedIxs: TransactionInstruction[] = [];
@@ -5245,7 +5246,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 })),
               } as any,
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           
           const missingAccounts: Array<{ address: string; index: number; isSigner: boolean; isWritable: boolean }> = [];
           const verifiedAccounts: Array<{ address: string; index: number; reason: string }> = [];
@@ -5331,7 +5332,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               // Collect for batch fetch - only verify read-only accounts that MUST exist
               // Or writable pool-related accounts (vaults, pool account, observation)
               accountsToVerify.push({ pkObj, pkStr, keyIdx, keyMeta });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
           
           // Batch fetch all accounts at once
@@ -5376,7 +5377,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                           owner: acc?.owner?.toBase58?.() || 'unknown',
                         } as any,
                       });
-                    } catch {}
+                    } catch (e) { logCatchError('ix.build', e); }
                   } else {
                     verifiedAccounts.push({ address: pkStr, index: keyIdx, reason: 'exists_on_chain' });
                     try {
@@ -5391,7 +5392,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                           dataLen: acc.data.length,
                         } as any,
                       });
-                    } catch {}
+                    } catch (e) { logCatchError('ix.build', e); }
                   }
                 }
               } else {
@@ -5417,7 +5418,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     error: String(e?.message || e),
                   } as any,
                 });
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
               for (const { pkStr, keyIdx, keyMeta } of accountsToVerify) {
                 missingAccounts.push({
                   address: pkStr,
@@ -5445,7 +5446,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 missingAccounts: missingAccounts.map(a => `${a.address} (idx=${a.index}, signer=${a.isSigner}, writable=${a.isWritable})`),
               } as any,
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           
           if (missingAccounts.length > 0) {
             try {
@@ -5459,7 +5460,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   programId: ix.programId.toBase58(),
                 } as any 
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
             throw createBuilderError('RAYDIUM_CLMM', `instruction ${ixIdx} contains missing read-only accounts: ${missingAccounts.map(a => a.address).join(', ')}`, hop);
           }
           
@@ -5494,7 +5495,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           })) || [],
         } as any,
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     if (ixs && ixs.length) return ixs as any[];
   } catch (e) {
@@ -5508,7 +5509,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 }
 
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build raydium.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.info('ix.build raydium.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   try {
     // Pre-build validation: amounts
     validateHopAmounts(hop, { dex: 'raydium', variant: 'amm', poolId: hop.poolId });
@@ -5540,10 +5541,10 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 hasProgram: !!(poolData as any).market_program_id
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
         }
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Fallback: If not in cache, try fetching from chain (backward compatibility)
     try {
@@ -5578,18 +5579,18 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 hop.serumProgramId = hop.serumProgramId || mp;
                 break;
               }
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           }
         }
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     // Optional: validate vault accounts exist (best-effort, don't block on RPC errors)
     if (hop.vaultA || hop.vaultB) {
       try {
         await validatePoolAccounts(hop.poolId, hop.vaultA, hop.vaultB, { dex: 'raydium', variant: 'amm' }).catch(() => {
           // Best-effort validation - don't fail if RPC is slow
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
     const missing: string[] = [];
     if (!hop.market) missing.push('market');
@@ -5630,7 +5631,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         if (poolMintA) poolDecA = await resolveDecimals(poolMintA) ?? cached.decimals_a;
         if (poolMintB) poolDecB = await resolveDecimals(poolMintB) ?? cached.decimals_b;
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Determine base/quote mints based on swap direction
     // If swapping mint_a -> mint_b, then base=mint_a, quote=mint_b
@@ -5670,7 +5671,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               poolMintB
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         baseMint = toPublicKey(hop.inputMint);
         quoteMint = toPublicKey(hop.outputMint);
         baseDecimals = Number(hop.inputDecimals);
@@ -5718,9 +5719,9 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             cat: 'tx',
             ctx: { pool: hop.poolId.slice(0, 8) + '...', age: Date.now() - (cached.rawAccountDataUpdatedMs || 0) }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // Fallback to RPC if not in cache
     if (!poolAccountInfo) {
@@ -5733,8 +5734,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             cat: 'tx',
             ctx: { pool: hop.poolId.slice(0, 8) + '...' }
           });
-        } catch {}
-      } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
+      } catch (e) { logCatchError('ix.build', e); }
     }
     
     if (poolAccountInfo?.data?.length) {
@@ -5747,7 +5748,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       ].filter(Boolean);
       let state: any = null;
       for (const layout of layouts) {
-        try { state = layout.decode(poolAccountInfo.data); break; } catch {}
+        try { state = layout.decode(poolAccountInfo.data); break; } catch (e) { logCatchError('ix.build', e); }
       }
       if (state) {
         // Normalize fields across versions
@@ -5761,7 +5762,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             if (v && typeof v.toBase58 === 'function') {
               try {
                 return new PublicKey(v.toBase58());
-              } catch {}
+              } catch (e) { logCatchError('ix.build', e); }
             }
             return undefined;
           }
@@ -5870,9 +5871,9 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               marketBidsValue: (poolKeys as any)?.marketBids?.toBase58?.() || 'missing'
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     const userKeys = {
       tokenAccountIn: toPublicKey(hop.userSourceAta),
@@ -5940,7 +5941,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       ensureAndSet('marketBaseVault', (poolKeys as any).marketBaseVault);
       ensureAndSet('marketQuoteVault', (poolKeys as any).marketQuoteVault);
       ensureAndSet('marketAuthority', (poolKeys as any).marketAuthority);
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     // Fallback Serum/OpenBook program id if decode failed and placeholder/system id was present
     try {
@@ -5951,7 +5952,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       if (!s || s === sysPid) {
         (poolKeys as any).marketProgramId = new PublicKey(serumV3);
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     // Final validation guard: abort build if critical keys are still invalid
     try {
@@ -5973,7 +5974,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             marketId: toStr((poolKeys as any)?.marketId),
             marketProgramId: toStr((poolKeys as any)?.marketProgramId),
           } as any });
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         throw createBuilderError('RAYDIUM_AMM', 'invalid_pool_keys', hop, {
           vaultA: toStr((poolKeys as any)?.vault?.A),
           vaultB: toStr((poolKeys as any)?.vault?.B),
@@ -5981,7 +5982,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           marketProgramId: toStr((poolKeys as any)?.marketProgramId),
         });
       }
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     
     // CRITICAL DEBUG: Log poolKeys state before SDK call to verify market accounts
     try {
@@ -6013,7 +6014,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           targetOrders: toStr((poolKeys as any)?.targetOrders),
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
 
     const BN = (await import('bn.js')).default as any;
     const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
@@ -6049,12 +6050,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           }
           return flat.filter((x: any) => x instanceof TransactionInstruction);
         }
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
       return [];
     };
 
     let out = unwrapIxs(ixInfo);
-    try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(out) ? out.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch {}
+    try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(out) ? out.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch (e) { logCatchError('ix.build', e); }
     // Report key material for observability when we have poolKeys
     try {
       const key = (v: any) => (v && typeof v.toBase58 === 'function') ? v.toBase58() : (v ? String(v) : '');
@@ -6066,7 +6067,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         marketId: key((poolKeys as any)?.marketId),
         marketProgramId: key((poolKeys as any)?.marketProgramId)
       }});
-    } catch {}
+    } catch (e) { logCatchError('ix.build', e); }
     // Fallback: coerce top-level ixInfo if unwrap produced no TIs
     if ((!out || out.length === 0) && ixInfo && typeof ixInfo === 'object' && (ixInfo as any).programId && (ixInfo as any).keys) {
       try {
@@ -6083,7 +6084,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               const vals = Object.values(keysLike as any);
               if (vals.length && (vals[0] as any) && ((vals[0] as any).pubkey || (vals[0] as any).pubKey || (vals[0] as any).address)) keyArr = vals as any[];
             }
-          } catch {}
+          } catch (e) { logCatchError('ix.build', e); }
           const keys = keyArr.map((k: any) => ({
             pubkey: normalizePkLoose(k?.pubkey ?? k?.pubKey ?? k?.address),
             isSigner: !!k?.isSigner,
@@ -6095,12 +6096,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             if (Buffer.isBuffer(raw)) data = raw as Buffer;
             else if (raw instanceof Uint8Array) data = Buffer.from(raw);
             else if (raw && typeof raw === 'object' && typeof (raw as any).length === 'number') data = Buffer.from(Array.from(raw as any));
-            else if (typeof raw === 'string') { try { data = Buffer.from(raw, 'base64'); } catch {} }
-          } catch {}
+            else if (typeof raw === 'string') { try { data = Buffer.from(raw, 'base64'); } catch (e) { logCatchError('ix.build', e); } }
+          } catch (e) { logCatchError('ix.build', e); }
           return new TransactionInstruction({ programId, keys, data });
         };
         out = [coerceTop(ixInfo)];
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
     // Coerce any foreign TI-shaped objects into our local TransactionInstruction to avoid cross-web3 issues
     try {
@@ -6129,7 +6130,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             const vals = Object.values(keysLike as any);
             if (vals.length && (vals[0] as any) && ((vals[0] as any).pubkey || (vals[0] as any).pubKey || (vals[0] as any).address)) keyArr = vals as any[];
           }
-        } catch {}
+        } catch (e) { logCatchError('ix.build', e); }
         const keys = keyArr.map((k: any) => ({
           pubkey: normalizePkLoose(k?.pubkey ?? k?.pubKey ?? k?.address),
           isSigner: !!k?.isSigner,
@@ -6141,8 +6142,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           if (Buffer.isBuffer(raw)) data = raw as Buffer;
           else if (raw instanceof Uint8Array) data = Buffer.from(raw);
           else if (raw && typeof raw === 'object' && typeof (raw as any).length === 'number') data = Buffer.from(Array.from(raw as any));
-          else if (typeof raw === 'string') { try { data = Buffer.from(raw, 'base64'); } catch {} }
-        } catch {}
+          else if (typeof raw === 'string') { try { data = Buffer.from(raw, 'base64'); } catch (e) { logCatchError('ix.build', e); } }
+        } catch (e) { logCatchError('ix.build', e); }
         return new TransactionInstruction({ programId, keys, data });
       };
       // ALWAYS coerce all instructions, even if they're already TransactionInstruction instances
@@ -6161,7 +6162,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             outLength: Array.isArray(out) ? out.length : 0
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('ix.build', e); }
     }
     
     // CRITICAL FIX: Validate that all instructions have proper PublicKey instances
@@ -6301,7 +6302,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                         isWritable: !!k?.isWritable,
                       }
                     });
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                   
                   // Skip this key entirely - return null to filter it out later
                   return null;
@@ -6323,7 +6324,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                         isWritable: getCorrectWritableFlag(keyIdx, !!k.isWritable)
                       };
                     }
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 }
                 
                 // Method 2: Try toBytes()
@@ -6339,7 +6340,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                         return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
                       }
                     }
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 }
                 
                 // Method 3: Try toBuffer()
@@ -6355,7 +6356,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                         return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
                       }
                     }
-                  } catch {}
+                  } catch (e) { logCatchError('ix.build', e); }
                 }
                 
                 // Method 4: Check for internal _bn property (BN-based PublicKey) - ENHANCED
@@ -6377,7 +6378,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                             return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
                           }
                         } catch (bnErr) {
-                          try { logger.debug('bn.toArrayLike.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
+                          try { logger.debug('bn.toArrayLike.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch (e) { logCatchError('ix.build', e); }
                         }
                       }
                       
@@ -6393,7 +6394,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                             return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
                           }
                         } catch (bnErr) {
-                          try { logger.debug('bn.toArray.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
+                          try { logger.debug('bn.toArray.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch (e) { logCatchError('ix.build', e); }
                         }
                       }
                       
@@ -6417,7 +6418,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                             return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
                           }
                         } catch (bnErr) {
-                          try { logger.debug('bn.words.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
+                          try { logger.debug('bn.words.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch (e) { logCatchError('ix.build', e); }
                         }
                       }
                       
@@ -6436,7 +6437,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                             }
                           }
                         } catch (bnErr) {
-                          try { logger.debug('bn.toString.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
+                          try { logger.debug('bn.toString.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch (e) { logCatchError('ix.build', e); }
                         }
                       }
                       
@@ -6455,10 +6456,10 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                             hasToString: typeof bn.toString,
                           }
                         });
-                      } catch {}
+                      } catch (e) { logCatchError('ix.build', e); }
                     }
                   } catch (bnExtractErr) {
-                    try { logger.debug('bn.extraction.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnExtractErr) } }); } catch {}
+                    try { logger.debug('bn.extraction.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnExtractErr) } }); } catch (e) { logCatchError('ix.build', e); }
                   }
                 }
                 
@@ -6486,7 +6487,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                       keys: rawKey && typeof rawKey === 'object' ? Object.keys(rawKey).slice(0, 10) : [],
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 
                 throw new Error(`Failed to extract PublicKey from foreign object at index ${keyIdx}`);
               } catch (keyErr) {
@@ -6506,7 +6507,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                             originalError: String((keyErr as any)?.message || keyErr)
                           }
                         });
-                      } catch {}
+                      } catch (e) { logCatchError('ix.build', e); }
                       return { 
                         pubkey: normalized, 
                         isSigner: !!k?.isSigner, 
@@ -6522,7 +6523,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                             normError: String((normErr as any)?.message || normErr)
                           }
                         });
-                      } catch {}
+                      } catch (e) { logCatchError('ix.build', e); }
                       return { 
                         pubkey: fallback, 
                         isSigner: !!k?.isSigner, 
@@ -6530,7 +6531,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                       };
                     }
                   }
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 
                 throw new Error(`Failed to normalize key at index ${keyIdx}: ${(keyErr as any)?.message}`);
               }
@@ -6552,7 +6553,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                   hasAuthority: !!authority
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
             
             // Build exactly 17 accounts in order
             for (let keyIdx = 0; keyIdx < 17; keyIdx++) {
@@ -6563,7 +6564,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                     cat: 'tx',
                     ctx: { keyIdx, pool: hop.poolId }
                   });
-                } catch {}
+                } catch (e) { logCatchError('ix.build', e); }
                 throw new Error(`Missing required key at index ${keyIdx}`);
               }
               
@@ -6585,7 +6586,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 cat: 'tx',
                 ctx: { pool: hop.poolId, ixIndex: i, keyCount: manualKeys.length }
               });
-            } catch {}
+            } catch (e) { logCatchError('ix.build', e); }
           } catch (rebuildErr) {
             throw createBuilderError('RAYDIUM_AMM', `Failed to rebuild instruction: ${(rebuildErr as any)?.message}`, hop);
           }

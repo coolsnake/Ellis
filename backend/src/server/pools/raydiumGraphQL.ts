@@ -8,6 +8,7 @@ import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
 import { Connection, PublicKey } from '@solana/web3.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { getConnection } from '../../wallet/wallet.js';
 
@@ -593,7 +594,7 @@ async function fetchRaydiumClmmPoolsByAddress(
       try {
         poolsMetrics.raydium.detailBatches += 1;
         poolsMetrics.raydium.apiBatches += 1;
-      } catch {}
+      } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
       logger.debug('raydium.clmm.graphql.detail.chunk', {
         idx: i,
         chunk: chunk.length,
@@ -799,7 +800,7 @@ async function fetchRaydiumPoolsByAddress(
         const count = poolsMetrics.raydium.detailBatches;
         const prevAvg = poolsMetrics.raydium.apiBatchSizeAvg || 0;
         poolsMetrics.raydium.apiBatchSizeAvg = count > 0 ? ((prevAvg * (count - 1)) + chunk.length) / count : chunk.length;
-      } catch {}
+      } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
       logger.debug('raydium.graphql.detail.chunk', {
         idx: i,
         chunk: chunk.length,
@@ -812,7 +813,7 @@ async function fetchRaydiumPoolsByAddress(
         error: String((err as any)?.message || err),
         cat: 'raydium',
       });
-      try { poolsMetrics.raydium.detailFailures += 1; } catch {}
+      try { poolsMetrics.raydium.detailFailures += 1; } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
     }
 
     if (opts.delayMs > 0 && i < chunks.length - 1) {
@@ -858,7 +859,7 @@ async function fetchVaultBalances(addresses: string[]): Promise<Map<string, bigi
             const buf = Buffer.from(acc.data);
             const amount = buf.readBigUInt64LE(64);
             results.set(batch[idx], amount);
-          } catch {}
+          } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
         }
       });
     } catch (e) {
@@ -951,7 +952,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
             id: id.slice(0, 8) + '…',
             cat: 'raydium'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
         continue; // Skip this pool
       }
       
@@ -999,7 +1000,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
             fee_bps = Math.round((feeNum / feeDenom) * 10000);
           }
         }
-      } catch {}
+      } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
       
       if (isClmm) {
         // Handle CLMM pool - Concentrated Liquidity Market Maker
@@ -1030,7 +1031,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
               tvl_usd = wholeB * priceB * 2;
             }
           }
-        } catch {}
+        } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
 
         // Process price through pipeline with sqrtPriceX64
         let price_a_per_b = 0;
@@ -1062,7 +1063,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
               wasSwapped = processed.wasSwapped;
             }
           }
-        } catch {}
+        } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
         
         // Swap account fields if pipeline swapped mints
         const finalAccountA = wasSwapped ? pool.tokenVault1 : pool.tokenVault0;
@@ -1142,7 +1143,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
               tvl_usd = wholeB * priceB * 2; // Assume balanced
             }
           }
-        } catch {}
+        } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
 
         // Process price through pipeline with reserves or swap volumes as fallback
         let price_a_per_b = 0;
@@ -1179,7 +1180,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
               wasSwapped = processed.wasSwapped;
             }
           }
-        } catch {}
+        } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
         
         // Swap account fields if pipeline swapped mints
         const finalAccountA = wasSwapped ? pool.quoteVault : pool.baseVault;

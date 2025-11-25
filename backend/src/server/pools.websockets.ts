@@ -16,6 +16,23 @@ import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './p
 import { poolsMetrics, wsDecodeStats, wsDeltaStats, incrementSkipReason, wsDebugCounters, wsTargetDebugCounters } from './pools.metrics.js';
 import { isValidPublicKey } from '../execution/builder/utils.js';
 
+// Import modular decoders for WebSocket pool updates
+// These decoders handle all DEX-specific account parsing and price pipeline processing
+import {
+  handleRaydiumUpdate,
+  handleOrcaUpdate,
+  handleMeteoraUpdate,
+  handlePumpswapUpdate,
+  handleMeteoraBalancedUpdate,
+  isRaydiumOwner,
+  isOrcaOwner,
+  isMeteoraOwner,
+  RAYDIUM_PROGRAMS,
+  ORCA_PROGRAM,
+  METEORA_PROGRAM,
+} from './pools/websockets/decoders/index.js';
+import type { AccountInfo as DecoderAccountInfo, DerivedAccountInfo } from './pools/websockets/decoders/types.js';
+
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const METEORA_BIN_BITMAP_SIZE = 512;
 type MeteoraBinTracker = {
@@ -36,6 +53,12 @@ export function isMeteoraBinArraySubscribed(address: string): boolean {
 let wsAllowed: boolean = false;
 let wsSetupActive: boolean = false;
 let targetedWsActive: boolean = false;
+
+// Flag to enable modular decoders - set via config or env
+// When enabled, WebSocket updates are routed through the new modular decoder system
+// which provides better separation of concerns and consistent price pipeline usage
+// Default: true (modular decoders are now the primary implementation)
+const useModularDecoders: boolean = Boolean((CONFIG.system as any)?.useModularWsDecoders ?? process.env.USE_MODULAR_WS_DECODERS ?? true);
 
 type RefreshAllSourcesHandler = (force?: boolean, subscribe?: boolean, opts?: any) => Promise<{
   raydium: PoolsPayload;
@@ -924,6 +947,54 @@ function runWebsocketRefreshLoop(): void {
             const maybeDebugAccount = (_source: 'raydium' | 'orca' | 'meteora') => {
               // No-op: debug account logs removed to respect log levels
             };
+            
+            // MODULAR DECODER ROUTING
+            // When enabled, route account updates through the new modular decoder system
+            // which provides consistent price pipeline usage and better separation of concerns
+            if (useModularDecoders) {
+              try {
+                const accountInfo: DecoderAccountInfo = {
+                  data: Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []),
+                  executable: info.executable ?? false,
+                  lamports: info.lamports ?? 0,
+                  owner: info.owner,
+                };
+                
+                // Route to appropriate decoder based on owner or mapped source
+                if (owner === ownerRayAmm || owner === ownerRayClmm) {
+                  wsCounts.raydium += 1;
+                  await handleRaydiumUpdate(accountInfo, pk58, derivedAccountToPool);
+                  return;
+                } else if (owner === ownerOrca) {
+                  wsCounts.orca += 1;
+                  await handleOrcaUpdate(accountInfo, pk58, derivedAccountToPool, pk);
+                  return;
+                } else if ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget) {
+                  wsCounts.meteora = (wsCounts.meteora || 0) + 1;
+                  await handleMeteoraUpdate(accountInfo, pk58, derivedAccountToPool, pk);
+                  return;
+                } else if (mapped === 'pumpswap') {
+                  wsCounts.pumpswap = (wsCounts.pumpswap || 0) + 1;
+                  await handlePumpswapUpdate(accountInfo, pk58, derivedAccountToPool);
+                  return;
+                } else if (mapped === 'meteora_balanced') {
+                  wsCounts.meteora_balanced = (wsCounts.meteora_balanced || 0) + 1;
+                  await handleMeteoraBalancedUpdate(accountInfo, pk58, derivedAccountToPool);
+                  return;
+                }
+                // Fall through to inline handlers for unknown sources
+              } catch (modularErr: any) {
+                logger.warn('pools.ws modular_decoder.error', {
+                  account: pk58.slice(0, 8) + '…',
+                  owner: owner.slice(0, 8) + '…',
+                  error: String(modularErr?.message || modularErr),
+                  cat: 'pools'
+                });
+                // Fall through to inline handlers as fallback
+              }
+            }
+            
+            // INLINE DECODER LOGIC (used when modular decoders are disabled or as fallback)
             if (owner === ownerRayAmm || owner === ownerRayClmm) {
               try { wsCounts.raydium += 1; } catch {}
               try { wsDecodeStats.raydium.attempts += 1; } catch {}

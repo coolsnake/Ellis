@@ -6,6 +6,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import type { DexSource, ValidationResult, ValidationStats } from './types.js';
+import { logCatchError } from '../../../utils/errorHandler.js';
 
 /**
  * Validation statistics per DEX
@@ -61,25 +62,25 @@ export function validateDecodedPool(
   // Validate mints
   if (!pool.mint_a || !pool.mint_b) {
     reasons.push('missing_mints');
-    try { wsValidationStats[dex].missingMints += 1; } catch {}
+    try { wsValidationStats[dex].missingMints += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
   } else if (pool.mint_a.length === 0 || pool.mint_b.length === 0) {
     reasons.push('empty_mints');
-    try { wsValidationStats[dex].emptyMints += 1; } catch {}
+    try { wsValidationStats[dex].emptyMints += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
   } else if (pool.mint_a === pool.mint_b) {
     reasons.push('identical_mints');
-    try { wsValidationStats[dex].missingMints += 1; } catch {}
+    try { wsValidationStats[dex].missingMints += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
   }
   
   // Validate price (for pools that should have it)
   if (pool.price_a_per_b != null) {
     if (!Number.isFinite(pool.price_a_per_b) || pool.price_a_per_b <= 0) {
       reasons.push('invalid_price');
-      try { wsValidationStats[dex].invalidPrice += 1; } catch {}
+      try { wsValidationStats[dex].invalidPrice += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }
     // Sanity check: price should be within reasonable bounds (0.00000001 to 100000000)
     if (pool.price_a_per_b && (pool.price_a_per_b < 1e-8 || pool.price_a_per_b > 1e8)) {
       reasons.push('price_out_of_bounds');
-      try { wsValidationStats[dex].invalidPrice += 1; } catch {}
+      try { wsValidationStats[dex].invalidPrice += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }
   }
   
@@ -88,7 +89,7 @@ export function validateDecodedPool(
   if (liq != null) {
     if (!Number.isFinite(liq) || liq < 0) {
       reasons.push('invalid_liquidity');
-      try { wsValidationStats[dex].invalidLiquidity += 1; } catch {}
+      try { wsValidationStats[dex].invalidLiquidity += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }
   }
   
@@ -96,7 +97,7 @@ export function validateDecodedPool(
   if (pool.fee_bps != null) {
     if (!Number.isFinite(pool.fee_bps) || pool.fee_bps < 0 || pool.fee_bps > 10000) {
       reasons.push('invalid_fee');
-      try { wsValidationStats[dex].invalidFee += 1; } catch {}
+      try { wsValidationStats[dex].invalidFee += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }
   }
   
@@ -104,7 +105,7 @@ export function validateDecodedPool(
   if (pool.tick_spacing != null) {
     if (!Number.isFinite(pool.tick_spacing) || pool.tick_spacing <= 0) {
       reasons.push('invalid_tick_spacing');
-      try { wsValidationStats[dex].invalidTick += 1; } catch {}
+      try { wsValidationStats[dex].invalidTick += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }
   }
   
@@ -113,7 +114,7 @@ export function validateDecodedPool(
   if (pool.sqrt_price_x64 != null && dex !== 'meteora') {
     if (!Number.isFinite(pool.sqrt_price_x64) || pool.sqrt_price_x64 <= 0) {
       reasons.push('invalid_sqrt_price');
-      try { wsValidationStats[dex].invalidPrice += 1; } catch {}
+      try { wsValidationStats[dex].invalidPrice += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }
   }
   
@@ -134,7 +135,7 @@ export function validateDecodedPool(
         tick_spacing: pool.tick_spacing,
         cat: 'pools'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.ws.validation', e); }
   }
   
   return { valid, reasons };
@@ -154,6 +155,6 @@ export function debugLogTargeted(
       ...extra,
       cat: 'pools'
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.ws.validation', e); }
 }
 

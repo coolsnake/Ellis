@@ -1,5 +1,6 @@
 import { CONFIG } from '../../utils/config.js';
 import { logger } from '../../utils/logger.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 /**
  * Quote hierarchy: determines which token should be on the B (quote) side
@@ -237,7 +238,7 @@ export function canonicalizePools<T extends { mint_a: string; mint_b: string }>(
             new_decimals_b: (swapped as any).decimals_b,
             cat: 'canonical'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.canonical', e); }
       }
     }
     

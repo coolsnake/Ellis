@@ -3,6 +3,7 @@ import { loadJupiterTokenMap } from '../../utils/tokens.js';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getMint } from '@solana/spl-token';
 import { CONFIG } from '../../utils/config.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 // Anchor decimals: highest-priority source of truth for well-known tokens
 const ANCHOR_DECIMALS = new Map<string, number>([
@@ -99,7 +100,7 @@ export async function resolveDecimals(mint: string): Promise<number | undefined>
         error: String(e?.message || e),
         cat: 'decimals'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.decimals', e); }
   }
   
   return undefined;
@@ -163,7 +164,7 @@ export async function resolveManyDecimals(
         mode: 'validation',
         cat: 'decimals'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.decimals', e); }
     
     const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
     const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
@@ -234,7 +235,7 @@ export async function resolveManyDecimals(
             error: String(e?.message || e),
             cat: 'decimals'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.decimals', e); }
       }
     }
     
@@ -246,7 +247,7 @@ export async function resolveManyDecimals(
         needsJupiterFallback: needsJupiter.size,
         cat: 'decimals'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.decimals', e); }
   } else {
     // PERFORMANCE MODE: Check Jupiter before RPC
     const jupMap = await getJupiterMap();
@@ -289,7 +290,7 @@ export async function resolveManyDecimals(
           needsRpc: stillMissing.length,
           cat: 'decimals'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.decimals', e); }
       
       // Same RPC logic as above but for remaining mints
       const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
@@ -333,7 +334,7 @@ export async function resolveManyDecimals(
                   }
                 }
               }
-            } catch {}
+            } catch (e) { logCatchError('pools.decimals', e); }
           }
         } catch (e: any) {
           try {
@@ -342,7 +343,7 @@ export async function resolveManyDecimals(
               error: String(e?.message || e),
               cat: 'decimals'
             });
-          } catch {}
+          } catch (e) { logCatchError('pools.decimals', e); }
         }
       }
     }
@@ -364,7 +365,7 @@ export async function resolveManyDecimals(
       },
       cat: 'decimals'
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.decimals', e); }
   
   return result;
 }

@@ -2,6 +2,7 @@ import type { DirectHop } from '../../execution/types.js';
 import { executionCache } from '../cache.js';
 import { peekOrcaPools } from '../../server/pools.js';
 import { logger } from '../../utils/logger.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
@@ -25,7 +26,7 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
           upper: hop.tickArrayUpper?.slice(0, 8) + '…' || 'none'
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.orca', e); }
   }
   
   try {
@@ -68,7 +69,7 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
         });
       }
     }
-  } catch {}
+  } catch (e) { logCatchError('resolver.orca', e); }
   return hop;
 }
 

@@ -11,6 +11,9 @@ import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpL
 import { PublicKey } from '@solana/web3.js';
 import { getConnection } from '../../wallet/wallet.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
+import type { PumpswapPoolApiResponse, PumpswapGraphQLResponse } from './api-types.js';
+import { isValidPumpswapPool } from './api-types.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -18,11 +21,11 @@ const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 // Pumpswap AMM program ID
 export const PUMPSWAP_PROGRAM_ID = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 
-export async function fetchPumpswapGraphQL(): Promise<any> {
+export async function fetchPumpswapGraphQL(): Promise<PumpswapPoolApiResponse[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'pumpswap-raw-sample.json');
   const apiKey = (CONFIG as any)?.pumpswap?.shyftApiKey || '';
   if (!apiKey) {
-    try { logger.warn('pumpswap.graphql apiKey missing', { cat: 'pumpswap' }); } catch {}
+    try { logger.warn('pumpswap.graphql apiKey missing', { cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
     return [];
   }
 
@@ -78,9 +81,9 @@ export async function fetchPumpswapGraphQL(): Promise<any> {
   
   const allPools = Array.from(pools.values());
   try { await writeJson(CACHE_PATH, allPools); } catch (e: any) {
-    try { logger.warn('pumpswap.cache write failed', { file: CACHE_PATH, error: String(e?.message || e), cat: 'pumpswap' }); } catch {}
+    try { logger.warn('pumpswap.cache write failed', { file: CACHE_PATH, error: String(e?.message || e), cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
   }
-  try { logger.info('pumpswap.graphql raw', { count: allPools.length, mints: mints.length, cat: 'pumpswap' }); } catch {}
+  try { logger.info('pumpswap.graphql raw', { count: allPools.length, mints: mints.length, cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
   return allPools;
 }
 
@@ -142,8 +145,8 @@ async function fetchPoolsForToken(
         });
         
         if (res?.status === 429) {
-          try { emit('log', { level: 'warn', message: 'arb:429 source=pumpswap kind=graphql', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-          try { logger.warn('pumpswap.graphql 429', { mint: mintAddress, page, cat: 'pumpswap' }); } catch {}
+          try { emit('log', { level: 'warn', message: 'arb:429 source=pumpswap kind=graphql', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch (e) { logCatchError('pools.pumpswap', e); }
+          try { logger.warn('pumpswap.graphql 429', { mint: mintAddress, page, cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
           httpLog429({ source: 'pumpswap', url: `${url}?${params}`, cid });
           if (attempt < retries) {
             await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
@@ -159,7 +162,7 @@ async function fetchPoolsForToken(
         
         const json = await res.json();
         if (json?.errors) {
-          try { logger.warn('pumpswap.graphql errors', { errors: JSON.stringify(json.errors), cat: 'pumpswap' }); } catch {}
+          try { logger.warn('pumpswap.graphql errors', { errors: JSON.stringify(json.errors), cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
           throw new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
         }
         
@@ -176,7 +179,7 @@ async function fetchPoolsForToken(
           await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
           continue;
         }
-        try { logger.warn('pumpswap.graphql fetch failed', { mint: mintAddress, page, error: msg, cat: 'pumpswap' }); } catch {}
+        try { logger.warn('pumpswap.graphql fetch failed', { mint: mintAddress, page, error: msg, cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
         break; // Exit retry loop on final failure
       }
     }
@@ -187,7 +190,7 @@ async function fetchPoolsForToken(
     }
     
     allPools.push(...pagePools);
-    try { logger.debug('pumpswap.graphql page', { mint: mintAddress, page, count: pagePools.length, total: allPools.length, cat: 'pumpswap' }); } catch {}
+    try { logger.debug('pumpswap.graphql page', { mint: mintAddress, page, count: pagePools.length, total: allPools.length, cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
     
     // If we got fewer results than pageSize, we've reached the end
     if (pagePools.length < pageSize) {
@@ -299,7 +302,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
   const enabled = ((CONFIG as any)?.pumpswap?.enableRpcEnrichment !== false);
   
   if (!enabled) {
-    try { logger.debug('pumpswap.rpc.enrichment.disabled', { cat: 'pumpswap' }); } catch {}
+    try { logger.debug('pumpswap.rpc.enrichment.disabled', { cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
     return { pools, metrics: { success: 0, fail: 0, ms: 0, feesExtracted: 0, protocolRecipientsExtracted: 0 } };
   }
   
@@ -311,7 +314,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
   let protocolRecipientsExtracted = 0;
   const t0 = Date.now();
   
-  try { logger.info('pumpswap.rpc.enrichment.start', { poolCount: pools.length, batchSize, cat: 'pumpswap' }); } catch {}
+  try { logger.info('pumpswap.rpc.enrichment.start', { poolCount: pools.length, batchSize, cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
   
   for (let i = 0; i < pools.length; i += batchSize) {
     const batch = pools.slice(i, i + batchSize);
@@ -331,7 +334,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
             const pk = new PublicKey(pool.pubkey);
             allAddresses.push(pk);
             addressMapping.set(pool.pubkey, { poolIndex: poolIdx, type: 'pool' });
-          } catch {}
+          } catch (e) { logCatchError('pools.pumpswap', e); }
         }
         
         // Add vault accounts
@@ -340,7 +343,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
             const pk = new PublicKey(pool.pool_base_token_account);
             allAddresses.push(pk);
             addressMapping.set(pool.pool_base_token_account, { poolIndex: poolIdx, type: 'base_vault' });
-          } catch {}
+          } catch (e) { logCatchError('pools.pumpswap', e); }
         }
         
         if (pool.pool_quote_token_account) {
@@ -348,7 +351,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
             const pk = new PublicKey(pool.pool_quote_token_account);
             allAddresses.push(pk);
             addressMapping.set(pool.pool_quote_token_account, { poolIndex: poolIdx, type: 'quote_vault' });
-          } catch {}
+          } catch (e) { logCatchError('pools.pumpswap', e); }
         }
       }
       
@@ -416,7 +419,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
                       isSystemProgram: coinCreatorBase58 === '11111111111111111111111111111111',
                       cat: 'pumpswap'
                     });
-                  } catch {}
+                  } catch (e) { logCatchError('pools.pumpswap', e); }
                 }
               }
             }
@@ -447,7 +450,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
                       protocolRecipient: protocolRecipientBase58.slice(0, 12),
                       cat: 'pumpswap'
                     });
-                  } catch {}
+                  } catch (e) { logCatchError('pools.pumpswap', e); }
                 }
               } else if (protocolRecipientBase58 === SYSTEM_PROGRAM_ID) {
                 // Log when System Program is found (means field is empty/not configured)
@@ -457,7 +460,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
                     note: 'protocol_fee_recipient_not_configured_will_use_fallback',
                     cat: 'pumpswap'
                   });
-                } catch {}
+                } catch (e) { logCatchError('pools.pumpswap', e); }
               }
             }
           } catch (e: any) {
@@ -467,7 +470,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
                 error: String(e?.message || e),
                 cat: 'pumpswap'
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.pumpswap', e); }
           }
         } else {
           // Extract balance from vault account
@@ -512,14 +515,14 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         feesExtracted,
         protocolRecipientsExtracted,
         cat: 'pumpswap' 
-      }); } catch {}
+      }); } catch (e) { logCatchError('pools.pumpswap', e); }
       
     } catch (e: any) {
       try { logger.warn('pumpswap.rpc.enrichment.batch.failed', { 
         batch: Math.floor(i / batchSize) + 1, 
         error: String(e?.message || e), 
         cat: 'pumpswap' 
-      }); } catch {}
+      }); } catch (e) { logCatchError('pools.pumpswap', e); }
       // On error, add pools without enrichment
       enriched.push(...batch);
       failCount += batch.length;
@@ -536,15 +539,16 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
     protocolRecipientsExtracted,
     ms,
     cat: 'pumpswap' 
-  }); } catch {}
+  }); } catch (e) { logCatchError('pools.pumpswap', e); }
   
   return { pools: enriched, metrics: { success: successCount, fail: failCount, ms, feesExtracted, protocolRecipientsExtracted } };
 }
 
-export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
+export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | unknown): Promise<PoolsPayload> {
   const now = Date.now();
   const amm: AmmPool[] = [];
-  const pools = Array.isArray(raw) ? raw : [];
+  const rawArr: unknown[] = Array.isArray(raw) ? raw : [];
+  const pools = rawArr.filter(isValidPumpswapPool);
   
   // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
   const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
@@ -580,7 +584,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
             quoteVault: pool.pool_quote_token_account?.slice(0, 8) + '…',
             cat: 'pumpswap'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.pumpswap', e); }
         continue; // Skip this pool
       }
       
@@ -600,7 +604,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
             reason: 'fee_not_extracted_from_rpc',
             cat: 'pumpswap'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.pumpswap', e); }
       }
       
       // Get decimals from centralized resolver with fallback to 6
@@ -649,7 +653,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
                 lpSupply: '0',
                 cat: 'pumpswap' 
               }); 
-            } catch {}
+            } catch (e) { logCatchError('pools.pumpswap', e); }
             continue;  // Skip this pool
           }
           
@@ -666,7 +670,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
                 lpSupply: lpSupply.toString(),
                 cat: 'pumpswap' 
               }); 
-            } catch {}
+            } catch (e) { logCatchError('pools.pumpswap', e); }
             continue;  // Skip suspicious pools
           }
           
@@ -724,7 +728,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
                   error: String(err),
                   cat: 'pumpswap'
                 });
-              } catch {}
+              } catch (e) { logCatchError('pools.pumpswap', e); }
             }
           }
           
@@ -737,7 +741,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
               const denominator = quoteReserveRaw * BigInt(Math.pow(10, decA));
               const priceExactBigInt = numerator / denominator;
               price_a_per_b_exact = priceExactBigInt.toString();
-            } catch {}
+            } catch (e) { logCatchError('pools.pumpswap', e); }
           }
           
           // Try to get USD prices from the price store
@@ -747,7 +751,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
             const priceB = getPriceByMint(mint_b);
             if (priceA?.usdc) baseUsdPrice = priceA.usdc;
             if (priceB?.usdc) quoteUsdPrice = priceB.usdc;
-          } catch {}
+          } catch (e) { logCatchError('pools.pumpswap', e); }
           
           // Calculate USD liquidity if we have prices
           if (baseUsdPrice > 0 && quoteUsdPrice > 0) {
@@ -779,7 +783,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
             pool: id, 
             error: String(e?.message || e), 
             cat: 'pumpswap' 
-          }); } catch {}
+          }); } catch (e) { logCatchError('pools.pumpswap', e); }
         }
       }
       
@@ -790,7 +794,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           liquidity: liquidity_base, 
           minLiqBase, 
           cat: 'pumpswap' 
-        }); } catch {}
+        }); } catch (e) { logCatchError('pools.pumpswap', e); }
         continue;
       }
       
@@ -844,7 +848,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         protocol_fee_recipient: pool.protocol_fee_recipient || undefined, // On-chain protocol fee recipient (offset 243)
       } as any);
     } catch (e: any) {
-      try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}
+      try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
     }
   }
   
@@ -863,9 +867,9 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           errors: ammVerification.errors.length,
           cat: 'pumpswap'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.pumpswap', e); }
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.pumpswap', e); }
   
   try {
     const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'quoteHierarchy');
@@ -896,7 +900,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       cat: 'pumpswap', 
       canon 
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.pumpswap', e); }
   
   return { amm: ammCanon, clmm: [] };
 }

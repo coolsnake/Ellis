@@ -3,6 +3,7 @@ import { PublicKey } from '@solana/web3.js';
 import { getConnection } from '../../wallet/wallet.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 import { createBuilderError } from './errors.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 
@@ -41,7 +42,7 @@ export function validateHopAmounts(hop: DirectHop, context?: Record<string, unkn
         code: LogCode.TX_BUILD_ERR,
         ctx: { amountIn: amountIn.toString(), minOut: minOut.toString(), slippageBps: slippage, ...context }
       });
-    } catch {}
+    } catch (e) { logCatchError('builder.validation', e); }
   }
 
   // Overflow protection: check amounts don't exceed safe JS number range
@@ -163,7 +164,7 @@ export async function validatePoolAccounts(
         code: LogCode.TX_BUILD_ERR,
         ctx: { poolId, error: String((e as any)?.message || e), ...context }
       });
-    } catch {}
+    } catch (e) { logCatchError('builder.validation', e); }
     // Don't throw on RPC errors - validation is best-effort
   }
 }

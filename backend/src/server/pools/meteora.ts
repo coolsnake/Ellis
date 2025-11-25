@@ -11,6 +11,9 @@ import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpL
 import { getTokenMeta } from '../../execution/resolver/tokenMeta.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { getPriceByMint } from '../../server/priceStore.js';
+import type { MeteoraPoolApiResponse, MeteoraApiListResponse } from './api-types.js';
+import { isValidMeteoraPool } from './api-types.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 const METEORA_DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const ATOMIC_INT_REGEX = /^[-+]?\d+$/;
@@ -75,7 +78,7 @@ export async function fetchMeteoraHttp(): Promise<any> {
             const url = build(base, page, size);
             const cid = httpLogStart({ source: 'meteora', url, extra: { page, limit: size } });
             const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
-            if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; httpLog429({ source: 'meteora', url, cid }); throw new Error('http 429'); }
+            if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch (e) { logCatchError('pools.meteora', e); }; httpLog429({ source: 'meteora', url, cid }); throw new Error('http 429'); }
             if (!res?.ok) throw new Error(`http ${res?.status}`);
             const json: any = await res.json().catch(() => null);
             const arr: any[] = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
@@ -95,8 +98,8 @@ export async function fetchMeteoraHttp(): Promise<any> {
         if (!ok) break;
       }
       if (out.length > 0) {
-        try { await writeJson(METEORA_RAW_PATH, out); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
-        try { logger.info('meteora.http raw', { count: out.length, cat: 'meteora' }); } catch {}
+        try { await writeJson(METEORA_RAW_PATH, out); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch (e) { logCatchError('pools.meteora', e); } }
+        try { logger.info('meteora.http raw', { count: out.length, cat: 'meteora' }); } catch (e) { logCatchError('pools.meteora', e); }
         return out;
       }
       // else try next candidate
@@ -107,34 +110,41 @@ export async function fetchMeteoraHttp(): Promise<any> {
     if (!res?.ok) throw new Error(`http ${res?.status}`);
     const json: any = await res.json().catch(() => null);
     const single = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
-    try { httpLogResponse({ source: 'meteora', url, cid: `http-${Date.now()}`, status: res.status, ms: 0, count: single.length }); } catch {}
-    try { await writeJson(METEORA_RAW_PATH, single); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
+    try { httpLogResponse({ source: 'meteora', url, cid: `http-${Date.now()}`, status: res.status, ms: 0, count: single.length }); } catch (e) { logCatchError('pools.meteora', e); }
+    try { await writeJson(METEORA_RAW_PATH, single); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch (e) { logCatchError('pools.meteora', e); } }
     return single;
   } catch {
     return [];
   }
 }
 
-export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
+export async function normalizeMeteoraHttp(raw: MeteoraApiListResponse | MeteoraPoolApiResponse[] | unknown): Promise<PoolsPayload> {
   const now = Date.now();
   const clmm: ClmmPool[] = [];
   try {
-    const { getTokenMeta } = await import('../../execution/resolver/tokenMeta.js');
-  } catch {}
+    await import('../../execution/resolver/tokenMeta.js');
+  } catch (e) { logCatchError('pools.meteora', e); }
   
-  const arrCandidates: any[] = [];
-  if (Array.isArray(raw?.pairs)) arrCandidates.push(raw.pairs);
-  if (Array.isArray(raw)) arrCandidates.push(raw);
-  if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
-  const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw?.pairs) ? raw.pairs : (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : [])));
+  // Extract array from various response formats
+  const rawArr: unknown[] = (() => {
+    if (Array.isArray(raw)) return raw;
+    const r = raw as { pairs?: unknown[]; data?: unknown[] };
+    if (Array.isArray(r?.pairs)) return r.pairs;
+    if (Array.isArray(r?.data)) return r.data;
+    return [];
+  })();
+  
+  // Filter to only valid Meteora pools
+  const arr = rawArr.filter(isValidMeteoraPool);
   
   // Extract all unique mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const it of arr) {
-    const tokenA = it?.tokenA || it?.tokenX || {};
-    const tokenB = it?.tokenB || it?.tokenY || {};
-    const mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
-    const mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
+    const pool = it as MeteoraPoolApiResponse;
+    const tokenA = pool.tokenA || pool.tokenX || {};
+    const tokenB = pool.tokenB || pool.tokenY || {};
+    const mint_a = String(pool.mint_x || tokenA?.mint || pool.tokenXMint || '');
+    const mint_b = String(pool.mint_y || tokenB?.mint || pool.tokenYMint || '');
     if (mint_a) allMints.add(mint_a);
     if (mint_b) allMints.add(mint_b);
   }
@@ -148,18 +158,19 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   
   const bitmapExtensionMap = await resolveMeteoraBitmapExtensions(
     arr
-      .map(it => String(it?.address || it?.id || it?.poolAddress || ''))
+      .map(it => String((it as MeteoraPoolApiResponse).address || (it as MeteoraPoolApiResponse).id || (it as MeteoraPoolApiResponse).poolAddress || ''))
       .filter(id => typeof id === 'string' && id.length > 0)
   );
   
   for (const it of arr) {
-    const id = String(it?.address || it?.id || it?.poolAddress || '');
-    const tokenA = it?.tokenA || it?.tokenX || {};
-    const tokenB = it?.tokenB || it?.tokenY || {};
+    const pool = it as MeteoraPoolApiResponse;
+    const id = String(pool.address || pool.id || pool.poolAddress || '');
+    const tokenA = pool.tokenA || pool.tokenX || {};
+    const tokenB = pool.tokenB || pool.tokenY || {};
     
     // Extract vault addresses early for validation
-    const reserveX = String((it as any)?.reserve_x || (it as any)?.reserveX || '');
-    const reserveY = String((it as any)?.reserve_y || (it as any)?.reserveY || '');
+    const reserveX = String(pool.reserve_x || pool.reserveX || '');
+    const reserveY = String(pool.reserve_y || pool.reserveY || '');
     
     // VALIDATION: Ensure pool ID is not a vault address
     if (id === reserveX || id === reserveY) {
@@ -170,17 +181,17 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           reserveY: reserveY.slice(0, 8) + '…',
           cat: 'meteora'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.meteora', e); }
       continue; // Skip this pool
     }
     
-    let mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
-    let mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
+    let mint_a = String(pool.mint_x || tokenA?.mint || pool.tokenXMint || '');
+    let mint_b = String(pool.mint_y || tokenB?.mint || pool.tokenYMint || '');
     if (!id || !mint_a || !mint_b) continue;
     
     // Get decimals from centralized resolver with API fallback
-    const apiDecA = Number((tokenA?.decimals ?? it?.decimalsA));
-    const apiDecB = Number((tokenB?.decimals ?? it?.decimalsB));
+    const apiDecA = Number((tokenA?.decimals ?? pool.decimalsA));
+    const apiDecB = Number((tokenB?.decimals ?? pool.decimalsB));
     
     let decA = decimalsMap.get(mint_a) ?? apiDecA;
     let decB = decimalsMap.get(mint_b) ?? apiDecB;
@@ -192,12 +203,12 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
     decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
     
-    const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
-    const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
+    const amtAraw = (pool.reserve_x_amount ?? pool.tokenBalanceA ?? pool.tokenAAmount ?? pool.amountA ?? pool.baseAmount ?? 0);
+    const amtBraw = (pool.reserve_y_amount ?? pool.tokenBalanceB ?? pool.tokenBAmount ?? pool.amountB ?? pool.quoteAmount ?? 0);
     const amount_a_atomic = looksLikeAtomicAmount(amtAraw) ? BigInt(String(amtAraw)) : undefined;
     const amount_b_atomic = looksLikeAtomicAmount(amtBraw) ? BigInt(String(amtBraw)) : undefined;
 
-    const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd ?? (it as any)?.liquidity;
+    const tvlUsdcRaw = pool.tvlUsdc ?? pool.tvlUsd ?? pool.liquidity;
     const tvl_usd = Number.isFinite(Number(tvlUsdcRaw)) && Number(tvlUsdcRaw) > 0 ? Number(tvlUsdcRaw) : undefined;
 
     const processedPrice = processPriceThroughPipeline({
@@ -208,10 +219,10 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       poolId: id,
       dex: 'Meteora',
       poolType: 'clmm',
-      activeId: Number((it as any)?.active_id ?? (it as any)?.activeId),
-      binStep: Number((it as any)?.bin_step ?? (it as any)?.binStep),
-      tokenXMint: String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || ''),
-      tokenYMint: String((it as any)?.mint_y || (it as any)?.tokenYMint || tokenB?.mint || ''),
+      activeId: Number(pool.active_id ?? pool.activeId),
+      binStep: Number(pool.bin_step ?? pool.binStep),
+      tokenXMint: String(pool.mint_x || pool.tokenXMint || tokenA?.mint || ''),
+      tokenYMint: String(pool.mint_y || pool.tokenYMint || tokenB?.mint || ''),
     });
 
     if (!processedPrice) {
@@ -240,7 +251,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let account_b: string | undefined;
     try {
       // reserveX and reserveY are already extracted earlier for validation
-      const tokenXMint = String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || '');
+      const tokenXMint = String(pool.mint_x || pool.tokenXMint || tokenA?.mint || '');
       
       if (reserveX && reserveY) {
         if (tokenXMint === mint_a) {
@@ -251,7 +262,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           account_b = reserveX;
         }
       }
-    } catch {}
+    } catch (e) { logCatchError('pools.meteora', e); }
 
     const nativeAccountA = account_a;
     const nativeAccountB = account_b;
@@ -267,10 +278,10 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       dex: 'Meteora',
       mint_a: finalMintA,
       mint_b: finalMintB,
-      fee_bps: Math.round(Number(it.feeRate || 0) * 100),
+      fee_bps: Math.round(Number(pool.feeRate || 0) * 100),
       sqrt_price_x64: 0, // Let graph builder derive if needed
       liquidity: 0,
-      tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0),
+      tick_spacing: Number(pool.bin_step || pool.binStep || 0),
       updated_ms: now,
       price_a_per_b: priceForward,
       amount_a: finalAmountAtomicA?.toString(),
@@ -304,7 +315,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   try {
     const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'lex');
     logger.info('meteora.http normalized', { clmm: clmm.length, cat: 'meteora', canon });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteora', e); }
   
   // OPTIMIZATION: Pre-cache active bin IDs to eliminate RPC calls during transaction building
   await populateMeteoraActiveIds(clmm);
@@ -324,7 +335,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
       sample: unique.slice(0, 3).map(id => id.slice(0, 8) + '…'),
       cat: 'meteora'
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteora', e); }
 
   const fallback = METEORA_DLMM_PROGRAM_ID;
   try {
@@ -351,7 +362,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
             error: String((err as any)?.message || err),
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteora', e); }
       }
     }
 
@@ -366,7 +377,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
         })),
         cat: 'meteora'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteora', e); }
 
     const BATCH_SIZE = 100;
     let totalChecked = 0;
@@ -386,7 +397,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
           samplePda: pubkeys[0]?.toBase58().slice(0, 8) + '…',
           cat: 'meteora'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.meteora', e); }
       
       try {
         const weight = Math.max(1, Math.ceil(batch.length / 100));
@@ -406,7 +417,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
             nonNull: nonNullCount,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteora', e); }
 
         for (let j = 0; j < batch.length; j++) {
           const entry = batch[j];
@@ -450,7 +461,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
                 error: String((ownerErr as any)?.message || ownerErr),
                 cat: 'meteora'
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.meteora', e); }
           }
           
           if (ownerMatches) {
@@ -461,7 +472,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
                 pda: entry.pda.toBase58(),
                 cat: 'meteora'
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.meteora', e); }
           } else {
             totalOwnerMismatch++;
             result.set(entry.id, fallback);
@@ -474,7 +485,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
                 expectedOwner: programId.toBase58(),
                 cat: 'meteora'
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.meteora', e); }
           }
         }
       } catch (batchErr) {
@@ -487,7 +498,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
             batchSize: batch.length,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteora', e); }
       }
     }
 
@@ -502,14 +513,14 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
         fallback: Array.from(result.values()).filter(v => v === fallback).length,
         cat: 'meteora'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteora', e); }
   } catch (err) {
     try {
       logger.warn('meteora.bitmap_ext.batch_unavailable', {
         error: String((err as any)?.message || err),
         cat: 'meteora'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteora', e); }
     for (const id of unique) {
       if (!result.has(id)) result.set(id, fallback);
     }
@@ -579,7 +590,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                       activeId,
                       cat: 'meteora'
                     });
-                  } catch {}
+                  } catch (e) { logCatchError('pools.meteora', e); }
                   failed++;
                   continue;
                 }
@@ -612,7 +623,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                       cachedRange: binArrayAddresses?.range ? `${binArrayAddresses.range.lower}..${binArrayAddresses.range.upper}` : 'legacy'
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('pools.meteora', e); }
               } else {
                 failed++;
               }
@@ -626,7 +637,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                     error: String((decodeErr as any)?.message || decodeErr)
                   }
                 });
-              } catch {}
+              } catch (e) { logCatchError('pools.meteora', e); }
             }
           } else {
             failed++;
@@ -643,7 +654,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
               error: String((batchErr as any)?.message || batchErr)
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteora', e); }
       }
     }
     
@@ -660,14 +671,14 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
           method: 'anchor_decode'
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteora', e); }
   } catch (err) {
     try {
       logger.warn('meteora.activeId.populate_failed', {
         cat: 'meteora',
         ctx: { error: String((err as any)?.message || err) }
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteora', e); }
   }
 }
 
@@ -703,7 +714,7 @@ async function deriveBinArrays(
             msg: 'BN not available in DLMM SDK, will use SDK fallback during transaction build'
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.meteora', e); }
       return undefined;
     }
     
@@ -773,7 +784,7 @@ async function deriveBinArrays(
             cat: 'meteora', 
             ctx: { index: i, error: String(e?.message || e) } 
           }); 
-        } catch {}
+        } catch (e) { logCatchError('pools.meteora', e); }
       }
     }
     
@@ -796,7 +807,7 @@ async function deriveBinArrays(
         cat: 'meteora',
         ctx: { pool: poolStr, activeId, error: String((err as any)?.message || err) }
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteora', e); }
     return undefined;
   }
 }

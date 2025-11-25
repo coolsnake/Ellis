@@ -1,6 +1,7 @@
 import { CONFIG } from '../../utils/config.js';
 import { logger } from '../../utils/logger.js';
 import { getSolMintSet, getStableMintSet } from './canonical.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 export function toFeeBpsSafe(value: any, defaultBps = 30): number {
   const n = Number(value);
@@ -118,7 +119,7 @@ export function canonicalizePairs<T extends { mint_a: string; mint_b: string; pr
     if (qList.length) {
       quoteRank = new Map(qList.map((m, i) => [String(m), i]));
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.common', e); }
   if (mode === 'lex') return canonicalizePairsLex(pools);
   const out: T[] = [];
   for (const p of pools) {
@@ -188,7 +189,7 @@ export function validateHttpUrl(input: string): string | null {
     }
     return url.toString();
   } catch {
-    try { logger.warn('ssrf.validate failed', { url: input }); } catch {}
+    try { logger.warn('ssrf.validate failed', { url: input }); } catch (e) { logCatchError('pools.common', e); }
     return null;
   }
 }

@@ -3,6 +3,7 @@ import { PublicKey } from '@solana/web3.js';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<bigint> {
   try {
@@ -29,7 +30,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             outputDecimals: hop.outputDecimals,
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       
       const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
       const { Percentage } = await import('@orca-so/common-sdk');
@@ -42,7 +43,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             wallet: kp.publicKey.toBase58(),
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       
       const programId = new PublicKey(hop.programId || (CONFIG.orca?.programId as any));
       const ctx = (WhirlpoolContext as any).from(getConnection() as any, { publicKey: kp.publicKey } as any, programId);
@@ -55,7 +56,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             wallet: kp.publicKey.toBase58(),
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       
       const client = (buildWhirlpoolClient as any)(ctx);
       // Strip -rev suffix before creating PublicKey (similar to Raydium/Meteora)
@@ -75,7 +76,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             sqrtPrice: poolData?.sqrtPrice?.toString() || 'unknown',
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       
       const slippageTolerance = (Percentage as any).fromFraction(1, 10_000);
       const inputMintPk = new PublicKey(hop.inputMint);
@@ -96,7 +97,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             slippageTolerance: String(slippageTolerance),
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       
       // Wrap quote call to handle adaptiveFeeInfo errors
       // The SDK checks if adaptiveFeeInfo matches the pool's fee tier configuration
@@ -127,7 +128,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                 hint: 'Pool may have adaptive fee tier mismatch - falling back to local quote'
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('resolver.quotes', e); }
           
           // Try to get pool data and ensure adaptiveFeeInfo is set correctly
           try {
@@ -151,7 +152,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                     suggestion: 'Falling back to local quote or SDK may need pool data refresh'
                   }
                 });
-              } catch {}
+              } catch (e) { logCatchError('resolver.quotes', e); }
               
               // Return 0 to trigger fallback to local quote (which doesn't use SDK)
               return 0n;
@@ -166,7 +167,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                   error: String((fixErr as any)?.message || fixErr)
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('resolver.quotes', e); }
             return 0n;
           }
         } else {
@@ -197,7 +198,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             quoteType: quote?.constructor?.name || typeof quote,
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       
       const out = BigInt((quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0);
       
@@ -247,7 +248,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                 upper: tickArrays.upper?.[0]?.slice(0, 8) + '…' || 'none',
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('resolver.quotes', e); }
         }
       } catch (err) {
         // Log but don't fail if caching fails - builder will fallback to RPC if needed
@@ -259,7 +260,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
               error: String((err as any)?.message || err)
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.quotes', e); }
       }
       
       try {
@@ -273,7 +274,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             usedEstimatedAmountOut: quote?.estimatedAmountOut !== undefined,
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       
       if (out > 0n) return out;
     } else if (hop.dex === 'raydium') {
@@ -312,7 +313,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
               poolFields: poolFields, // Log ALL pool fields
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.quotes', e); }
         
         const clmmOut = quoteRaydiumClmmFromSnapshot(hop, amountInRaw, ray);
         
@@ -327,7 +328,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
               success: clmmOut > 0n,
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.quotes', e); }
         
         if (clmmOut > 0n) return clmmOut;
       }
@@ -507,7 +508,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
               poolFields: poolFields, // Log ALL pool fields
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.quotes', e); }
         
         if (p) {
           const poolMintA = String((p as any)?.mint_a || '');
@@ -533,7 +534,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                   isRevFromSuffix: /[#-]rev$/.test(hop.poolId || ''),
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('resolver.quotes', e); }
             return 0n; // Return 0 if mints don't match
           }
           
@@ -578,7 +579,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                       actualIsRev,
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('resolver.quotes', e); }
               }
             }
           }
@@ -606,7 +607,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                 }
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('resolver.quotes', e); }
           
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
             if (px > 0) {
@@ -634,7 +635,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                       isRevFromSuffix: /[#-]rev$/.test(hop.poolId || ''),
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('resolver.quotes', e); }
                 
                 if (outRaw > 0n) return outRaw;
               } else {
@@ -650,7 +651,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                       isFinite: Number.isFinite(amtIn),
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('resolver.quotes', e); }
               }
             } else {
               try {
@@ -663,7 +664,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                     poolHasPrice: (p as any)?.price_a_per_b !== undefined,
                   }
                 });
-              } catch {}
+              } catch (e) { logCatchError('resolver.quotes', e); }
             }
           } else {
             try {
@@ -678,7 +679,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                   decOutFinite: Number.isFinite(decOut),
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('resolver.quotes', e); }
           }
         } else {
           try {
@@ -691,7 +692,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                 availablePoolIds: (met?.clmm || []).slice(0, 5).map((x: any) => x?.id),
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('resolver.quotes', e); }
         }
       }
       return 0n;
@@ -712,7 +713,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
           stack: (e as any)?.stack,
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
   return 0n;
@@ -752,7 +753,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<
             msg: 'Falling back to SDK quote'
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       return 0n;
     }
     
@@ -833,7 +834,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<
             sqrtPriceX64: sqrtPriceX64.toString()
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.quotes', e); }
       return outRaw;
     }
     
@@ -849,7 +850,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<
           msg: 'Falling back to SDK quote'
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
 }
@@ -863,7 +864,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           ctx: { poolId: hop.poolId, amountInRaw: amountInRaw.toString() }
         });
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
   
@@ -880,7 +881,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           }
         });
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
 
@@ -903,7 +904,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           }
         });
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
 
@@ -944,7 +945,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
               }
             });
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.quotes', e); }
       }
     }
   }
@@ -966,7 +967,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           }
         });
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
   const { numerator: priceNumerator, denominator: priceDenominator } = ratio;
@@ -1001,7 +1002,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           }
         });
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
 
@@ -1026,7 +1027,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           }
         });
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
 
@@ -1090,7 +1091,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
                       upper: tickArrays.upper?.[0]?.slice(0, 8) + '…' || 'none',
                     }
                   });
-                } catch {}
+                } catch (e) { logCatchError('resolver.quotes', e); }
               }
             } catch (err) {
               // Log but don't fail if derivation fails
@@ -1103,7 +1104,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
                     error: String((err as any)?.message || err)
                   }
                 });
-              } catch {}
+              } catch (e) { logCatchError('resolver.quotes', e); }
             }
           }
         }
@@ -1134,7 +1135,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
         }
       });
     });
-  } catch {}
+  } catch (e) { logCatchError('resolver.quotes', e); }
   
   return out > 0n ? out : 0n;
 }

@@ -5,6 +5,7 @@ import { LogCode } from '../../utils/logging.js';
 import { getTokenMeta } from './tokenMeta.js';
 import { CONFIG } from '../../utils/config.js';
 import { applySlippage } from '../limits.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConfig): Promise<ExecutionPlan> {
   const path = Array.isArray(input.path) ? input.path : [];
@@ -138,10 +139,10 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         const { resolveRaydiumClmm } = await import('./raydiumClmm.js');
         return await resolveRaydiumClmm(hop);
       } else if (hop.dex === 'orca') {
-        try { logger.info('tx.resolve.orca.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint } as any }); } catch {}
+        try { logger.info('tx.resolve.orca.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint } as any }); } catch (e) { logCatchError('resolver.index', e); }
         const { resolveOrca } = await import('./orca.js');
         const resolved = await resolveOrca(hop);
-        try { logger.info('tx.resolve.orca.complete', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { poolId: resolved.poolId, hasTickArrays: !!(resolved.tickArrayLower && resolved.tickArrayCenter && resolved.tickArrayUpper) } as any }); } catch {}
+        try { logger.info('tx.resolve.orca.complete', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { poolId: resolved.poolId, hasTickArrays: !!(resolved.tickArrayLower && resolved.tickArrayCenter && resolved.tickArrayUpper) } as any }); } catch (e) { logCatchError('resolver.index', e); }
         return resolved;
       } else if (hop.dex === 'pumpswap') {
         const { resolvePumpswap } = await import('./pumpswap.js');
@@ -171,7 +172,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       const mintA = String((p as any)?.mint_a || '');
       const mintB = String((p as any)?.mint_b || '');
       if (h.inputMint !== mintA && h.inputMint !== mintB) {
-        try { logger.warn('tx.resolve.orca.input_mint_mismatch', { cat: 'tx', ctx: { pool: id, inputMint: h.inputMint, mintA, mintB } }); } catch {}
+        try { logger.warn('tx.resolve.orca.input_mint_mismatch', { cat: 'tx', ctx: { pool: id, inputMint: h.inputMint, mintA, mintB } }); } catch (e) { logCatchError('resolver.index', e); }
         throw new Error(`ORCA_WRONG_INPUT_MINT_FOR_POOL: pool=${id}, in=${h.inputMint}, a=${mintA}, b=${mintB}`);
       }
     }
@@ -201,7 +202,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             try {
               const parsed = BigInt(trimmed);
               if (parsed > 0n) curIn = parsed;
-            } catch {}
+            } catch (e) { logCatchError('resolver.index', e); }
           }
         }
       }
@@ -227,7 +228,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                     usdPx,
                     source: 'jupiter_token_list',
                   });
-                } catch {}
+                } catch (e) { logCatchError('resolver.index', e); }
               }
             } catch (e: any) {
               // Log Jupiter fallback failure but continue
@@ -237,7 +238,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                   cat: 'tx',
                   error: String(e?.message || e),
                 });
-              } catch {}
+              } catch (e) { logCatchError('resolver.index', e); }
             }
           }
           
@@ -257,7 +258,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                 sizeUsd: input.sizeUsd,
                 usdPx,
               });
-            } catch {}
+            } catch (e) { logCatchError('resolver.index', e); }
           }
         } catch (e: any) {
           // Log the error instead of silently catching
@@ -268,7 +269,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               error: String(e?.message || e),
               sizeUsd: input.sizeUsd,
             });
-          } catch {}
+          } catch (e) { logCatchError('resolver.index', e); }
         }
       }
     }
@@ -297,7 +298,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                   sizeUsd: defUsd,
                   configPath,
                 });
-              } catch {}
+              } catch (e) { logCatchError('resolver.index', e); }
             } else {
               // Log that we didn't find it
               try {
@@ -307,7 +308,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                   configPath,
                   executorConfig: executorConfig ? Object.keys(executorConfig) : 'null',
                 });
-              } catch {}
+              } catch (e) { logCatchError('resolver.index', e); }
             }
           } catch (e: any) {
             // Log the error for debugging instead of silently catching
@@ -319,7 +320,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                 code: e?.code,
                 stack: e?.stack,
               });
-            } catch {}
+            } catch (e) { logCatchError('resolver.index', e); }
           }
         }
         
@@ -346,7 +347,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                     usdPx,
                     source: 'jupiter_token_list',
                   });
-                } catch {}
+                } catch (e) { logCatchError('resolver.index', e); }
               }
             } catch (e: any) {
               // Log Jupiter fallback failure but continue
@@ -356,7 +357,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                   cat: 'tx',
                   error: String(e?.message || e),
                 });
-              } catch {}
+              } catch (e) { logCatchError('resolver.index', e); }
             }
           }
           
@@ -375,7 +376,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                 defUsd,
                 usdPx,
               });
-            } catch {}
+            } catch (e) { logCatchError('resolver.index', e); }
           }
         }
       } catch (e: any) {
@@ -387,7 +388,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             error: String(e?.message || e),
             stack: e?.stack,
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.index', e); }
       }
     }
     if (curIn === 0n && hops.length > 0) {
@@ -420,7 +421,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                 outputMint: prevHop.outputMint,
               }
             });
-          } catch {}
+          } catch (e) { logCatchError('resolver.index', e); }
         }
       }
       
@@ -440,7 +441,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               prevHopOutput: hops[i - 1]?.quotedOutputRaw?.toString() || 'N/A',
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.index', e); }
       }
 
       // Add logging to debug amount propagation
@@ -457,7 +458,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             outputDecimals: hops[i].outputDecimals,
           }
         });
-      } catch {}
+      } catch (e) { logCatchError('resolver.index', e); }
 
       // CRITICAL: If this is not the first hop, verify curIn matches the input mint's decimals
       // This prevents using SOL lamports (9 decimals) for USDC (6 decimals)
@@ -481,7 +482,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               currentInputMint: currentHop.inputMint,
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.index', e); }
       }
 
       // CRITICAL: Verify amountInRaw matches what we're quoting with
@@ -505,7 +506,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                   outputMint: prevHop.outputMint,
                 }
               });
-            } catch {}
+            } catch (e) { logCatchError('resolver.index', e); }
             // Force correct amount
             hops[i].amountInRaw = prevHop.quotedOutputRaw;
             curIn = prevHop.quotedOutputRaw;
@@ -533,7 +534,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               inputMint: hops[i].inputMint,
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.index', e); }
       }
 
       // Compute effective slippage and minOut even if out=0n
@@ -543,7 +544,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         const bump = Number(sys.token2022ExtraSlippageBps ?? 0);
         const is2022 = (hops[i].inputTokenProgram === 'token-2022') || (hops[i].outputTokenProgram === 'token-2022');
         eff = Math.max(0, Math.min(9900, eff + (is2022 ? bump : 0)));
-      } catch {}
+      } catch (e) { logCatchError('resolver.index', e); }
       try { hops[i].minOutRaw = applyMinOut(out, eff); } catch { hops[i].minOutRaw = 0n; }
 
       // For multihop: use the actual quoted output for propagation, not minOutRaw
@@ -573,7 +574,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               nextHopInputMint: (i < hops.length - 1) ? hops[i + 1].inputMint : 'N/A',
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.index', e); }
       } else {
         // Quote failed or returned 0 - don't propagate old curIn
         // Set curIn to 0 so next hop will fail validation
@@ -590,7 +591,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               quoteError: quoteError ? String(quoteError.message) : 'none',
             }
           });
-        } catch {}
+        } catch (e) { logCatchError('resolver.index', e); }
         // Don't propagate - set to 0 to prevent using wrong amount
         curIn = 0n;
       }
@@ -607,7 +608,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           stack: (e as any)?.stack,
         }
       });
-    } catch {}
+    } catch (e) { logCatchError('resolver.index', e); }
     // Re-throw so the caller knows resolution failed
     throw e;
   }

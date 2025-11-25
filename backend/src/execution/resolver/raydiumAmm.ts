@@ -2,6 +2,7 @@ import type { DirectHop } from '../../execution/types.js';
 import { executionCache } from '../cache.js';
 import { peekRaydiumPools } from '../../server/pools.js';
 import { determineSwapOrientation } from '../../server/pools/orientation.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
@@ -55,7 +56,7 @@ export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
         hop.outputDecimals = orientation.decimalsOutput;
       }
     }
-  } catch {}
+  } catch (e) { logCatchError('resolver.raydiumAmm', e); }
   return hop;
 }
 

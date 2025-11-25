@@ -9,6 +9,9 @@ import { resolveManyDecimals } from './decimals.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { PublicKey } from '@solana/web3.js';
 import { anyToBigInt } from './precision.js';
+import type { MeteoraBalancedPoolApiResponse } from './api-types.js';
+import { isValidMeteoraBalancedPool } from './api-types.js';
+import { logCatchError } from '../../utils/errorHandler.js';
 
 function meteoraBalancedFeeToBps(value: any): number {
   const n = Number(
@@ -45,7 +48,7 @@ function meteoraBalancedDeriveAtomic(
       if (Number.isFinite(scaled)) {
         try {
           return BigInt(scaled);
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
     }
   }
@@ -58,7 +61,7 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
     const cfg = (CONFIG as any)?.meteoraBalanced || {};
     const baseUnsafe = cfg.apiUrl || '';
     const base = validateHttpUrl(baseUnsafe) || '';
-    if (!base) { try { await writeJson(RAW_PATH, []); } catch {}; return []; }
+    if (!base) { try { await writeJson(RAW_PATH, []); } catch (e) { logCatchError('pools.meteoraBalanced', e); }; return []; }
     
     // Check if we should use anchor-tokens-only mode (higher quality, more efficient)
     const anchorTokensOnly = cfg.anchorTokensOnly !== false; // Default: true
@@ -66,7 +69,7 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
       // Use the V1 fetcher which already implements anchor-token filtering
       try {
         logger.info('meteora.balanced.fetch using anchor-tokens-only mode', { cat: 'meteora' });
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       return await fetchMeteoraBalancedV1Http(base);
     }
     
@@ -91,7 +94,7 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
           const v2 = base.replace('/v1/pairs', '/v2/pairs');
           if (v2 !== base) list.push(v2);
         }
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       return list;
     })();
 
@@ -134,7 +137,7 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
         page += 1;
       }
       if (out.length > 0) {
-        try { await writeJson(RAW_PATH, out); } catch {}
+        try { await writeJson(RAW_PATH, out); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
         try {
           logger.info('meteora.balanced.fetch complete', {
             count: out.length,
@@ -143,27 +146,33 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
             tokensVerified,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
         return out;
       }
       // If this candidate produced nothing, try next candidate (e.g., v2)
     }
     // If all candidates failed/empty, return []
-    try { await writeJson(RAW_PATH, []); } catch {}
+    try { await writeJson(RAW_PATH, []); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
     return [];
   } catch {
     return [];
   }
 }
 
-export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPayload> {
+export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiResponse[] | { data?: MeteoraBalancedPoolApiResponse[] } | unknown): Promise<PoolsPayload> {
   const now = Date.now();
   const amm: AmmPool[] = [];
 
-  const arrCandidates: any[] = [];
-  if (Array.isArray(raw)) arrCandidates.push(raw);
-  if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
-  const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
+  // Extract array from various response formats
+  const rawArr: unknown[] = (() => {
+    if (Array.isArray(raw)) return raw;
+    const r = raw as { data?: unknown[] };
+    if (Array.isArray(r?.data)) return r.data;
+    return [];
+  })();
+  
+  // Filter to only valid Meteora Balanced pools
+  const arr = rawArr.filter(isValidMeteoraBalancedPool);
 
   const toMint = (v: any): string => {
     if (!v) return '';
@@ -212,7 +221,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
             vaultB: vaultB.slice(0, 8) + '…',
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
         continue; // Skip this pool
       }
       
@@ -269,7 +278,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
                 scaleFactor: 1000,
                 cat: 'meteora'
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.meteoraBalanced', e); }
           } else {
             tvl_usd = tvlRaw;  // Use as-is
           }
@@ -287,7 +296,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
             const pct = (Number.isFinite(bf) ? bf : 0) + (Number.isFinite(df) ? df : 0);
             if (Number.isFinite(pct)) return Math.round(pct * 100);
           }
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
         return meteoraBalancedFeeToBps(it);
       })();
 
@@ -316,7 +325,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
               source_b: it?.vault_b_whole !== undefined ? 'vault_whole' : (it?.reserveB ? 'reserveB' : (it?.amountB ? 'amountB' : 'other')),
               cat: 'meteora.diagnostic'
             });
-          } catch {}
+          } catch (e) { logCatchError('pools.meteoraBalanced', e); }
         }
       } else {
         const p = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB);
@@ -339,7 +348,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
             hasVaultWhole: it?.vault_a_whole !== undefined,
             cat: 'meteora' 
           }); 
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
 
       const liquidity_base = (Number.isFinite(wholeA) && Number.isFinite(wholeB))
@@ -385,7 +394,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
             hasTokenBVault: !!it?.token_b_vault,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
       
       amm.push({
@@ -428,7 +437,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
           pool: String((it as any)?.address || (it as any)?.pool_address || ''),
           cat: 'meteora',
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraBalanced', e); }
     }
   }
 
@@ -447,7 +456,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         cat: 'meteora'
       });
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
   // Optional: Apply minimum liquidity filtering
   try {
@@ -467,7 +476,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
               mintB: p.mint_b,
               cat: 'meteora'
             });
-          } catch {}
+          } catch (e) { logCatchError('pools.meteoraBalanced', e); }
         }
         
         return liq >= minLiqBase;
@@ -488,14 +497,14 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
             filteredNoDecimals,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
-      try { logger.info('meteora.balanced normalized', { amm: filtered.length, cat: 'meteora' }); } catch {}
+      try { logger.info('meteora.balanced normalized', { amm: filtered.length, cat: 'meteora' }); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       return { amm: filtered, clmm: [] };
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
-  try { logger.info('meteora.balanced normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch {}
+  try { logger.info('meteora.balanced normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   return { amm: ammCanon, clmm: [] };
 }
 
@@ -575,7 +584,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
               scaleFactor: 1000,
               cat: 'meteora'
             });
-          } catch {}
+          } catch (e) { logCatchError('pools.meteoraBalanced', e); }
         } else {
           tvl_usd = tvlRaw;
         }
@@ -629,7 +638,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
             vaultsLength: Array.isArray((it as any)?.pool_token_vaults) ? (it as any).pool_token_vaults.length : 0,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
       
       amm.push({
@@ -671,7 +680,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
           pool: String((it as any)?.address || (it as any)?.pool_address || ''),
           cat: 'meteora',
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraBalanced', e); }
     }
   }
   const ammCanon = canonicalizePools(amm);
@@ -689,7 +698,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         cat: 'meteora'
       });
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
   // Optional: Apply minimum liquidity filtering
   try {
@@ -708,14 +717,14 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
             minLiqBase,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
-      try { logger.info('meteora.balanced.v1 normalized', { amm: filtered.length, cat: 'meteora' }); } catch {}
+      try { logger.info('meteora.balanced.v1 normalized', { amm: filtered.length, cat: 'meteora' }); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       return { amm: filtered, clmm: [] } as any;
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
-  try { logger.info('meteora.balanced.v1 normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch {}
+  try { logger.info('meteora.balanced.v1 normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   return { amm: ammCanon, clmm: [] } as any;
 }
 
@@ -839,7 +848,7 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
         endpoint: 'pools/search',
         cat: 'meteora'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
     
     return data;
   } else {
@@ -916,7 +925,7 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
         endpoint: 'pools/search',
         cat: 'meteora'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
     
     return data;
   }
@@ -957,7 +966,7 @@ async function fetchV1SearchWithRetry(
             url: url.slice(0, 200),
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
         if (attempt < retries) {
           await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
           continue;
@@ -972,7 +981,7 @@ async function fetchV1SearchWithRetry(
           error: String(err?.message || err),
           cat: 'meteora'
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       if (attempt < retries) {
         await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
         continue;
@@ -1020,7 +1029,7 @@ async function fetchV1SearchWithRetry(
         cat: 'meteora'
       });
     }
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
   // Return the full response (will be handled by caller)
   return json || [];
@@ -1037,14 +1046,14 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
 
   try {
     logger.info('meteora.balanced.rpc.enrichment.start', { poolCount: pools.length, cat: 'meteora' });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
 
   // Load Jupiter token map for decimals
   let jupMap: Record<string, { decimals: number }> = {};
   try {
     const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
     jupMap = await loadJupiterTokenMap().catch(() => ({}));
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
 
   // Collect all vault addresses and LP mints
   const vaultAddresses: string[] = [];
@@ -1126,7 +1135,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
           batch: i / batchSize,
           cat: 'meteora' 
         });
-      } catch {}
+      } catch (e) { logCatchError('pools.meteoraBalanced', e); }
     }
   }
 
@@ -1137,7 +1146,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
         count: lpMintAddresses.length, 
         cat: 'meteora' 
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
     
     for (let i = 0; i < lpMintAddresses.length; i += batchSize) {
       const batch = lpMintAddresses.slice(i, i + batchSize);
@@ -1161,7 +1170,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
               const buf = Buffer.from(account.data);
               const supply = buf.readBigUInt64LE(36);
               lpMintData.set(address, supply);
-            } catch {}
+            } catch (e) { logCatchError('pools.meteoraBalanced', e); }
           }
         }
       } catch (e) {
@@ -1171,7 +1180,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
             batch: i / batchSize,
             cat: 'meteora' 
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
     }
     
@@ -1181,7 +1190,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
         total: lpMintAddresses.length,
         cat: 'meteora' 
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   }
 
   // Collect missing mint addresses for batch RPC fetch
@@ -1199,7 +1208,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
         count: missingMints.size,
         cat: 'meteora'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
     
     const missingMintArray = Array.from(missingMints);
     for (let i = 0; i < missingMintArray.length; i += batchSize) {
@@ -1223,7 +1232,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
               // SPL Token Mint layout: decimals is u8 at offset 44
               const decimals = account.data[44];
               mintDecimals.set(mintAddress, decimals);
-            } catch {}
+            } catch (e) { logCatchError('pools.meteoraBalanced', e); }
           }
         }
       } catch (e) {
@@ -1233,7 +1242,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
             batch: i / batchSize,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
     }
     
@@ -1243,7 +1252,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
         total: missingMints.size,
         cat: 'meteora'
       });
-    } catch {}
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   }
   
   // Enrich pools with reserve data
@@ -1280,7 +1289,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
             mintA: vaults.mintA,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
       
       if (Number.isFinite(jupDecB)) {
@@ -1293,7 +1302,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
             mintB: vaults.mintB,
             cat: 'meteora'
           });
-        } catch {}
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
       
       // Calculate whole amounts and pool_liquidity_raw
@@ -1370,7 +1379,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
                 mintB: vaults.mintB,
                 cat: 'meteora'
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.meteoraBalanced', e); }
           }
         } else {
           // Pool appears healthy - use API TVL if available, otherwise calculate from vaults
@@ -1389,7 +1398,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
                 lpSupply: lpSupply ? lpSupply.toString() : 'null',
                 cat: 'meteora'
               });
-            } catch {}
+            } catch (e) { logCatchError('pools.meteoraBalanced', e); }
           }
         }
       }
@@ -1406,7 +1415,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       ms,
       cat: 'meteora' 
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
 
   return { pools, metrics: { success: successCount, fail: failCount, ms } };
 }
@@ -1480,7 +1489,7 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
       tokensVerified,
       cat: 'meteora'
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
   return out;
 }
@@ -1506,7 +1515,7 @@ export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
       v2Url,
       cat: 'meteora'
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
   // Enrich v2 pools with RPC data (vault balances)
   const enrichResult = await enrichMeteoraBalancedWithRpc(v2);
@@ -1530,7 +1539,7 @@ export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
       combinedCount: ammCanon.length,
       cat: 'meteora'
     });
-  } catch {}
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
   return { amm: ammCanon, clmm: [] } as any;
 }
