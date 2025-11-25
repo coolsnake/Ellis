@@ -303,7 +303,13 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         // SOL wrapping/unwrap if configured
         const wrapSol = (execCfg.wrapSolInTx !== false) && (CONFIG.system.wrapAndUnwrapSol !== false);
         if (wrapSol) {
-          if (isSolMint(hop.inputMint) && !performedWrap) {
+          // Only wrap SOL if:
+          // 1. This hop inputs SOL/WSOL
+          // 2. We haven't already wrapped
+          // 3. The WSOL is NOT coming from a previous hop's output (multi-hop chain)
+          const prevHop = i > 0 ? plan.hops[i - 1] : null;
+          const inputFromPrevHop = prevHop && isSolMint(prevHop.outputMint) && isSolMint(hop.inputMint);
+          if (isSolMint(hop.inputMint) && !performedWrap && !inputFromPrevHop) {
             const lamports = Number(hop.amountInRaw || 0n);
             if (lamports > 0) {
               const wrap = buildWrapSolIxs(owner, owner, lamports);
