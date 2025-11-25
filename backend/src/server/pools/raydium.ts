@@ -671,12 +671,14 @@ export async function normalizeRaydiumPools(raw: RaydiumApiListResponse | { data
   // Extract array from various response formats
   const rawArr: unknown[] = (() => {
     if (Array.isArray(raw)) return raw;
-    const r = raw as { data?: { data?: unknown[] } | unknown[] };
+    const r = raw as Record<string, unknown>;
     if (Array.isArray(r?.data)) {
-      if (Array.isArray((r.data as { data?: unknown[] })?.data)) {
-        return (r.data as { data: unknown[] }).data;
+      // Check for nested data.data pattern
+      const dataObj = r.data as unknown;
+      if (dataObj && typeof dataObj === 'object' && 'data' in dataObj && Array.isArray((dataObj as Record<string, unknown>).data)) {
+        return (dataObj as Record<string, unknown>).data as unknown[];
       }
-      return r.data as unknown[];
+      return r.data;
     }
     return [];
   })();

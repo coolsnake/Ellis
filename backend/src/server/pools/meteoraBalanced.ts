@@ -185,8 +185,11 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
   // Extract all unique mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const it of arr) {
-    const a = it?.tokenA || it?.mintA || it?.base || {};
-    const b = it?.tokenB || it?.mintB || it?.quote || {};
+    const aRaw = it?.tokenA || it?.mintA || it?.base || {};
+    const bRaw = it?.tokenB || it?.mintB || it?.quote || {};
+    // Type-safe extraction: if it's a string, use it directly; otherwise get .info
+    const a = typeof aRaw === 'string' ? { mint: aRaw } : aRaw;
+    const b = typeof bRaw === 'string' ? { mint: bRaw } : bRaw;
     const mint_a = String(it?.token_a_mint || toMint(a) || toMint(a?.info) || it?.mintA || '');
     const mint_b = String(it?.token_b_mint || toMint(b) || toMint(b?.info) || it?.mintB || '');
     if (mint_a) allMints.add(mint_a);
@@ -205,8 +208,11 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
   for (const it of arr) {
     try {
       const id = String(it?.pool_address || it?.address || it?.id || '');
-      const a = it?.tokenA || it?.mintA || it?.base || {};
-      const b = it?.tokenB || it?.mintB || it?.quote || {};
+      const aRaw = it?.tokenA || it?.mintA || it?.base || {};
+      const bRaw = it?.tokenB || it?.mintB || it?.quote || {};
+      // Type-safe extraction: if it's a string, use it directly; otherwise extract object
+      const a = typeof aRaw === 'string' ? { mint: aRaw } : aRaw;
+      const b = typeof bRaw === 'string' ? { mint: bRaw } : bRaw;
       
       // Extract vault addresses early for validation
       const vaultA = String(it?.token_a_vault || '');
@@ -367,12 +373,12 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
       })();
 
       const reserveAAtomic = meteoraBalancedDeriveAtomic(
-        (it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? it?.token_a_amount ?? it?.vault_a_amount ?? 0),
+        (it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? (it as any)?.token_a_amount ?? (it as any)?.vault_a_amount ?? 0),
         Number.isFinite(wholeA) ? wholeA : undefined,
         decA,
       );
       const reserveBAtomic = meteoraBalancedDeriveAtomic(
-        (it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? it?.token_b_amount ?? it?.vault_b_amount ?? 0),
+        (it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? (it as any)?.token_b_amount ?? (it as any)?.vault_b_amount ?? 0),
         Number.isFinite(wholeB) ? wholeB : undefined,
         decB,
       );
@@ -410,7 +416,7 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
         // Vault addresses for swap instructions
         account_a,
         account_b,
-        lp_mint: String(it?.lp_mint || ''),
+        lp_mint: String((it as any)?.lp_mint || ''),
         amount_a_whole: Number.isFinite(wholeA) ? wholeA as number : undefined,
         amount_b_whole: Number.isFinite(wholeB) ? wholeB as number : undefined,
         amounts_are_whole: Number.isFinite(wholeA) || Number.isFinite(wholeB) ? true : undefined,

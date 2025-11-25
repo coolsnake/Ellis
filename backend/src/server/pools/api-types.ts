@@ -267,6 +267,7 @@ export interface PumpswapPoolApiResponse {
   base_mint: string;
   quote_mint: string;
   creator?: string;
+  onchain_creator?: string; // On-chain pool creator (extracted from pool account data during enrichment)
   lp_mint?: string;
   lp_supply?: string | number;
   pool_base_token_account?: string;
@@ -275,9 +276,13 @@ export interface PumpswapPoolApiResponse {
   pool_quote_token_vault?: string;
   pool_bump?: number;
   index?: number;
-  // Enriched from RPC
+  // Enriched from RPC - reserves in atomic units
   base_reserve_raw?: string;
   quote_reserve_raw?: string;
+  // Alternate property names used in some API responses
+  base_reserve?: string;
+  quote_reserve?: string;
+  // Whole unit amounts (human-readable)
   base_reserve_whole?: number;
   quote_reserve_whole?: number;
   fee_bps?: number;

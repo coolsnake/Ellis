@@ -11,7 +11,7 @@ import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpL
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
 import { getPriceByMint } from '../../server/priceStore.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
-import type { OrcaPoolApiResponse } from './api-types.js';
+import type { OrcaPoolApiResponse, OrcaTokenInfo } from './api-types.js';
 import { isValidOrcaPool } from './api-types.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 
@@ -191,8 +191,8 @@ export async function normalizeOrcaHttp(raw: OrcaPoolApiResponse[] | { data?: Or
   // Extract all unique mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const it of arr) {
-    const tokenA = it?.tokenA || it?.token_a || {};
-    const tokenB = it?.tokenB || it?.token_b || {};
+    const tokenA = (it?.tokenA || it?.token_a || {}) as OrcaTokenInfo;
+    const tokenB = (it?.tokenB || it?.token_b || {}) as OrcaTokenInfo;
     const mint_a = String(tokenA?.mint || it?.tokenMintA || it?.mintA || '');
     const mint_b = String(tokenB?.mint || it?.tokenMintB || it?.mintB || '');
     if (mint_a) allMints.add(mint_a);
@@ -208,8 +208,8 @@ export async function normalizeOrcaHttp(raw: OrcaPoolApiResponse[] | { data?: Or
   for (const it of arr) {
     const pool = it as OrcaPoolApiResponse;
     const id = String(pool.address || pool.id || '');
-    const tokenA = pool.tokenA || pool.token_a || {};
-    const tokenB = pool.tokenB || pool.token_b || {};
+    const tokenA = (pool.tokenA || pool.token_a || {}) as OrcaTokenInfo;
+    const tokenB = (pool.tokenB || pool.token_b || {}) as OrcaTokenInfo;
     
     // Extract vault addresses early for validation
     const vaultA = String(pool.tokenVaultA ?? pool.token_vault_a ?? pool.vaultA ?? '');
