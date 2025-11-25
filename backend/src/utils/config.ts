@@ -459,10 +459,12 @@ export const CONFIG = {
     blockEngineUrl: process.env.JITO_BE_URL || 'https://mainnet.block-engine.jito.wtf',
     tipPayerKeypath: process.env.JITO_TIP_PAYER_PATH || null,
     bundleTimeoutMs: Number(process.env.JITO_BUNDLE_TIMEOUT_MS || 1200),
-    // New tip configuration
+    // Tip configuration
     tipMode: (process.env.JITO_TIP_MODE as any) || 'dynamic', // 'fixed' | 'dynamic'
     fixedTipLamports: Number(process.env.JITO_FIXED_TIP_LAMPORTS || 10000),
-    tipShare: Math.max(0, Math.min(1, Number(process.env.JITO_TIP_SHARE ?? 0.3))),
+    tipShare: Math.max(0, Math.min(1, Number(process.env.JITO_TIP_SHARE ?? 0.35))), // 35% of profit
+    minTipLamports: Number(process.env.JITO_MIN_TIP_LAMPORTS || 10000),     // 0.00001 SOL minimum
+    maxTipLamports: Number(process.env.JITO_MAX_TIP_LAMPORTS || 5_000_000), // 0.005 SOL maximum
     useDontFrontAccount: (process.env.JITO_USE_DONT_FRONT || 'false') === 'true',
     // Optional tip recipient (pubkey). Recommended to configure explicitly.
     tipAccount: process.env.JITO_TIP_ACCOUNT || '',

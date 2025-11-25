@@ -69,6 +69,19 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           }
         } 
       } catch {}
+      // Load Jito config
+      try {
+        const r = await fetch(`${apiBase}/arb/jito/config`);
+        if (r.ok) {
+          const j = await r.json();
+          if (typeof j.enabled === 'boolean') set('jito_enabled', j.enabled);
+          if (j.tipMode) set('jito_tip_mode', j.tipMode);
+          if (typeof j.tipShare === 'number') set('jito_tip_share', j.tipShare);
+          if (typeof j.minTipLamports === 'number') set('jito_min_tip_lamports', j.minTipLamports);
+          if (typeof j.maxTipLamports === 'number') set('jito_max_tip_lamports', j.maxTipLamports);
+          if (typeof j.fixedTipLamports === 'number') set('jito_fixed_tip_lamports', j.fixedTipLamports);
+        }
+      } catch {}
     })();
   }, [apiBase]);
 
@@ -110,7 +123,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         .split(',').map(s => s.trim()).filter(Boolean),
     };
     try {
-      const [r1, r2, r3] = await Promise.all([
+      const [r1, r2, r3, r4] = await Promise.all([
         fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
         fetch(`${apiBase}${ROUTES.exec.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: execMode }) }),
         fetch(`${apiBase}/arb/executor/config`, { 
@@ -134,8 +147,21 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             },
           }) 
         }),
+        // Save Jito config
+        fetch(`${apiBase}/arb/jito/config`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            enabled: det.jito_enabled !== false,
+            tipMode: det.jito_tip_mode || 'dynamic',
+            tipShare: Number(det.jito_tip_share) || 0.35,
+            minTipLamports: toNum(det.jito_min_tip_lamports) || 10000,
+            maxTipLamports: toNum(det.jito_max_tip_lamports) || 5_000_000,
+            fixedTipLamports: toNum(det.jito_fixed_tip_lamports) || 10000,
+          }),
+        }),
       ]);
-      if (!r1.ok || !r2.ok || !r3.ok) throw new Error('Failed to save');
+      if (!r1.ok || !r2.ok || !r3.ok || !r4.ok) throw new Error('Failed to save');
       onClose();
     } catch (e: any) {
       setError(String(e?.message || e));
@@ -394,6 +420,136 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                 />
               </div>
             </div>
+          </div>
+
+          {/* Jito Tipping Configuration */}
+          <div className="bg-gray-700 rounded p-4 border-2 border-orange-500/30">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-lg font-semibold text-white">Jito Tipping</h3>
+              <label className="flex items-center gap-2 text-sm">
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4"
+                  checked={det.jito_enabled !== false} 
+                  onChange={e=>set('jito_enabled', e.target.checked)} 
+                />
+                <span className="text-orange-400">Enabled</span>
+              </label>
+            </div>
+            <p className="text-xs text-gray-400 mb-3">
+              Jito tips improve transaction landing rates by incentivizing validators. Tips are calculated as a share of expected profit.
+            </p>
+            
+            <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${det.jito_enabled === false ? 'opacity-50' : ''}`}>
+              <div>
+                <label className="block mb-1 text-gray-300">Tip Mode</label>
+                <select 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1"
+                  value={det.jito_tip_mode || 'dynamic'}
+                  onChange={e=>set('jito_tip_mode', e.target.value)}
+                  disabled={det.jito_enabled === false}
+                >
+                  <option value="dynamic">Dynamic (% of profit)</option>
+                  <option value="fixed">Fixed amount</option>
+                </select>
+              </div>
+              
+              {(det.jito_tip_mode || 'dynamic') === 'dynamic' ? (
+                <div>
+                  <label className="block mb-1 text-gray-300">
+                    Tip Share (% of profit)
+                    <span className="text-xs text-gray-500 ml-2">0.35 = 35%</span>
+                  </label>
+                  <input 
+                    type="number" 
+                    step="0.05"
+                    min="0.05"
+                    max="0.90"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                    value={det.jito_tip_share ?? 0.35} 
+                    onChange={e=>set('jito_tip_share', Number(e.target.value)||0.35)} 
+                    disabled={det.jito_enabled === false}
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block mb-1 text-gray-300">
+                    Fixed Tip (lamports)
+                    <span className="text-xs text-gray-500 ml-2">1M = 0.001 SOL</span>
+                  </label>
+                  <input 
+                    type="number" 
+                    step="10000"
+                    min="1000"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                    value={det.jito_fixed_tip_lamports ?? 10000} 
+                    onChange={e=>set('jito_fixed_tip_lamports', Number(e.target.value)||10000)} 
+                    disabled={det.jito_enabled === false}
+                  />
+                </div>
+              )}
+              
+              <div>
+                <label className="block mb-1 text-gray-300">
+                  Min Tip (lamports)
+                  <span className="text-xs text-gray-500 ml-2">Floor for all tips</span>
+                </label>
+                <input 
+                  type="number" 
+                  step="1000"
+                  min="1000"
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.jito_min_tip_lamports ?? 10000} 
+                  onChange={e=>set('jito_min_tip_lamports', Number(e.target.value)||10000)} 
+                  disabled={det.jito_enabled === false}
+                />
+              </div>
+              
+              <div>
+                <label className="block mb-1 text-gray-300">
+                  Max Tip (lamports)
+                  <span className="text-xs text-gray-500 ml-2">Cap for all tips</span>
+                </label>
+                <input 
+                  type="number" 
+                  step="100000"
+                  min="10000"
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.jito_max_tip_lamports ?? 5000000} 
+                  onChange={e=>set('jito_max_tip_lamports', Number(e.target.value)||5000000)} 
+                  disabled={det.jito_enabled === false}
+                />
+              </div>
+            </div>
+
+            {/* Tip calculation preview */}
+            {det.jito_enabled !== false && (det.jito_tip_mode || 'dynamic') === 'dynamic' && (
+              <div className="mt-4 p-3 bg-gray-800/50 rounded text-xs text-gray-400">
+                <strong className="text-gray-300">Example tips (for $100 trade):</strong>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">
+                  {[50, 100, 200, 500].map(bps => {
+                    const profitPct = bps / 100;
+                    const profitUsd = 100 * (bps / 10000);
+                    const tipShare = det.jito_tip_share || 0.35;
+                    const minTip = det.jito_min_tip_lamports || 10000;
+                    const maxTip = det.jito_max_tip_lamports || 5000000;
+                    // Assume SOL = $200 for preview
+                    const profitLamports = (profitUsd / 200) * 1e9;
+                    const rawTip = profitLamports * tipShare;
+                    const finalTip = Math.max(minTip, Math.min(maxTip, rawTip));
+                    const tipSol = finalTip / 1e9;
+                    return (
+                      <div key={bps} className="bg-gray-700/50 p-2 rounded">
+                        <div className="text-gray-500">{profitPct}% profit</div>
+                        <div className="text-orange-400 font-mono">
+                          {tipSol >= 0.001 ? `${tipSol.toFixed(4)} SOL` : `${Math.round(finalTip)} lamp`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="bg-gray-700 rounded p-4">

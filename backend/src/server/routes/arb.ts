@@ -2549,6 +2549,31 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Get Jito tipping configuration
+  api.get('/arb/jito/config', async (_req: Request, res: Response) => {
+    try {
+      const { loadJitoConfig } = await import('../jitoConfigStore.js');
+      const config = await loadJitoConfig();
+      res.json(config);
+    } catch (e: any) {
+      logger.error('arb.jito.api.config_read_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Update Jito tipping configuration
+  api.post('/arb/jito/config', async (req: Request, res: Response) => {
+    try {
+      const { saveJitoConfig } = await import('../jitoConfigStore.js');
+      const updated = await saveJitoConfig(req.body);
+      logger.info('arb.jito.api.config_updated', { cat: 'arb', updates: req.body, config: updated });
+      res.json({ status: 'updated', config: updated });
+    } catch (e: any) {
+      logger.error('arb.jito.api.config_update_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

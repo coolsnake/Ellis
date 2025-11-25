@@ -73,16 +73,30 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
         const poolTokenB = (p as any)?.token_program_b as 'spl-token' | 'token-2022' | undefined;
         if (poolTokenA) (hop as any).tokenProgramA = poolTokenA;
         if (poolTokenB) (hop as any).tokenProgramB = poolTokenB;
-        
-        // Also populate executionCache for future lookups
-        if (poolTokenA || poolTokenB) {
-          const existingStatic = executionCache.getStatic(id) || {};
-          executionCache.setStatic(id, {
-            ...existingStatic,
-            token_program_a: poolTokenA || (existingStatic as any).token_program_a,
-            token_program_b: poolTokenB || (existingStatic as any).token_program_b,
-          });
-        }
+      }
+      
+      // Populate execution cache with mint_a/mint_b and other critical fields from pool cache
+      // This ensures the builder has mints available even if they weren't in the initial cache population
+      const poolMintA = (p as any)?.mint_a;
+      const poolMintB = (p as any)?.mint_b;
+      const existingStatic = executionCache.getStatic(id) || {} as any;
+      
+      // Only update cache if mints are missing (the critical field that causes build failures)
+      if (poolMintA && poolMintB && (!existingStatic.mint_a || !existingStatic.mint_b)) {
+        executionCache.setStatic(id, {
+          ...existingStatic,
+          programId: existingStatic.programId || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+          dex: 'Meteora',
+          mint_a: poolMintA,
+          mint_b: poolMintB,
+          decimals_a: (p as any)?.decimals_a ?? existingStatic.decimals_a,
+          decimals_b: (p as any)?.decimals_b ?? existingStatic.decimals_b,
+          token_program_a: (p as any)?.token_program_a || existingStatic.token_program_a,
+          token_program_b: (p as any)?.token_program_b || existingStatic.token_program_b,
+          account_a: (p as any)?.account_a || existingStatic.account_a,
+          account_b: (p as any)?.account_b || existingStatic.account_b,
+          bin_array_bitmap_extension: (p as any)?.bin_array_bitmap_extension || existingStatic.bin_array_bitmap_extension,
+        });
       }
       
       // Debug logging for vaults and bitmap extension

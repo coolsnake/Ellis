@@ -47,7 +47,8 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
       if (vaultA) hop.vaultA = hop.vaultA || String(vaultA);
       if (vaultB) hop.vaultB = hop.vaultB || String(vaultB);
       
-      // CRITICAL: Cache vault addresses and oracle in execution cache if we found them
+      // CRITICAL: Cache vault addresses, oracle, and mints in execution cache if we found them
+      // This ensures the builder has all required data even if it wasn't in the initial cache population
       const existing = executionCache.getStatic(hop.poolId) || {} as any;
       const updates: any = {};
       
@@ -60,6 +61,17 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
       
       if (oracleFromPool && oracleFromPool !== '11111111111111111111111111111111') {
         updates.oracle = oracleFromPool;
+      }
+      
+      // Populate mints if missing (required by buildOrcaSwapIxLocal for swap direction)
+      const poolMintA = (p as any)?.mint_a;
+      const poolMintB = (p as any)?.mint_b;
+      if (poolMintA && poolMintB && (!existing.mint_a || !existing.mint_b)) {
+        updates.mint_a = poolMintA;
+        updates.mint_b = poolMintB;
+        updates.decimals_a = (p as any)?.decimals_a ?? existing.decimals_a;
+        updates.decimals_b = (p as any)?.decimals_b ?? existing.decimals_b;
+        updates.programId = existing.programId || (p as any)?.program_id || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
       }
       
       if (Object.keys(updates).length > 0) {

@@ -6,6 +6,10 @@ import { assembleAndSend, assembleAndSimulate } from './sender.js';
 import { loadExecConfig } from '../server/execConfigStore.js';
 import { addTxRecord } from '../server/txHistory.js';
 import type { ArbBuildResult } from '../workers/arbBuild.types.js';
+import { calculateProfitBasedTip, type TipResult } from './arbTip.js';
+import { sendToBlockEngine } from './jitoClient.js';
+import { CONFIG } from '../utils/config.js';
+import { ensureWallet } from '../wallet/wallet.js';
 
 interface Opportunity {
   path: string[];
@@ -822,13 +826,57 @@ export class ArbExecutor {
         });
         this.state.successfulExecutions++;
       } else {
+        // Calculate Jito tip based on expected profit
+        let tipResult: TipResult | null = null;
+        const firstHop = plan.hops[0];
+        if (firstHop && opp.profit_bps > 0 && (CONFIG as any)?.jito?.enabled) {
+          try {
+            const kp = await ensureWallet(CONFIG.walletPath);
+            tipResult = await calculateProfitBasedTip(kp.publicKey, {
+              inputMint: firstHop.inputMint,
+              inputAmountRaw: firstHop.amountInRaw,
+              inputDecimals: firstHop.inputDecimals ?? 6,
+              profitBps: opp.profit_bps,
+            });
+          } catch (tipErr: any) {
+            logger.warn('arb.executor.tip_calc_failed', { 
+              cat: 'arb', 
+              error: String(tipErr?.message || tipErr) 
+            });
+          }
+        }
+
+        // Prepend tip instruction if calculated
+        const instructionsWithTip = tipResult?.tipIx 
+          ? [tipResult.tipIx, ...built.instructions] 
+          : built.instructions;
+
         // Execute on-chain
-        const sendResult = await assembleAndSend(built.instructions, {
+        const sendResult = await assembleAndSend(instructionsWithTip, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
         });
         signature = sendResult?.signature || null;
+
+        // If Jito is enabled and we have a tip, also send to block engine
+        if (tipResult && signature && (CONFIG as any)?.jito?.enabled) {
+          try {
+            await sendToBlockEngine(sendResult.wireBase64);
+            logger.info('arb.jito.sent', { 
+              cat: 'tx', 
+              signature: signature.slice(0, 16),
+              tipLamports: tipResult.tipLamports,
+              expectedProfitLamports: tipResult.expectedProfitLamports,
+            });
+          } catch (jitoErr: any) {
+            // Log but don't fail - RPC send already happened
+            logger.warn('arb.jito.fallback', { 
+              cat: 'tx', 
+              error: String(jitoErr?.message || jitoErr) 
+            });
+          }
+        }
 
         // Log full dump with opportunity data
         try {
@@ -875,6 +923,13 @@ export class ArbExecutor {
             send: sendResult,
             signature,
             executorLogs: txLogs,
+            // Jito tip info if applied
+            jitoTip: tipResult ? {
+              tipLamports: tipResult.tipLamports,
+              tipAccount: tipResult.tipAccount,
+              expectedProfitLamports: tipResult.expectedProfitLamports,
+              breakdown: tipResult.breakdown,
+            } : null,
             // Add calculated expected outputs for sanity checking
             expectedOutputs: opp.hop_outs ? {
               // Expected output at each hop (from arb-rs calculations)
