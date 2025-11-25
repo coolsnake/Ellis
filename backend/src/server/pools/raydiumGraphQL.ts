@@ -1388,6 +1388,10 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
   try {
     const { executionCache } = await import('../../execution/cache.js');
     
+    // Import tick array derivation functions for zero-RPC tick array caching
+    const { getTickArrayStartIndexByTick, deriveTickArrayPda } = await import('../../execution/raydiumTickArrays.js');
+    const { PublicKey } = await import('@solana/web3.js');
+    
     // Fetch raw data for CLMM pools to extract observation_state and other fields
     // This is critical for zero-RPC transaction building
     const clmmPoolIds = clmm.map((p: any) => p.id);
@@ -1398,15 +1402,57 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     
     let clmmCached = 0;
     let clmmWithObservation = 0;
+    let clmmWithTickArrays = 0;
+    
+    const programIdStr = (CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
+    const programPk = new PublicKey(programIdStr);
     
     for (const pool of clmm) {
       try {
         const existing = executionCache.getStatic(pool.id) || {};
         const rawData = rawDataMap.get(pool.id);
         
+        // Derive tick arrays from tickCurrent and tick_spacing (GraphQL-provided)
+        // This enables zero-RPC transaction building by pre-caching tick array PDAs
+        let tickArrayLower: string | undefined;
+        let tickArrayCenter: string | undefined;
+        let tickArrayUpper: string | undefined;
+        
+        const tickCurrent = (pool as any).tick_current;
+        const tickSpacing = pool.tick_spacing;
+        
+        if (Number.isFinite(tickCurrent) && Number.isFinite(tickSpacing) && tickSpacing > 0) {
+          try {
+            const poolPk = new PublicKey(pool.id);
+            const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
+            const delta = 60 * Math.max(1, tickSpacing);
+            
+            // Derive center, lower, and upper tick array PDAs in parallel
+            const [lowerPk, centerPk, upperPk] = await Promise.all([
+              deriveTickArrayPda(programPk, poolPk, centerStart - delta).catch(() => null),
+              deriveTickArrayPda(programPk, poolPk, centerStart).catch(() => null),
+              deriveTickArrayPda(programPk, poolPk, centerStart + delta).catch(() => null),
+            ]);
+            
+            if (lowerPk) tickArrayLower = lowerPk.toBase58();
+            if (centerPk) tickArrayCenter = centerPk.toBase58();
+            if (upperPk) tickArrayUpper = upperPk.toBase58();
+            
+            if (tickArrayLower && tickArrayCenter && tickArrayUpper) {
+              clmmWithTickArrays++;
+            }
+          } catch (e) {
+            logger.debug('raydium.clmm.graphql.tick_array_derivation.failed', {
+              pool: pool.id.slice(0, 8) + '…',
+              error: String((e as any)?.message || e),
+              cat: 'raydium'
+            });
+          }
+        }
+        
         executionCache.setStatic(pool.id, {
           ...existing,
-          programId: (CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
+          programId: programIdStr,
           dex: 'Raydium',
           pool_kind: 'clmm',
           mint_a: pool.mint_a,
@@ -1419,6 +1465,10 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           amm_config: rawData?.ammConfig || (pool as any).amm_config || (pool as any).ammConfig,
           observation_state: rawData?.observationState,
           oracle: rawData?.oracle,
+          // Store derived tick arrays in static cache for zero-RPC builds
+          tickArrayLower,
+          tickArrayCenter,
+          tickArrayUpper,
         });
         clmmCached++;
         if (rawData?.observationState) clmmWithObservation++;
@@ -1428,6 +1478,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     logger.info('raydium.clmm.execution_cache.populated', {
       clmmCached,
       clmmWithObservation,
+      clmmWithTickArrays,
       total: clmm.length,
       cat: 'raydium'
     });

@@ -3765,9 +3765,54 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
                 const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
                 
-                // Calculate bin array index range (not bin ID range)
-                // Use fixed expansion factor (conservative, no RPC needed)
-                const fixedExpansion = 3; // Conservative default - 3 bin arrays on each side
+                // Calculate bin array expansion based on SWAP SIZE relative to pool liquidity
+                // This prevents oversized transactions for small swaps
+                let binExpansion: number;
+                try {
+                  // Get pool liquidity from cached data
+                  const { peekMeteoraPools } = await import('../../server/pools.js');
+                  const meteoraPools = peekMeteoraPools();
+                  const strippedPoolId = hop.poolId.replace(/[#-]rev$/, '');
+                  const poolInfo = (meteoraPools.clmm || []).find((p: any) => String(p?.id || '') === strippedPoolId);
+                  
+                  const poolAmountA = Number((poolInfo as any)?.amount_a_whole || 0);
+                  const poolAmountB = Number((poolInfo as any)?.amount_b_whole || 0);
+                  const swapAmountWhole = Number(hop.amountInRaw) / Math.pow(10, hop.inputDecimals ?? 9);
+                  
+                  // Estimate swap as % of relevant side liquidity
+                  const relevantLiquidity = isXToY ? poolAmountA : (isYToX ? poolAmountB : Math.min(poolAmountA, poolAmountB) || 1);
+                  const swapRatio = relevantLiquidity > 0 ? swapAmountWhole / relevantLiquidity : 0.05;
+                  
+                  // Tiered expansion based on swap size:
+                  // - Tiny swaps (< 0.5%): 0 extra (just active bin array + 1 buffer)
+                  // - Small swaps (0.5-2%): 1 extra bin array
+                  // - Medium swaps (2-5%): 2 extra bin arrays
+                  // - Large swaps (> 5%): 3 extra bin arrays (original behavior)
+                  if (swapRatio < 0.005) {
+                    binExpansion = 0;
+                  } else if (swapRatio < 0.02) {
+                    binExpansion = 1;
+                  } else if (swapRatio < 0.05) {
+                    binExpansion = 2;
+                  } else {
+                    binExpansion = 3;
+                  }
+                  
+                  try {
+                    logger.debug('meteora.dlmm.bin_expansion.calculated', {
+                      cat: 'tx',
+                      ctx: {
+                        poolId: hop.poolId,
+                        swapAmountWhole: swapAmountWhole.toFixed(6),
+                        relevantLiquidity: relevantLiquidity.toFixed(2),
+                        swapRatio: (swapRatio * 100).toFixed(4) + '%',
+                        binExpansion,
+                      }
+                    });
+                  } catch (e) { logCatchError('ix.build', e); }
+                } catch {
+                  binExpansion = 3; // Fallback to conservative default
+                }
                 
                 let lowerArrayIdx: any;
                 let upperArrayIdx: any;
@@ -3776,21 +3821,22 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 
                 if (isXToY) {
                   // X->Y: Price moves DOWN, expand LOWER range
-                  lowerArrayIdx = arrIdx.sub(new BN(fixedExpansion));
+                  lowerArrayIdx = arrIdx.sub(new BN(binExpansion));
                   upperArrayIdx = arrIdx.add(new BN(1)); // Include active + 1 above
-                  binArrayCount = fixedExpansion + 2;
+                  binArrayCount = binExpansion + 2;
                   direction = 'down';
                 } else if (isYToX) {
                   // Y->X: Price moves UP, expand UPPER range
                   lowerArrayIdx = arrIdx.sub(new BN(1)); // Include active + 1 below
-                  upperArrayIdx = arrIdx.add(new BN(fixedExpansion));
-                  binArrayCount = fixedExpansion + 2;
+                  upperArrayIdx = arrIdx.add(new BN(binExpansion));
+                  binArrayCount = binExpansion + 2;
                   direction = 'up';
                 } else {
                   // Unknown direction: expand both (conservative)
-                  lowerArrayIdx = arrIdx.sub(new BN(2));
-                  upperArrayIdx = arrIdx.add(new BN(2));
-                  binArrayCount = 5;
+                  const halfExpansion = Math.max(1, Math.ceil(binExpansion / 2));
+                  lowerArrayIdx = arrIdx.sub(new BN(halfExpansion));
+                  upperArrayIdx = arrIdx.add(new BN(halfExpansion));
+                  binArrayCount = halfExpansion * 2 + 1;
                   direction = 'both';
                 }
                 
