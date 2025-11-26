@@ -54,4 +54,11 @@ export async function saveClmmCacheToDisk(): Promise<void> {
   await writeFile(fp, JSON.stringify(obj), 'utf8');
 }
 
+/**
+ * Clear the in-memory CLMM cache (useful for shutdown cleanup)
+ */
+export function clearClmmCache(): void {
+  mem.clear();
+}
+
 

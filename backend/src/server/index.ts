@@ -427,28 +427,50 @@ export async function shutdown() {
       accountCache?.clear?.();
     } catch {}
     
+    // Clear CLMM in-memory cache
+    try {
+      const { clearClmmCache } = await import('../execution/clmmCache.js');
+      clearClmmCache?.();
+    } catch {}
+    
+    // Clear decimals cache (token decimal mappings)
+    try {
+      const { clearDecimalsCache } = await import('./pools/decimals.js');
+      clearDecimalsCache?.();
+    } catch {}
+    
     // Delete persistent cache files to force fresh data on next boot
     try {
       const { deleteFile, joinPath } = await import('../utils/fs.js');
       const { CONFIG } = await import('../utils/config.js');
       
-      // Execution cache snapshot
-      try { 
-        await deleteFile(joinPath(CONFIG.cacheDir, 'dex-accounts.json')); 
-        logger.info('Deleted dex-accounts.json cache');
-      } catch {}
+      // Comprehensive list of ALL cache files to clean for fresh startup
+      const cacheFiles = [
+        // Execution caches
+        'dex-accounts.json',
+        'raydium-clmm-cache.json',
+        'pools-startup.json',
+        // Raw sample caches (written during pool fetches)
+        'orca-raw-sample.json',
+        'meteora-raw-sample.json',
+        'raydium-raw-sample.json',
+        'meteora-balanced-raw-sample.json',
+        'pumpswap-raw-sample.json',
+        // GraphQL pool caches
+        'orca-pools-graphql.json',
+        'raydium-pools-graphql.json',
+        'raydium-clmm-pools-graphql.json',
+        'meteora-pools-graphql.json',
+      ];
       
-      // CLMM cache
-      try { 
-        await deleteFile(joinPath(CONFIG.cacheDir, 'raydium-clmm-cache.json')); 
-        logger.info('Deleted raydium-clmm-cache.json');
-      } catch {}
-      
-      // Pool startup cache
-      try { 
-        await deleteFile(joinPath(CONFIG.cacheDir, 'pools-startup.json')); 
-        logger.info('Deleted pools-startup.json');
-      } catch {}
+      let deletedCount = 0;
+      for (const file of cacheFiles) {
+        try {
+          await deleteFile(joinPath(CONFIG.cacheDir, file));
+          deletedCount++;
+        } catch {} // Ignore if file doesn't exist
+      }
+      logger.info('Cache cleanup complete', { deleted: deletedCount, total: cacheFiles.length });
     } catch (e) {
       try { logger.warn('Cache file cleanup failed', { error: String(e) }); } catch {}
     }
