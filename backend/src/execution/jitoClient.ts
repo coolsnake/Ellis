@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
+import bs58 from 'bs58';
 
 export async function sendToBlockEngine(base64Tx: string, opts?: { beUrl?: string; timeoutMs?: number }): Promise<string> {
   const primary = String(opts?.beUrl || (CONFIG as any)?.jito?.blockEngineUrl || 'https://mainnet.block-engine.jito.wtf');
@@ -12,6 +13,10 @@ export async function sendToBlockEngine(base64Tx: string, opts?: { beUrl?: strin
   const beList = [primary, ...regions.filter(u => u !== primary)];
   const timeoutMs = Math.max(500, Number(opts?.timeoutMs ?? (CONFIG as any)?.jito?.bundleTimeoutMs ?? 2000));
 
+  // Convert base64 to base58 (Jito bundles expect base58-encoded transactions)
+  const txBytes = Buffer.from(base64Tx, 'base64');
+  const base58Tx = bs58.encode(txBytes);
+
   const sendOnce = async (url: string): Promise<string> => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort('timeout'), timeoutMs);
@@ -22,7 +27,7 @@ export async function sendToBlockEngine(base64Tx: string, opts?: { beUrl?: strin
         jsonrpc: '2.0',
         id: Date.now(),
         method: 'sendBundle',
-        params: [[base64Tx]], // Array of transactions (single tx bundle)
+        params: [[base58Tx]], // Array of base58-encoded transactions
       };
       
       const r = await fetch(`${url}/api/v1/bundles`, {
