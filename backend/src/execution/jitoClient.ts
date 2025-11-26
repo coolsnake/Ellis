@@ -11,9 +11,9 @@ export async function sendToBlockEngine(base64Tx: string, opts?: { beUrl?: strin
     'https://frankfurt.mainnet.block-engine.jito.wtf',
   ];
   const beList = [primary, ...regions.filter(u => u !== primary)];
-  const timeoutMs = Math.max(500, Number(opts?.timeoutMs ?? (CONFIG as any)?.jito?.bundleTimeoutMs ?? 2000));
+  const timeoutMs = Math.max(500, Number(opts?.timeoutMs ?? (CONFIG as any)?.jito?.sendTimeoutMs ?? 2000));
 
-  // Convert base64 to base58 (Jito bundles expect base58-encoded transactions)
+  // Convert base64 to base58 (Jito expects base58-encoded transactions)
   const txBytes = Buffer.from(base64Tx, 'base64');
   const base58Tx = bs58.encode(txBytes);
 
@@ -21,16 +21,15 @@ export async function sendToBlockEngine(base64Tx: string, opts?: { beUrl?: strin
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort('timeout'), timeoutMs);
     try {
-      // Jito block engine expects JSON-RPC 2.0 format for sendBundle
-      // We send the transaction as a single-transaction bundle
+      // Jito block engine expects JSON-RPC 2.0 format for sendTransaction
       const jsonRpcBody = {
         jsonrpc: '2.0',
         id: Date.now(),
-        method: 'sendBundle',
-        params: [[base58Tx]], // Array of base58-encoded transactions
+        method: 'sendTransaction',
+        params: [base58Tx, { encoding: 'base58' }],
       };
       
-      const r = await fetch(`${url}/api/v1/bundles`, {
+      const r = await fetch(`${url}/api/v1/transactions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(jsonRpcBody),
@@ -41,15 +40,14 @@ export async function sendToBlockEngine(base64Tx: string, opts?: { beUrl?: strin
         throw new Error(`BE_${r.status}: ${txt.slice(0, 200)}`);
       }
       const out = await r.json().catch(() => ({}));
-      // JSON-RPC response has result field (bundle_id), or error field
+      // JSON-RPC response has result field (signature), or error field
       if (out?.error) {
         throw new Error(`BE_RPC_ERR: ${JSON.stringify(out.error).slice(0, 150)}`);
       }
-      // For bundles, result is the bundle UUID - we return it as the "signature" for tracking
-      const bundleId = String(out?.result || '');
-      if (!bundleId) throw new Error('BE_NO_BUNDLE_ID');
-      try { logger.info('tx.jito.sent', { cat: 'tx', url, bundleId: bundleId.slice(0, 16) }); } catch {}
-      return bundleId;
+      const sig = String(out?.result || '');
+      if (!sig) throw new Error('BE_NO_SIG');
+      try { logger.info('tx.jito.sent', { cat: 'tx', url, signature: sig.slice(0, 16) }); } catch {}
+      return sig;
     } finally {
       clearTimeout(t);
     }

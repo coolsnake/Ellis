@@ -277,29 +277,14 @@ export class ArbExecutor {
       return;
     }
 
-    // Check concurrent execution limit
-    if (this.state.inFlight.size >= this.config.maxConcurrentExecutions) {
-      logger.info('arb.executor.batch_concurrency_limit', {
-        cat: 'arb',
-        count: opportunities.length,
-        inFlight: this.state.inFlight.size,
-        maxConcurrent: this.config.maxConcurrentExecutions,
-      });
-      return;
-    }
+    // REMOVED: Concurrent execution limit check - no limit on concurrency
+    // Transactions awaiting confirmation no longer count towards a limit
 
-    // Process opportunities in order until we hit limits
+    // Process opportunities in order
     let accepted = 0;
     let filtered = 0;
     for (const opp of opportunities) {
-      if (this.state.inFlight.size >= this.config.maxConcurrentExecutions) {
-        logger.info('arb.executor.batch_stopped_concurrency', {
-          cat: 'arb',
-          processed: accepted + filtered,
-          remaining: opportunities.length - (accepted + filtered),
-        });
-        break;
-      }
+      // REMOVED: Concurrency check inside loop - no limit on concurrency
 
       // Check if we should execute (now async)
       const shouldExec = await this.shouldExecute(opp);
