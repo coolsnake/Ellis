@@ -10,16 +10,25 @@ export async function sendToBlockEngine(base64Tx: string, opts?: { beUrl?: strin
     'https://frankfurt.mainnet.block-engine.jito.wtf',
   ];
   const beList = [primary, ...regions.filter(u => u !== primary)];
-  const timeoutMs = Math.max(500, Number(opts?.timeoutMs ?? (CONFIG as any)?.jito?.bundleTimeoutMs ?? 1200));
+  const timeoutMs = Math.max(500, Number(opts?.timeoutMs ?? (CONFIG as any)?.jito?.bundleTimeoutMs ?? 2000));
 
   const sendOnce = async (url: string): Promise<string> => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort('timeout'), timeoutMs);
     try {
-      const r = await fetch(`${url}/api/v1/transactions`, {
+      // Jito block engine expects JSON-RPC 2.0 format for sendBundle
+      // We send the transaction as a single-transaction bundle
+      const jsonRpcBody = {
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'sendBundle',
+        params: [[base64Tx]], // Array of transactions (single tx bundle)
+      };
+      
+      const r = await fetch(`${url}/api/v1/bundles`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ transaction: base64Tx }),
+        body: JSON.stringify(jsonRpcBody),
         signal: ac.signal,
       });
       if (!r.ok) {
@@ -27,10 +36,15 @@ export async function sendToBlockEngine(base64Tx: string, opts?: { beUrl?: strin
         throw new Error(`BE_${r.status}: ${txt.slice(0, 200)}`);
       }
       const out = await r.json().catch(() => ({}));
-      const sig = String(out?.signature || out?.result || '');
-      if (!sig) throw new Error('BE_NO_SIG');
-      try { logger.info('tx.jito.sent', { cat: 'tx', url }); } catch {}
-      return sig;
+      // JSON-RPC response has result field (bundle_id), or error field
+      if (out?.error) {
+        throw new Error(`BE_RPC_ERR: ${JSON.stringify(out.error).slice(0, 150)}`);
+      }
+      // For bundles, result is the bundle UUID - we return it as the "signature" for tracking
+      const bundleId = String(out?.result || '');
+      if (!bundleId) throw new Error('BE_NO_BUNDLE_ID');
+      try { logger.info('tx.jito.sent', { cat: 'tx', url, bundleId: bundleId.slice(0, 16) }); } catch {}
+      return bundleId;
     } finally {
       clearTimeout(t);
     }
