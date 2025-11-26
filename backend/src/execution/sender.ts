@@ -1257,10 +1257,8 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
           });
         } catch {}
         
-        // Also resend to Jito if enabled
-        if (opts?.jito?.enabled && opts.jito.sendToBlockEngine) {
-          opts.jito.sendToBlockEngine(wireBase64).catch(() => {});
-        }
+        // DON'T resend to Jito - it already has the tx in its mempool and will retry internally.
+        // Resending to Jito just burns rate limits (1 tx/sec per endpoint, 2 min backoff).
       } catch (resendErr) {
         // Check if blockhash expired
         const errMsg = String((resendErr as any)?.message || resendErr);

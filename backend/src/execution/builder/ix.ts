@@ -5502,14 +5502,17 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 }
 
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build raydium.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
+  // Strip #rev or -rev suffix from poolId (direction indicator, not part of actual address)
+  const poolIdStripped = String(hop.poolId).replace(/[#-]rev$/, '');
+  
+  try { logger.info('ix.build raydium.amm.real', { pool: poolIdStripped, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
   try {
     // Pre-build validation: amounts
-    validateHopAmounts(hop, { dex: 'raydium', variant: 'amm', poolId: hop.poolId });
+    validateHopAmounts(hop, { dex: 'raydium', variant: 'amm', poolId: poolIdStripped });
     
     // Pre-build validation: critical PublicKeys
     try {
-      validatePublicKey(hop.poolId, 'poolId', { dex: 'raydium', variant: 'amm' });
+      validatePublicKey(poolIdStripped, 'poolId', { dex: 'raydium', variant: 'amm' });
       validatePublicKey(hop.inputMint, 'inputMint', { dex: 'raydium', variant: 'amm' });
       validatePublicKey(hop.outputMint, 'outputMint', { dex: 'raydium', variant: 'amm' });
       validatePublicKey(hop.userSourceAta, 'userSourceAta', { dex: 'raydium', variant: 'amm' });
@@ -5521,7 +5524,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     try {
       if (!hop.market || !hop.serumProgramId) {
         const { executionCache } = await import('../cache.js');
-        const poolData = executionCache.getStatic(hop.poolId);
+        const poolData = executionCache.getStatic(poolIdStripped);
         if (poolData) {
           hop.market = hop.market || (poolData as any).market_id;
           hop.serumProgramId = hop.serumProgramId || (poolData as any).market_program_id;
@@ -5529,7 +5532,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             logger.debug('raydium.amm.use_cached_market', {
               cat: 'tx',
               ctx: {
-                pool: hop.poolId.slice(0, 8) + '...',
+                pool: poolIdStripped.slice(0, 8) + '...',
                 hasMarket: !!(poolData as any).market_id,
                 hasProgram: !!(poolData as any).market_program_id
               }
@@ -5547,7 +5550,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           hop,
           'pool_account_fetch',
         );
-        const poolPk = toPublicKey(hop.poolId);
+        const poolPk = toPublicKey(poolIdStripped);
         const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
         const tempPoolAccountInfo = await withRpcLimit(
           () => connection.getAccountInfo(poolPk),
@@ -5580,7 +5583,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     // Optional: validate vault accounts exist (best-effort, don't block on RPC errors)
     if (hop.vaultA || hop.vaultB) {
       try {
-        await validatePoolAccounts(hop.poolId, hop.vaultA, hop.vaultB, { dex: 'raydium', variant: 'amm' }).catch(() => {
+        await validatePoolAccounts(poolIdStripped, hop.vaultA, hop.vaultB, { dex: 'raydium', variant: 'amm' }).catch(() => {
           // Best-effort validation - don't fail if RPC is slow
         });
       } catch (e) { logCatchError('ix.build', e); }
@@ -5613,7 +5616,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     let poolDecB: number | undefined;
     try {
       const { executionCache } = await import('../cache.js');
-      const cached = executionCache.getStatic(hop.poolId);
+      const cached = executionCache.getStatic(poolIdStripped);
       if (cached) {
         poolMintA = cached.mint_a;
         poolMintB = cached.mint_b;
@@ -5657,7 +5660,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           logger.warn('raydium.amm.mint_mismatch', {
             cat: 'tx',
             ctx: {
-              poolId: hop.poolId,
+              poolId: poolIdStripped,
               hopInput: hop.inputMint,
               hopOutput: hop.outputMint,
               poolMintA,
@@ -5701,7 +5704,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     let poolAccountInfo: any = null;
     try {
       const { executionCache } = await import('../cache.js');
-      const cached = executionCache.getStatic(hop.poolId);
+      const cached = executionCache.getStatic(poolIdStripped);
       if (cached?.rawAccountData) {
         poolAccountInfo = {
           data: cached.rawAccountData,
@@ -5710,7 +5713,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         try {
           logger.debug('raydium.amm.account.from_cache', {
             cat: 'tx',
-            ctx: { pool: hop.poolId.slice(0, 8) + '...', age: Date.now() - (cached.rawAccountDataUpdatedMs || 0) }
+            ctx: { pool: poolIdStripped.slice(0, 8) + '...', age: Date.now() - (cached.rawAccountDataUpdatedMs || 0) }
           });
         } catch (e) { logCatchError('ix.build', e); }
       }
@@ -5721,11 +5724,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       try {
         // Use account cache instead of direct RPC call
         const { accountCache } = await import('../utils/accountCache.js');
-        poolAccountInfo = await accountCache.getAccountInfo(toPublicKey(hop.poolId));
+        poolAccountInfo = await accountCache.getAccountInfo(toPublicKey(poolIdStripped));
         try {
           logger.debug('raydium.amm.account.from_rpc', {
             cat: 'tx',
-            ctx: { pool: hop.poolId.slice(0, 8) + '...' }
+            ctx: { pool: poolIdStripped.slice(0, 8) + '...' }
           });
         } catch (e) { logCatchError('ix.build', e); }
       } catch (e) { logCatchError('ix.build', e); }
@@ -5778,7 +5781,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         const marketAuthority = asPk(state.marketAuthority);
         poolKeys = {
           ...poolKeys,
-          id: toPublicKey(hop.poolId),
+          id: toPublicKey(poolIdStripped),
           programId: ammProgramId,
           authority: authority || (poolKeys as any)?.authority,
           openOrders: openOrders || (poolKeys as any)?.openOrders,
@@ -5805,7 +5808,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     // The SDK sometimes computes PDAs that don't match actual on-chain values
     try {
       const { executionCache } = await import('../cache.js');
-      const poolData = executionCache.getStatic(hop.poolId);
+      const poolData = executionCache.getStatic(poolIdStripped);
       if (poolData) {
         const cached = poolData as any;
         // UNCONDITIONALLY use cached values when available - they're always correct
@@ -5853,7 +5856,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           logger.info('raydium.amm.poolkeys_from_cache', {
             cat: 'tx',
             ctx: {
-              pool: hop.poolId.slice(0, 8) + '...',
+              pool: poolIdStripped.slice(0, 8) + '...',
               hasBids: !!cached.market_bids,
               hasAsks: !!cached.market_asks,
               hasEventQueue: !!cached.market_event_queue,
@@ -5960,7 +5963,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         const toStr = (v: any) => (v && typeof v.toBase58 === 'function') ? v.toBase58() : String(v || '');
         try {
           logger.warn('raydium.amm.keys.invalid', { cat: 'tx', ctx: {
-            id: toStr((poolKeys as any)?.id || hop.poolId),
+            id: toStr((poolKeys as any)?.id || poolIdStripped),
             programId: toStr((poolKeys as any)?.programId || ammProgramId),
             vaultA: toStr((poolKeys as any)?.vault?.A),
             vaultB: toStr((poolKeys as any)?.vault?.B),
@@ -5993,7 +5996,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       logger.info('raydium.amm.poolkeys_before_sdk', {
         cat: 'tx',
         ctx: {
-          pool: hop.poolId.slice(0, 8) + '...',
+          pool: poolIdStripped.slice(0, 8) + '...',
           marketId: toStr((poolKeys as any)?.marketId),
           marketProgramId: toStr((poolKeys as any)?.marketProgramId),
           marketBids: toStr((poolKeys as any)?.marketBids),
