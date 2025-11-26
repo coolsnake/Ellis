@@ -729,6 +729,24 @@ server.listen(CONFIG.port, () => {
   } catch {}
   // Start optional arb-rs stdout/stderr forwarding over WS
   try { setupRustLogForwarding(); } catch {}
+  
+  // Start shared blockhash warmer regardless of Drift - needed for arb executor
+  try {
+    import('../utils/blockhash.js')
+      .then(({ startSharedBlockhash }) => {
+        import('../wallet/wallet.js')
+          .then(({ getConnection }) => {
+            try {
+              const intervalMs = Math.max(300, Number(((CONFIG as any)?.blockhash?.warmIntervalMs) ?? 400));
+              startSharedBlockhash(getConnection(), { intervalMs });
+              logger.info('blockhash.warmer.started', { cat: 'tx', intervalMs });
+            } catch {}
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+  } catch {}
+  
   // Auto warmup Drift infra on startup so prefetch/GPA begins before any bot
   try {
     const driftCfg: any = (CONFIG as any)?.drift || {};
