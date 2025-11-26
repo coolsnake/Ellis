@@ -8,6 +8,7 @@ import { addTxRecord } from '../server/txHistory.js';
 import type { ArbBuildResult } from '../workers/arbBuild.types.js';
 import { calculateProfitBasedTip, type TipResult } from './arbTip.js';
 import { sendToBlockEngine } from './jitoClient.js';
+import { startTipFeed } from './jitoTipCache.js';
 import { CONFIG } from '../utils/config.js';
 import { ensureWallet } from '../wallet/wallet.js';
 
@@ -116,6 +117,14 @@ export class ArbExecutor {
 
     this.running = true;
     logger.info('arb.executor.starting', { cat: 'arb', config: this.config });
+
+    // Start Jito tip feed cache (non-blocking) - same as Drift runners
+    try { 
+      startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); 
+      logger.info('arb.executor.jito_tip_feed_started', { cat: 'arb' });
+    } catch (e) {
+      logger.warn('arb.executor.jito_tip_feed_failed', { cat: 'arb', error: String(e?.message || e) });
+    }
 
     // Cache wallet public key for balance checks
     try {
@@ -504,6 +513,10 @@ export class ArbExecutor {
     const oppKey = this.getOpportunityKey(opp);
     const pathStr = opp.path.join('->');
     
+    // Generate unified trace ID at the VERY START of execution
+    // This ID will be propagated through resolver -> builder -> sender for complete log correlation
+    const traceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    
     this.state.inFlight.add(oppKey);
     this.state.lastExecutionTime = Date.now();
     this.state.executionsThisMinute++;
@@ -515,6 +528,7 @@ export class ArbExecutor {
     try {
       logger.info('arb.executor.attempt', {
         cat: 'arb',
+        traceId,
         path: pathStr,
         dexes: opp.dexes.join(','),
         profitBps: opp.profit_bps,
@@ -549,6 +563,7 @@ export class ArbExecutor {
       // Debug: Log what we're receiving from arb-rs
       logger.debug('arb.executor.opportunity_data', {
         cat: 'arb',
+        traceId,
         path: opp.path,
         pathLength: opp.path.length,
         dexes: opp.dexes,
@@ -597,6 +612,7 @@ export class ArbExecutor {
         executionPath = [...opp.path, opp.path[0]];
         logger.debug('arb.executor.cycle_closed', {
           cat: 'arb',
+          traceId,
           originalPath: opp.path,
           closedPath: executionPath,
           nodes: opp.path.length,
@@ -621,6 +637,7 @@ export class ArbExecutor {
         // Log what we're passing to the resolver
         logger.debug('arb.executor.resolving_plan', {
           cat: 'arb',
+          traceId,
           path: executionPath.join('->'),
           sizeUsd,
           slippageBps: this.config.slippageBps,
@@ -629,7 +646,7 @@ export class ArbExecutor {
           dynamicSizingEnabled: !!this.config.dynamicSizing?.enabled,
         });
         
-        // Resolve execution plan
+        // Resolve execution plan - pass traceId for complete log correlation
         plan = await resolveDirectPlan(
           {
             path: executionPath,
@@ -637,13 +654,14 @@ export class ArbExecutor {
             dexes: executionDexes,
             sizeUsd,
             slippageBps: this.config.slippageBps,
+            traceId,
           } as any,
           {} as any
         );
 
-        // Build transaction using the same method as arb routes
+        // Build transaction using the same method as arb routes - pass traceId
         const { buildTransactionSummary } = await import('../server/arb.build.worker.compute.js');
-        built = await buildTransactionSummary(plan, undefined, undefined);
+        built = await buildTransactionSummary(plan, undefined, undefined, traceId);
 
         // Load execution config
         execCfg = await loadExecConfig();
@@ -653,11 +671,12 @@ export class ArbExecutor {
           const { writeTxFullDump } = await import('../utils/txTrace.js');
           const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
           const dexes = Array.from(new Set((executionDexes || []).filter(Boolean)));
-          const txLogs = getTxRelatedLogs(oppKey, Date.now() - 30000, Date.now(), 200);
+          const txLogs = getTxRelatedLogs(traceId, Date.now() - 30000, Date.now(), 500);
           
           await writeTxFullDump('preflight', {
-            id: oppKey,
-            txId: oppKey,
+            id: traceId,
+            txId: traceId,
+            traceId,
             opportunity: {
               ...opp,
               path: opp.path,
@@ -698,8 +717,10 @@ export class ArbExecutor {
           try { 
             logger.error('arb.executor.build.log_failed', { 
               cat: 'arb', 
+              traceId,
               ctx: { 
                 oppKey,
+                traceId,
                 buildError: String(buildError?.message || buildError),
                 logError: String(logErr?.message || logErr)
               } 
@@ -716,11 +737,12 @@ export class ArbExecutor {
       const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
       
       if (mode === 'simulate') {
-        // Simulate only
+        // Simulate only - pass traceId for log correlation
         const simResult = await assembleAndSimulate(built.instructions, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
+          traceId,
         });
         
         // Log full dump with opportunity data
@@ -728,12 +750,13 @@ export class ArbExecutor {
           const { writeTxFullDump } = await import('../utils/txTrace.js');
           const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
           const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
-          const txLogs = getTxRelatedLogs(oppKey, Date.now() - 30000, Date.now(), 200);
+          const txLogs = getTxRelatedLogs(traceId, Date.now() - 30000, Date.now(), 500);
           
           // Write single consolidated file instead of one per DEX
           await writeTxFullDump('preflight', {
-            id: oppKey,
-            txId: oppKey,
+            id: traceId,
+            txId: traceId,
+            traceId,
             opportunity: {
               // Include ALL opportunity fields from arb-rs
               ...opp,
@@ -785,8 +808,10 @@ export class ArbExecutor {
           try { 
             logger.error('tx.log.write_failed', { 
               cat: 'tx', 
+              traceId,
               ctx: { 
-                id: oppKey,
+                id: traceId,
+                traceId,
                 phase: 'preflight',
                 error: String(logErr?.message || logErr)
               } as any 
@@ -796,6 +821,7 @@ export class ArbExecutor {
         
         logger.info('arb.executor.simulated', {
           cat: 'arb',
+          traceId,
           path: pathStr,
           result: simResult,
           // Include opportunity data for context
@@ -842,6 +868,7 @@ export class ArbExecutor {
           } catch (tipErr: any) {
             logger.warn('arb.executor.tip_calc_failed', { 
               cat: 'arb', 
+              traceId,
               error: String(tipErr?.message || tipErr) 
             });
           }
@@ -852,24 +879,28 @@ export class ArbExecutor {
           ? [tipResult.tipIx, ...built.instructions] 
           : built.instructions;
 
-        // Use Jito parallel sending if we have a valid tip (tip calculation checks if Jito is enabled)
-        const useJitoParallel = !!tipResult;
+        // Always use Jito parallel sending when Jito is enabled (not just when we have a tip)
+        // This ensures transactions go to Jito block engine for faster landing
+        const jitoEnabled = (CONFIG as any)?.jito?.enabled !== false;
 
-        // Execute on-chain - with Jito parallel sending if tip is present
+        // Execute on-chain - with Jito parallel sending when enabled - pass traceId
         const sendResult = await assembleAndSend(instructionsWithTip, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
-          // Send to Jito in parallel with RPC when we have a tip
-          jito: useJitoParallel ? {
+          traceId,
+          // Send to Jito in parallel with RPC when Jito is enabled
+          jito: jitoEnabled ? {
             enabled: true,
             sendToBlockEngine: async (wireBase64: string) => {
               const sig = await sendToBlockEngine(wireBase64);
               logger.info('arb.jito.parallel_sent', { 
                 cat: 'tx', 
+                traceId,
                 signature: sig.slice(0, 16),
-                tipLamports: tipResult?.tipLamports,
-                expectedProfitLamports: tipResult?.expectedProfitLamports,
+                tipLamports: tipResult?.tipLamports ?? 0,
+                expectedProfitLamports: tipResult?.expectedProfitLamports ?? 0,
+                hasTip: !!tipResult,
               });
               return sig;
             },
@@ -882,12 +913,13 @@ export class ArbExecutor {
           const { writeTxFullDump } = await import('../utils/txTrace.js');
           const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
           const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
-          const txLogs = getTxRelatedLogs(oppKey, Date.now() - 60000, Date.now(), 300);
+          const txLogs = getTxRelatedLogs(traceId, Date.now() - 60000, Date.now(), 500);
           
           // Write single consolidated file instead of one per DEX
           await writeTxFullDump('execute', {
-            id: oppKey,
-            txId: oppKey,
+            id: traceId,
+            txId: traceId,
+            traceId,
             opportunity: {
               // Include ALL opportunity fields from arb-rs
               ...opp,
@@ -947,8 +979,10 @@ export class ArbExecutor {
           try { 
             logger.error('tx.log.write_failed', { 
               cat: 'tx', 
+              traceId,
               ctx: { 
-                id: oppKey,
+                id: traceId,
+                traceId,
                 phase: 'execute',
                 error: String(logErr?.message || logErr)
               } as any 
@@ -959,6 +993,7 @@ export class ArbExecutor {
         if (signature) {
           logger.info('arb.executor.success', {
             cat: 'arb',
+            traceId,
             path: pathStr,
             signature,
             durationMs: Date.now() - startTime,
@@ -1036,7 +1071,7 @@ export class ArbExecutor {
       try {
         const { writeTxFullDump } = await import('../utils/txTrace.js');
         const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
-        const txLogs = getTxRelatedLogs(oppKey, Date.now() - 60000, Date.now(), 300);
+        const txLogs = getTxRelatedLogs(traceId, Date.now() - 60000, Date.now(), 500);
         
         // Try to get plan and built if they exist (might be undefined if error occurred early)
         const plan = (e as any)?.plan || null;
@@ -1045,8 +1080,9 @@ export class ArbExecutor {
         const executionDexes = opp.hop_dexes || opp.dexes || [];
         
         await writeTxFullDump('execute', {
-          id: oppKey,
-          txId: oppKey,
+          id: traceId,
+          txId: traceId,
+          traceId,
           opportunity: {
             ...opp,
             path: opp.path,
@@ -1087,8 +1123,10 @@ export class ArbExecutor {
         try { 
           logger.error('arb.executor.log_failed', { 
             cat: 'arb', 
+            traceId,
             ctx: { 
               oppKey,
+              traceId,
               executionError: errorMsg,
               logError: String(logErr?.message || logErr)
             } 
@@ -1098,6 +1136,7 @@ export class ArbExecutor {
       
       logger.error('arb.executor.failed', {
         cat: 'arb',
+        traceId,
         path: pathStr,
         error: errorMsg,
         durationMs: Date.now() - startTime,

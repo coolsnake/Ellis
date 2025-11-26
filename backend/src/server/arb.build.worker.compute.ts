@@ -58,7 +58,7 @@ function serializeInstruction(ix: any): SerializedInstruction {
   };
 }
 
-export async function buildTransactionSummary(plan: ExecutionPlan, extraSetupIxs: SerializedInstruction[] | undefined, computeBudget?: { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number }): Promise<ArbBuildResult> {
+export async function buildTransactionSummary(plan: ExecutionPlan, extraSetupIxs: SerializedInstruction[] | undefined, computeBudget?: { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number }, traceId?: string): Promise<ArbBuildResult> {
   const additionalIxs = Array.isArray(extraSetupIxs) ? extraSetupIxs : [];
   const extras = additionalIxs.map((ix) => ({
     programId: ix.programId,
@@ -66,7 +66,9 @@ export async function buildTransactionSummary(plan: ExecutionPlan, extraSetupIxs
     data: Buffer.from(ix.data, 'base64'),
   }));
 
-  const built = await buildDirectArbTx(plan, extras, computeBudget as any);
+  // Pass traceId (from executor or plan) to builder for log correlation
+  const effectiveTraceId = traceId || plan.traceId;
+  const built = await buildDirectArbTx(plan, extras, computeBudget as any, effectiveTraceId);
   const instructions = Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions.map(serializeInstruction) : [];
   const lookupTableAddresses = Array.isArray((built as any)?.tx?.lookupTableAddresses) 
     ? (built as any).tx.lookupTableAddresses 

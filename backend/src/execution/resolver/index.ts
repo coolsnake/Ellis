@@ -21,12 +21,15 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   const path = Array.isArray(input.path) ? input.path : [];
   const hopPoolIds = Array.isArray(input.hopPoolIds) ? input.hopPoolIds : [];
   const dexes = Array.isArray(input.dexes) ? input.dexes : [];
+  // Use provided traceId or generate one for log correlation
+  const traceId = input.traceId || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  
   if (path.length < 2 || hopPoolIds.length !== (path.length - 1) || dexes.length !== (path.length - 1)) {
     throw new Error('invalid resolve input: path/hops mismatch');
   }
 
   const t0 = Date.now();
-  logger.debug('tx.resolve.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, ctx: { hopCount: path.length - 1 } as any });
+  logger.debug('tx.resolve.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, traceId, ctx: { hopCount: path.length - 1, traceId } as any });
   const hops: DirectHop[] = await Promise.all(path.slice(0, -1).map(async (_mint, i) => {
     const dexv = String(dexes[i] || '').toLowerCase();
     // Map graph DEX names to execution DEX types
@@ -148,10 +151,10 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         const { resolveRaydiumClmm } = await import('./raydiumClmm.js');
         return await resolveRaydiumClmm(hop);
       } else if (hop.dex === 'orca') {
-        try { logger.info('tx.resolve.orca.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint } as any }); } catch (e) { logCatchError('resolver.index', e); }
+        try { logger.info('tx.resolve.orca.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, traceId, ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, traceId } as any }); } catch (e) { logCatchError('resolver.index', e); }
         const { resolveOrca } = await import('./orca.js');
-        const resolved = await resolveOrca(hop);
-        try { logger.info('tx.resolve.orca.complete', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { poolId: resolved.poolId, hasTickArrays: !!(resolved.tickArrayLower && resolved.tickArrayCenter && resolved.tickArrayUpper) } as any }); } catch (e) { logCatchError('resolver.index', e); }
+        const resolved = await resolveOrca(hop, traceId);
+        try { logger.info('tx.resolve.orca.complete', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, traceId, ctx: { poolId: resolved.poolId, hasTickArrays: !!(resolved.tickArrayLower && resolved.tickArrayCenter && resolved.tickArrayUpper), traceId } as any }); } catch (e) { logCatchError('resolver.index', e); }
         return resolved;
       } else if (hop.dex === 'pumpswap') {
         const { resolvePumpswap } = await import('./pumpswap.js');
@@ -181,7 +184,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       const mintA = String((p as any)?.mint_a || '');
       const mintB = String((p as any)?.mint_b || '');
       if (h.inputMint !== mintA && h.inputMint !== mintB) {
-        try { logger.warn('tx.resolve.orca.input_mint_mismatch', { cat: 'tx', ctx: { pool: id, inputMint: h.inputMint, mintA, mintB } }); } catch (e) { logCatchError('resolver.index', e); }
+        try { logger.warn('tx.resolve.orca.input_mint_mismatch', { cat: 'tx', traceId, ctx: { pool: id, inputMint: h.inputMint, mintA, mintB, traceId } }); } catch (e) { logCatchError('resolver.index', e); }
         throw new Error(`ORCA_WRONG_INPUT_MINT_FOR_POOL: pool=${id}, in=${h.inputMint}, a=${mintA}, b=${mintB}`);
       }
     }
@@ -405,6 +408,8 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     }
     const { quoteHopOut, applyMinOut } = await import('./quotes.js');
     for (let i = 0; i < hops.length; i++) {
+      // Set traceId on each hop for downstream logging
+      (hops[i] as any)._traceId = traceId;
       // CRITICAL: Always set current hop input from curIn
       // For multi-hop swaps (i > 0), this ensures we use the exact output from previous hop
       // Never preserve a pre-set amountInRaw for hops after the first - always propagate correctly
@@ -421,6 +426,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             logger.info('tx.resolve.hop.amount.use_exact_quoted', {
               cat: 'tx',
               code: LogCode.TX_RESOLVE_OK,
+              traceId,
               ctx: {
                 hopIndex: i,
                 prevHopIndex: i - 1,
@@ -428,6 +434,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                 curInBefore: curIn.toString(),
                 inputMint: hops[i].inputMint,
                 outputMint: prevHop.outputMint,
+                traceId,
               }
             });
           } catch (e) { logCatchError('resolver.index', e); }
@@ -442,12 +449,14 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           logger.warn('tx.resolve.hop.amount.overridden', {
             cat: 'tx',
             code: LogCode.TX_RESOLVE_OK,
+            traceId,
             ctx: {
               hopIndex: i,
               previousAmount: previousAmountInRaw.toString(),
               newAmount: curIn.toString(),
               inputMint: hops[i].inputMint,
               prevHopOutput: hops[i - 1]?.quotedOutputRaw?.toString() || 'N/A',
+              traceId,
             }
           });
         } catch (e) { logCatchError('resolver.index', e); }
@@ -458,6 +467,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         logger.info('tx.resolve.hop.amount.set', {
           cat: 'tx',
           code: LogCode.TX_RESOLVE_OK,
+          traceId,
           ctx: {
             hopIndex: i,
             amountInRaw: curIn.toString(),
@@ -465,6 +475,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             outputMint: hops[i].outputMint,
             inputDecimals: hops[i].inputDecimals,
             outputDecimals: hops[i].outputDecimals,
+            traceId,
           }
         });
       } catch (e) { logCatchError('resolver.index', e); }
@@ -482,6 +493,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           logger.info('tx.resolve.hop.decimal_check', {
             cat: 'tx',
             code: LogCode.TX_RESOLVE_OK,
+            traceId,
             ctx: {
               hopIndex: i,
               prevOutputDecimals: prevDecimals,
@@ -489,6 +501,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               curIn: curIn.toString(),
               prevOutputMint: prevHop.outputMint,
               currentInputMint: currentHop.inputMint,
+              traceId,
             }
           });
         } catch (e) { logCatchError('resolver.index', e); }
@@ -504,6 +517,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               logger.error('tx.resolve.hop.amount.mismatch', {
                 cat: 'tx',
                 code: LogCode.TX_BUILD_ERR,
+                traceId,
                 ctx: {
                   hopIndex: i,
                   expectedAmount: prevHop.quotedOutputRaw.toString(),
@@ -513,6 +527,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                     : (prevHop.quotedOutputRaw - hops[i].amountInRaw).toString()),
                   inputMint: hops[i].inputMint,
                   outputMint: prevHop.outputMint,
+                  traceId,
                 }
               });
             } catch (e) { logCatchError('resolver.index', e); }
@@ -529,18 +544,20 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       let out = 0n;
       let quoteError: Error | null = null;
       try {
-        out = await quoteHopOut(hops[i], hops[i].amountInRaw);
+        out = await quoteHopOut(hops[i], hops[i].amountInRaw, traceId);
       } catch (e) {
         quoteError = e as Error;
         try {
           logger.warn('tx.resolve.hop.quote.failed', {
             cat: 'tx',
             code: LogCode.TX_BUILD_ERR,
+            traceId,
             ctx: { 
               hopIndex: i, 
               error: String((e as any)?.message || e),
               amountInRaw: hops[i].amountInRaw.toString(),
               inputMint: hops[i].inputMint,
+              traceId,
             }
           });
         } catch (e) { logCatchError('resolver.index', e); }
@@ -599,6 +616,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         logger.debug('tx.resolve.hop.slippage.estimated', {
           cat: 'tx',
           code: LogCode.TX_RESOLVE_OK,
+          traceId,
           ctx: {
             hopIndex: i,
             poolId,
@@ -612,6 +630,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             tradeSizeUsd,
             poolLiquidityUsd,
             fallbackSlippageBps: slippage,
+            traceId,
           }
         });
       } catch (e) {
@@ -620,7 +639,8 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         logger.warn('tx.resolve.hop.slippage.fallback', {
           cat: 'tx',
           code: LogCode.TX_RESOLVE_OK,
-          ctx: { hopIndex: i, fallbackBps: slippage, error: String((e as any)?.message || e) }
+          traceId,
+          ctx: { hopIndex: i, fallbackBps: slippage, error: String((e as any)?.message || e), traceId }
         });
       }
 
@@ -649,6 +669,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           logger.info('tx.resolve.hop.propagate', {
             cat: 'tx',
             code: LogCode.TX_RESOLVE_OK,
+            traceId,
             ctx: {
               hopIndex: i,
               quotedOut: out.toString(),
@@ -657,6 +678,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               propagatedAmount: out.toString(), // Now using actual output
               nextHopInput: curIn.toString(),
               nextHopInputMint: (i < hops.length - 1) ? hops[i + 1].inputMint : 'N/A',
+              traceId,
             }
           });
         } catch (e) { logCatchError('resolver.index', e); }
@@ -667,6 +689,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           logger.warn('tx.resolve.hop.no_propagation', {
             cat: 'tx',
             code: LogCode.TX_BUILD_ERR,
+            traceId,
             ctx: {
               hopIndex: i,
               quotedOut: out.toString(),
@@ -674,6 +697,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               inputMint: hops[i].inputMint,
               outputMint: hops[i].outputMint,
               quoteError: quoteError ? String(quoteError.message) : 'none',
+              traceId,
             }
           });
         } catch (e) { logCatchError('resolver.index', e); }
@@ -687,18 +711,20 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       logger.error('tx.resolve.failed', {
         cat: 'tx',
         code: LogCode.TX_BUILD_ERR,
+        traceId,
         ctx: { 
           error: String((e as any)?.message || e), 
           hops: hops.length,
           stack: (e as any)?.stack,
+          traceId,
         }
       });
     } catch (e) { logCatchError('resolver.index', e); }
     // Re-throw so the caller knows resolution failed
     throw e;
   }
-  logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { ms: Date.now() - t0, hops: hops.length } as any });
-  return { path, hops, computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports };
+  logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, traceId, ctx: { ms: Date.now() - t0, hops: hops.length, traceId } as any });
+  return { path, hops, computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports, traceId };
 }
 
 function hopAdjustAmount(_hops: DirectHop[], _raw: bigint): void { /* deprecated */ }

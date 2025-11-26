@@ -172,9 +172,10 @@ function estimateInstructionSize(ix: any): number {
   }
 }
 
-export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[], cb?: ComputeBudgetConfig): Promise<{ tx: any; ixCount: number; sizeBytes: number }> {
+export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[], cb?: ComputeBudgetConfig, inputTraceId?: string): Promise<{ tx: any; ixCount: number; sizeBytes: number }> {
   const t0 = Date.now();
-  const traceId = Math.random().toString(36).slice(2, 10);
+  // Use provided traceId (from executor/plan) or generate one
+  const traceId = inputTraceId || plan.traceId || Math.random().toString(36).slice(2, 10);
   
   // Initialize timing metrics
   const metrics: TimingMetrics = {

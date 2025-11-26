@@ -5,13 +5,16 @@ import { CONFIG } from '../../utils/config.js';
 import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 
-export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<bigint> {
+export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?: string): Promise<bigint> {
+  // Get traceId from hop if not passed directly (set by resolver)
+  const effectiveTraceId = traceId || (hop as any)._traceId;
+  
   try {
     if (hop.dex === 'orca') {
       // OPTIMIZATION: Try local quote first using cached pool state
       const sys: any = (CONFIG as any)?.system || {};
       if (sys.quotes?.enableMinimalMath !== false) {
-        const localQuote = await quoteOrcaClmmLocal(hop, amountInRaw);
+        const localQuote = await quoteOrcaClmmLocal(hop, amountInRaw, effectiveTraceId);
         if (localQuote > 0n) return localQuote;
       }
       
@@ -20,6 +23,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       try {
         logger.info('tx.resolve.quote.orca.start', {
           cat: 'tx',
+          traceId: effectiveTraceId,
           ctx: {
             poolId: hop.poolId,
             inputMint: hop.inputMint,
@@ -28,6 +32,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             programId: hop.programId,
             inputDecimals: hop.inputDecimals,
             outputDecimals: hop.outputDecimals,
+            traceId: effectiveTraceId,
           }
         });
       } catch (e) { logCatchError('resolver.quotes', e); }
@@ -39,8 +44,10 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       try {
         logger.info('tx.resolve.quote.orca.wallet', {
           cat: 'tx',
+          traceId: effectiveTraceId,
           ctx: {
             wallet: kp.publicKey.toBase58(),
+            traceId: effectiveTraceId,
           }
         });
       } catch (e) { logCatchError('resolver.quotes', e); }
@@ -51,9 +58,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       try {
         logger.info('tx.resolve.quote.orca.context', {
           cat: 'tx',
+          traceId: effectiveTraceId,
           ctx: {
             programId: ctx.program.programId.toBase58(),
             wallet: kp.publicKey.toBase58(),
+            traceId: effectiveTraceId,
           }
         });
       } catch (e) { logCatchError('resolver.quotes', e); }
@@ -67,6 +76,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
         const poolData = pool.getData ? pool.getData() : null;
         logger.info('tx.resolve.quote.orca.pool', {
           cat: 'tx',
+          traceId: effectiveTraceId,
           ctx: {
             poolId: hop.poolId,
             poolAddress: pool.getAddress?.()?.toBase58() || 'unknown',
@@ -74,6 +84,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             tickCurrentIndex: poolData?.tickCurrentIndex?.toString() || 'unknown',
             tickSpacing: poolData?.tickSpacing?.toString() || 'unknown',
             sqrtPrice: poolData?.sqrtPrice?.toString() || 'unknown',
+            traceId: effectiveTraceId,
           }
         });
       } catch (e) { logCatchError('resolver.quotes', e); }
@@ -89,12 +100,14 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       try {
         logger.info('tx.resolve.quote.orca.params', {
           cat: 'tx',
+          traceId: effectiveTraceId,
           ctx: {
             poolId: hop.poolId,
             inputMint: inputMintPk.toBase58(),
             amountInRaw: amountInRaw.toString(),
             amountInBn: amountInBn.toString(),
             slippageTolerance: String(slippageTolerance),
+            traceId: effectiveTraceId,
           }
         });
       } catch (e) { logCatchError('resolver.quotes', e); }
@@ -703,6 +716,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       const { logger } = await import('../../utils/logger.js');
       logger.error('tx.resolve.quote.error', {
         cat: 'tx',
+        traceId: effectiveTraceId,
         ctx: {
           dex: hop.dex,
           poolId: hop.poolId,
@@ -711,6 +725,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
           amountInRaw: amountInRaw.toString(),
           error: String((e as any)?.message || e),
           stack: (e as any)?.stack,
+          traceId: effectiveTraceId,
         }
       });
     } catch (e) { logCatchError('resolver.quotes', e); }
@@ -729,7 +744,7 @@ export function applyMinOut(outRaw: bigint, slippageBps: number): bigint {
  * Quote Orca Whirlpool CLMM swap using cached pool state (no RPC calls)
  * Uses CLMM price formula with mint-based direction detection
  */
-async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<bigint> {
+async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?: string): Promise<bigint> {
   if (!(amountInRaw > 0n)) return 0n;
   
   try {

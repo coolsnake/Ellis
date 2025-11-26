@@ -67,6 +67,7 @@ export type ExecutionPlan = {
   path: string[];
   hops: DirectHop[];
   computeUnitPriceMicroLamports?: number;
+  traceId?: string;  // Unified trace ID for correlating all logs across the execution lifecycle
 };
 
 export type ChunkedPlan = { txs: Array<{ instructions: any[]; approxSizeBytes: number }>; totalIxs: number; totalBytes: number };
@@ -90,6 +91,7 @@ export type ResolveDirectInput = {
   size?: number;
   sizeUsd?: number;
   slippageBps?: number;
+  traceId?: string;  // Unified trace ID for correlating all logs across the execution lifecycle
 };
 
 

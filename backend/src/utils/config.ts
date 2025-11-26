@@ -468,6 +468,22 @@ export const CONFIG = {
     useDontFrontAccount: (process.env.JITO_USE_DONT_FRONT || 'false') === 'true',
     // Optional tip recipient (pubkey). Recommended to configure explicitly.
     tipAccount: process.env.JITO_TIP_ACCOUNT || '',
+    // Official Jito tip accounts with fallback (same as Drift uses)
+    tipAccounts: (() => {
+      const raw = String(process.env.JITO_TIP_ACCOUNTS || '');
+      const arr = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      if (arr.length > 0) return arr;
+      // Default Jito tip accounts (official Jito validator tip accounts)
+      return [
+        '96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5',
+        'Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY',
+        'DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh',
+        'ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt',
+        'DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL',
+        'HFqU5x63VTqvQss8hp11i4bVoTfXDRiU9LbvgU5h57cE',
+        '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT',
+      ];
+    })(),
   },
   // RPC send fallback configuration
   rpcSend: {

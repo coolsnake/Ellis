@@ -47,6 +47,7 @@ export async function logTxTrace(kind: TraceKind, entry: Record<string, any>): P
 }
 
 // Consolidated transaction dump (single file per attempt, not split by DEX)
+// Now includes complete trace from opportunity detection through transaction send
 export async function writeTxFullDump(
   phase: 'preflight' | 'execute', 
   payload: Record<string, any>
@@ -56,8 +57,9 @@ export async function writeTxFullDump(
     await mkdir(dir, { recursive: true });
   }
   
-  // Extract identifiers for filename
-  const id = payload.id || payload.txId || payload.txLogs?.[0]?.txId || 'unknown';
+  // Extract traceId - this is the unified ID that correlates all logs
+  const traceId = payload.traceId || payload.id || payload.txId || payload.txLogs?.[0]?.txId || 'unknown';
+  const id = payload.id || payload.txId || traceId;
   const signature = payload.signature || payload.send?.signature || null;
   const hasError = !!(payload.err || payload.sim?.value?.err || payload.send?.err || payload.sim?.err);
   const status = hasError ? 'failed' : 'success';
@@ -68,9 +70,9 @@ export async function writeTxFullDump(
     (payload.hops ? Array.from(new Set(payload.hops.map((h: any) => h.dex).filter(Boolean))) : []) ||
     [];
   
-  // Create unique filename: timestamp-id-signature-status.json
+  // Create unique filename: timestamp-traceId-signature-status.json
   const timestamp = Date.now();
-  const idPart = String(id).slice(0, 16); // Truncate long IDs
+  const idPart = String(traceId).slice(0, 16); // Truncate long IDs
   const sigPart = signature ? `-${String(signature).slice(0, 8)}` : '';
   const filename = `${timestamp}-${idPart}${sigPart}-${status}.json`;
   const file = resolve(dir, filename);
@@ -80,11 +82,12 @@ export async function writeTxFullDump(
     // Core transaction data
     ...payload,
     
-    // Metadata
+    // Metadata - traceId is the unified ID for correlating all logs
     _metadata: {
       timestamp,
       phase,
       status,
+      traceId, // Unified trace ID for correlating all logs across the execution lifecycle
       id,
       signature: signature || null,
       hasError,

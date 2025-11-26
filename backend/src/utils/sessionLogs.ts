@@ -109,9 +109,10 @@ export async function writeConsolidatedSessionLog(): Promise<string | null> {
   }
 }
 
-// Get recent session logs filtered by transaction ID and patterns
-// Since timestamps are relative strings, we use a simple approach: take recent logs that match
-export function getTxRelatedLogs(txId: string | undefined, startTime?: number, endTime?: number, maxLogs: number = 200): SessionLogEvent[] {
+// Get recent session logs filtered by traceId (unified transaction trace ID)
+// The traceId is generated at the start of each execution attempt and propagated through
+// resolver -> builder -> sender for complete log correlation
+export function getTxRelatedLogs(traceId: string | undefined, startTime?: number, endTime?: number, maxLogs: number = 200): SessionLogEvent[] {
   try {
     const relevant: SessionLogEvent[] = [];
     const txPatterns = [
@@ -129,8 +130,10 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
       /\.(ix\.|instruction)/i,
       /\.(builder|build|swap)/i,
       // Arb executor patterns - capture opportunity acceptance and execution logs
-      /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_check|opportunity_data|cycle_closed|balance_check|filtered)/i,
+      /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_check|opportunity_data|cycle_closed|balance_check|filtered|resolving_plan)/i,
       /arb\.executor\./i,
+      // Jito patterns
+      /arb\.jito\./i,
     ];
     
     // Exclusion patterns - filter out graph sync/push logs
@@ -148,8 +151,8 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
     
     // Iterate backwards through recent events (most recent first)
     // Events are stored chronologically, so we start from the end
-    // Increase window to ensure we capture all instruction building logs
-    const eventsToCheck = Math.min(_sessionEvents.length, maxLogs * 5); // Check more to filter down (increased from 3x to 5x)
+    // Increase window to capture all logs from the entire execution lifecycle
+    const eventsToCheck = Math.min(_sessionEvents.length, maxLogs * 10); // Check more to find all related logs
     const startIdx = Math.max(0, _sessionEvents.length - eventsToCheck);
     
     for (let i = _sessionEvents.length - 1; i >= startIdx; i--) {
@@ -157,26 +160,37 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
       if (!event) continue;
       
       const msg = String(event.message || '').toLowerCase();
-      const ctxStr = JSON.stringify(event.context || {}).toLowerCase();
+      const ctx = event.context || {};
+      const ctxStr = JSON.stringify(ctx).toLowerCase();
       
       // Skip if matches exclusion patterns (graph sync/push logs)
       const shouldExclude = excludePatterns.some(p => p.test(msg) || p.test(ctxStr));
       if (shouldExclude) continue;
       
-      // Check if transaction ID matches
-      const hasTxId = txId && (
-        ctxStr.includes(txId.toLowerCase()) ||
-        msg.includes(txId.toLowerCase())
+      // PRIMARY CHECK: Direct traceId match in context (most reliable)
+      // This captures all logs that were explicitly tagged with the traceId
+      const hasDirectTraceId = traceId && (
+        (ctx as any).traceId === traceId ||
+        (ctx as any).txId === traceId ||
+        ((ctx as any).ctx && ((ctx as any).ctx.traceId === traceId || (ctx as any).ctx.txId === traceId))
       );
       
-      // Check if message matches transaction patterns
-      const matchesPattern = txPatterns.some(p => p.test(msg) || p.test(ctxStr));
+      // SECONDARY CHECK: traceId substring in context or message
+      const hasTraceIdSubstring = traceId && (
+        ctxStr.includes(traceId.toLowerCase()) ||
+        msg.includes(traceId.toLowerCase())
+      );
+      
+      // FALLBACK CHECK: Pattern matching for tx.* category logs without traceId
+      // Only used when we have a traceId to avoid pulling in unrelated logs
+      const matchesPattern = traceId && txPatterns.some(p => p.test(msg) || p.test(ctxStr));
       
       // Check if cat is 'tx' or 'arb' (transaction/arbitrage category)
       // But only include arb logs that are executor-related, not graph sync
-      const isTxCat = event.cat === 'tx' || (event.cat === 'arb' && /arb\.executor\./i.test(msg));
+      const isTxCat = event.cat === 'tx' || (event.cat === 'arb' && /arb\.executor\.|arb\.jito\./i.test(msg));
       
-      if (hasTxId || matchesPattern || isTxCat) {
+      // Prioritize direct traceId matches, then substring matches, then pattern matches for tx category
+      if (hasDirectTraceId || hasTraceIdSubstring || (matchesPattern && isTxCat)) {
         relevant.unshift(event); // Add to beginning to maintain chronological order
         if (relevant.length >= maxLogs) break;
       }

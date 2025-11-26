@@ -4,7 +4,7 @@ import { peekOrcaPools } from '../../server/pools.js';
 import { logger } from '../../utils/logger.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 
-export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
+export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
   if (stat?.programId) hop.programId = stat.programId;
   
@@ -19,11 +19,13 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
     try {
       logger.info('orca.resolver.tick_arrays_from_cache', {
         cat: 'tx',
+        traceId,
         ctx: {
           pool: hop.poolId,
           lower: hop.tickArrayLower?.slice(0, 8) + '…' || 'none',
           center: hop.tickArrayCenter?.slice(0, 8) + '…' || 'none',
-          upper: hop.tickArrayUpper?.slice(0, 8) + '…' || 'none'
+          upper: hop.tickArrayUpper?.slice(0, 8) + '…' || 'none',
+          traceId,
         }
       });
     } catch (e) { logCatchError('resolver.orca', e); }

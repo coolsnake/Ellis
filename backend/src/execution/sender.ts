@@ -21,6 +21,7 @@ export type SendOptions = {
   computeUnitPriceMicroLamports?: number;
   lookupTableAddresses?: string[];
   skipPreflight?: boolean; // Default: true for speed. Set to false for debugging.
+  traceId?: string; // Unified trace ID for correlating all logs across the execution lifecycle
   // Jito parallel sending options
   jito?: {
     enabled: boolean;
@@ -454,6 +455,9 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   const kp = await ensureWallet(CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
   
+  // Use provided traceId or generate one
+  const txId = opts?.traceId || Math.random().toString(36).slice(2, 10);
+  
   // Check if compute budget instructions already exist in the incoming instructions
   const COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
   let hasComputeUnitLimit = false;
@@ -526,12 +530,11 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     }
   } catch {}
   const { blockhash } = await getCachedBlockhash(connection);
-  const txId = Math.random().toString(36).slice(2, 10);
   try {
-    logger.info('tx.preflight.start', { cat: 'tx', ctx: { txId, ixCount: realIxs.length } as any });
+    logger.info('tx.preflight.start', { cat: 'tx', traceId: txId, ctx: { txId, ixCount: realIxs.length } as any });
   } catch {}
   try {
-    logger.info('tx.preflight.detail', { cat: 'tx', ctx: { txId, ixCount: realIxs.length, origCount: (instructions || []).length, skipped, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
+    logger.info('tx.preflight.detail', { cat: 'tx', traceId: txId, ctx: { txId, ixCount: realIxs.length, origCount: (instructions || []).length, skipped, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
   let lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   
@@ -832,6 +835,9 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   const kp = await ensureWallet(CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
   
+  // Use provided traceId or generate one
+  const txId = opts?.traceId || Math.random().toString(36).slice(2, 10);
+  
   // Check if compute budget instructions already exist in the incoming instructions
   const COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
   let hasComputeUnitLimit = false;
@@ -899,10 +905,9 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     realIxs.push(t);
   }
   const { blockhash, lastValidBlockHeight } = await getCachedBlockhash(connection);
-  const txId = Math.random().toString(36).slice(2, 10);
   try {
-    logger.info('tx.send.start', { cat: 'tx', ctx: { txId, ixCount: realIxs.length } as any });
-    logger.info('tx.send.detail', { cat: 'tx', ctx: { txId, ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
+    logger.info('tx.send.start', { cat: 'tx', traceId: txId, ctx: { txId, ixCount: realIxs.length } as any });
+    logger.info('tx.send.detail', { cat: 'tx', traceId: txId, ctx: { txId, ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
   // Use ALT addresses from options, or try to extract from instructions if available
   const altAddresses = opts?.lookupTableAddresses || [];
