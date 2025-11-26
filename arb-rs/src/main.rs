@@ -18,7 +18,6 @@ use base64::{engine::general_purpose, Engine as _};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{Notify, RwLock};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -359,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
         loop {
             let iter_start = Instant::now();
             // Execute loop iteration - errors are logged but don't stop the loop
-            let (enabled, idle_ms, min_bps, max_hops) = {
+            let (enabled, _idle_ms, min_bps, max_hops) = {
                 let s = loop_state.read().await;
                 (
                     s.config.enabled,
@@ -555,7 +554,7 @@ async fn main() -> anyhow::Result<()> {
                             let fee: i64 = e.fee_bps.unwrap_or(0);
                             let liq = e.liquidity.unwrap_or(0.0);
                             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                            let pool_id = e.pool_id.clone().unwrap_or_default();
+                            let _pool_id = e.pool_id.clone().unwrap_or_default();
                             let px_raw = if let Some(px) = e.price_a_per_b {
                                 if px.is_finite() && px > 0.0 {
                                     px
@@ -770,7 +769,7 @@ async fn main() -> anyhow::Result<()> {
                         // but AFTER releasing the write lock to avoid blocking.
                         // This ensures ACK requests can succeed quickly even if detection takes a long time.
                         if let Some(v_commit) = version_to_commit {
-                            let mut s = loop_state.write().await;
+                            let s = loop_state.write().await;
                             let current_v = s.last_graph_version.load(Ordering::Acquire);
                             if v_commit > current_v {
                                 tracing::info!(
@@ -794,7 +793,7 @@ async fn main() -> anyhow::Result<()> {
                         tracing::info!("arb.graph.diff: none pending");
                         // Even if no diffs, commit version if we have one (version-only updates)
                         if let Some(v_commit) = version_to_commit {
-                            let mut s = loop_state.write().await;
+                            let s = loop_state.write().await;
                             let current_v = s.last_graph_version.load(Ordering::Acquire);
                             if v_commit > current_v {
                                 tracing::info!(
@@ -818,7 +817,7 @@ async fn main() -> anyhow::Result<()> {
                 let detect_start = Instant::now();
                 // Detect cycles (MVP -log weights)
                 // Compare with previous to only push WS updates on change
-                let (opps, prev, near_pair, near_list, rejected_samples): (
+                let (opps, prev, _near_pair, _near_list, rejected_samples): (
                     Vec<Opportunity>,
                     Vec<Opportunity>,
                     Option<(Opportunity, i64)>,
@@ -942,7 +941,9 @@ async fn main() -> anyhow::Result<()> {
                     // Deduplicate cycles and compute profit from edge rates
                     let mut seen: HashSet<String> = HashSet::new();
                     let mut curr: Vec<Opportunity> = Vec::new();
+                    #[allow(unused_assignments, unused_variables)]
                     let mut best_below: Option<Opportunity> = None;
+                    #[allow(unused_variables)]
                     let mut best_below_shortfall: i64 = i64::MAX;
                     // Minimum liquidity threshold to consider an edge in rate selection
                     let min_edge_liq_threshold: f64 = 0.0; // filter out zero-liquidity edges
@@ -1560,8 +1561,10 @@ async fn main() -> anyhow::Result<()> {
                     );
                     // Near-miss, triangle fallback, and subthreshold passes are disabled
                     // Only the primary detector cycles above are used
-                    let near_pair: Option<(Opportunity, i64)> = None;
-                    let near_list: Vec<(Opportunity, i64)> = Vec::new();
+                    #[allow(unused_mut, unused_variables)]
+                    let mut near_pair: Option<(Opportunity, i64)> = None;
+                    #[allow(unused_mut, unused_variables)]
+                    let mut near_list: Vec<(Opportunity, i64)> = Vec::new();
                     // Skip all near-miss detection (was: if s.config.near_miss_enable)
                     if false {
                         let epsilon: f64 = if s.config.near_miss_epsilon.is_finite()
@@ -1583,7 +1586,7 @@ async fn main() -> anyhow::Result<()> {
                             if nmcy.nodes.iter().any(|&i| i >= node_count_nm) {
                                 continue;
                             }
-                            let mut labels: Vec<String> = nmcy
+                            let labels: Vec<String> = nmcy
                                 .nodes
                                 .iter()
                                 .map(|&i| s.graph.g[NodeIndex::new(i)].clone())
@@ -2306,8 +2309,8 @@ async fn main() -> anyhow::Result<()> {
                                 if a >= ncount || b >= ncount || c >= ncount {
                                     continue;
                                 }
-                                let mut nodes = vec![a, b, c];
-                                let mut labels: Vec<String> = nodes
+                                let nodes = vec![a, b, c];
+                                let labels: Vec<String> = nodes
                                     .iter()
                                     .map(|&i| s.graph.g[NodeIndex::new(i)].clone())
                                     .collect();
@@ -2837,7 +2840,7 @@ async fn main() -> anyhow::Result<()> {
                     merged.truncate(50);
                 }
                 // Proper change detection: compare opportunities by path/dexes AND profit values
-                let mut s_check = loop_state.read().await;
+                let s_check = loop_state.read().await;
                 let prev_opps = &s_check.opportunities;
                 let changed = {
                     // Check if count changed
@@ -3044,7 +3047,7 @@ async fn main() -> anyhow::Result<()> {
                 // Version should already be committed before detection, but check defensively
                 // This handles edge cases where version_to_commit wasn't cleared properly
                 if let Some(v_commit) = version_to_commit {
-                    let mut s = loop_state.write().await;
+                    let s = loop_state.write().await;
                     let current_v = s.last_graph_version.load(Ordering::Acquire);
                     if v_commit > current_v {
                         tracing::warn!(
@@ -3065,8 +3068,8 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(ts_commit) = ts_to_commit {
                         s.last_graph_ts.store(ts_commit, Ordering::Release);
                     }
-                    version_to_commit = None;
-                    ts_to_commit = None;
+                    // Note: version_to_commit and ts_to_commit are not cleared here
+                    // as they will be reassigned at the start of the next loop iteration
                 } else {
                     // Check if there's a pending version that wasn't captured (shouldn't happen, but defensive check)
                     let pending_check = loop_state
