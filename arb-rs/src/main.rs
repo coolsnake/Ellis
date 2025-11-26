@@ -67,6 +67,8 @@ struct ArbConfig {
     periodic_full_ms: Option<u64>,
     // Algorithm selection: use SPFA (Shortest Path Faster Algorithm) instead of standard Bellman-Ford
     use_spfa: bool,
+    // When true, run both BF and SPFA algorithms and merge results for more comprehensive detection
+    run_dual_algo: bool,
     // Pruning of competitive paths
     // Limit number of SOL<->stable hops allowed per cycle; None means unlimited
     max_sol_stable_hops: Option<usize>,
@@ -883,15 +885,36 @@ async fn main() -> anyhow::Result<()> {
                             detect_negative_cycles_from_anchors(&s.graph, &anchor_set, max_hops)
                         }
                     } else if use_filtered {
-                        // Use SPFA or standard Bellman-Ford for filtered detection
-                        if s.config.use_spfa {
+                        // Run both BF and SPFA for filtered detection if run_dual_algo is enabled
+                        if s.config.run_dual_algo {
+                            let mut combined = detect_negative_cycles_spfa_filtered(&s.graph, &affected_nodes, max_hops);
+                            let bf_cycles = detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops);
+                            // Dedupe by node sequence
+                            let existing: std::collections::HashSet<Vec<usize>> = combined.iter().map(|c| c.nodes.clone()).collect();
+                            for c in bf_cycles {
+                                if !existing.contains(&c.nodes) {
+                                    combined.push(c);
+                                }
+                            }
+                            combined
+                        } else if s.config.use_spfa {
                             detect_negative_cycles_spfa_filtered(&s.graph, &affected_nodes, max_hops)
                         } else {
                             detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops)
                         }
                     } else {
-                        // Use SPFA or standard Bellman-Ford for full graph detection
-                        if s.config.use_spfa {
+                        // Run both BF and SPFA on full graph if run_dual_algo is enabled
+                        if s.config.run_dual_algo {
+                            let mut combined = detect_negative_cycles_spfa(&s.graph, max_hops);
+                            let bf_cycles = detect_negative_cycles(&s.graph, max_hops);
+                            let existing: std::collections::HashSet<Vec<usize>> = combined.iter().map(|c| c.nodes.clone()).collect();
+                            for c in bf_cycles {
+                                if !existing.contains(&c.nodes) {
+                                    combined.push(c);
+                                }
+                            }
+                            combined
+                        } else if s.config.use_spfa {
                             detect_negative_cycles_spfa(&s.graph, max_hops)
                         } else {
                             detect_negative_cycles(&s.graph, max_hops)
@@ -1535,10 +1558,12 @@ async fn main() -> anyhow::Result<()> {
                         rejected_too_high_profit,
                         "arb.detect.cycles"
                     );
-                    let mut near_pair = best_below.map(|o| (o, best_below_shortfall));
-                    let mut near_list: Vec<(Opportunity, i64)> = Vec::new();
-                    // Near-miss via Bellman-Ford final slack pass
-                    if s.config.near_miss_enable {
+                    // Near-miss, triangle fallback, and subthreshold passes are disabled
+                    // Only the primary detector cycles above are used
+                    let near_pair: Option<(Opportunity, i64)> = None;
+                    let near_list: Vec<(Opportunity, i64)> = Vec::new();
+                    // Skip all near-miss detection (was: if s.config.near_miss_enable)
+                    if false {
                         let epsilon: f64 = if s.config.near_miss_epsilon.is_finite()
                             && s.config.near_miss_epsilon > 0.0
                         {
@@ -1889,8 +1914,8 @@ async fn main() -> anyhow::Result<()> {
                             near_list.push((near_for_list, shortfall));
                         }
                     }
-                    // Fallback: if no negative cycles at all (curr empty) and no near_below, enumerate simple cycles up to max_hops and pick best product
-                    if curr.is_empty() && near_pair.is_none() {
+                    // Skip DFS fallback for near-miss detection (disabled)
+                    if false && curr.is_empty() && near_pair.is_none() {
                         let ncount = s.graph.g.node_count();
                         let max_starts = ncount.min(40);
                         let mut best_prod: f64 = 0.0;
@@ -2234,8 +2259,8 @@ async fn main() -> anyhow::Result<()> {
                                 near_pair = Some((near, shortfall));
                             }
                         }
-                        // Extra permissive fallback: try find any triangle cycle even if profit <= 0
-                        if near_pair.is_none() {
+                        // Skip triangle fallback search (disabled)
+                        if false && near_pair.is_none() {
                             let ncount = s.graph.g.node_count();
                             let best_rate_between = |ui: usize, vi: usize| -> f64 {
                                 let u = NodeIndex::new(ui);
@@ -2605,8 +2630,8 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    // Emit debug: top-N subthreshold
-                    if s.config.debug_emit_subthreshold {
+                    // Skip debug subthreshold pass (disabled)
+                    if false && s.config.debug_emit_subthreshold {
                         // Re-run a light pass over cycles to collect subthreshold candidates
                         let mut subs: Vec<(i64, String)> = Vec::new();
                         let dbg_cycles = detect_negative_cycles(&s.graph, max_hops);
@@ -2867,133 +2892,52 @@ async fn main() -> anyhow::Result<()> {
                         s.rejected_opportunities_updated_ms = 0;
                     }
                 }
-                let mut near_misses_changed = false;
-                // Build top-K near-misses list for UI with updated profit values
-                let mut nlist = near_list;
-                nlist.sort_by_key(|(_, sh)| *sh);
-                let k = s.config.debug_top_n.max(1).min(10);
-                let mut new_near_misses = nlist
-                    .iter()
-                    .take(k)
-                    .map(|(o, _)| o.clone())
-                    .collect::<Vec<Opportunity>>();
-                // Update near_misses timestamps to reflect they were just rebuilt
-                for nm in new_near_misses.iter_mut() {
-                    nm.last_verified_ms = Some(now_ms_val);
-                }
-                // Check if near_misses changed by comparing profit values
-                if s.near_misses.len() != new_near_misses.len() {
-                    near_misses_changed = true;
-                } else {
-                    for (new, prev) in new_near_misses.iter().zip(s.near_misses.iter()) {
-                        if new.path != prev.path
-                            || new.dexes != prev.dexes
-                            || new.profit_bps != prev.profit_bps
-                            || new.net_bps != prev.net_bps
-                        {
-                            near_misses_changed = true;
-                            break;
-                        }
-                    }
+                // Near-miss processing disabled - skip all near_misses updates
+                // Clear near_misses since detection is disabled
+                let near_misses_changed = !s.near_misses.is_empty();
+                if near_misses_changed {
+                    s.near_misses.clear();
+                    s.near_miss = None;
+                    s.near_miss_shortfall_bps = None;
                 }
 
-                if changed || near_misses_changed {
-                    // Update detections for re-detected opps (only if opportunities changed)
-                    if changed {
-                        for m in merged.iter_mut() {
-                            // If this opp also existed previously, bump detections and preserve first_seen_ms
-                            if let Some(prev_o) = s
-                                .opportunities
-                                .iter()
-                                .find(|p| p.path == m.path && p.dexes == m.dexes)
-                            {
-                                m.first_seen_ms = prev_o
-                                    .first_seen_ms
-                                    .or(prev_o.detected_ms)
-                                    .or(m.detected_ms);
-                                m.detections = Some(prev_o.detections.unwrap_or(1) + 1);
-                                m.last_verified_ms = Some(now_ms_val); // Update verification timestamp
-                            } else {
-                                m.first_seen_ms = m.first_seen_ms.or(m.detected_ms);
-                                m.last_verified_ms = m.last_verified_ms.or(m.detected_ms);
-                                m.detections = Some(1);
-                            }
-                        }
-                        s.opportunities = merged;
-                    }
-
-                    // Always update near_misses if they changed
-                    let prev_near_misses = s.near_misses.clone();
-                    s.near_misses = new_near_misses;
-                    // Prefer ≥3-DEX paths; prefer recently updated ones, then rotate across cycles
-                    let preferred: Vec<Opportunity> = s
-                        .near_misses
-                        .iter()
-                        .cloned()
-                        .filter(|o| o.dexes.len() >= 3)
-                        .collect();
-                    let pool: Vec<Opportunity> = if !preferred.is_empty() {
-                        preferred
-                    } else {
-                        s.near_misses.clone()
-                    };
-                    if !pool.is_empty() {
-                        // Find opportunities that changed profit_bps compared to previous near_misses
-                        let changed_indices: Vec<usize> = pool
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(idx, o)| {
-                                let prev = prev_near_misses
-                                    .iter()
-                                    .find(|p| p.path == o.path && p.dexes == o.dexes);
-                                if let Some(prev_o) = prev {
-                                    if prev_o.profit_bps != o.profit_bps
-                                        || prev_o.net_bps != o.net_bps
-                                    {
-                                        Some(idx)
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    // New near miss
-                                    Some(idx)
-                                }
-                            })
-                            .collect();
-                        // Prefer changed entries, then rotate
-                        let chosen = if !changed_indices.is_empty() {
-                            // Pick from changed entries, rotating through them
-                            let changed_idx =
-                                (s.metrics.detection_cycles_total as usize) % changed_indices.len();
-                            pool[changed_indices[changed_idx]].clone()
-                        } else {
-                            // No changes detected, rotate through all
-                            let idx = (s.metrics.detection_cycles_total as usize) % pool.len();
-                            pool[idx].clone()
-                        };
-                        s.near_miss = Some(chosen.clone());
-                        s.near_miss_shortfall_bps =
-                            Some((s.config.min_profit_bps - chosen.profit_bps).max(0));
-                    } else {
-                        s.near_miss = near_pair.as_ref().map(|(o, _)| o.clone());
-                        s.near_miss_shortfall_bps = near_pair.as_ref().map(|(_, sh)| *sh);
-                    }
-                    // Update metrics only when opportunities changed
-                    if changed {
-                        s.metrics.opportunities_active = s.opportunities.len() as u64;
-                        s.metrics.max_profit_bps = s
+                if changed {
+                    // Update detections for re-detected opps
+                    for m in merged.iter_mut() {
+                        // If this opp also existed previously, bump detections and preserve first_seen_ms
+                        if let Some(prev_o) = s
                             .opportunities
                             .iter()
-                            .map(|o| o.profit_bps)
-                            .max()
-                            .unwrap_or(0) as i64;
-                        let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
-                        s.metrics.avg_profit_bps = if s.opportunities.is_empty() {
-                            0.0
+                            .find(|p| p.path == m.path && p.dexes == m.dexes)
+                        {
+                            m.first_seen_ms = prev_o
+                                .first_seen_ms
+                                .or(prev_o.detected_ms)
+                                .or(m.detected_ms);
+                            m.detections = Some(prev_o.detections.unwrap_or(1) + 1);
+                            m.last_verified_ms = Some(now_ms_val); // Update verification timestamp
                         } else {
-                            total as f64 / s.opportunities.len() as f64
-                        };
+                            m.first_seen_ms = m.first_seen_ms.or(m.detected_ms);
+                            m.last_verified_ms = m.last_verified_ms.or(m.detected_ms);
+                            m.detections = Some(1);
+                        }
                     }
+                    s.opportunities = merged;
+
+                    // Update metrics
+                    s.metrics.opportunities_active = s.opportunities.len() as u64;
+                    s.metrics.max_profit_bps = s
+                        .opportunities
+                        .iter()
+                        .map(|o| o.profit_bps)
+                        .max()
+                        .unwrap_or(0) as i64;
+                    let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
+                    s.metrics.avg_profit_bps = if s.opportunities.is_empty() {
+                        0.0
+                    } else {
+                        total as f64 / s.opportunities.len() as f64
+                    };
                     s.metrics.detection_cycles_total += 1;
                     // Increment detector outcomes and cumulative opportunities
                     if s.opportunities.is_empty() {
@@ -4346,6 +4290,7 @@ struct ConfigReq {
     filtered_expand_hops: Option<usize>,
     periodic_full_ms: Option<u64>,
     use_spfa: Option<bool>,
+    run_dual_algo: Option<bool>,
     max_sol_stable_hops: Option<usize>,
     drop_stable_stable_hops: Option<bool>,
     stable_mints: Option<Vec<String>>,
@@ -4484,6 +4429,9 @@ async fn set_config(
     if let Some(v) = cfg.use_spfa {
         s.config.use_spfa = v;
     }
+    if let Some(v) = cfg.run_dual_algo {
+        s.config.run_dual_algo = v;
+    }
     if let Some(v) = cfg.max_sol_stable_hops {
         s.config.max_sol_stable_hops = Some(v);
     }
@@ -4557,8 +4505,8 @@ fn default_config() -> ArbConfig {
             .unwrap_or(5),
         near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE")
             .ok()
-            .map(|v| v != "false")
-            .unwrap_or(true),
+            .map(|v| v == "true")
+            .unwrap_or(false),
         near_miss_epsilon: std::env::var("ARB_NEAR_MISS_EPS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -4589,6 +4537,11 @@ fn default_config() -> ArbConfig {
             .ok()
             .map(|v| v == "true")
             .unwrap_or(false),
+        // Run both BF and SPFA and merge results for more comprehensive detection
+        run_dual_algo: std::env::var("ARB_RUN_DUAL_ALGO")
+            .ok()
+            .map(|v| v != "false")
+            .unwrap_or(true),
         // Pruning defaults
         max_sol_stable_hops: Some(
             std::env::var("ARB_MAX_SOL_STABLE_HOPS")

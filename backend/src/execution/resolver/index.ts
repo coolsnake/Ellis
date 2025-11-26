@@ -83,9 +83,8 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       Promise.resolve(executionCache.getTokenMeta(outputMint) || getTokenMeta(outputMint)),
     ]);
     // Token-2022 gating with mode controls
-    const sys = (CONFIG.system as any) || {};
-    const mode = String(sys.token2022Mode || 'block');
-    const allow = (sys.token2022Allow || {}) as { raydium?: boolean; orca?: boolean; meteora?: boolean };
+    const mode = String((CONFIG as any).token2022Mode || 'block');
+    const allow = ((CONFIG as any).token2022Allow || {}) as { raydium?: boolean; orca?: boolean; meteora?: boolean; pumpswap?: boolean };
     const any2022 = tokenInMeta.program === 'token-2022' || tokenOutMeta.program === 'token-2022';
     if (any2022) {
       let ok = false;
@@ -627,8 +626,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
 
       // Apply Token-2022 bump on top of estimated slippage
       try {
-        const sys = (CONFIG.system as any) || {};
-        const bump = Number(sys.token2022ExtraSlippageBps ?? 0);
+        const bump = Number((CONFIG as any).token2022ExtraSlippageBps ?? 0);
         const is2022 = (hops[i].inputTokenProgram === 'token-2022') || (hops[i].outputTokenProgram === 'token-2022');
         eff = Math.max(0, Math.min(9900, eff + (is2022 ? bump : 0)));
       } catch (e) { logCatchError('resolver.index', e); }

@@ -337,7 +337,7 @@ export const CONFIG = {
   // Max requests for deep Jupiter price bootstrap
   deepJupiterBootstrapMaxRequests: Number(process.env.DEEP_JUPITER_BOOTSTRAP_MAX_REQUESTS || 6),
   // Token mint blocklist: comma-separated list of mint addresses to exclude from pools
-  tokenBlocklistMints: (process.env.TOKEN_BLOCKLIST_MINTS || 'pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn,USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB')
+  tokenBlocklistMints: (process.env.TOKEN_BLOCKLIST_MINTS || '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),

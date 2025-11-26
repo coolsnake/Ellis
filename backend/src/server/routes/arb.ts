@@ -2491,12 +2491,22 @@ export function createArbRouter(io: SocketIOServer): Router {
       // Write back to file
       await writeJson(configPath, updatedConfig);
       
-      // If executor is running, also update its runtime config
+      // If executor is running, reload the FULL config from file and update runtime
       try {
         const { getArbExecutor } = await import('../../execution/arbExecutor.js');
         const executor = getArbExecutor();
-        executor.updateConfig(req.body);
-        logger.info('arb.executor.api.config_updated', { cat: 'arb', updates: req.body, runtime: true });
+        
+        // Reload the complete config from file (not just the updates)
+        // This ensures the runtime instance always matches what's saved in the file
+        const fullConfig = await readJson(configPath, {});
+        executor.updateConfig(fullConfig); // This will replace the entire config
+        
+        logger.info('arb.executor.api.config_updated', { 
+          cat: 'arb', 
+          updates: req.body, 
+          runtime: true, 
+          fullConfig 
+        });
       } catch {
         // Executor not running yet, that's OK - file is updated
         logger.info('arb.executor.api.config_updated', { cat: 'arb', updates: req.body, runtime: false });
