@@ -21,7 +21,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     mode: 'simulate',
     slippageBpsDefault: 50,
     computeUnitLimit: 1000000,
-    computeUnitPriceMicroLamports: 1000,
+    computeUnitPriceMicroLamports: 500000,
     createAtasInTx: true,
     dynamicCompute: true,
     maxTxSizeBytes: 1200,

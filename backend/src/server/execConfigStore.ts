@@ -23,7 +23,7 @@ const defaults: ExecConfig = {
   mode: 'simulate',
   slippageBpsDefault: 50,
   computeUnitLimit: 1_000_000,
-  computeUnitPriceMicroLamports: 50000, // Increased from 1000 for better tx landing
+  computeUnitPriceMicroLamports: 500_000, // 500k µLamports - much better tx landing rate
   createAtasInTx: true,
   dynamicCompute: true,
   maxTxSizeBytes: 0,
