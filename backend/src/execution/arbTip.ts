@@ -97,6 +97,13 @@ export async function calculateProfitBasedTip(
 ): Promise<TipResult | null> {
   const jitoCfg = await getJitoConfig();
   if (!jitoCfg.enabled) {
+    try {
+      logger.debug('arb.tip.skipped', { 
+        cat: 'tx', 
+        reason: 'jito_disabled',
+        config: { enabled: jitoCfg.enabled, tipMode: jitoCfg.tipMode },
+      });
+    } catch {}
     return null;
   }
 

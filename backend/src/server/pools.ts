@@ -2203,7 +2203,17 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
     // This ensures local quotes and builders have access to sqrtPrice, liquidity, etc.
     try {
       const { executionCache } = await import('../execution/cache.js');
+      
+      // Import Orca SDK utilities for tick array derivation
+      const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+      const PDAUtil = sdkAny?.PDAUtil;
+      const TickUtil = sdkAny?.TickUtil || 
+        (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
+      const { PublicKey } = await import('@solana/web3.js');
+      const orcaProgramId = new PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+      
       let hotCached = 0;
+      let tickArraysCached = 0;
       
       for (const pool of normalized.clmm || []) {
         try {
@@ -2229,6 +2239,34 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
           // feeRate from GraphQL (already converted to bps in normalization)
           const feeRateBps = pool.fee_bps;
           
+          // Derive tick arrays for local builder (no RPC needed - pure PDA math)
+          let tickArrays: { lower?: string; center?: string; upper?: string } | undefined;
+          const tickSpacing = pool.tick_spacing;
+          if (tickIndex !== undefined && tickSpacing && PDAUtil && TickUtil) {
+            try {
+              const tickArrayAddresses: { lower?: string; center?: string; upper?: string } = {};
+              const poolPk = new PublicKey(pool.id);
+              
+              for (let offset = -1; offset <= 1; offset++) {
+                try {
+                  const startTick = TickUtil.getStartTickIndex(tickIndex, tickSpacing, offset);
+                  const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, poolPk, startTick);
+                  if (tickArrayPda?.publicKey) {
+                    const address = tickArrayPda.publicKey.toBase58();
+                    if (offset === -1) tickArrayAddresses.lower = address;
+                    else if (offset === 0) tickArrayAddresses.center = address;
+                    else if (offset === 1) tickArrayAddresses.upper = address;
+                  }
+                } catch {}
+              }
+              
+              if (tickArrayAddresses.lower && tickArrayAddresses.center && tickArrayAddresses.upper) {
+                tickArrays = tickArrayAddresses;
+                tickArraysCached++;
+              }
+            } catch {}
+          }
+          
           // Only cache if we have at least sqrtPrice and liquidity
           if (sqrtPriceX64 && liquidity !== undefined) {
             const existing = executionCache.getHot(pool.id) || {};
@@ -2237,7 +2275,8 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
               sqrtPriceX64,
               currentTickIndex: tickIndex,
               liquidity,
-              feeRate: feeRateBps
+              feeRate: feeRateBps,
+              ...(tickArrays ? { tickArrays } : {})
             });
             hotCached++;
           }
@@ -2256,6 +2295,7 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
       logger.info('orca.graphql.hot_cache.populated', {
         clmm: normalized.clmm.length,
         hotCached,
+        tickArraysCached,
         cat: 'orca'
       });
     } catch (e: any) {

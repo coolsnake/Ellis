@@ -45,13 +45,32 @@ function detectDexesFromPrograms(programIds: string[]): Array<'raydium' | 'orca'
 
 /**
  * Get blockhash with caching to reduce RPC calls
- * Blockhashes are valid for ~150 seconds, we cache for 30 seconds for safety
+ * Uses the shared blockhash system first (updated more frequently by other components),
+ * then falls back to local cache with 'confirmed' commitment for fresher values.
  * CRITICAL: Do NOT rate limit blockhash fetching - it's part of transaction execution
  */
 async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
   const now = Date.now();
   
-  // Return cached blockhash if still fresh
+  // Try the shared blockhash system first (updated more frequently by drift/other runners)
+  try {
+    const { getFreshBlockhashOrFetch, getLastValidBlockHeight } = await import('../utils/blockhash.js');
+    const bh = await getFreshBlockhashOrFetch(5000); // Accept up to 5 second old
+    if (bh) {
+      const lvbh = getLastValidBlockHeight();
+      if (lvbh) {
+        try {
+          logger.debug('tx.blockhash.shared_hit', {
+            cat: 'tx',
+            ctx: { blockhash: bh.slice(0, 8), source: 'shared' },
+          });
+        } catch {}
+        return { blockhash: bh, lastValidBlockHeight: lvbh };
+      }
+    }
+  } catch {}
+  
+  // Fallback to local cache if still fresh
   if (cachedBlockhash && (now - cachedBlockhash.fetchedAt) < BLOCKHASH_CACHE_MS) {
     try {
       logger.debug('tx.blockhash.cache_hit', {
@@ -65,8 +84,9 @@ async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: 
     return { blockhash: cachedBlockhash.blockhash, lastValidBlockHeight: cachedBlockhash.lastValidBlockHeight };
   }
   
-  // Fetch fresh blockhash WITHOUT rate limiting - this is transaction-critical
-  const result = await connection.getLatestBlockhash('finalized');
+  // Fetch fresh blockhash - use 'confirmed' for faster/fresher blockhash (vs 'finalized')
+  // Confirmed is ~2-3 slots behind tip vs finalized which is ~32 slots behind
+  const result = await connection.getLatestBlockhash('confirmed');
   cachedBlockhash = { ...result, fetchedAt: now };
   
   try {
@@ -75,7 +95,8 @@ async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: 
       ctx: {
         blockhash: result.blockhash.slice(0, 8),
         lastValidBlockHeight: result.lastValidBlockHeight,
-        note: 'bypassed_rate_limit_for_critical_tx',
+        commitment: 'confirmed',
+        note: 'fresh_fetch_for_tx',
       },
     });
   } catch {}
