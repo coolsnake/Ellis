@@ -5,6 +5,137 @@ import { logCatchError } from '../../utils/errorHandler.js';
 
 type SupportedDex = 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'pumpswap';
 
+// ============================================================================
+// GLOBAL SHYFT RATE LIMITER
+// Shyft has a 1 request/second limit. This enforces that limit process-wide
+// and adds a cooldown period when 429s are detected.
+// ============================================================================
+
+interface ShyftRateLimiterState {
+  /** Timestamp (ms) when cooldown ends. 0 = no active cooldown */
+  cooldownUntilMs: number;
+  /** Timestamp of last successful request dispatch */
+  lastRequestMs: number;
+  /** Count of 429s in current window (for logging) */
+  recentRateLimitCount: number;
+  /** Timestamp when rate limit count was last reset */
+  rateLimitCountResetMs: number;
+}
+
+const shyftState: ShyftRateLimiterState = {
+  cooldownUntilMs: 0,
+  lastRequestMs: 0,
+  recentRateLimitCount: 0,
+  rateLimitCountResetMs: Date.now(),
+};
+
+// Configuration (can be overridden via CONFIG.shyft.*)
+const getShyftRateLimitConfig = () => ({
+  /** Minimum gap between requests in ms (1000 = 1 req/sec) */
+  minRequestGapMs: Number((CONFIG as any)?.shyft?.minRequestGapMs ?? 1100),
+  /** Cooldown duration after a 429 in ms */
+  cooldownDurationMs: Number((CONFIG as any)?.shyft?.cooldownDurationMs ?? 5000),
+  /** Additional cooldown per consecutive 429 in ms */
+  cooldownPerConsecutive429Ms: Number((CONFIG as any)?.shyft?.cooldownPerConsecutive429Ms ?? 2000),
+  /** Max cooldown duration in ms */
+  maxCooldownMs: Number((CONFIG as any)?.shyft?.maxCooldownMs ?? 30000),
+  /** Window for counting consecutive 429s (ms) */
+  rateLimitCountWindowMs: Number((CONFIG as any)?.shyft?.rateLimitCountWindowMs ?? 60000),
+});
+
+/**
+ * Trigger a global cooldown after receiving a 429.
+ * All Shyft requests will wait until cooldown expires.
+ */
+function triggerShyftCooldown(source: string): void {
+  const config = getShyftRateLimitConfig();
+  const now = Date.now();
+  
+  // Reset counter if window expired
+  if (now - shyftState.rateLimitCountResetMs > config.rateLimitCountWindowMs) {
+    shyftState.recentRateLimitCount = 0;
+    shyftState.rateLimitCountResetMs = now;
+  }
+  
+  shyftState.recentRateLimitCount++;
+  
+  // Calculate cooldown: base + (consecutive * extra)
+  const cooldownMs = Math.min(
+    config.maxCooldownMs,
+    config.cooldownDurationMs + (shyftState.recentRateLimitCount - 1) * config.cooldownPerConsecutive429Ms
+  );
+  
+  const newCooldownUntil = now + cooldownMs;
+  
+  // Only extend cooldown, never shorten it
+  if (newCooldownUntil > shyftState.cooldownUntilMs) {
+    shyftState.cooldownUntilMs = newCooldownUntil;
+    
+    logger.warn('shyft.rate_limit.cooldown.triggered', {
+      source,
+      cooldownMs,
+      cooldownUntilMs: newCooldownUntil,
+      consecutiveCount: shyftState.recentRateLimitCount,
+      cat: 'shyft',
+    });
+  }
+}
+
+/**
+ * Wait until it's safe to make a Shyft request.
+ * Enforces: (1) global cooldown after 429s, (2) minimum gap between requests.
+ */
+async function waitForShyftSlot(): Promise<void> {
+  const config = getShyftRateLimitConfig();
+  const now = Date.now();
+  
+  // Check if we're in cooldown
+  if (shyftState.cooldownUntilMs > now) {
+    const waitMs = shyftState.cooldownUntilMs - now;
+    logger.debug('shyft.rate_limit.cooldown.waiting', {
+      waitMs,
+      cooldownUntilMs: shyftState.cooldownUntilMs,
+      cat: 'shyft',
+    });
+    await new Promise(r => setTimeout(r, waitMs));
+  }
+  
+  // Enforce minimum gap between requests
+  const timeSinceLastRequest = Date.now() - shyftState.lastRequestMs;
+  if (timeSinceLastRequest < config.minRequestGapMs) {
+    const gapWaitMs = config.minRequestGapMs - timeSinceLastRequest;
+    await new Promise(r => setTimeout(r, gapWaitMs));
+  }
+  
+  // Update last request time
+  shyftState.lastRequestMs = Date.now();
+}
+
+/**
+ * Get current Shyft rate limiter status (for debugging/monitoring)
+ */
+export function getShyftRateLimiterStatus(): {
+  inCooldown: boolean;
+  cooldownRemainingMs: number;
+  recentRateLimitCount: number;
+  lastRequestMs: number;
+  config: ReturnType<typeof getShyftRateLimitConfig>;
+} {
+  const now = Date.now();
+  const config = getShyftRateLimitConfig();
+  return {
+    inCooldown: shyftState.cooldownUntilMs > now,
+    cooldownRemainingMs: Math.max(0, shyftState.cooldownUntilMs - now),
+    recentRateLimitCount: shyftState.recentRateLimitCount,
+    lastRequestMs: shyftState.lastRequestMs,
+    config,
+  };
+}
+
+// ============================================================================
+// EXISTING CODE (with rate limiter integration)
+// ============================================================================
+
 /**
  * Get Shyft API key for a specific DEX with fallback chain
  * Priority: DEX-specific key → Pumpswap key → Global Shyft key
@@ -73,7 +204,7 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
   if (!fetchFn) throw new Error('fetch.unavailable');
 
   const retries = req.retries ?? Number((CONFIG as any)?.shyft?.maxRetries ?? 2);
-  const backoffMs = req.backoffMs ?? Number((CONFIG as any)?.shyft?.backoffMs ?? 500);
+  const backoffMs = req.backoffMs ?? Number((CONFIG as any)?.shyft?.backoffMs ?? 1000);
 
   const body = JSON.stringify({
     query: req.query,
@@ -83,6 +214,9 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
 
   let lastErr: any;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // *** RATE LIMITER: Wait for slot before each attempt ***
+    await waitForShyftSlot();
+    
     const cid = httpLogStart({
       source: req.dex,
       url,
@@ -97,12 +231,21 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
 
       if (res?.status === 429) {
         httpLog429({ source: req.dex, url, cid });
+        
+        // *** RATE LIMITER: Trigger global cooldown on 429 ***
+        triggerShyftCooldown(req.dex);
+        
         lastErr = new Error('429');
         if (attempt < retries) {
-          await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+          // Don't add extra delay here - waitForShyftSlot will handle it on next iteration
           continue;
         }
         throw lastErr;
+      }
+
+      // Reset rate limit counter on successful response
+      if (res?.ok) {
+        shyftState.recentRateLimitCount = 0;
       }
 
       if (!res?.ok) {
@@ -223,4 +366,3 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
   }
   throw lastErr;
 }
-

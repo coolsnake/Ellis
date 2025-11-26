@@ -128,6 +128,11 @@ pub fn detect_negative_cycles_spfa(g: &ArbGraph, max_hops: usize) -> Vec<Detecte
     while let Some(u) = queue.pop_front() {
         in_queue[u] = false;
         
+        // Skip nodes already confirmed in a cycle - they have unbounded negative distance
+        if relax_count[u] > n {
+            continue;
+        }
+        
         // Process all outgoing edges from u
         for e in g.g.edges(NodeIndex::new(u)) {
             let v = e.target().index();
@@ -148,7 +153,8 @@ pub fn detect_negative_cycles_spfa(g: &ArbGraph, max_hops: usize) -> Vec<Detecte
                             log_sum: 0.0,
                         });
                     }
-                    // Continue processing to find more cycles
+                    // Don't re-queue v - it's in a cycle with unbounded negative distance
+                    continue;
                 }
                 
                 if !in_queue[v] {
@@ -224,6 +230,11 @@ pub fn detect_negative_cycles_spfa_filtered(
     while let Some(u) = queue.pop_front() {
         in_queue[u] = false;
         
+        // Skip nodes already confirmed in a cycle
+        if relax_count[u] > nodes.len() {
+            continue;
+        }
+        
         for &(v, rate) in &adj[u] {
             let w = -(rate.max(1e-12)).ln();
             
@@ -240,6 +251,8 @@ pub fn detect_negative_cycles_spfa_filtered(
                             log_sum: 0.0,
                         });
                     }
+                    // Don't re-queue - cycle detected
+                    continue;
                 }
                 
                 if !in_queue[v] {
