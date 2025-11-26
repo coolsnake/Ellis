@@ -387,6 +387,20 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       // If GraphQL is enabled and CLMM is enabled, fetch CLMM pools separately and merge
       if (useGraphQL && isClmmEnabled) {
         try {
+          // Add inter-phase cooldown to let Shyft rate limit window reset after AMM requests
+          const clmmPageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
+          const interPhaseMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
+          const interPhaseDelayMs = clmmPageDelayMs * interPhaseMultiplier;
+          if (interPhaseDelayMs > 0) {
+            logger.debug('pools.raydium.clmm.inter_phase_delay', { 
+              delayMs: interPhaseDelayMs, 
+              pageDelayMs: clmmPageDelayMs,
+              multiplier: interPhaseMultiplier,
+              cat: 'pools' 
+            });
+            await new Promise(resolve => setTimeout(resolve, interPhaseDelayMs));
+          }
+          
           logger.info('pools.refresh.phase.fetch.raydium.clmm.start', { cat: 'pools' });
           const clmmResult = await getRaydiumClmmPoolsGraphQL(!!options.force);
           // Merge CLMM pools into the result
