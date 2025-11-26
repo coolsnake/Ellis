@@ -717,9 +717,18 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
 
   const poolsMap = new Map<string, any>();
 
-  // Add initial delay before first request to respect rate limits
-  if (pageDelayMs > 0 && mints.length > 0) {
-    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  // Add longer initial delay before first request to let Shyft rate limit window reset
+  // after preceding AMM requests. Uses 10x page delay (e.g., 200ms → 2000ms)
+  const initialDelayMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
+  const initialDelayMs = pageDelayMs * initialDelayMultiplier;
+  if (initialDelayMs > 0 && mints.length > 0) {
+    logger.debug('raydium.clmm.graphql.initial_delay', { 
+      initialDelayMs, 
+      pageDelayMs, 
+      multiplier: initialDelayMultiplier,
+      cat: 'raydium-clmm' 
+    });
+    await new Promise(resolve => setTimeout(resolve, initialDelayMs));
   }
 
   for (let idx = 0; idx < mints.length; idx++) {
