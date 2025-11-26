@@ -56,7 +56,7 @@ async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: 
   // Try the shared blockhash system first (updated more frequently by drift/other runners)
   try {
     const { getFreshBlockhashOrFetch, getLastValidBlockHeight } = await import('../utils/blockhash.js');
-    const bh = await getFreshBlockhashOrFetch(5000); // Accept up to 5 second old
+    const bh = await getFreshBlockhashOrFetch(500); // Accept up to 500ms old - fresher blockhash for better landing
     if (bh) {
       const lvbh = getLastValidBlockHeight();
       if (lvbh) {

@@ -130,7 +130,24 @@ export async function calculateProfitBasedTip(
 
     // Get input token price
     const inputPrice = getPriceByMint(params.inputMint);
-    const inputUsd = inputPrice?.usdc ?? 0;
+    let inputUsd = inputPrice?.usdc ?? 0;
+
+    // Fallback to Jupiter token list if priceStore doesn't have the price
+    if (inputUsd <= 0) {
+      try {
+        const { loadJupiterTokenMap } = await import('../utils/tokens.js');
+        const jupiterMap = await loadJupiterTokenMap();
+        const jupiterToken = jupiterMap[params.inputMint];
+        if (jupiterToken && typeof jupiterToken.usdPrice === 'number' && jupiterToken.usdPrice > 0) {
+          inputUsd = jupiterToken.usdPrice;
+          logger.debug('arb.tip.jupiter_fallback', {
+            cat: 'tx',
+            inputMint: params.inputMint.slice(0, 8),
+            inputUsd,
+          });
+        }
+      } catch {}
+    }
 
     if (solUsd <= 0 || inputUsd <= 0) {
       logger.warn('arb.tip.no_price', { 

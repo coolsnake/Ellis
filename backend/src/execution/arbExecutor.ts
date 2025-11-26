@@ -880,8 +880,10 @@ export class ArbExecutor {
           : built.instructions;
 
         // Always use Jito parallel sending when Jito is enabled (not just when we have a tip)
-        // This ensures transactions go to Jito block engine for faster landing
-        const jitoEnabled = (CONFIG as any)?.jito?.enabled !== false;
+        // Use the same config source as tip calculation for consistency
+        const { loadJitoConfig } = await import('../server/jitoConfigStore.js');
+        const jitoCfg = await loadJitoConfig();
+        const jitoEnabled = jitoCfg.enabled;
 
         // Execute on-chain - with Jito parallel sending when enabled - pass traceId
         const sendResult = await assembleAndSend(instructionsWithTip, {
