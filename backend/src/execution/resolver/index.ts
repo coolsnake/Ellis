@@ -446,7 +446,9 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       
       // CRITICAL: For multi-hop swaps, use the exact quotedOutputRaw from previous hop
       // This ensures perfect amount propagation without any rounding errors
-      if (i > 0) {
+      // EXCEPT for arb cycles, where we use conservative minOutRaw-based curIn to prevent
+      // "insufficient funds" errors when intermediate hops have slippage
+      if (i > 0 && !isArbCycle) {
         const prevHop = hops[i - 1];
         if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
           // Use the exact quotedOutputRaw from previous hop, not curIn which might have rounding
@@ -537,8 +539,9 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       }
 
       // CRITICAL: Verify amountInRaw matches what we're quoting with
-      // For multi-hop swaps, ensure we're using the exact quotedOutputRaw from previous hop
-      if (i > 0) {
+      // For non-arb routes: ensure we're using the exact quotedOutputRaw from previous hop
+      // For arb cycles: we intentionally use conservative minOutRaw, so don't "correct" it
+      if (i > 0 && !isArbCycle) {
         const prevHop = hops[i - 1];
         if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
           if (hops[i].amountInRaw !== prevHop.quotedOutputRaw) {
