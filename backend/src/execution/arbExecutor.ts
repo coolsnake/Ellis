@@ -859,9 +859,9 @@ export class ArbExecutor {
           }
         }
 
-        // Prepend tip instruction if calculated
+        // Append tip instruction if calculated (so it only executes if transaction succeeds)
         const instructionsWithTip = tipResult?.tipIx 
-          ? [tipResult.tipIx, ...built.instructions] 
+          ? [...built.instructions, tipResult.tipIx] 
           : built.instructions;
 
         // Always use Jito parallel sending when Jito is enabled (not just when we have a tip)

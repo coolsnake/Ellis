@@ -5831,16 +5831,18 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         if (cached.market_authority) {
           (poolKeys as any).marketAuthority = toPublicKey(cached.market_authority);
         }
-        // AMM Authority: try both cache fields (amm_authority or owner)
-        // For Raydium AMM v4, use hardcoded authority if not in cache
-        if (cached.amm_authority) {
-          (poolKeys as any).authority = toPublicKey(cached.amm_authority);
-        } else if (cached.owner) {
-          (poolKeys as any).authority = toPublicKey(cached.owner);
-        } else if (cached.programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
-          // Raydium AMM v4: use hardcoded authority (not stored in pool data)
+        // AMM Authority: For Raydium AMM v4, ALWAYS use hardcoded authority (not upgrade authority)
+        // The cache may contain the wrong authority (upgrade authority), so we override it
+        if (cached.programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
+          // Raydium AMM v4: ALWAYS use hardcoded authority (Raydium Authority V4)
           const v4Authority = (CONFIG as any)?.raydium?.ammV4Authority || '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1';
           (poolKeys as any).authority = toPublicKey(v4Authority);
+        } else if (cached.amm_authority) {
+          // For non-v4 pools, use cached authority if available
+          (poolKeys as any).authority = toPublicKey(cached.amm_authority);
+        } else if (cached.owner) {
+          // Fallback to owner field
+          (poolKeys as any).authority = toPublicKey(cached.owner);
         }
         if (cached.amm_open_orders) {
           (poolKeys as any).openOrders = toPublicKey(cached.amm_open_orders);
@@ -5921,8 +5923,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       };
       ensureAndSet('id', (poolKeys as any).id);
       ensureAndSet('programId', ammProgramId);
-      // For Raydium AMM v4, ensure authority is set to hardcoded value if missing
-      if (!(poolKeys as any).authority && resolveRaydiumAmmVersion(hop.programId) === 4) {
+      // For Raydium AMM v4, ensure authority is ALWAYS set to hardcoded value (override cache if wrong)
+      if (resolveRaydiumAmmVersion(hop.programId) === 4) {
         const v4Authority = (CONFIG as any)?.raydium?.ammV4Authority || '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1';
         (poolKeys as any).authority = toPublicKey(v4Authority);
       }
@@ -6212,7 +6214,19 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 
                 // For old/deprecated Serum markets, Raydium uses pool ID as placeholder for most accounts
                 const poolId = (poolKeys as any)?.id;
-                const authority = (poolKeys as any)?.authority;
+                
+                // CRITICAL: For Raydium AMM v4, ALWAYS use hardcoded Raydium Authority V4 at position 2 (3rd account)
+                // Do NOT use upgrade authority - must be the V4 authority
+                let authority = (poolKeys as any)?.authority;
+                if (keyIdx === 2) {
+                  const programId = (poolKeys as any)?.programId;
+                  const programIdStr = programId?.toBase58?.() || String(programId || '');
+                  if (programIdStr === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
+                    // Override with hardcoded Raydium Authority V4
+                    const v4Authority = (CONFIG as any)?.raydium?.ammV4Authority || '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1';
+                    authority = toPublicKey(v4Authority);
+                  }
+                }
                 
                 switch (keyIdx) {
                   case 0: return TOKEN_PROGRAM_ID;
