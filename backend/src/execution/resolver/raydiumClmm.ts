@@ -7,7 +7,8 @@ import { logCatchError } from '../../utils/errorHandler.js';
 
 export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   // Prefer statics from in-memory exec cache.
-  const stat = executionCache.getStatic(hop.poolId);
+  // CRITICAL: Strip #rev suffix to match cache key format (pools are cached by base ID)
+  const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
   if (stat?.programId) hop.programId = stat.programId;
   if (stat?.oracle && !hop.oracle) hop.oracle = stat.oracle;
   if (stat?.account_a && !hop.vaultA) hop.vaultA = stat.account_a;
