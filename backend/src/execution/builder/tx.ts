@@ -222,6 +222,26 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   let prevHopOutputMint: string | undefined = undefined;
   let prevHopOutputTokenProgram: string | undefined = undefined;
   
+  // Detect arb cycle: path starts and ends with same token
+  // For arb cycles, the resolver uses conservative (minOutRaw) amounts between hops.
+  // We should NOT override these amounts with quotedOutputRaw in the builder.
+  const isArbCycle = plan.path.length >= 3 && plan.path[0] === plan.path[plan.path.length - 1];
+  if (isArbCycle) {
+    try {
+      logger.info('tx.build.arb_cycle_detected', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_HOP,
+        ctx: {
+          traceId,
+          pathLength: plan.path.length,
+          hopCount: plan.hops.length,
+          startToken: plan.path[0].slice(0, 8) + '...',
+          message: 'Using conservative amount propagation for reliability',
+        }
+      });
+    } catch (e) { logCatchError('builder.tx', e); }
+  }
+  
   try {
     for (let i = 0; i < plan.hops.length; i++) {
       const hopStart = Date.now();
@@ -362,10 +382,29 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
               });
             } catch (e) { logCatchError('builder.tx', e); }
             
-            // Always prefer quotedOutputRaw for multi-hop swaps when available
-            if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
-              // Use exact quoted output, even if amountInRaw is already set
-              // This ensures consistency and prevents using wrong amounts
+            // For arb cycles: trust the resolver's conservative amounts (minOutRaw-based)
+            // The resolver already calculated safe amounts that won't cause "insufficient funds"
+            // For non-arb routes: use quotedOutputRaw for exact amount propagation
+            if (isArbCycle && hop.amountInRaw > 0n) {
+              // ARB CYCLE: Trust resolver's conservative amount (don't override with quotedOutputRaw)
+              // This prevents "insufficient funds" errors when intermediate hops have slippage
+              try {
+                logger.info('tx.build.amount_propagation.arb_cycle_preserve', {
+                  cat: 'tx',
+                  code: LogCode.TX_BUILD_HOP,
+                  ctx: {
+                    traceId,
+                    hopIndex: i,
+                    preservedAmount: hop.amountInRaw.toString(),
+                    prevHopQuotedOutput: prevHop?.quotedOutputRaw?.toString() || 'N/A',
+                    prevHopMinOut: prevHop?.minOutRaw?.toString() || 'N/A',
+                    reason: 'arb_cycle_conservative_propagation',
+                  }
+                });
+              } catch (e) { logCatchError('builder.tx', e); }
+              hop.useExactAmount = true;
+            } else if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
+              // NON-ARB ROUTE: Use exact quoted output for maximum token utilization
               const exactAmount = prevHop.quotedOutputRaw;
               if (hop.amountInRaw !== exactAmount) {
                 try {
@@ -578,12 +617,21 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         
         hopIxs.push(...ixs);
         
-        // Track output amount for next hop - use quotedOutputRaw if available, otherwise minOutRaw
-        // CRITICAL: Use quotedOutputRaw (exact output) instead of minOutRaw (slippage-adjusted minimum)
-        // This ensures the next hop uses the full amount received, not a reduced amount
-        const outputForNextHop = hop.quotedOutputRaw && hop.quotedOutputRaw > 0n 
-          ? hop.quotedOutputRaw 
-          : (hop.minOutRaw && hop.minOutRaw > 0n ? hop.minOutRaw : (hop.amountInRaw || 0n));
+        // Track output amount for next hop
+        // For arb cycles: use minOutRaw (conservative) to match resolver's propagation strategy
+        // For non-arb routes: use quotedOutputRaw (exact) for maximum token utilization
+        let outputForNextHop: bigint;
+        if (isArbCycle) {
+          // Conservative: use guaranteed minimum output
+          outputForNextHop = hop.minOutRaw && hop.minOutRaw > 0n 
+            ? hop.minOutRaw 
+            : (hop.quotedOutputRaw && hop.quotedOutputRaw > 0n ? hop.quotedOutputRaw : (hop.amountInRaw || 0n));
+        } else {
+          // Exact: use quoted output for non-arb routes
+          outputForNextHop = hop.quotedOutputRaw && hop.quotedOutputRaw > 0n 
+            ? hop.quotedOutputRaw 
+            : (hop.minOutRaw && hop.minOutRaw > 0n ? hop.minOutRaw : (hop.amountInRaw || 0n));
+        }
         hopOutputs.push(outputForNextHop);
         
         // Track this hop's output ATA for chaining to next hop

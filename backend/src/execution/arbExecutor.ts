@@ -632,6 +632,7 @@ export class ArbExecutor {
         });
         
         // Resolve execution plan - pass traceId for complete log correlation
+        // Pass minProfitBps to enforce profitability at the final hop for arb cycles
         plan = await resolveDirectPlan(
           {
             path: executionPath,
@@ -640,6 +641,7 @@ export class ArbExecutor {
             sizeUsd,
             slippageBps: this.config.slippageBps,
             traceId,
+            minProfitBps: this.config.minProfitBps || 0,  // Enforce profitability for arb cycles
           } as any,
           {} as any
         );

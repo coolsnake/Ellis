@@ -406,6 +406,35 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     if (curIn === 0n && hops.length > 0) {
       throw new Error('QUOTE_SIZE_REQUIRED: provide size/sizeUsd or configure defaultQuoteSizeUsd');
     }
+    
+    // Detect if this is an arbitrage cycle (path starts and ends with same token)
+    // For arb cycles, we use conservative amount propagation (minOutRaw) to prevent
+    // "insufficient funds" errors when intermediate hops have slippage
+    const isArbCycle = path.length >= 3 && path[0] === path[path.length - 1];
+    const initialInputRaw = curIn; // Store for final profitability enforcement
+    const minProfitBps = typeof (input as any).minProfitBps === 'number' 
+      ? (input as any).minProfitBps 
+      : 0; // Default to break-even if not specified
+    
+    if (isArbCycle) {
+      try {
+        logger.info('tx.resolve.arb_cycle_detected', {
+          cat: 'tx',
+          code: LogCode.TX_RESOLVE_OK,
+          traceId,
+          ctx: {
+            pathLength: path.length,
+            hopCount: hops.length,
+            startToken: path[0],
+            endToken: path[path.length - 1],
+            initialInputRaw: initialInputRaw.toString(),
+            minProfitBps,
+            traceId,
+          }
+        });
+      } catch (e) { logCatchError('resolver.index', e); }
+    }
+    
     const { quoteHopOut, applyMinOut } = await import('./quotes.js');
     for (let i = 0; i < hops.length; i++) {
       // Set traceId on each hop for downstream logging
@@ -652,36 +681,97 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       } catch (e) { logCatchError('resolver.index', e); }
       try { hops[i].minOutRaw = applyMinOut(out, eff); } catch { hops[i].minOutRaw = 0n; }
 
-      // For multihop: use the actual quoted output for propagation, not minOutRaw
-      // The minOutRaw is only used for minimum output protection in the swap instruction
-      // Using the actual quoted output ensures we use all tokens received from the previous hop
-      // This prevents leaking small amounts between hops in multihop transactions
+      // For multihop: propagate amounts to next hop
+      // The strategy differs for arb cycles vs regular multi-hop swaps
       if (out > 0n) {
-        // Store the exact quoted output for this hop - this will be used as exact input for next hop
+        // Store the exact quoted output for this hop
         hops[i].quotedOutputRaw = out;
         
-        // Use the actual quoted output amount for propagation to next hop
-        // This ensures we use the full amount received, not the slippage-adjusted minimum
-        curIn = out;
-        
-        // Add logging for successful propagation
-        try {
-          logger.info('tx.resolve.hop.propagate', {
-            cat: 'tx',
-            code: LogCode.TX_RESOLVE_OK,
-            traceId,
-            ctx: {
-              hopIndex: i,
-              quotedOut: out.toString(),
-              quotedOutputRaw: hops[i].quotedOutputRaw?.toString() || '0',
-              minOutRaw: hops[i].minOutRaw.toString(),
-              propagatedAmount: out.toString(), // Now using actual output
-              nextHopInput: curIn.toString(),
-              nextHopInputMint: (i < hops.length - 1) ? hops[i + 1].inputMint : 'N/A',
-              traceId,
+        // CRITICAL FIX for arbitrage reliability:
+        // For arb cycles, use CONSERVATIVE amounts (minOutRaw) for next hop input.
+        // This prevents "insufficient funds" errors when intermediate hops have slippage.
+        // Any excess tokens naturally flow through to the final output.
+        // 
+        // For non-arb routes, use the exact quoted output to avoid leaking tokens.
+        if (isArbCycle) {
+          // Use the guaranteed minimum output for next hop's input
+          // This makes the transaction more reliable - it will only fail if
+          // actual slippage exceeds the tolerance, not due to optimistic amounts
+          const conservativeAmount = hops[i].minOutRaw > 0n ? hops[i].minOutRaw : out;
+          curIn = conservativeAmount;
+          
+          // For final hop of arb cycle: enforce profitability
+          // The final minOutRaw must be >= initial input to ensure no loss
+          if (i === hops.length - 1) {
+            // Calculate minimum profitable output: initialInput * (1 + minProfitBps/10000)
+            const minProfitableOutput = initialInputRaw + 
+              (initialInputRaw * BigInt(Math.max(0, minProfitBps))) / 10_000n;
+            
+            if (hops[i].minOutRaw < minProfitableOutput) {
+              // Enforce minimum profitability - this ensures tx fails if not profitable
+              hops[i].minOutRaw = minProfitableOutput;
+              
+              try {
+                logger.info('tx.resolve.arb.profitability_enforced', {
+                  cat: 'tx',
+                  code: LogCode.TX_RESOLVE_OK,
+                  traceId,
+                  ctx: {
+                    hopIndex: i,
+                    initialInputRaw: initialInputRaw.toString(),
+                    minProfitBps,
+                    quotedOutput: out.toString(),
+                    slippageAdjustedMin: applyMinOut(out, eff).toString(),
+                    enforcedMinOut: minProfitableOutput.toString(),
+                    profitGuaranteed: (minProfitableOutput > initialInputRaw).toString(),
+                    traceId,
+                  }
+                });
+              } catch (e) { logCatchError('resolver.index', e); }
             }
-          });
-        } catch (e) { logCatchError('resolver.index', e); }
+          }
+          
+          try {
+            logger.info('tx.resolve.hop.propagate.conservative', {
+              cat: 'tx',
+              code: LogCode.TX_RESOLVE_OK,
+              traceId,
+              ctx: {
+                hopIndex: i,
+                isArbCycle: true,
+                quotedOut: out.toString(),
+                minOutRaw: hops[i].minOutRaw.toString(),
+                conservativeAmount: conservativeAmount.toString(),
+                nextHopInput: curIn.toString(),
+                isFinalHop: i === hops.length - 1,
+                traceId,
+              }
+            });
+          } catch (e) { logCatchError('resolver.index', e); }
+        } else {
+          // Non-arb routes: use exact quoted output (existing behavior)
+          // This ensures we use the full amount received, not a reduced amount
+          curIn = out;
+          
+          try {
+            logger.info('tx.resolve.hop.propagate', {
+              cat: 'tx',
+              code: LogCode.TX_RESOLVE_OK,
+              traceId,
+              ctx: {
+                hopIndex: i,
+                isArbCycle: false,
+                quotedOut: out.toString(),
+                quotedOutputRaw: hops[i].quotedOutputRaw?.toString() || '0',
+                minOutRaw: hops[i].minOutRaw.toString(),
+                propagatedAmount: out.toString(),
+                nextHopInput: curIn.toString(),
+                nextHopInputMint: (i < hops.length - 1) ? hops[i + 1].inputMint : 'N/A',
+                traceId,
+              }
+            });
+          } catch (e) { logCatchError('resolver.index', e); }
+        }
       } else {
         // Quote failed or returned 0 - don't propagate old curIn
         // Set curIn to 0 so next hop will fail validation

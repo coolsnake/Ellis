@@ -92,6 +92,7 @@ export type ResolveDirectInput = {
   sizeUsd?: number;
   slippageBps?: number;
   traceId?: string;  // Unified trace ID for correlating all logs across the execution lifecycle
+  minProfitBps?: number;  // For arb cycles: minimum profit required (final minOutRaw >= initial input * (1 + minProfitBps/10000))
 };
 
 

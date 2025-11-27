@@ -920,13 +920,21 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
     }
   }
   
+  // FIX: Assign token accounts based on pool ordering, not swap direction
+  // Whirlpools requires tokenOwnerAccountA to always be the Token A account,
+  // and tokenOwnerAccountB to always be the Token B account, regardless of swap direction.
+  // When aToB=true: source=A, dest=B
+  // When aToB=false: source=B, dest=A
+  const tokenOwnerAccountA = aToB ? toPublicKey(hop.userSourceAta) : toPublicKey(hop.userDestAta);
+  const tokenOwnerAccountB = aToB ? toPublicKey(hop.userDestAta) : toPublicKey(hop.userSourceAta);
+  
   const keys = [
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #0 tokenProgram
     { pubkey: kp.publicKey, isSigner: true, isWritable: true }, // #1 tokenAuthority (signer, writable)
     { pubkey: toPublicKey(hop.poolId), isSigner: false, isWritable: true }, // #2 whirlpool
-    { pubkey: toPublicKey(hop.userSourceAta), isSigner: false, isWritable: true }, // #3 tokenOwnerAccountA (input)
+    { pubkey: tokenOwnerAccountA, isSigner: false, isWritable: true }, // #3 tokenOwnerAccountA
     { pubkey: toPublicKey(vaultA), isSigner: false, isWritable: true }, // #4 tokenVaultA
-    { pubkey: toPublicKey(hop.userDestAta), isSigner: false, isWritable: true }, // #5 tokenOwnerAccountB (output)
+    { pubkey: tokenOwnerAccountB, isSigner: false, isWritable: true }, // #5 tokenOwnerAccountB
     { pubkey: toPublicKey(vaultB), isSigner: false, isWritable: true }, // #6 tokenVaultB
     { pubkey: toPublicKey(tickArrayLower), isSigner: false, isWritable: true }, // #7 tickArray0
     { pubkey: toPublicKey(tickArrayCenter), isSigner: false, isWritable: true }, // #8 tickArray1
