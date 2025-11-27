@@ -15,7 +15,7 @@ import { meteoraCache } from '../../../pools.cache.js';
 import { deriveMeteoraBinArrayAddresses } from '../../../pools.derivation.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
-import { validateDecodedPool } from '../validation.js';
+import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { CONFIG } from '../../../../utils/config.js';
 import type { 
   DecodedPool, 
@@ -44,6 +44,63 @@ function toB58(val: any): string {
   if (typeof val === 'string') return val;
   if (typeof val.toBase58 === 'function') return val.toBase58();
   return String(val);
+}
+
+/**
+ * Safely extract a field from state using multiple possible field names
+ * Logs debug info when using fallbacks and warns if all extractions fail
+ */
+function extractFieldSafe<T>(
+  state: any,
+  fieldNames: string[],
+  poolId: string,
+  fieldLabel: string,
+  converter?: (val: any) => T
+): T | undefined {
+  for (let i = 0; i < fieldNames.length; i++) {
+    const fieldName = fieldNames[i];
+    try {
+      const val = state?.[fieldName];
+      if (val !== undefined && val !== null) {
+        // Log if using fallback (not the primary field name)
+        if (i > 0) {
+          logger.debug('meteora.field.fallback', {
+            pool: poolId.slice(0, 8) + '…',
+            field: fieldLabel,
+            usedField: fieldName,
+            primaryField: fieldNames[0],
+            cat: 'pools'
+          });
+        }
+        
+        // Apply converter if provided (e.g., toBase58)
+        if (converter) {
+          return converter(val);
+        }
+        return val as T;
+      }
+    } catch (err) {
+      // Log the specific field extraction error
+      logger.debug('meteora.field.extract.error', {
+        pool: poolId.slice(0, 8) + '…',
+        field: fieldLabel,
+        attemptedField: fieldName,
+        error: String((err as Error)?.message || err),
+        cat: 'pools'
+      });
+    }
+  }
+  
+  // All extractions failed
+  logger.warn('meteora.field.extract.all_failed', {
+    pool: poolId.slice(0, 8) + '…',
+    field: fieldLabel,
+    attemptedFields: fieldNames,
+    stateKeys: Object.keys(state || {}).slice(0, 15),
+    cat: 'pools'
+  });
+  
+  return undefined;
 }
 
 /**
@@ -217,16 +274,38 @@ export async function handleMeteoraUpdate(
       return { success: false, error: 'state_missing', skipped: true };
     }
 
-    // Extract pool fields
-    let tokenX: string | undefined;
-    let tokenY: string | undefined;
-    let activeId: number | undefined;
-    let binStep: number | undefined;
-
-    try { tokenX = state?.tokenXMint?.toBase58?.() || state?.mint_x || state?.tokenXMint || state?.tokenA; } catch {}
-    try { tokenY = state?.tokenYMint?.toBase58?.() || state?.mint_y || state?.tokenYMint || state?.tokenB; } catch {}
-    try { activeId = Number(state?.activeId ?? state?.active_id); } catch {}
-    try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
+    // Extract pool fields using safe extraction with logging
+    const tokenX = extractFieldSafe<string>(
+      state,
+      ['tokenXMint', 'mint_x', 'tokenA'],
+      poolId,
+      'tokenX',
+      (val) => val?.toBase58?.() || String(val)
+    );
+    
+    const tokenY = extractFieldSafe<string>(
+      state,
+      ['tokenYMint', 'mint_y', 'tokenB'],
+      poolId,
+      'tokenY',
+      (val) => val?.toBase58?.() || String(val)
+    );
+    
+    const activeId = extractFieldSafe<number>(
+      state,
+      ['activeId', 'active_id'],
+      poolId,
+      'activeId',
+      (val) => Number(val)
+    );
+    
+    const binStep = extractFieldSafe<number>(
+      state,
+      ['binStep', 'bin_step'],
+      poolId,
+      'binStep',
+      (val) => Number(val)
+    );
 
     const accountA = toB58(state?.reserveX);
     const accountB = toB58(state?.reserveY);
@@ -271,6 +350,13 @@ export async function handleMeteoraUpdate(
     if (Number.isFinite(decB)) decB = Number(decB);
     if (!Number.isFinite(decA)) decA = undefined;
     if (!Number.isFinite(decB)) decB = undefined;
+
+    // Validate decimals against known tokens
+    try {
+      const { validateDecimalsForMint } = await import('../../decimals.js');
+      if (tokenX && Number.isFinite(decA)) validateDecimalsForMint(tokenX, decA!, poolId, 'Meteora');
+      if (tokenY && Number.isFinite(decB)) validateDecimalsForMint(tokenY, decB!, poolId, 'Meteora');
+    } catch {}
 
     // Process through price pipeline
     let processedPrice: ProcessedPriceResult | null = null;
@@ -450,10 +536,25 @@ export async function handleMeteoraUpdate(
     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
     const idx = next.clmm.findIndex(p => p.id === item.id);
 
+    // Validate price delta against previous value
+    if (idx >= 0) {
+      validatePriceDelta('meteora', poolId, item.price_a_per_b, next.clmm[idx].price_a_per_b);
+    }
+
     if (idx >= 0) {
       const prevPool = next.clmm[idx];
       const orientationChanged = prevPool.mint_a !== item.mint_a || prevPool.mint_b !== item.mint_b;
       if (orientationChanged) {
+        logger.warn('ws.update.orientation_changed', {
+          poolId: poolId.slice(0, 8) + '…',
+          dex: 'Meteora',
+          prevMintA: prevPool.mint_a?.slice(0, 8),
+          prevMintB: prevPool.mint_b?.slice(0, 8),
+          newMintA: item.mint_a?.slice(0, 8),
+          newMintB: item.mint_b?.slice(0, 8),
+          cat: 'pools'
+        });
+        
         const orientationIndependentFields = {
           tvl_usd: prevPool.tvl_usd,
           liquidity_display: prevPool.liquidity_display,

@@ -13,6 +13,34 @@ const ANCHOR_DECIMALS = new Map<string, number>([
   ['USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', 6],  // USD1
 ]);
 
+/**
+ * Known decimals for common tokens - used for validation
+ * These are tokens where we KNOW the correct decimals and can detect misresolution
+ */
+const KNOWN_TOKEN_DECIMALS: Record<string, { name: string; decimals: number }> = {
+  // Native SOL
+  'So11111111111111111111111111111111111111112': { name: 'SOL', decimals: 9 },
+  // Stablecoins
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': { name: 'USDC', decimals: 6 },
+  'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN': { name: 'USDT', decimals: 6 },
+  'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB': { name: 'USD1', decimals: 6 },
+  'USDhvdLPwTSgFdHu6wuf6rmEZJsKFRHznBggvjKfDLJ': { name: 'USDY', decimals: 6 },
+  'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm': { name: 'WIF', decimals: 6 },
+  // Common tokens
+  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': { name: 'mSOL', decimals: 9 },
+  'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1': { name: 'bSOL', decimals: 9 },
+  'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': { name: 'JitoSOL', decimals: 9 },
+  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': { name: 'BONK', decimals: 5 },
+  'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': { name: 'JUP', decimals: 6 },
+  '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs': { name: 'ETH (Wormhole)', decimals: 8 },
+  '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj': { name: 'stSOL', decimals: 9 },
+  'rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof': { name: 'RNDR', decimals: 8 },
+  '85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ': { name: 'W', decimals: 6 },
+};
+
+// Track decimal validation mismatches
+let decimalValidationMismatches = 0;
+
 // In-memory cache for resolved decimals
 const resolveCache = new Map<string, number>();
 
@@ -387,6 +415,65 @@ export function getDecimalsCacheStats(): { cacheSize: number; anchorSize: number
     cacheSize: resolveCache.size,
     anchorSize: ANCHOR_DECIMALS.size,
     jupMapAge: jupMapCache ? Date.now() - jupMapCacheTime : -1,
+  };
+}
+
+/**
+ * Validate that resolved decimals match known values for common tokens
+ * 
+ * Logs an error if a mismatch is detected between resolved decimals and known values.
+ * This helps catch decimal misresolution bugs that could cause price calculation errors.
+ * 
+ * @param mint Token mint address
+ * @param resolvedDecimals The decimals value that was resolved
+ * @param poolId Optional pool ID for debugging context
+ * @param dex Optional DEX name for debugging context
+ * @returns true if valid (or unknown token), false if mismatch detected
+ */
+export function validateDecimalsForMint(
+  mint: string,
+  resolvedDecimals: number,
+  poolId?: string,
+  dex?: string
+): boolean {
+  const known = KNOWN_TOKEN_DECIMALS[mint];
+  
+  // If not a known token, skip validation
+  if (!known) {
+    return true;
+  }
+  
+  // Check for mismatch
+  if (known.decimals !== resolvedDecimals) {
+    decimalValidationMismatches += 1;
+    
+    try {
+      logger.error('decimals.validation.mismatch', {
+        mint: mint.slice(0, 16) + '…',
+        tokenName: known.name,
+        expectedDecimals: known.decimals,
+        resolvedDecimals,
+        poolId: poolId ? poolId.slice(0, 8) + '…' : undefined,
+        dex,
+        totalMismatches: decimalValidationMismatches,
+        warning: 'This may cause severe price calculation errors',
+        cat: 'decimals'
+      });
+    } catch (e) { logCatchError('pools.decimals', e); }
+    
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Get decimal validation statistics
+ */
+export function getDecimalValidationStats(): { mismatches: number; knownTokens: number } {
+  return {
+    mismatches: decimalValidationMismatches,
+    knownTokens: Object.keys(KNOWN_TOKEN_DECIMALS).length,
   };
 }
 

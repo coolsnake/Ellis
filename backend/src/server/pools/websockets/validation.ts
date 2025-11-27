@@ -142,6 +142,78 @@ export function validateDecodedPool(
 }
 
 /**
+ * Price delta validation statistics
+ */
+const priceDeltaStats: Record<DexSource, { warnings: number; maxDelta: number }> = {
+  raydium: { warnings: 0, maxDelta: 0 },
+  orca: { warnings: 0, maxDelta: 0 },
+  meteora: { warnings: 0, maxDelta: 0 },
+  pumpswap: { warnings: 0, maxDelta: 0 },
+  meteora_balanced: { warnings: 0, maxDelta: 0 },
+};
+
+/**
+ * Price delta threshold (50% change triggers warning)
+ */
+const PRICE_DELTA_WARN_THRESHOLD = 0.5;
+
+/**
+ * Validate price delta between updates
+ * 
+ * Logs a warning if price changes by more than 50% from previous value.
+ * Does NOT reject the update - this is diagnostic only.
+ * 
+ * @param dex DEX source
+ * @param poolId Pool ID
+ * @param newPrice New price from update
+ * @param prevPrice Previous price from cache
+ * @returns Object with delta info and whether it was suspicious
+ */
+export function validatePriceDelta(
+  dex: DexSource,
+  poolId: string,
+  newPrice: number | undefined,
+  prevPrice: number | undefined
+): { suspicious: boolean; deltaPercent: number | undefined } {
+  // Skip if either price is missing or invalid
+  if (!Number.isFinite(newPrice) || !Number.isFinite(prevPrice) || prevPrice === 0 || newPrice === 0) {
+    return { suspicious: false, deltaPercent: undefined };
+  }
+
+  const deltaPercent = Math.abs(newPrice! - prevPrice!) / prevPrice!;
+  const suspicious = deltaPercent > PRICE_DELTA_WARN_THRESHOLD;
+
+  if (suspicious) {
+    try {
+      priceDeltaStats[dex].warnings += 1;
+      if (deltaPercent > priceDeltaStats[dex].maxDelta) {
+        priceDeltaStats[dex].maxDelta = deltaPercent;
+      }
+
+      logger.warn('ws.update.large_price_change', {
+        poolId: poolId.slice(0, 8) + '…',
+        dex,
+        prevPrice,
+        newPrice,
+        deltaPercent: (deltaPercent * 100).toFixed(2) + '%',
+        threshold: (PRICE_DELTA_WARN_THRESHOLD * 100) + '%',
+        totalWarnings: priceDeltaStats[dex].warnings,
+        cat: 'pools'
+      });
+    } catch (e) { logCatchError('pools.ws.validation', e); }
+  }
+
+  return { suspicious, deltaPercent };
+}
+
+/**
+ * Get price delta statistics for a DEX
+ */
+export function getPriceDeltaStats(dex: DexSource): { warnings: number; maxDelta: number } {
+  return { ...priceDeltaStats[dex] };
+}
+
+/**
  * Debug logging helper for targeted pools
  */
 export function debugLogTargeted(

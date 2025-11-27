@@ -18,7 +18,7 @@ import { diffNormalizedPools, parseTokenAccountAmount } from '../../../pools.uti
 import { metbalCache, vaultBalanceCache, findPoolInCache } from '../../../pools.cache.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
-import { validateDecodedPool } from '../validation.js';
+import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { CONFIG } from '../../../../utils/config.js';
 import type { 
   DecodedPool, 
@@ -230,6 +230,13 @@ export async function handleMeteoraBalancedVaultUpdate(
     const decA = decoded.native_decimals_a ?? decoded.decimals_a ?? 9;
     const decB = decoded.native_decimals_b ?? decoded.decimals_b ?? 6;
 
+    // Validate decimals against known tokens
+    try {
+      const { validateDecimalsForMint } = await import('../../decimals.js');
+      if (mintA) validateDecimalsForMint(mintA, decA, poolId, 'MeteoraBalanced');
+      if (mintB) validateDecimalsForMint(mintB, decB, poolId, 'MeteoraBalanced');
+    } catch {}
+
     const processedPrice = processPriceThroughPipeline({
       mintA,
       mintB,
@@ -294,10 +301,25 @@ export async function handleMeteoraBalancedVaultUpdate(
     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
     const idx = next.amm.findIndex(p => p.id === item.id);
 
+    // Validate price delta against previous value
+    if (idx >= 0) {
+      validatePriceDelta('meteora_balanced', poolId, item.price_a_per_b, next.amm[idx].price_a_per_b);
+    }
+
     if (idx >= 0) {
       const prevPool = next.amm[idx];
       const orientationChanged = prevPool.mint_a !== item.mint_a || prevPool.mint_b !== item.mint_b;
       if (orientationChanged) {
+        logger.warn('ws.update.orientation_changed', {
+          poolId: poolId.slice(0, 8) + '…',
+          dex: 'MeteoraBalanced',
+          prevMintA: prevPool.mint_a?.slice(0, 8),
+          prevMintB: prevPool.mint_b?.slice(0, 8),
+          newMintA: item.mint_a?.slice(0, 8),
+          newMintB: item.mint_b?.slice(0, 8),
+          cat: 'pools'
+        });
+        
         const orientationIndependentFields = {
           tvl_usd: prevPool.tvl_usd,
           liquidity_display: prevPool.liquidity_display,

@@ -18,7 +18,7 @@ import { raydiumCache } from '../../../pools.cache.js';
 import { deriveRaydiumClmmCacheFields } from '../../../pools.derivation.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
-import { validateDecodedPool } from '../validation.js';
+import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -324,6 +324,13 @@ async function handleClmmUpdate(
     }
   }
 
+  // Validate decimals against known tokens
+  try {
+    const { validateDecimalsForMint } = await import('../../decimals.js');
+    if (Number.isFinite(decA)) validateDecimalsForMint(mintA, decA!, poolId, 'Raydium');
+    if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Raydium');
+  } catch {}
+
   // Process through price pipeline
   let processedPrice: ProcessedPriceResult | null = null;
   if (Number.isFinite(decA) && Number.isFinite(decB) && sqrtRaw) {
@@ -382,10 +389,26 @@ async function handleClmmUpdate(
   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
   const idx = next.clmm.findIndex(p => p.id === item.id);
 
+  // Validate price delta against previous value
+  if (idx >= 0) {
+    validatePriceDelta('raydium', poolId, item.price_a_per_b, next.clmm[idx].price_a_per_b);
+  }
+
   if (idx >= 0) {
     const prevPool = next.clmm[idx];
     const orientationChanged = prevPool.mint_a !== item.mint_a || prevPool.mint_b !== item.mint_b;
     if (orientationChanged) {
+      logger.warn('ws.update.orientation_changed', {
+        poolId: poolId.slice(0, 8) + '…',
+        dex: 'Raydium',
+        poolType: 'clmm',
+        prevMintA: prevPool.mint_a?.slice(0, 8),
+        prevMintB: prevPool.mint_b?.slice(0, 8),
+        newMintA: item.mint_a?.slice(0, 8),
+        newMintB: item.mint_b?.slice(0, 8),
+        cat: 'pools'
+      });
+      
       const orientationIndependentFields = {
         tvl_usd: prevPool.tvl_usd,
         liquidity_display: prevPool.liquidity_display,
@@ -562,6 +585,13 @@ async function handleAmmUpdate(
     }
   }
 
+  // Validate decimals against known tokens
+  try {
+    const { validateDecimalsForMint } = await import('../../decimals.js');
+    if (Number.isFinite(decA)) validateDecimalsForMint(mintA, decA!, poolId, 'Raydium');
+    if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Raydium');
+  } catch {}
+
   // Calculate price using correct AMM formula with decimal adjustment
   let price_a_per_b: number | undefined;
   if (rA > 0 && rB > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
@@ -603,10 +633,26 @@ async function handleAmmUpdate(
   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
   const idx = next.amm.findIndex(p => p.id === finalItem.id);
 
+  // Validate price delta against previous value
+  if (idx >= 0) {
+    validatePriceDelta('raydium', poolId, finalItem.price_a_per_b, next.amm[idx].price_a_per_b);
+  }
+
   if (idx >= 0) {
     const prevPool = next.amm[idx];
     const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
     if (orientationChanged) {
+      logger.warn('ws.update.orientation_changed', {
+        poolId: poolId.slice(0, 8) + '…',
+        dex: 'Raydium',
+        poolType: 'amm',
+        prevMintA: prevPool.mint_a?.slice(0, 8),
+        prevMintB: prevPool.mint_b?.slice(0, 8),
+        newMintA: finalItem.mint_a?.slice(0, 8),
+        newMintB: finalItem.mint_b?.slice(0, 8),
+        cat: 'pools'
+      });
+      
       const orientationIndependentFields = {
         tvl_usd: prevPool.tvl_usd,
         liquidity_display: prevPool.liquidity_display,

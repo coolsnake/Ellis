@@ -15,7 +15,7 @@ import { orcaCache } from '../../../pools.cache.js';
 import { deriveOrcaFeeBps } from '../../orca.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
-import { validateDecodedPool } from '../validation.js';
+import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { CONFIG } from '../../../../utils/config.js';
 import type { 
   DecodedPool, 
@@ -150,9 +150,13 @@ export async function handleOrcaUpdate(
     let decB: number | undefined;
     
     try {
-      const { resolveDecimals } = await import('../../decimals.js');
+      const { resolveDecimals, validateDecimalsForMint } = await import('../../decimals.js');
       if (mintA) decA = await resolveDecimals(mintA);
       if (mintB) decB = await resolveDecimals(mintB);
+      
+      // Validate decimals against known tokens
+      if (Number.isFinite(decA)) validateDecimalsForMint(mintA, decA!, poolId, 'Orca');
+      if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Orca');
     } catch {
       if (!Number.isFinite(decA)) decA = 9;
       if (!Number.isFinite(decB)) decB = 6;
@@ -319,8 +323,37 @@ export async function handleOrcaUpdate(
     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
     const idx = next.clmm.findIndex(p => p.id === poolId);
     
+    // Validate price delta against previous value
     if (idx >= 0) {
-      next.clmm[idx] = { ...next.clmm[idx], ...clmmItem };
+      const prevPool = next.clmm[idx];
+      validatePriceDelta('orca', poolId, clmmItem.price_a_per_b, prevPool.price_a_per_b);
+    }
+    
+    if (idx >= 0) {
+      const prevPool = next.clmm[idx];
+      const orientationChanged = prevPool.mint_a !== clmmItem.mint_a || prevPool.mint_b !== clmmItem.mint_b;
+      
+      if (orientationChanged) {
+        logger.warn('ws.update.orientation_changed', {
+          poolId: poolId.slice(0, 8) + '…',
+          dex: 'Orca',
+          prevMintA: prevPool.mint_a?.slice(0, 8),
+          prevMintB: prevPool.mint_b?.slice(0, 8),
+          newMintA: clmmItem.mint_a?.slice(0, 8),
+          newMintB: clmmItem.mint_b?.slice(0, 8),
+          cat: 'pools'
+        });
+        
+        // Preserve orientation-independent fields
+        const orientationIndependentFields = {
+          tvl_usd: prevPool.tvl_usd,
+          liquidity_display: prevPool.liquidity_display,
+          pool_liquidity_raw: prevPool.pool_liquidity_raw,
+        };
+        next.clmm[idx] = { ...clmmItem, ...orientationIndependentFields };
+      } else {
+        next.clmm[idx] = { ...next.clmm[idx], ...clmmItem };
+      }
     } else {
       next.clmm.push(clmmItem);
     }
