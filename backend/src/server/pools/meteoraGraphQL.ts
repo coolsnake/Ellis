@@ -590,49 +590,12 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     tokenPrograms // Pass the map to collect token program info
   });
 
-  // Resolve bitmap extensions for all pool IDs (parallel with other async operations)
-  // OPTIMIZATION: Use binArrayBitmap from GraphQL to determine which pools have bitmap extensions
-  // If binArrayBitmap is present and non-empty, the bitmap extension account exists
+  // Collect pool IDs for bitmap extension gap-filling
   const poolIds = raw
-    .map(pool => {
-      // Prioritize pubkey as it's the actual pool account address
-      const id = pool.pubkey || pool.baseKey;
-      if (pool.baseKey && !pool.pubkey) {
-        // Log when we're using baseKey instead of pubkey (might indicate an issue)
-        try {
-          logger.warn('meteora.graphql.bitmap_ext.using_basekey', {
-            pool: pool.baseKey?.slice(0, 8) + '…',
-            hasPubkey: !!pool.pubkey,
-            hasBaseKey: !!pool.baseKey,
-            cat: 'meteora'
-          });
-        } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
-      }
-      return id;
-    })
+    .map(pool => pool.pubkey || pool.baseKey)
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
-  
-  // Check which pools have bitmap extensions based on GraphQL binArrayBitmap field
-  const poolsWithBitmap = new Set<string>();
-  for (const pool of raw) {
-    const id = pool.pubkey || pool.baseKey;
-    if (!id) continue;
-    
-    // Check if binArrayBitmap exists and is non-empty
-    const binArrayBitmap = pool.binArrayBitmap;
-    if (Array.isArray(binArrayBitmap) && binArrayBitmap.length > 0) {
-      // Check if array has any non-zero values
-      const hasData = binArrayBitmap.some((val: any) => {
-        const num = typeof val === 'number' ? val : Number(val);
-        return !isNaN(num) && num !== 0;
-      });
-      if (hasData) {
-        poolsWithBitmap.add(id);
-      }
-    }
-  }
-  
-  // Build map of pools that already have bitmap extension PDAs from GraphQL
+
+  // Build set of pools that already have bitmap extension PDAs from GraphQL
   const poolsWithGraphQLPDA = new Set<string>();
   for (const pool of raw) {
     const id = pool.pubkey || pool.baseKey;
@@ -641,21 +604,17 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     }
   }
   
-  // Only resolve bitmap extensions via RPC for pools that have bitmap but no GraphQL PDA
-  const poolsToCheck = poolIds.filter(id => {
-    const hasBitmap = poolsWithBitmap.has(id);
-    const hasFromGraphQL = poolsWithGraphQLPDA.has(id);
-    return hasBitmap && !hasFromGraphQL; // Only check RPC if we have bitmap but no GraphQL PDA
-  });
+  // Fetch via RPC for ALL pools that GraphQL didn't return a PDA for
+  // Don't rely on binArrayBitmap field - GraphQL data may be stale
+  const poolsToCheck = poolIds.filter(id => !poolsWithGraphQLPDA.has(id));
   
   const bitmapExtensionMapPromise = poolsToCheck.length > 0
     ? resolveMeteoraBitmapExtensions(poolsToCheck)
     : Promise.resolve(new Map<string, string>());
   
   try {
-    logger.info('meteora.graphql.bitmap_ext.filtered', {
+    logger.info('meteora.graphql.bitmap_ext.gap_fill', {
       total: poolIds.length,
-      withBitmap: poolsWithBitmap.size,
       fromGraphQL: poolsWithGraphQLPDA.size,
       toCheckRPC: poolsToCheck.length,
       cat: 'meteora'
@@ -828,33 +787,16 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         }
       }
 
-      // Get bitmap extension from GraphQL query (most reliable)
-      // First try to get from GraphQL query result (direct PDA from BinArrayBitmapExtension table)
+      // Get bitmap extension: GraphQL first, then RPC gap-fill, then fallback
+      // GraphQL data may be stale, so RPC verifies all pools without a GraphQL PDA
       let bin_array_bitmap_extension: string | undefined = pool.bitmapExtensionPDA;
       
-      // Fallback: If not in GraphQL, check if binArrayBitmap indicates it exists and derive it
-      const hasBitmapInGraphQL = poolsWithBitmap.has(id);
-      if (!bin_array_bitmap_extension && hasBitmapInGraphQL) {
-        // Try RPC check as fallback
+      // If GraphQL didn't have it, check RPC gap-fill results
+      if (!bin_array_bitmap_extension) {
         bin_array_bitmap_extension = bitmapExtensionMap.get(id);
-        
-        // Last resort: derive it (shouldn't be needed if GraphQL query works)
-        if (!bin_array_bitmap_extension) {
-          try {
-            const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
-            const poolPk = new PublicKey(id);
-            const [bitmapExtPda] = PublicKey.findProgramAddressSync(
-              [Buffer.from('BitmapExtension'), poolPk.toBuffer()],
-              programId
-            );
-            bin_array_bitmap_extension = bitmapExtPda.toBase58();
-          } catch {
-            bin_array_bitmap_extension = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
-          }
-        }
       }
       
-      // If no bitmap extension found, use program ID fallback
+      // Final fallback to program ID (RPC returns this if account doesn't exist)
       if (!bin_array_bitmap_extension) {
         bin_array_bitmap_extension = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
       }
