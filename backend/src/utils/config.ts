@@ -216,7 +216,7 @@ export const CONFIG = {
     // If true, drop stable<->stable edges at graph build time
     dropStableStableEdges: (process.env.DROP_STABLE_STABLE_EDGES || 'false') === 'true',
     // Optional: anchors always included in universe and bridging exceptions
-    anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij')
+    anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB,USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA,2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH,2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo')
       .split(',')
       .map(s => s.trim())
       .filter(Boolean),
