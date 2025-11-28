@@ -85,7 +85,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
     try {
       const updates = req.body;
       const config = await saveRouterConfig(updates);
-      emit(io, 'router:config', config);
+      emit('router:config', config);
       res.json({ success: true, config });
     } catch (err: any) {
       logger.error('router.config.update.error', { cat: 'router', error: err.message });
@@ -103,7 +103,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         return res.status(400).json({ success: false, error: 'Invalid execution mode' });
       }
       const config = await setExecutionMode(mode);
-      emit(io, 'router:config', config);
+      emit('router:config', config);
       res.json({ success: true, config });
     } catch (err: any) {
       logger.error('router.config.mode.error', { cat: 'router', error: err.message });
@@ -118,7 +118,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
     try {
       const { enabled } = req.body;
       const config = await setRouterEnabled(!!enabled);
-      emit(io, 'router:config', config);
+      emit('router:config', config);
       res.json({ success: true, config });
     } catch (err: any) {
       logger.error('router.config.enabled.error', { cat: 'router', error: err.message });
@@ -180,16 +180,16 @@ export function createRouterRouter(io: SocketIOServer): Router {
   api.post('/router/build', async (_req: Request, res: Response) => {
     try {
       logger.info('router.build.start', { cat: 'router' });
-      emit(io, 'router:build:start', { timestamp: Date.now() });
+      emit('router:build:start', { timestamp: Date.now() });
 
       const result = await buildProgram();
 
       if (result.success) {
         logger.info('router.build.success', { cat: 'router', binaryPath: result.binaryPath });
-        emit(io, 'router:build:complete', { success: true, binaryPath: result.binaryPath });
+        emit('router:build:complete', { success: true, binaryPath: result.binaryPath });
       } else {
         logger.error('router.build.failed', { cat: 'router', error: result.error });
-        emit(io, 'router:build:complete', { success: false, error: result.error });
+        emit('router:build:complete', { success: false, error: result.error });
       }
 
       res.json(result);
@@ -212,7 +212,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
       }
 
       logger.info('router.deploy.start', { cat: 'router', cluster: getSolanaCluster() });
-      emit(io, 'router:deploy:start', { cluster: getSolanaCluster(), timestamp: Date.now() });
+      emit('router:deploy:start', { cluster: getSolanaCluster(), timestamp: Date.now() });
 
       const result = await deployProgram(CONFIG.walletPath);
 
@@ -220,10 +220,10 @@ export function createRouterRouter(io: SocketIOServer): Router {
         // Save to config
         await setDeployedProgramId(result.programId, getSolanaCluster() as any);
         logger.info('router.deploy.success', { cat: 'router', programId: result.programId });
-        emit(io, 'router:deploy:complete', { success: true, programId: result.programId });
+        emit('router:deploy:complete', { success: true, programId: result.programId });
       } else {
         logger.error('router.deploy.failed', { cat: 'router', error: result.error });
-        emit(io, 'router:deploy:complete', { success: false, error: result.error });
+        emit('router:deploy:complete', { success: false, error: result.error });
       }
 
       res.json(result);
@@ -244,16 +244,16 @@ export function createRouterRouter(io: SocketIOServer): Router {
       }
 
       logger.info('router.upgrade.start', { cat: 'router', programId: config.programId });
-      emit(io, 'router:upgrade:start', { programId: config.programId, timestamp: Date.now() });
+      emit('router:upgrade:start', { programId: config.programId, timestamp: Date.now() });
 
       const result = await upgradeProgram(config.programId, CONFIG.walletPath);
 
       if (result.success) {
         logger.info('router.upgrade.success', { cat: 'router', programId: config.programId });
-        emit(io, 'router:upgrade:complete', { success: true, programId: config.programId });
+        emit('router:upgrade:complete', { success: true, programId: config.programId });
       } else {
         logger.error('router.upgrade.failed', { cat: 'router', error: result.error });
-        emit(io, 'router:upgrade:complete', { success: false, error: result.error });
+        emit('router:upgrade:complete', { success: false, error: result.error });
       }
 
       res.json(result);
@@ -396,7 +396,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         signature,
       });
 
-      emit(io, 'router:vault:init', { mint, vault: vaultAddress.toBase58(), signature });
+      emit('router:vault:init', { mint, vault: vaultAddress.toBase58(), signature });
 
       res.json({
         success: true,
@@ -457,7 +457,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         signature,
       });
 
-      emit(io, 'router:vault:deposit', { mint, amount, signature });
+      emit('router:vault:deposit', { mint, amount, signature });
 
       res.json({ success: true, signature });
     } catch (err: any) {
@@ -527,7 +527,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         signature,
       });
 
-      emit(io, 'router:vault:withdraw', { mint, amount, signature });
+      emit('router:vault:withdraw', { mint, amount, signature });
 
       res.json({ success: true, signature });
     } catch (err: any) {
@@ -582,7 +582,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         signature,
       });
 
-      emit(io, 'router:vault:close', { mint, signature });
+      emit('router:vault:close', { mint, signature });
 
       res.json({ success: true, signature });
     } catch (err: any) {

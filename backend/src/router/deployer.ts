@@ -474,7 +474,18 @@ export async function getProgramStatus(
           
           if (programDataInfo && programDataInfo.data.length >= 45) {
             // First 8 bytes are slot, next 1 byte is option, then 32 bytes upgrade authority
-            lastDeploySlot = Number(programDataInfo.data.readBigInt64LE(0));
+            // Read slot as little-endian uint64
+            const slotBytes = programDataInfo.data.subarray(0, 8);
+            lastDeploySlot = Number(
+              BigInt(slotBytes[0]) |
+              (BigInt(slotBytes[1]) << 8n) |
+              (BigInt(slotBytes[2]) << 16n) |
+              (BigInt(slotBytes[3]) << 24n) |
+              (BigInt(slotBytes[4]) << 32n) |
+              (BigInt(slotBytes[5]) << 40n) |
+              (BigInt(slotBytes[6]) << 48n) |
+              (BigInt(slotBytes[7]) << 56n)
+            );
             const hasUpgradeAuthority = programDataInfo.data[8] === 1;
             if (hasUpgradeAuthority) {
               upgradeAuthority = new PublicKey(programDataInfo.data.subarray(9, 41)).toBase58();

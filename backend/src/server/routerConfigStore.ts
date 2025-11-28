@@ -8,7 +8,7 @@ import { CONFIG } from '../utils/config.js';
 import { ensureDir, readJson, writeJson } from '../utils/fs.js';
 import { RouterConfig, DEFAULT_ROUTER_CONFIG, ExecutionMode } from '../router/types.js';
 
-const CONFIG_FILE = resolve(CONFIG.configDir || './config', 'router.json');
+const CONFIG_FILE = resolve(CONFIG.cacheDir || './cache', 'router.json');
 let current: RouterConfig | null = null;
 
 /**
