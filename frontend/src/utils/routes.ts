@@ -85,6 +85,19 @@ export const ROUTES = {
   exec: {
     config: '/exec/config',
   },
+  router: {
+    status: '/router/status',
+    config: '/router/config',
+    configMode: '/router/config/mode',
+    configEnabled: '/router/config/enabled',
+    build: '/router/build',
+    deploy: '/router/deploy',
+    upgrade: '/router/upgrade',
+    airdrop: '/router/airdrop',
+    vaults: '/router/vaults',
+    cli: '/router/cli',
+    cliCluster: '/router/cli/cluster',
+  },
   drift: {
     status: '/drift/status',
     l2: '/drift/l2',

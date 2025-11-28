@@ -1,5 +1,5 @@
 import React from 'react';
-import { AuthProvider, SocketProvider, SystemProvider, DriftProvider, LogsProvider, ArbProvider, WalletProvider } from './contexts';
+import { AuthProvider, SocketProvider, SystemProvider, DriftProvider, LogsProvider, ArbProvider, WalletProvider, RouterProvider } from './contexts';
 
 export const AppProviders: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return (
@@ -10,7 +10,9 @@ export const AppProviders: React.FC<{ children: React.ReactNode }> = ({ children
             <LogsProvider>
               <ArbProvider>
                 <WalletProvider>
-                  {children}
+                  <RouterProvider>
+                    {children}
+                  </RouterProvider>
                 </WalletProvider>
               </ArbProvider>
             </LogsProvider>

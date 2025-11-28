@@ -1,0 +1,428 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { apiGet, apiPost } from '../utils/api';
+
+// Types matching backend
+interface ProgramStatus {
+  deployed: boolean;
+  programId: string | null;
+  dataSize: number | null;
+  executable: boolean;
+  upgradeAuthority: string | null;
+  lastDeploySlot: number | null;
+  cluster: string;
+}
+
+interface RouterConfig {
+  programId: string | null;
+  deployedAt: string | null;
+  cluster: 'devnet' | 'mainnet-beta' | 'localnet';
+  executionMode: 'direct' | 'flash_loan' | 'auto';
+  vaultOwner: string | null;
+  flashLoanFeeBps: number;
+  enabled: boolean;
+}
+
+interface CliStatus {
+  solana: boolean;
+  anchor: boolean;
+  cluster: string;
+}
+
+interface RouterStatusResponse {
+  success: boolean;
+  status: ProgramStatus;
+  config: RouterConfig;
+  cli: CliStatus;
+  ready: boolean;
+  flashLoanAvailable: boolean;
+}
+
+type RouterPanelProps = {
+  apiBase: string;
+  onClose: () => void;
+};
+
+export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) => {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<ProgramStatus | null>(null);
+  const [config, setConfig] = useState<RouterConfig | null>(null);
+  const [cli, setCli] = useState<CliStatus | null>(null);
+  const [ready, setReady] = useState(false);
+  const [flashLoanAvailable, setFlashLoanAvailable] = useState(false);
+  
+  const [building, setBuilding] = useState(false);
+  const [deploying, setDeploying] = useState(false);
+  const [selectedCluster, setSelectedCluster] = useState<'devnet' | 'mainnet-beta'>('devnet');
+  const [actionLogs, setActionLogs] = useState<string[]>([]);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await apiGet<RouterStatusResponse>('/router/status');
+      if (data.success) {
+        setStatus(data.status);
+        setConfig(data.config);
+        setCli(data.cli);
+        setReady(data.ready);
+        setFlashLoanAvailable(data.flashLoanAvailable);
+        if (data.config?.cluster) {
+          setSelectedCluster(data.config.cluster === 'localnet' ? 'devnet' : data.config.cluster);
+        }
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchStatus();
+  }, [fetchStatus]);
+
+  const handleBuild = async () => {
+    if (building) return;
+    setBuilding(true);
+    setActionLogs(['Starting build...']);
+    setError(null);
+    
+    try {
+      const result = await apiPost<{ success: boolean; binaryPath?: string; error?: string; logs?: string[] }>('/router/build');
+      if (result.logs) {
+        setActionLogs(prev => [...prev, ...result.logs!]);
+      }
+      if (result.success) {
+        setActionLogs(prev => [...prev, `Build successful: ${result.binaryPath}`]);
+      } else {
+        setActionLogs(prev => [...prev, `Build failed: ${result.error}`]);
+        setError(result.error || 'Build failed');
+      }
+    } catch (err: any) {
+      setError(err.message);
+      setActionLogs(prev => [...prev, `Error: ${err.message}`]);
+    } finally {
+      setBuilding(false);
+    }
+  };
+
+  const handleDeploy = async () => {
+    if (deploying) return;
+    setDeploying(true);
+    setActionLogs(['Starting deployment...']);
+    setError(null);
+    
+    try {
+      const result = await apiPost<{ success: boolean; programId?: string; error?: string; logs?: string[] }>(
+        '/router/deploy',
+        { cluster: selectedCluster }
+      );
+      if (result.logs) {
+        setActionLogs(prev => [...prev, ...result.logs!]);
+      }
+      if (result.success) {
+        setActionLogs(prev => [...prev, `Deployed successfully: ${result.programId}`]);
+        await fetchStatus();
+      } else {
+        setActionLogs(prev => [...prev, `Deploy failed: ${result.error}`]);
+        setError(result.error || 'Deploy failed');
+      }
+    } catch (err: any) {
+      setError(err.message);
+      setActionLogs(prev => [...prev, `Error: ${err.message}`]);
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  const handleUpgrade = async () => {
+    if (deploying || !config?.programId) return;
+    setDeploying(true);
+    setActionLogs(['Starting upgrade...']);
+    setError(null);
+    
+    try {
+      const result = await apiPost<{ success: boolean; error?: string; logs?: string[] }>('/router/upgrade');
+      if (result.logs) {
+        setActionLogs(prev => [...prev, ...result.logs!]);
+      }
+      if (result.success) {
+        setActionLogs(prev => [...prev, 'Upgrade successful']);
+        await fetchStatus();
+      } else {
+        setActionLogs(prev => [...prev, `Upgrade failed: ${result.error}`]);
+        setError(result.error || 'Upgrade failed');
+      }
+    } catch (err: any) {
+      setError(err.message);
+      setActionLogs(prev => [...prev, `Error: ${err.message}`]);
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  const handleToggleEnabled = async () => {
+    if (!config) return;
+    try {
+      await apiPost('/router/config/enabled', { enabled: !config.enabled });
+      await fetchStatus();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleModeChange = async (mode: string) => {
+    try {
+      await apiPost('/router/config/mode', { mode });
+      await fetchStatus();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleAirdrop = async () => {
+    try {
+      setActionLogs(prev => [...prev, 'Requesting airdrop...']);
+      const result = await apiPost<{ success: boolean; balance?: number; error?: string }>('/router/airdrop', { amount: 2 });
+      if (result.success) {
+        setActionLogs(prev => [...prev, `Airdrop successful. New balance: ${result.balance?.toFixed(4)} SOL`]);
+      } else {
+        setActionLogs(prev => [...prev, `Airdrop failed: ${result.error}`]);
+      }
+    } catch (err: any) {
+      setActionLogs(prev => [...prev, `Airdrop error: ${err.message}`]);
+    }
+  };
+
+  const getSolscanUrl = (programId: string, cluster: string) => {
+    const base = cluster === 'mainnet-beta' ? 'https://solscan.io' : 'https://solscan.io';
+    const clusterParam = cluster === 'mainnet-beta' ? '' : `?cluster=${cluster}`;
+    return `${base}/account/${programId}${clusterParam}`;
+  };
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="bg-gray-800 rounded-lg p-6 w-full max-w-2xl">
+          <div className="text-white text-center">Loading router status...</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-gray-800 rounded-lg p-6 w-full max-w-3xl max-h-[90vh] overflow-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold text-white">Arb Router Program</h2>
+          <button className="text-gray-300 hover:text-white text-xl" onClick={onClose}>✕</button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-900/50 border border-red-600 rounded text-red-300 text-sm">
+            {error}
+          </div>
+        )}
+
+        {/* CLI Status */}
+        <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
+          <h3 className="text-lg font-semibold text-white mb-3">CLI Status</h3>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${cli?.solana ? 'bg-green-500' : 'bg-red-500'}`} />
+              <span className="text-gray-300">Solana CLI</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${cli?.anchor ? 'bg-green-500' : 'bg-red-500'}`} />
+              <span className="text-gray-300">Anchor CLI</span>
+            </div>
+            <div className="text-gray-300">
+              Cluster: <span className="text-white font-mono">{cli?.cluster || 'unknown'}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Program Status */}
+        <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
+          <h3 className="text-lg font-semibold text-white mb-3">Program Status</h3>
+          
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <span className="text-gray-400 text-sm">Status:</span>
+              <div className="flex items-center gap-2 mt-1">
+                <span className={`w-2 h-2 rounded-full ${status?.deployed ? 'bg-green-500' : 'bg-yellow-500'}`} />
+                <span className="text-white">{status?.deployed ? 'Deployed' : 'Not Deployed'}</span>
+              </div>
+            </div>
+            <div>
+              <span className="text-gray-400 text-sm">Router Enabled:</span>
+              <div className="mt-1">
+                <button
+                  onClick={handleToggleEnabled}
+                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                    config?.enabled
+                      ? 'bg-green-600 hover:bg-green-700 text-white'
+                      : 'bg-gray-600 hover:bg-gray-500 text-gray-300'
+                  }`}
+                >
+                  {config?.enabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {status?.deployed && config?.programId && (
+            <div className="space-y-2">
+              <div>
+                <span className="text-gray-400 text-sm">Program ID:</span>
+                <div className="flex items-center gap-2 mt-1">
+                  <code className="text-green-400 text-sm font-mono bg-gray-900/50 px-2 py-1 rounded">
+                    {config.programId}
+                  </code>
+                  <a
+                    href={getSolscanUrl(config.programId, status.cluster)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-400 hover:text-blue-300 text-sm"
+                  >
+                    View on Solscan ↗
+                  </a>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-400">Data Size:</span>
+                  <span className="text-white ml-2">{status.dataSize?.toLocaleString()} bytes</span>
+                </div>
+                <div>
+                  <span className="text-gray-400">Executable:</span>
+                  <span className={`ml-2 ${status.executable ? 'text-green-400' : 'text-red-400'}`}>
+                    {status.executable ? 'Yes' : 'No'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Execution Mode */}
+        <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
+          <h3 className="text-lg font-semibold text-white mb-3">Execution Mode</h3>
+          <div className="flex gap-2">
+            {(['direct', 'flash_loan', 'auto'] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => handleModeChange(mode)}
+                className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+                  config?.executionMode === mode
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                }`}
+              >
+                {mode === 'flash_loan' ? 'Flash Loan' : mode.charAt(0).toUpperCase() + mode.slice(1)}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-gray-400 text-sm">
+            {config?.executionMode === 'direct' && 'Execute swaps with your own tokens'}
+            {config?.executionMode === 'flash_loan' && 'Borrow from vault, execute arb, repay with profit'}
+            {config?.executionMode === 'auto' && 'Use flash loan if vault has funds, otherwise direct'}
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${flashLoanAvailable ? 'bg-green-500' : 'bg-gray-500'}`} />
+            <span className="text-gray-400 text-sm">
+              Flash Loan: {flashLoanAvailable ? 'Available' : 'Not Available'}
+            </span>
+          </div>
+        </div>
+
+        {/* Deploy Actions */}
+        <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
+          <h3 className="text-lg font-semibold text-white mb-3">Deployment</h3>
+          
+          <div className="flex items-center gap-4 mb-4">
+            <label className="text-gray-400 text-sm">Target Cluster:</label>
+            <select
+              value={selectedCluster}
+              onChange={(e) => setSelectedCluster(e.target.value as 'devnet' | 'mainnet-beta')}
+              className="bg-gray-700 text-white px-3 py-1 rounded border border-gray-600"
+            >
+              <option value="devnet">Devnet</option>
+              <option value="mainnet-beta">Mainnet-Beta</option>
+            </select>
+            {selectedCluster === 'devnet' && (
+              <button
+                onClick={handleAirdrop}
+                className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm"
+              >
+                Request Airdrop
+              </button>
+            )}
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={handleBuild}
+              disabled={building || deploying || !cli?.anchor}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded font-medium"
+            >
+              {building ? 'Building...' : 'Build Program'}
+            </button>
+            <button
+              onClick={handleDeploy}
+              disabled={building || deploying || !cli?.solana}
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded font-medium"
+            >
+              {deploying ? 'Deploying...' : 'Deploy'}
+            </button>
+            {status?.deployed && (
+              <button
+                onClick={handleUpgrade}
+                disabled={building || deploying || !cli?.solana}
+                className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded font-medium"
+              >
+                {deploying ? 'Upgrading...' : 'Upgrade'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Action Logs */}
+        {actionLogs.length > 0 && (
+          <div className="mb-6 p-4 bg-gray-900/50 rounded-lg">
+            <h3 className="text-lg font-semibold text-white mb-2">Logs</h3>
+            <div className="font-mono text-xs text-gray-300 max-h-40 overflow-y-auto space-y-1">
+              {actionLogs.map((log, i) => (
+                <div key={i} className="break-all">{log}</div>
+              ))}
+            </div>
+            <button
+              onClick={() => setActionLogs([])}
+              className="mt-2 text-gray-400 hover:text-gray-300 text-xs"
+            >
+              Clear logs
+            </button>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-700">
+          <button
+            onClick={fetchStatus}
+            className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded"
+          >
+            Refresh
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+

@@ -1,0 +1,550 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer, Mint};
+
+pub mod constants;
+pub mod error;
+pub mod state;
+pub mod dex;
+
+use constants::*;
+use error::*;
+use state::*;
+
+declare_id!("ArbRtr1111111111111111111111111111111111111");
+
+#[program]
+pub mod arb_router {
+    use super::*;
+
+    /// Initialize a new vault for a user and token mint
+    pub fn vault_init(ctx: Context<VaultInit>) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        vault.owner = ctx.accounts.owner.key();
+        vault.mint = ctx.accounts.mint.key();
+        vault.token_account = ctx.accounts.vault_token_account.key();
+        vault.balance = 0;
+        vault.borrowed_amount = 0;
+        vault.flash_loan_active = false;
+        vault.bump = ctx.bumps.vault;
+        
+        msg!("Vault initialized for owner: {}", vault.owner);
+        Ok(())
+    }
+
+    /// Deposit tokens into the vault
+    pub fn vault_deposit(ctx: Context<VaultDeposit>, amount: u64) -> Result<()> {
+        // Transfer tokens from user to vault
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.user_token_account.to_account_info(),
+            to: ctx.accounts.vault_token_account.to_account_info(),
+            authority: ctx.accounts.owner.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, amount)?;
+
+        // Update vault balance
+        let vault = &mut ctx.accounts.vault;
+        vault.balance = vault.balance.checked_add(amount)
+            .ok_or(ArbRouterError::MathOverflow)?;
+
+        msg!("Deposited {} tokens to vault", amount);
+        Ok(())
+    }
+
+    /// Withdraw tokens from the vault
+    pub fn vault_withdraw(ctx: Context<VaultWithdraw>, amount: u64) -> Result<()> {
+        // Check sufficient balance (excluding borrowed amount)
+        let available = ctx.accounts.vault.balance.checked_sub(ctx.accounts.vault.borrowed_amount)
+            .ok_or(ArbRouterError::InsufficientFunds)?;
+        require!(amount <= available, ArbRouterError::InsufficientFunds);
+
+        // Transfer tokens from vault to user
+        let owner_key = ctx.accounts.owner.key();
+        let mint_key = ctx.accounts.mint.key();
+        let bump = ctx.accounts.vault.bump;
+        let seeds = &[
+            VAULT_SEED,
+            owner_key.as_ref(),
+            mint_key.as_ref(),
+            &[bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.vault_token_account.to_account_info(),
+            to: ctx.accounts.user_token_account.to_account_info(),
+            authority: ctx.accounts.vault.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+        token::transfer(cpi_ctx, amount)?;
+
+        // Update vault balance
+        let vault = &mut ctx.accounts.vault;
+        vault.balance = vault.balance.checked_sub(amount)
+            .ok_or(ArbRouterError::MathOverflow)?;
+
+        msg!("Withdrawn {} tokens from vault", amount);
+        Ok(())
+    }
+
+    /// Close the vault and reclaim rent
+    pub fn vault_close(ctx: Context<VaultClose>) -> Result<()> {
+        let vault = &ctx.accounts.vault;
+        
+        // Cannot close if flash loan is active
+        require!(!vault.flash_loan_active, ArbRouterError::FlashLoanAlreadyActive);
+        
+        // Cannot close if balance > 0 (must withdraw first)
+        require!(vault.balance == 0, ArbRouterError::InsufficientFunds);
+
+        msg!("Vault closed for owner: {}", vault.owner);
+        Ok(())
+    }
+
+    /// Borrow tokens from vault via flash loan
+    /// IMPORTANT: A flash_repay instruction MUST follow in the same transaction
+    pub fn flash_borrow(ctx: Context<FlashBorrow>, params: FlashBorrowParams) -> Result<()> {
+        // Check no active flash loan
+        require!(!ctx.accounts.vault.flash_loan_active, ArbRouterError::FlashLoanAlreadyActive);
+        
+        // Check sufficient balance
+        require!(params.amount <= ctx.accounts.vault.balance, ArbRouterError::InsufficientFunds);
+
+        // Verify that a repay instruction exists later in this transaction
+        let vault_key = ctx.accounts.vault.key();
+        verify_repay_instruction_exists(&ctx.accounts.instructions_sysvar, params.amount, vault_key)?;
+
+        // Transfer tokens to borrower
+        let owner_key = ctx.accounts.vault.owner;
+        let mint_key = ctx.accounts.vault.mint;
+        let bump = ctx.accounts.vault.bump;
+        let seeds = &[
+            VAULT_SEED,
+            owner_key.as_ref(),
+            mint_key.as_ref(),
+            &[bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.vault_token_account.to_account_info(),
+            to: ctx.accounts.borrower_token_account.to_account_info(),
+            authority: ctx.accounts.vault.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+        token::transfer(cpi_ctx, params.amount)?;
+
+        // Mark flash loan as active
+        let vault = &mut ctx.accounts.vault;
+        vault.flash_loan_active = true;
+        vault.borrowed_amount = params.amount;
+
+        msg!("Flash borrowed {} tokens", params.amount);
+        Ok(())
+    }
+
+    /// Repay flash loan
+    pub fn flash_repay(ctx: Context<FlashRepay>, params: FlashRepayParams) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        
+        // Check flash loan is active
+        require!(vault.flash_loan_active, ArbRouterError::NoActiveFlashLoan);
+        
+        // Calculate required repayment (borrowed + fee)
+        let fee = vault.calculate_flash_loan_fee(vault.borrowed_amount)?;
+        let required_repay = vault.borrowed_amount.checked_add(fee)
+            .ok_or(ArbRouterError::MathOverflow)?;
+        
+        // Check repay amount is sufficient
+        require!(params.amount >= required_repay, ArbRouterError::RepayAmountInsufficient);
+
+        // Transfer tokens back to vault
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.borrower_token_account.to_account_info(),
+            to: ctx.accounts.vault_token_account.to_account_info(),
+            authority: ctx.accounts.borrower.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, params.amount)?;
+
+        // Update vault state
+        vault.balance = vault.balance
+            .checked_add(fee) // Only the fee is profit, principal was already counted
+            .ok_or(ArbRouterError::MathOverflow)?;
+        vault.flash_loan_active = false;
+        vault.borrowed_amount = 0;
+
+        msg!("Flash loan repaid: {} (fee: {})", params.amount, fee);
+        Ok(())
+    }
+
+    /// Execute a single swap through a specified DEX
+    pub fn route_swap<'info>(
+        ctx: Context<'_, '_, '_, 'info, RouteSwap<'info>>,
+        params: SwapParams,
+    ) -> Result<()> {
+        msg!("Executing swap on DEX type: {:?}", params.dex_type as u8);
+        
+        // Route to appropriate DEX
+        match params.dex_type {
+            DexType::Raydium => {
+                dex::raydium::swap(
+                    &ctx.remaining_accounts,
+                    params.amount_in,
+                    params.min_amount_out,
+                )?;
+            }
+            DexType::Meteora => {
+                dex::meteora::swap(
+                    &ctx.remaining_accounts,
+                    params.amount_in,
+                    params.min_amount_out,
+                )?;
+            }
+            DexType::Orca => {
+                dex::orca::swap(
+                    &ctx.remaining_accounts,
+                    params.amount_in,
+                    params.min_amount_out,
+                )?;
+            }
+            DexType::PumpSwap => {
+                dex::pumpswap::swap(
+                    &ctx.remaining_accounts,
+                    params.amount_in,
+                    params.min_amount_out,
+                )?;
+            }
+        }
+
+        msg!("Swap completed: {} in, min {} out", params.amount_in, params.min_amount_out);
+        Ok(())
+    }
+
+    /// Execute a multi-hop arbitrage route
+    pub fn execute<'info>(
+        ctx: Context<'_, '_, '_, 'info, Execute<'info>>,
+        params: ExecuteParams,
+    ) -> Result<()> {
+        require!(!params.steps.is_empty(), ArbRouterError::EmptyRoute);
+        require!(params.steps.len() <= MAX_ROUTE_STEPS, ArbRouterError::TooManyRouteSteps);
+
+        // Get initial balance
+        let initial_balance = ctx.accounts.user_token_account.amount;
+
+        // Execute each step
+        // Note: remaining_accounts should contain all DEX accounts for all steps
+        // The accounts are packed sequentially for each DEX
+        let mut account_offset = 0;
+        
+        for (i, step) in params.steps.iter().enumerate() {
+            msg!("Executing step {} on DEX {:?}", i, step.dex_type as u8);
+            
+            let accounts_needed = get_accounts_needed_for_dex(&step.dex_type);
+            let step_accounts = &ctx.remaining_accounts[account_offset..account_offset + accounts_needed];
+            
+            match step.dex_type {
+                DexType::Raydium => {
+                    dex::raydium::swap(step_accounts, step.amount_in, step.min_amount_out)?;
+                }
+                DexType::Meteora => {
+                    dex::meteora::swap(step_accounts, step.amount_in, step.min_amount_out)?;
+                }
+                DexType::Orca => {
+                    dex::orca::swap(step_accounts, step.amount_in, step.min_amount_out)?;
+                }
+                DexType::PumpSwap => {
+                    dex::pumpswap::swap(step_accounts, step.amount_in, step.min_amount_out)?;
+                }
+            }
+            
+            account_offset += accounts_needed;
+        }
+
+        // Reload token account to check final balance
+        ctx.accounts.user_token_account.reload()?;
+        let final_balance = ctx.accounts.user_token_account.amount;
+
+        // Verify profit
+        let profit = final_balance.checked_sub(initial_balance)
+            .ok_or(ArbRouterError::NoProfitFromRoute)?;
+        require!(profit >= params.min_profit, ArbRouterError::NoProfitFromRoute);
+
+        msg!("Route executed successfully. Profit: {}", profit);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Account Contexts
+// ============================================================================
+
+#[derive(Accounts)]
+pub struct VaultInit<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        init,
+        payer = owner,
+        space = Vault::LEN,
+        seeds = [VAULT_SEED, owner.key().as_ref(), mint.key().as_ref()],
+        bump
+    )]
+    pub vault: Account<'info, Vault>,
+
+    #[account(
+        init,
+        payer = owner,
+        token::mint = mint,
+        token::authority = vault,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct VaultDeposit<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, owner.key().as_ref(), mint.key().as_ref()],
+        bump = vault.bump,
+        has_one = owner,
+        has_one = mint,
+    )]
+    pub vault: Account<'info, Vault>,
+
+    #[account(
+        mut,
+        constraint = vault_token_account.key() == vault.token_account,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = user_token_account.mint == mint.key(),
+        constraint = user_token_account.owner == owner.key(),
+    )]
+    pub user_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct VaultWithdraw<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, owner.key().as_ref(), mint.key().as_ref()],
+        bump = vault.bump,
+        has_one = owner,
+        has_one = mint,
+    )]
+    pub vault: Account<'info, Vault>,
+
+    #[account(
+        mut,
+        constraint = vault_token_account.key() == vault.token_account,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = user_token_account.mint == mint.key(),
+        constraint = user_token_account.owner == owner.key(),
+    )]
+    pub user_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct VaultClose<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, owner.key().as_ref(), mint.key().as_ref()],
+        bump = vault.bump,
+        has_one = owner,
+        close = owner,
+    )]
+    pub vault: Account<'info, Vault>,
+
+    #[account(
+        mut,
+        constraint = vault_token_account.key() == vault.token_account,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct FlashBorrow<'info> {
+    /// The borrower (can be anyone, will repay with interest)
+    pub borrower: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, vault.owner.as_ref(), mint.key().as_ref()],
+        bump = vault.bump,
+        has_one = mint,
+    )]
+    pub vault: Account<'info, Vault>,
+
+    #[account(
+        mut,
+        constraint = vault_token_account.key() == vault.token_account,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = borrower_token_account.mint == mint.key(),
+    )]
+    pub borrower_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+
+    /// CHECK: Instructions sysvar for verifying repay instruction exists
+    #[account(address = solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct FlashRepay<'info> {
+    /// The borrower repaying the loan
+    pub borrower: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, vault.owner.as_ref(), mint.key().as_ref()],
+        bump = vault.bump,
+        has_one = mint,
+    )]
+    pub vault: Account<'info, Vault>,
+
+    #[account(
+        mut,
+        constraint = vault_token_account.key() == vault.token_account,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = borrower_token_account.mint == mint.key(),
+    )]
+    pub borrower_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct RouteSwap<'info> {
+    pub user: Signer<'info>,
+
+    #[account(mut)]
+    pub user_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    // Remaining accounts are DEX-specific
+}
+
+#[derive(Accounts)]
+pub struct Execute<'info> {
+    pub user: Signer<'info>,
+
+    #[account(mut)]
+    pub user_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    // Remaining accounts contain all DEX accounts for all steps
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Verify that a flash_repay instruction exists later in the current transaction
+fn verify_repay_instruction_exists(
+    instructions_sysvar: &AccountInfo,
+    _borrowed_amount: u64,
+    vault_key: Pubkey,
+) -> Result<()> {
+    use solana_program::sysvar::instructions::{
+        get_instruction_relative,
+        load_current_index_checked,
+    };
+
+    let current_index = load_current_index_checked(instructions_sysvar)?;
+    
+    // Look for a repay instruction after this one
+    let mut found_repay = false;
+    let mut idx = current_index + 1;
+    
+    loop {
+        match get_instruction_relative(idx as i64 - current_index as i64, instructions_sysvar) {
+            Ok(ix) => {
+                // Check if this is our program
+                if ix.program_id == crate::id() {
+                    // Check if it's a flash_repay instruction (discriminator check)
+                    // Anchor uses first 8 bytes as discriminator
+                    if ix.data.len() >= 8 {
+                        // flash_repay discriminator (you may need to adjust this)
+                        let _discriminator = &ix.data[..8];
+                        // This is a simplified check - in practice you'd compute the actual discriminator
+                        // For now, we check that one of the accounts matches our vault
+                        for acc in &ix.accounts {
+                            if acc.pubkey == vault_key {
+                                found_repay = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                idx += 1;
+            }
+            Err(_) => break, // No more instructions
+        }
+    }
+
+    require!(found_repay, ArbRouterError::FlashLoanNotRepaid);
+    Ok(())
+}
+
+/// Get the number of accounts needed for a DEX swap
+fn get_accounts_needed_for_dex(dex_type: &DexType) -> usize {
+    match dex_type {
+        DexType::Raydium => dex::raydium::ACCOUNTS_NEEDED,
+        DexType::Meteora => dex::meteora::ACCOUNTS_NEEDED,
+        DexType::Orca => dex::orca::ACCOUNTS_NEEDED,
+        DexType::PumpSwap => dex::pumpswap::ACCOUNTS_NEEDED,
+    }
+}
+

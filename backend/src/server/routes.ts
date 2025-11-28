@@ -37,6 +37,7 @@ import { createTriggerRouter } from './routes/strategies/trigger.js';
 import { createFillerRouter } from './routes/strategies/filler.js';
 import { createPoolsRouter } from './routes/pools.js';
 import { createArbRouter } from './routes/arb.js';
+import { createRouterRouter } from './routes/router.js';
 
 // Opportunity sampling (env knobs + helper)
 const OPP_SAMPLE_DIR = process.env.OPP_SAMPLE_DIR || joinPath(CONFIG.logDir, 'opportunity-samples');
@@ -140,6 +141,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createFillerRouter(io));
   api.use(createPoolsRouter(io));
   api.use(createArbRouter(io));
+  api.use(createRouterRouter(io));
 
   // --- Direct execution config and routes ---
   api.get('/exec/config', async (_req, res) => {

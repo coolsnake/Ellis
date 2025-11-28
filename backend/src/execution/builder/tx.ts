@@ -172,10 +172,95 @@ function estimateInstructionSize(ix: any): number {
   }
 }
 
-export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[], cb?: ComputeBudgetConfig, inputTraceId?: string): Promise<{ tx: any; ixCount: number; sizeBytes: number }> {
+export interface BuildTxOptions {
+  /** Whether to use the on-chain router (if available) */
+  useRouter?: boolean;
+  /** If using router, force flash loan mode */
+  forceFlashLoan?: boolean;
+  /** Mode override */
+  __modeOverride?: 'direct' | 'simulate';
+}
+
+export async function buildDirectArbTx(
+  plan: ExecutionPlan, 
+  extraSetupIxs: any[], 
+  cb?: ComputeBudgetConfig & BuildTxOptions, 
+  inputTraceId?: string
+): Promise<{ tx: any; ixCount: number; sizeBytes: number; usedRouter?: boolean; usedFlashLoan?: boolean }> {
   const t0 = Date.now();
   // Use provided traceId (from executor/plan) or generate one
   const traceId = inputTraceId || plan.traceId || Math.random().toString(36).slice(2, 10);
+  
+  // Check if router mode is requested
+  if ((cb as BuildTxOptions)?.useRouter) {
+    try {
+      const { buildRouterTransaction } = await import('./routerTx.js');
+      const { loadRouterConfig } = await import('../../server/routerConfigStore.js');
+      const wallet = await getCachedWallet();
+      const routerConfig = await loadRouterConfig();
+      
+      if (routerConfig.enabled && routerConfig.programId) {
+        const { ExecutionMode } = await import('../../router/types.js');
+        const mode = (cb as BuildTxOptions)?.forceFlashLoan 
+          ? ExecutionMode.FlashLoan 
+          : ExecutionMode.Auto;
+          
+        const result = await buildRouterTransaction(plan, wallet, { mode });
+        
+        if (result.usedRouter && result.instructions.length > 0) {
+          logger.info('tx.build.router_mode', {
+            cat: 'tx',
+            code: LogCode.TX_BUILD_OK,
+            ctx: {
+              traceId,
+              usedFlashLoan: result.usedFlashLoan,
+              ixCount: result.instructions.length,
+            },
+          });
+          
+          // Build transaction with router instructions
+          const { Transaction, ComputeBudgetProgram } = await import('@solana/web3.js');
+          const tx = new Transaction();
+          
+          // Add compute budget
+          if (cb?.computeUnitLimit) {
+            tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: cb.computeUnitLimit }));
+          }
+          if (cb?.computeUnitPriceMicroLamports) {
+            tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cb.computeUnitPriceMicroLamports }));
+          }
+          
+          // Add extra setup instructions
+          for (const ix of extraSetupIxs) {
+            if (ix) tx.add(ix);
+          }
+          
+          // Add router instructions
+          for (const ix of result.instructions) {
+            tx.add(ix);
+          }
+          
+          const sizeBytes = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).length;
+          
+          return {
+            tx,
+            ixCount: result.instructions.length + extraSetupIxs.length + 2,
+            sizeBytes,
+            usedRouter: true,
+            usedFlashLoan: result.usedFlashLoan,
+          };
+        }
+      }
+      // Fall through to normal build if router not available
+    } catch (routerErr: any) {
+      logger.warn('tx.build.router_fallback', {
+        cat: 'tx',
+        error: routerErr.message,
+        traceId,
+      });
+      // Fall through to normal build
+    }
+  }
   
   // Initialize timing metrics
   const metrics: TimingMetrics = {
