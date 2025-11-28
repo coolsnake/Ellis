@@ -4388,26 +4388,31 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       } catch (e) { logCatchError('ix.build', e); }
     }
 
-    // CRITICAL: Get pool's actual mint orientation from cache
-    // The pool's mintA/mintB orientation is FIXED in the pool state
-    // We must use the pool's actual mintA/mintB, not swap them based on swap direction
-    // This prevents constraint violations when swapping in reverse direction
+    // CRITICAL: Get pool's NATIVE (on-chain) mint orientation from cache
+    // The pool's on-chain mintA/mintB orientation is FIXED in the pool state
+    // We must use NATIVE ordering, NOT canonicalized ordering
+    // Canonicalization swaps mints for consistent pricing, but SDK/on-chain expects native order
     let poolMintA: string | undefined;
     let poolMintB: string | undefined;
     let poolDecA: number | undefined;
     let poolDecB: number | undefined;
+    let poolVaultA: string | undefined;
+    let poolVaultB: string | undefined;
     try {
       const { executionCache } = await import('../cache.js');
       const cached = executionCache.getStatic(hop.poolId);
       if (cached) {
-        poolMintA = cached.mint_a;
-        poolMintB = cached.mint_b;
+        // CRITICAL: Use NATIVE ordering for SDK/on-chain compatibility
+        // native_mint_a/b are the actual on-chain values before canonicalization
+        poolMintA = cached.native_mint_a || cached.mint_a;
+        poolMintB = cached.native_mint_b || cached.mint_b;
+        poolVaultA = cached.native_account_a || (cached as any).native_vault_a || cached.account_a;
+        poolVaultB = cached.native_account_b || (cached as any).native_vault_b || cached.account_b;
         
-        // CRITICAL: Fetch decimals based on CURRENT mints (post-canonicalization)
-        // The cache might have stale decimals from before canonicalization
+        // CRITICAL: Fetch decimals based on NATIVE mints
         const { resolveDecimals } = await import('../../server/pools/decimals.js');
-        if (poolMintA) poolDecA = await resolveDecimals(poolMintA) ?? cached.decimals_a;
-        if (poolMintB) poolDecB = await resolveDecimals(poolMintB) ?? cached.decimals_b;
+        if (poolMintA) poolDecA = await resolveDecimals(poolMintA) ?? cached.native_decimals_a ?? cached.decimals_a;
+        if (poolMintB) poolDecB = await resolveDecimals(poolMintB) ?? cached.native_decimals_b ?? cached.decimals_b;
       }
     } catch (e) { logCatchError('ix.build', e); }
     
@@ -4515,17 +4520,17 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       config: configInfo,
     } as any;
     
-    // Prefer API-fetched poolKeys, fallback to constructed
-    // NOTE: vaultA corresponds to mintA (pool's mint_a) and vaultB corresponds to mintB (pool's mint_b)
-    // The hop.vaultA/vaultB should already be correctly mapped from cache/resolver
+    // Prefer API-fetched poolKeys, fallback to constructed with NATIVE ordering
+    // NOTE: vaultA corresponds to on-chain mintA, vaultB to on-chain mintB
+    // Use poolVaultA/B (native) over hop.vaultA/B (may be canonicalized)
     const poolKeys: any = poolKeysFromApi || {
       id: poolId,
       programId,
       mintA: mintAInfo,
       mintB: mintBInfo,
       vault: {
-        A: toPublicKey(hop.vaultA as any).toBase58(),  // vaultA maps to mintA (pool's mint_a)
-        B: toPublicKey(hop.vaultB as any).toBase58(),  // vaultB maps to mintB (pool's mint_b)
+        A: toPublicKey(poolVaultA || hop.vaultA as any).toBase58(),  // NATIVE vaultA for on-chain mintA
+        B: toPublicKey(poolVaultB || hop.vaultB as any).toBase58(),  // NATIVE vaultB for on-chain mintB
       },
       observationId: observationId.toBase58(),
       config: configInfo,

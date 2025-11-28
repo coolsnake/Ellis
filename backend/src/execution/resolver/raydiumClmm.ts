@@ -11,8 +11,10 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
   if (stat?.programId) hop.programId = stat.programId;
   if (stat?.oracle && !hop.oracle) hop.oracle = stat.oracle;
-  if (stat?.account_a && !hop.vaultA) hop.vaultA = stat.account_a;
-  if (stat?.account_b && !hop.vaultB) hop.vaultB = stat.account_b;
+  // CRITICAL: Use NATIVE vault ordering for SDK/on-chain compatibility
+  // native_account_a/b are the actual on-chain values before canonicalization
+  if (!hop.vaultA) hop.vaultA = stat?.native_account_a || stat?.account_a;
+  if (!hop.vaultB) hop.vaultB = stat?.native_account_b || stat?.account_b;
   if (stat?.tick_spacing && !hop.tickSpacing) hop.tickSpacing = stat.tick_spacing;
   if (stat?.tickArrayLower && !hop.tickArrayLower) hop.tickArrayLower = stat.tickArrayLower;
   if (stat?.tickArrayCenter && !hop.tickArrayCenter) hop.tickArrayCenter = stat.tickArrayCenter;
@@ -87,8 +89,9 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
       if (p) {
         hop.tickSpacing = Number((p as any)?.tick_spacing || (p as any)?.tickSpacing || hop.tickSpacing || 0);
         hop.oracle = hop.oracle || String((p as any)?.oracle || '');
-        hop.vaultA = hop.vaultA || String((p as any)?.account_a || '');
-        hop.vaultB = hop.vaultB || String((p as any)?.account_b || '');
+        // CRITICAL: Use native vault ordering for SDK/on-chain compatibility
+        hop.vaultA = hop.vaultA || String((p as any)?.native_account_a || (p as any)?.account_a || '');
+        hop.vaultB = hop.vaultB || String((p as any)?.native_account_b || (p as any)?.account_b || '');
         hop.tickArrayLower = hop.tickArrayLower || String((p as any)?.tick_array_lower || '');
         hop.tickArrayCenter = hop.tickArrayCenter || String((p as any)?.tick_array_center || '');
         hop.tickArrayUpper = hop.tickArrayUpper || String((p as any)?.tick_array_upper || '');
