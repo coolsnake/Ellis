@@ -190,7 +190,8 @@ export function validatePriceDelta(
         priceDeltaStats[dex].maxDelta = deltaPercent;
       }
 
-      logger.warn('ws.update.large_price_change', {
+      // Use info level for better visibility of large price changes
+      logger.info('ws.update.large_price_change', {
         poolId: poolId.slice(0, 8) + '…',
         dex,
         prevPrice,

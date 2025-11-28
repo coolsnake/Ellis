@@ -1842,6 +1842,35 @@ function runWebsocketRefreshLoop(): void {
                 if (program && info?.data) {
                   try {
                     state = program.coder.accounts.decode('lbPair', info.data);
+                    
+                    // Enhanced diagnostic logging: compare SDK decode with direct binary reads
+                    const sdkActiveId = state?.activeId ?? state?.active_id;
+                    const sdkBinStep = state?.binStep ?? state?.bin_step;
+                    const dataBuffer = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
+                    
+                    let binary_activeId_240: number | null = null;
+                    let binary_activeId_180: number | null = null;
+                    let binary_binStep_232: number | null = null;
+                    let binary_binStep_176: number | null = null;
+                    
+                    try { binary_activeId_240 = dataBuffer.readInt32LE(240); } catch {}
+                    try { binary_activeId_180 = dataBuffer.readInt32LE(180); } catch {}
+                    try { binary_binStep_232 = dataBuffer.readUInt16LE(232); } catch {}
+                    try { binary_binStep_176 = dataBuffer.readUInt16LE(176); } catch {}
+                    
+                    logger.info('meteora.ws.legacy.values_comparison', {
+                      id: poolId.slice(0, 8) + '…',
+                      sdk_activeId: sdkActiveId,
+                      sdk_binStep: sdkBinStep,
+                      binary_activeId_240,
+                      binary_activeId_180,
+                      binary_binStep_232,
+                      binary_binStep_176,
+                      sdk_keys: Object.keys(state || {}).slice(0, 15),
+                      data_length: dataBuffer.length,
+                      cat: 'pools'
+                    });
+                    
                     logger.debug('meteora.ws state.inspect', {
                       id: poolId,
                       gotState: true,
@@ -1888,6 +1917,22 @@ function runWebsocketRefreshLoop(): void {
                   try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
                   const accountA = toB58Any((state as any)?.reserveX);
                   const accountB = toB58Any((state as any)?.reserveY);
+                  
+                  // Log extracted field values for debugging
+                  try {
+                    logger.info('meteora.ws.legacy.fields_extracted', {
+                      id: poolId.slice(0, 8) + '…',
+                      activeId,
+                      binStep,
+                      tokenX: tokenX?.slice(0, 8),
+                      tokenY: tokenY?.slice(0, 8),
+                      accountA: accountA?.slice(0, 8),
+                      accountB: accountB?.slice(0, 8),
+                      activeId_valid: Number.isFinite(activeId),
+                      binStep_valid: Number.isFinite(binStep),
+                      cat: 'pools'
+                    });
+                  } catch {}
                   
                   // Get decimals from pool cache (fast memory lookup)
                   const cachedMetPools = meteoraCache.data || { amm: [], clmm: [] };
@@ -1961,6 +2006,23 @@ function runWebsocketRefreshLoop(): void {
                               binStep: Number(binStep),
                               tokenX: tokenX?.slice(0, 8),
                               tokenY: tokenY?.slice(0, 8),
+                              cat: 'pools'
+                            });
+                          } catch {}
+                        } else {
+                          // Log calculated price for verification
+                          try {
+                            logger.info('meteora.ws.legacy.price.calculated', {
+                              id: poolId.slice(0, 8) + '…',
+                              activeId: Number(activeId),
+                              binStep: Number(binStep),
+                              decimalsA: decA,
+                              decimalsB: decB,
+                              priceForward: processedPrice.priceForward,
+                              priceReverse: processedPrice.priceReverse,
+                              wasSwapped: processedPrice.wasSwapped,
+                              mintA: processedPrice.mintA?.slice(0, 8),
+                              mintB: processedPrice.mintB?.slice(0, 8),
                               cat: 'pools'
                             });
                           } catch {}

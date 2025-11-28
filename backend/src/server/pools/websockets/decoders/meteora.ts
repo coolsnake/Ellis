@@ -173,6 +173,58 @@ export async function decodeMeteoraLbPair(
 
     try {
       state = program.coder.accounts.decode('lbPair', data);
+      
+      // Enhanced diagnostic logging: compare SDK decode with direct binary reads
+      const sdkActiveId = state?.activeId ?? state?.active_id;
+      const sdkBinStep = state?.binStep ?? state?.bin_step;
+      
+      // Read from both documented offset sets to identify correct one
+      let binary_activeId_240: number | null = null;
+      let binary_activeId_180: number | null = null;
+      let binary_binStep_232: number | null = null;
+      let binary_binStep_176: number | null = null;
+      
+      try { binary_activeId_240 = data.readInt32LE(240); } catch {}
+      try { binary_activeId_180 = data.readInt32LE(180); } catch {}
+      try { binary_binStep_232 = data.readUInt16LE(232); } catch {}
+      try { binary_binStep_176 = data.readUInt16LE(176); } catch {}
+      
+      logger.info('meteora.decoder.values_comparison', {
+        id: poolId.slice(0, 8) + '…',
+        sdk_activeId: sdkActiveId,
+        sdk_binStep: sdkBinStep,
+        binary_activeId_240,
+        binary_activeId_180,
+        binary_binStep_232,
+        binary_binStep_176,
+        sdk_keys: Object.keys(state || {}).slice(0, 15),
+        data_length: data.length,
+        cat: 'pools'
+      });
+      
+      // Warn if SDK values don't match either binary read offset
+      if (Number.isFinite(sdkActiveId)) {
+        const matchesOffset240 = sdkActiveId === binary_activeId_240;
+        const matchesOffset180 = sdkActiveId === binary_activeId_180;
+        if (!matchesOffset240 && !matchesOffset180) {
+          logger.warn('meteora.decoder.activeId_offset_mismatch', {
+            id: poolId.slice(0, 8) + '…',
+            sdk_activeId: sdkActiveId,
+            binary_activeId_240,
+            binary_activeId_180,
+            cat: 'pools'
+          });
+        } else {
+          logger.info('meteora.decoder.activeId_offset_match', {
+            id: poolId.slice(0, 8) + '…',
+            sdk_activeId: sdkActiveId,
+            matches_offset_240: matchesOffset240,
+            matches_offset_180: matchesOffset180,
+            cat: 'pools'
+          });
+        }
+      }
+      
       logger.debug('meteora.decoder.lbPair.decoded', {
         id: poolId.slice(0, 8) + '…',
         keys: Object.keys(state || {}).slice(0, 10),
@@ -310,6 +362,20 @@ export async function handleMeteoraUpdate(
     const accountA = toB58(state?.reserveX);
     const accountB = toB58(state?.reserveY);
 
+    // Log extracted field values for debugging
+    logger.info('meteora.ws.fields_extracted', {
+      id: poolId.slice(0, 8) + '…',
+      activeId,
+      binStep,
+      tokenX: tokenX?.slice(0, 8),
+      tokenY: tokenY?.slice(0, 8),
+      accountA: accountA?.slice(0, 8),
+      accountB: accountB?.slice(0, 8),
+      activeId_valid: Number.isFinite(activeId),
+      binStep_valid: Number.isFinite(binStep),
+      cat: 'pools'
+    });
+
     if (!tokenX || !tokenY) {
       wsDeltaStats.meteora.skipped += 1;
       incrementSkipReason('meteora', 'missing_tokens');
@@ -382,6 +448,21 @@ export async function handleMeteoraUpdate(
           binStep: Number(binStep),
           tokenX: tokenX?.slice(0, 8),
           tokenY: tokenY?.slice(0, 8),
+          cat: 'pools'
+        });
+      } else {
+        // Log calculated price for verification
+        logger.info('meteora.ws.price.calculated', {
+          id: poolId.slice(0, 8) + '…',
+          activeId: Number(activeId),
+          binStep: Number(binStep),
+          decimalsA: decA,
+          decimalsB: decB,
+          priceForward: processedPrice.priceForward,
+          priceReverse: processedPrice.priceReverse,
+          wasSwapped: processedPrice.wasSwapped,
+          mintA: processedPrice.mintA?.slice(0, 8),
+          mintB: processedPrice.mintB?.slice(0, 8),
           cat: 'pools'
         });
       }
