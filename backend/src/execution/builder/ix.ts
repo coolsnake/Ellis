@@ -4400,7 +4400,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     let poolVaultB: string | undefined;
     try {
       const { executionCache } = await import('../cache.js');
-      const cached = executionCache.getStatic(hop.poolId);
+      // CRITICAL: Strip #rev suffix - cache stores pools by base ID, not direction-suffixed ID
+      const cached = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
       if (cached) {
         // CRITICAL: Use NATIVE ordering for SDK/on-chain compatibility
         // native_mint_a/b are the actual on-chain values before canonicalization
