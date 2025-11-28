@@ -362,7 +362,7 @@ export async function handleMeteoraUpdate(
     const accountB = toB58(state?.reserveY);
 
     // Log extracted field values for debugging
-    logger.info('meteora.ws.fields_extracted', {
+    logger.debug('meteora.ws.fields_extracted', {
       id: poolId.slice(0, 8) + '…',
       activeId,
       binStep,
@@ -451,7 +451,7 @@ export async function handleMeteoraUpdate(
         });
       } else {
         // Log calculated price for verification
-        logger.info('meteora.ws.price.calculated', {
+        logger.debug('meteora.ws.price.calculated', {
           id: poolId.slice(0, 8) + '…',
           activeId: Number(activeId),
           binStep: Number(binStep),

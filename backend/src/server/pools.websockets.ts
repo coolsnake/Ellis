@@ -1858,7 +1858,7 @@ function runWebsocketRefreshLoop(): void {
                     try { binary_binStep_232 = dataBuffer.readUInt16LE(232); } catch {}
                     try { binary_binStep_176 = dataBuffer.readUInt16LE(176); } catch {}
                     
-                    logger.info('meteora.ws.legacy.values_comparison', {
+                    logger.debug('meteora.ws.legacy.values_comparison', {
                       id: poolId.slice(0, 8) + '…',
                       sdk_activeId: sdkActiveId,
                       sdk_binStep: sdkBinStep,
@@ -1920,7 +1920,7 @@ function runWebsocketRefreshLoop(): void {
                   
                   // Log extracted field values for debugging
                   try {
-                    logger.info('meteora.ws.legacy.fields_extracted', {
+                    logger.debug('meteora.ws.legacy.fields_extracted', {
                       id: poolId.slice(0, 8) + '…',
                       activeId,
                       binStep,
@@ -2012,7 +2012,7 @@ function runWebsocketRefreshLoop(): void {
                         } else {
                           // Log calculated price for verification
                           try {
-                            logger.info('meteora.ws.legacy.price.calculated', {
+                            logger.debug('meteora.ws.legacy.price.calculated', {
                               id: poolId.slice(0, 8) + '…',
                               activeId: Number(activeId),
                               binStep: Number(binStep),
