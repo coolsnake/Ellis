@@ -467,26 +467,51 @@ export async function buildDirectArbTx(
               });
             } catch (e) { logCatchError('builder.tx', e); }
             
-            // For arb cycles: trust the resolver's conservative amounts (minOutRaw-based)
-            // The resolver already calculated safe amounts that won't cause "insufficient funds"
+            // For arb cycles: ALWAYS enforce conservative amounts using prevHop.minOutRaw
+            // This prevents spending more tokens than the previous hop guaranteed to produce
             // For non-arb routes: use quotedOutputRaw for exact amount propagation
-            if (isArbCycle && hop.amountInRaw > 0n) {
-              // ARB CYCLE: Trust resolver's conservative amount (don't override with quotedOutputRaw)
-              // This prevents "insufficient funds" errors when intermediate hops have slippage
-              try {
-                logger.info('tx.build.amount_propagation.arb_cycle_preserve', {
-                  cat: 'tx',
-                  code: LogCode.TX_BUILD_HOP,
-                  ctx: {
-                    traceId,
-                    hopIndex: i,
-                    preservedAmount: hop.amountInRaw.toString(),
-                    prevHopQuotedOutput: prevHop?.quotedOutputRaw?.toString() || 'N/A',
-                    prevHopMinOut: prevHop?.minOutRaw?.toString() || 'N/A',
-                    reason: 'arb_cycle_conservative_propagation',
-                  }
-                });
-              } catch (e) { logCatchError('builder.tx', e); }
+            if (isArbCycle) {
+              // ARB CYCLE: ALWAYS use minOutRaw from previous hop for safety
+              // This ensures we never try to spend more than the guaranteed minimum received
+              const conservativeAmount = prevHop?.minOutRaw && prevHop.minOutRaw > 0n 
+                ? prevHop.minOutRaw 
+                : hop.amountInRaw;
+              
+              if (conservativeAmount > 0n) {
+                if (hop.amountInRaw !== conservativeAmount) {
+                  try {
+                    logger.warn('tx.build.amount_propagation.arb_cycle_enforce_conservative', {
+                      cat: 'tx',
+                      code: LogCode.TX_BUILD_HOP,
+                      ctx: {
+                        traceId,
+                        hopIndex: i,
+                        originalAmount: hop.amountInRaw.toString(),
+                        conservativeAmount: conservativeAmount.toString(),
+                        prevHopMinOut: prevHop?.minOutRaw?.toString() || 'N/A',
+                        prevHopQuotedOut: prevHop?.quotedOutputRaw?.toString() || 'N/A',
+                        reason: 'enforcing_conservative_amount_for_arb_safety',
+                      }
+                    });
+                  } catch (e) { logCatchError('builder.tx', e); }
+                  hop.amountInRaw = conservativeAmount;
+                } else {
+                  try {
+                    logger.info('tx.build.amount_propagation.arb_cycle_preserve', {
+                      cat: 'tx',
+                      code: LogCode.TX_BUILD_HOP,
+                      ctx: {
+                        traceId,
+                        hopIndex: i,
+                        preservedAmount: hop.amountInRaw.toString(),
+                        prevHopQuotedOutput: prevHop?.quotedOutputRaw?.toString() || 'N/A',
+                        prevHopMinOut: prevHop?.minOutRaw?.toString() || 'N/A',
+                        reason: 'arb_cycle_conservative_propagation',
+                      }
+                    });
+                  } catch (e) { logCatchError('builder.tx', e); }
+                }
+              }
               hop.useExactAmount = true;
             } else if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
               // NON-ARB ROUTE: Use exact quoted output for maximum token utilization
@@ -612,6 +637,32 @@ export async function buildDirectArbTx(
         }
         hopMetrics.amountPropagation = Date.now() - amountPropStart;
 
+        // SAFETY CHECK: For arb cycles, verify we're not trying to spend more than minOutRaw
+        // This is a final safety net to prevent unprofitable arbs from consuming wallet balance
+        if (isArbCycle && i > 0) {
+          const prevHop = plan.hops[i - 1];
+          if (prevHop?.minOutRaw && prevHop.minOutRaw > 0n) {
+            if (hop.amountInRaw > prevHop.minOutRaw) {
+              try {
+                logger.error('tx.build.arb_safety.exceeded_minout', {
+                  cat: 'tx',
+                  code: LogCode.TX_BUILD_ERR,
+                  ctx: {
+                    traceId,
+                    hopIndex: i,
+                    amountInRaw: hop.amountInRaw.toString(),
+                    prevHopMinOut: prevHop.minOutRaw.toString(),
+                    excess: (hop.amountInRaw - prevHop.minOutRaw).toString(),
+                    action: 'enforcing_safe_amount',
+                  }
+                });
+              } catch (e) { logCatchError('builder.tx', e); }
+              // Enforce safe amount - never spend more than guaranteed from previous hop
+              hop.amountInRaw = prevHop.minOutRaw;
+            }
+          }
+        }
+
         // Guard: if amount is still zero, avoid invoking real SDK builders
         // - In simulate mode, insert a non-executable placeholder (no programId) so assembly skips it
         // - In direct mode, fail fast with a descriptive error
@@ -648,10 +699,37 @@ export async function buildDirectArbTx(
         hopMetrics.validation = Date.now() - validationStart;
 
         // CRITICAL: Final verification before building instructions
-        // Ensure amountInRaw hasn't been modified after propagation
+        // For arb cycles: verify we're using minOutRaw (conservative)
+        // For non-arb routes: verify we're using quotedOutputRaw (exact)
         if (i > 0 && hop.useExactAmount) {
           const prevHop = plan.hops[i - 1];
-          if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
+          if (isArbCycle) {
+            // ARB CYCLE: Ensure we're using the conservative minOutRaw
+            const expectedAmount = prevHop?.minOutRaw && prevHop.minOutRaw > 0n 
+              ? prevHop.minOutRaw 
+              : hop.amountInRaw;
+            if (hop.amountInRaw > expectedAmount && expectedAmount > 0n) {
+              try {
+                logger.error('tx.build.amount_propagation.arb_pre_build_exceeded', {
+                  cat: 'tx',
+                  code: LogCode.TX_BUILD_ERR,
+                  ctx: {
+                    traceId,
+                    hopIndex: i,
+                    expectedAmount: expectedAmount.toString(),
+                    actualAmount: hop.amountInRaw.toString(),
+                    excess: (hop.amountInRaw - expectedAmount).toString(),
+                    inputMint: hop.inputMint,
+                    outputMint: prevHop.outputMint,
+                    action: 'enforcing_conservative_amount',
+                  }
+                });
+              } catch (e) { logCatchError('builder.tx', e); }
+              // Enforce conservative amount for arb safety
+              hop.amountInRaw = expectedAmount;
+            }
+          } else if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
+            // NON-ARB: Use exact quotedOutputRaw for maximum token utilization
             const expectedAmount = prevHop.quotedOutputRaw;
             if (hop.amountInRaw !== expectedAmount) {
               try {

@@ -580,6 +580,22 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               liquidity,
               feeRate: feeRateBps
             });
+            
+            // CRITICAL: Also populate static cache for local quotes to work
+            // Local quote needs mint_a, mint_b to determine swap direction
+            executionCache.setStatic(pool.id, {
+              programId: WHIRLPOOL_PROGRAM_ID.toBase58(),
+              mint_a: (pool as any).mint_a,
+              mint_b: (pool as any).mint_b,
+              decimals_a: (pool as any).decimals_a,
+              decimals_b: (pool as any).decimals_b,
+              native_mint_a: (pool as any).native_mint_a,
+              native_mint_b: (pool as any).native_mint_b,
+              tickSpacing: (pool as any).tick_spacing,
+              dex: 'orca',
+              pool_kind: 'clmm',
+            });
+            
             cached++;
             
             // Enrich normalized pool in-place so downstream graph/builders have prices

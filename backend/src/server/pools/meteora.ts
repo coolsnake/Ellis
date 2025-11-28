@@ -608,6 +608,22 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   activeId: activeId,
                   binArrays: binArrayAddresses,
                 });
+                
+                // CRITICAL: Also populate static cache for local quotes to work
+                // Local quote needs mint_a, mint_b to determine swap direction
+                executionCache.setStatic(pool.id, {
+                  programId: programId.toBase58(),
+                  mint_a: (pool as any).mint_a,
+                  mint_b: (pool as any).mint_b,
+                  decimals_a: (pool as any).decimals_a,
+                  decimals_b: (pool as any).decimals_b,
+                  native_mint_a: (pool as any).native_mint_a,
+                  native_mint_b: (pool as any).native_mint_b,
+                  binStep: (pool as any).bin_step,
+                  dex: 'meteora',
+                  pool_kind: 'clmm',
+                });
+                
                 cached++;
                 
                 try {

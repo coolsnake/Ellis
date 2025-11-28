@@ -32,6 +32,14 @@ import {
   METEORA_PROGRAM,
 } from './pools/websockets/decoders/index.js';
 import type { AccountInfo as DecoderAccountInfo, DerivedAccountInfo } from './pools/websockets/decoders/types.js';
+// gRPC streaming support (Yellowstone/Shyft)
+import { 
+  startGrpcSubscriptions, 
+  shutdownGrpcAdapter, 
+  getGrpcStatus, 
+  retargetGrpcSubscriptions,
+  isGrpcConfigured 
+} from './pools/grpc/index.js';
 
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const METEORA_BIN_BITMAP_SIZE = 512;
@@ -501,6 +509,30 @@ export function getPoolCacheAges(): { raydium: number; orca: number; meteora: nu
 // Retarget WS: unsubscribe and re-subscribe to current graph-derived targets
 // Uses sequential subscription with throttling to avoid RPC burst
 export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; meteora: number; meteora_balanced: number; pumpswap: number } }> {
+  const subscriptionMode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
+  
+  // For gRPC mode, use the gRPC retarget function
+  if (subscriptionMode === 'grpc') {
+    try {
+      const success = await retargetGrpcSubscriptions();
+      if (success) {
+        const grpcStatus = getGrpcStatus();
+        logger.info('pools.grpc.retarget.success', { 
+          subscriptionCount: grpcStatus.subscriptionCount,
+          cat: 'grpc' 
+        });
+        // Return placeholder counts - gRPC doesn't separate by DEX
+        return { attached: { orca: 0, raydium: 0, meteora: 0, meteora_balanced: 0, pumpswap: 0 } };
+      }
+    } catch (err) {
+      logger.error('pools.grpc.retarget.error', {
+        error: String((err as Error)?.message || err),
+        cat: 'grpc'
+      });
+    }
+    // Fall through to WSS retarget as fallback
+  }
+  
   try { 
     emit('log', { 
       level: 'info', 
@@ -649,9 +681,57 @@ function runWebsocketRefreshLoop(): void {
   const meteoraPeriod = unified;
 
   const wsEnabled = !!(CONFIG.system as any)?.enablePoolWs;
+  const subscriptionMode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
+  
   // Defer any activity until graph is ready
   if (!wsAllowed) { logger.info('pools.init deferred until graph ready'); return; }
   // Auto-start timers/WS when allowed by config and graph readiness
+
+  // Check for gRPC mode - if enabled, use gRPC streaming instead of WSS
+  if (subscriptionMode === 'grpc' && wsEnabled) {
+    (async () => {
+      try {
+        if (!isGrpcConfigured()) {
+          logger.warn('pools.grpc.not_configured', { 
+            message: 'gRPC mode selected but endpoint/xToken not configured, falling back to WSS',
+            cat: 'grpc' 
+          });
+          // Fall through to WSS mode below
+        } else {
+          const success = await startGrpcSubscriptions();
+          if (success) {
+            logger.info('pools.grpc.started', { mode: 'grpc', cat: 'grpc' });
+            emit('log', {
+              level: 'info',
+              message: 'Pool subscriptions started via gRPC',
+              timestamp: new Date().toISOString(),
+              context: { cat: 'grpc' }
+            });
+            return; // Exit - gRPC is handling subscriptions
+          } else {
+            logger.warn('pools.grpc.start_failed', { 
+              message: 'gRPC start failed, falling back to WSS',
+              cat: 'grpc' 
+            });
+          }
+        }
+      } catch (err) {
+        logger.error('pools.grpc.error', { 
+          error: String((err as Error)?.message || err),
+          cat: 'grpc' 
+        });
+      }
+      // If gRPC fails, the WSS setup below will run as fallback
+    })();
+    // For gRPC mode, skip the initial HTTP refresh timer setup - gRPC handles updates
+    // But still allow WSS to run as fallback if gRPC fails
+  }
+
+  // Handle disabled mode
+  if (subscriptionMode === 'disabled') {
+    logger.info('pools.subscriptions.disabled', { cat: 'pools' });
+    // No subscriptions - only HTTP polling if wsEnabled is false
+  }
 
     if (!wsEnabled && !suppressInitialOnce) {
     // Use unified refresh timer to ensure all filters (minPoolsPerPair, TVL, universe) are consistently applied
@@ -4079,6 +4159,11 @@ export function enablePoolWebsocketRefreshes(): void {
 
 export function disablePoolWebsocketRefreshes(): void {
   try {
+    // Shutdown gRPC adapter if running
+    try {
+      shutdownGrpcAdapter().catch(() => {});
+    } catch {}
+    
     if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; }
     if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
     wsHealthy = false; lastWsEventMs = Date.now();
@@ -4105,9 +4190,40 @@ export function disablePoolWebsocketRefreshes(): void {
   } catch {}
 }
 
-export function getPoolWsStatus(): { enabled: boolean; healthy: boolean; lastEventMs: number } {
+export function getPoolWsStatus(): { 
+  enabled: boolean; 
+  healthy: boolean; 
+  lastEventMs: number;
+  mode: 'wss' | 'grpc' | 'disabled';
+  grpc?: {
+    configured: boolean;
+    connected: boolean;
+    subscriptionCount: number;
+    eventCount: number;
+  };
+} {
   const enabled = !!((CONFIG.system as any)?.enablePoolWs) && wsAllowed;
-  return { enabled, healthy: !!wsHealthy, lastEventMs: lastWsEventMs || 0 };
+  const mode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
+  
+  // Get gRPC status if available
+  let grpcInfo: { configured: boolean; connected: boolean; subscriptionCount: number; eventCount: number } | undefined;
+  try {
+    const grpcStatus = getGrpcStatus();
+    grpcInfo = {
+      configured: grpcStatus.configured,
+      connected: grpcStatus.connected,
+      subscriptionCount: grpcStatus.subscriptionCount,
+      eventCount: grpcStatus.eventCount,
+    };
+  } catch {}
+  
+  return { 
+    enabled, 
+    healthy: mode === 'grpc' ? (grpcInfo?.connected ?? false) : !!wsHealthy, 
+    lastEventMs: mode === 'grpc' ? (getGrpcStatus().lastEventMs || 0) : (lastWsEventMs || 0),
+    mode: mode as 'wss' | 'grpc' | 'disabled',
+    grpc: grpcInfo,
+  };
 }
 
 // Clear all in-memory normalized caches to force a fresh rebuild next boot

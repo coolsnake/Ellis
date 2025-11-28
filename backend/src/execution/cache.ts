@@ -120,7 +120,9 @@ export class ExecutionCache {
 
   constructor(opts?: { ttlStaticMs?: number; ttlHotMs?: number; ttlTokenMs?: number; snapshotName?: string }) {
     this.ttlStaticMs = Math.max(5 * 60_000, Number(opts?.ttlStaticMs ?? 30 * 60_000));
-    this.ttlHotMs = Math.max(200, Number(opts?.ttlHotMs ?? 1000));
+    // Increased from 1000ms to 10000ms (10 seconds) to prevent premature expiry
+    // between WebSocket updates. Pool cache fallback now handles true misses.
+    this.ttlHotMs = Math.max(200, Number(opts?.ttlHotMs ?? 10_000));
     this.ttlTokenMs = Math.max(60_000, Number(opts?.ttlTokenMs ?? 3_600_000));
     const name = opts?.snapshotName || 'dex-accounts.json';
     this.snapshotFile = joinPath(CONFIG.cacheDir, name);
@@ -201,6 +203,61 @@ export class ExecutionCache {
         }
       }
     } catch {}
+  }
+
+  /**
+   * Extend the TTL of hot cache for a pool (useful during active arb execution)
+   * Prevents cache expiry while a multi-hop transaction is being built
+   */
+  extendHotTtl(poolId: string, additionalMs: number = 30_000): void {
+    const entry = this.hotByPool.get(poolId);
+    if (entry) {
+      entry.expiresAt = Math.max(entry.expiresAt, Date.now() + additionalMs);
+    }
+  }
+
+  /**
+   * Sync execution cache from pool cache for a specific pool
+   * Useful when execution cache misses but pool cache has the data
+   */
+  async syncFromPoolCache(poolId: string): Promise<boolean> {
+    try {
+      const { findPoolInCache } = await import('../server/pools.cache.js');
+      const found = findPoolInCache(poolId);
+      if (!found) return false;
+      
+      const pool = found.pool as any;
+      const source = found.source;
+      
+      // Populate static cache
+      this.setStatic(poolId, {
+        mint_a: pool.mint_a,
+        mint_b: pool.mint_b,
+        decimals_a: pool.decimals_a,
+        decimals_b: pool.decimals_b,
+        native_mint_a: pool.native_mint_a,
+        native_mint_b: pool.native_mint_b,
+        dex: source === 'orca' ? 'orca' : source === 'raydium' ? 'raydium' : source === 'meteora' ? 'meteora' : undefined,
+        pool_kind: pool.pool_kind,
+        tickSpacing: pool.tick_spacing,
+        binStep: pool.bin_step,
+      });
+      
+      // Populate hot cache if we have price data
+      if (pool.sqrt_price_x64_raw) {
+        this.setHot(poolId, {
+          sqrtPriceX64: BigInt(pool.sqrt_price_x64_raw),
+          feeRate: pool.fee_bps,
+          currentTickIndex: pool.tick_current_index,
+          activeId: pool.active_id,
+          liquidity: pool.liquidity_raw ? BigInt(pool.liquidity_raw) : undefined,
+        });
+      }
+      
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   clear(): void {

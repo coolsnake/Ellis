@@ -24,6 +24,16 @@ export interface SharedSystemConfig {
     sample?: Record<string, number>;
     rateLimit?: Record<string, { perSec?: number; minIntervalMs?: number }>;
   };
+  // Pool subscription mode (WSS vs gRPC)
+  poolSubscriptionMode?: 'wss' | 'grpc' | 'disabled';
+  // gRPC stream configuration
+  grpc?: {
+    endpoint?: string;
+    xToken?: string;
+    commitment?: 'processed' | 'confirmed' | 'finalized';
+    maxReconnectAttempts?: number;
+    reconnectDelayMs?: number;
+  };
 }
 
 export interface SharedFeesConfig {
@@ -129,5 +139,17 @@ export interface MeteoraGraphQLConfig {
   useGraphQL?: boolean;
   shyftApiKey?: string;
   pageDelayMs?: number;
+}
+
+// Pool Subscription Mode (WSS vs gRPC)
+export type PoolSubscriptionMode = 'wss' | 'grpc' | 'disabled';
+
+// gRPC Stream Configuration (Yellowstone/Shyft)
+export interface GrpcStreamConfig {
+  endpoint?: string;                    // e.g., "grpc.ams.shyft.to:443"
+  xToken?: string;                      // Shyft x-token for authentication
+  commitment?: 'processed' | 'confirmed' | 'finalized';
+  maxReconnectAttempts?: number;
+  reconnectDelayMs?: number;
 }
 

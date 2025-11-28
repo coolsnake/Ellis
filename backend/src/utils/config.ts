@@ -224,6 +224,16 @@ export const CONFIG = {
     universePrefilterOrca: (process.env.UNIVERSE_PREFILTER_ORCA || 'false') === 'true',
     // Enable websocket subscriptions for pool state changes
     enablePoolWs: process.env.ENABLE_POOL_WS !== 'false',
+    // Pool subscription mode: 'wss' (WebSocket RPC), 'grpc' (Yellowstone gRPC), or 'disabled'
+    poolSubscriptionMode: (process.env.POOL_SUBSCRIPTION_MODE as 'wss' | 'grpc' | 'disabled') || 'wss',
+    // gRPC stream configuration (Yellowstone/Shyft)
+    grpc: {
+      endpoint: process.env.GRPC_ENDPOINT || '',
+      xToken: process.env.GRPC_X_TOKEN || '',
+      commitment: (process.env.GRPC_COMMITMENT as 'processed' | 'confirmed' | 'finalized') || 'processed',
+      maxReconnectAttempts: Number(process.env.GRPC_MAX_RECONNECT_ATTEMPTS || 10),
+      reconnectDelayMs: Number(process.env.GRPC_RECONNECT_DELAY_MS || 1000),
+    },
     // WS program-level fallbacks: allow subscribing at program level when no targeted pools (default false)
     wsFallbackPrograms: (process.env.WS_FALLBACK_PROGRAMS || 'false') === 'true',
     // Meteora WS retry tuning

@@ -1,6 +1,4 @@
 import type { DirectHop } from '../types.js';
-import { PublicKey } from '@solana/web3.js';
-import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 import { logCatchError } from '../../utils/errorHandler.js';
@@ -11,285 +9,29 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
   
   try {
     if (hop.dex === 'orca') {
-      // OPTIMIZATION: Try local quote first using cached pool state
-      const sys: any = (CONFIG as any)?.system || {};
-      if (sys.quotes?.enableMinimalMath !== false) {
-        const localQuote = await quoteOrcaClmmLocal(hop, amountInRaw, effectiveTraceId);
-        if (localQuote > 0n) return localQuote;
-      }
+      // LOCAL QUOTE ONLY - No SDK fallback for maximum speed
+      // Pool cache fallback is built into quoteOrcaClmmLocal, so if this fails,
+      // the opportunity is stale and should be skipped
+      const localQuote = await quoteOrcaClmmLocal(hop, amountInRaw, effectiveTraceId);
+      if (localQuote > 0n) return localQuote;
       
-      // Fallback to SDK quote if local fails
-      const { logger } = await import('../../utils/logger.js');
+      // Log cache miss - this means pool data is not available anywhere
       try {
-        logger.info('tx.resolve.quote.orca.start', {
+        const { logger } = await import('../../utils/logger.js');
+        logger.debug('orca.quote.cache_miss', {
           cat: 'tx',
           traceId: effectiveTraceId,
           ctx: {
             poolId: hop.poolId,
-            inputMint: hop.inputMint,
-            outputMint: hop.outputMint,
-            amountInRaw: amountInRaw.toString(),
-            programId: hop.programId,
-            inputDecimals: hop.inputDecimals,
-            outputDecimals: hop.outputDecimals,
-            traceId: effectiveTraceId,
+            inputMint: hop.inputMint?.slice(0, 8),
+            outputMint: hop.outputMint?.slice(0, 8),
+            reason: 'local_quote_returned_zero_no_sdk_fallback',
           }
         });
       } catch (e) { logCatchError('resolver.quotes', e); }
       
-      const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
-      const { Percentage } = await import('@orca-so/common-sdk');
-      const kp = await ensureWallet(CONFIG.walletPath);
-      
-      try {
-        logger.info('tx.resolve.quote.orca.wallet', {
-          cat: 'tx',
-          traceId: effectiveTraceId,
-          ctx: {
-            wallet: kp.publicKey.toBase58(),
-            traceId: effectiveTraceId,
-          }
-        });
-      } catch (e) { logCatchError('resolver.quotes', e); }
-      
-      const programId = new PublicKey(hop.programId || (CONFIG.orca?.programId as any));
-      const ctx = (WhirlpoolContext as any).from(getConnection() as any, { publicKey: kp.publicKey } as any, programId);
-      
-      try {
-        logger.info('tx.resolve.quote.orca.context', {
-          cat: 'tx',
-          traceId: effectiveTraceId,
-          ctx: {
-            programId: ctx.program.programId.toBase58(),
-            wallet: kp.publicKey.toBase58(),
-            traceId: effectiveTraceId,
-          }
-        });
-      } catch (e) { logCatchError('resolver.quotes', e); }
-      
-      const client = (buildWhirlpoolClient as any)(ctx);
-      // Strip -rev suffix before creating PublicKey (similar to Raydium/Meteora)
-      const poolIdStripped = hop.poolId.replace(/[#-]rev$/, '');
-      const pool = await client.getPool(new PublicKey(poolIdStripped));
-      
-      try {
-        const poolData = pool.getData ? pool.getData() : null;
-        logger.info('tx.resolve.quote.orca.pool', {
-          cat: 'tx',
-          traceId: effectiveTraceId,
-          ctx: {
-            poolId: hop.poolId,
-            poolAddress: pool.getAddress?.()?.toBase58() || 'unknown',
-            hasData: !!poolData,
-            tickCurrentIndex: poolData?.tickCurrentIndex?.toString() || 'unknown',
-            tickSpacing: poolData?.tickSpacing?.toString() || 'unknown',
-            sqrtPrice: poolData?.sqrtPrice?.toString() || 'unknown',
-            traceId: effectiveTraceId,
-          }
-        });
-      } catch (e) { logCatchError('resolver.quotes', e); }
-      
-      const slippageTolerance = (Percentage as any).fromFraction(1, 10_000);
-      const inputMintPk = new PublicKey(hop.inputMint);
-      
-      // Convert amountInRaw to BN (BigNumber) - Orca SDK expects BN, not bigint
-      const bnjs = await import('bn.js');
-      const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-      const amountInBn = new BN(String(amountInRaw));
-      
-      try {
-        logger.info('tx.resolve.quote.orca.params', {
-          cat: 'tx',
-          traceId: effectiveTraceId,
-          ctx: {
-            poolId: hop.poolId,
-            inputMint: inputMintPk.toBase58(),
-            amountInRaw: amountInRaw.toString(),
-            amountInBn: amountInBn.toString(),
-            slippageTolerance: String(slippageTolerance),
-            traceId: effectiveTraceId,
-          }
-        });
-      } catch (e) { logCatchError('resolver.quotes', e); }
-      
-      // Wrap quote call to handle adaptiveFeeInfo errors
-      // The SDK checks if adaptiveFeeInfo matches the pool's fee tier configuration
-      let quote: any = null;
-      try {
-        quote = await (swapQuoteByInputToken as any)(
-          pool,
-          inputMintPk,
-          amountInBn,  // Use BN instead of bigint
-          slippageTolerance,
-          ctx.program.programId,
-          ctx.fetcher,
-          true,
-        );
-      } catch (quoteErr: any) {
-        const errMsg = String(quoteErr?.message || quoteErr);
-        
-        // Handle adaptiveFeeInfo invariant error
-        // This happens when the pool's fee tier configuration doesn't match the adaptiveFeeInfo
-        // We can try to work around this by ensuring the pool data is properly structured
-        if (errMsg.includes('adaptiveFeeInfo') || errMsg.includes('adaptive fee tier')) {
-          try {
-            logger.warn('tx.resolve.quote.orca.adaptive_fee_error', {
-              cat: 'tx',
-              ctx: {
-                poolId: hop.poolId,
-                error: errMsg,
-                hint: 'Pool may have adaptive fee tier mismatch - falling back to local quote'
-              }
-            });
-          } catch (e) { logCatchError('resolver.quotes', e); }
-          
-          // Try to get pool data and ensure adaptiveFeeInfo is set correctly
-          try {
-            const poolData = pool.getData ? pool.getData() : null;
-            if (poolData) {
-              // Check if pool has adaptive fee tier by examining fee tier configuration
-              // Most pools don't use adaptive fees, so we can set adaptiveFeeInfo to null
-              // The SDK expects adaptiveFeeInfo to be null for non-adaptive pools
-              const hasAdaptiveFee = (poolData as any).feeTier?.adaptiveFeeInfo != null;
-              
-              // If the pool doesn't have adaptive fee but SDK expects it (or vice versa),
-              // we need to reconstruct the pool object with correct structure
-              // For now, we'll log and return 0 to trigger fallback to local quote
-              try {
-                logger.warn('tx.resolve.quote.orca.adaptive_fee_mismatch', {
-                  cat: 'tx',
-                  ctx: {
-                    poolId: hop.poolId,
-                    hasAdaptiveFee,
-                    poolDataKeys: poolData ? Object.keys(poolData) : [],
-                    suggestion: 'Falling back to local quote or SDK may need pool data refresh'
-                  }
-                });
-              } catch (e) { logCatchError('resolver.quotes', e); }
-              
-              // Return 0 to trigger fallback to local quote (which doesn't use SDK)
-              return 0n;
-            }
-          } catch (fixErr) {
-            // If we can't fix it, return 0 to trigger fallback
-            try {
-              logger.warn('tx.resolve.quote.orca.adaptive_fee_fix_failed', {
-                cat: 'tx',
-                ctx: {
-                  poolId: hop.poolId,
-                  error: String((fixErr as any)?.message || fixErr)
-                }
-              });
-            } catch (e) { logCatchError('resolver.quotes', e); }
-            return 0n;
-          }
-        } else {
-          // Re-throw other errors
-          throw quoteErr;
-        }
-      }
-      
-      try {
-        const quoteKeys = quote ? Object.keys(quote) : [];
-        const otherAmount = quote?.otherAmount;
-        const estimatedAmountOut = quote?.estimatedAmountOut;
-        const estimatedAmountIn = quote?.estimatedAmountIn;
-        const aToB = quote?.aToB;
-        const sqrtPriceLimit = quote?.sqrtPriceLimit;
-        
-        logger.info('tx.resolve.quote.orca.result', {
-          cat: 'tx',
-          ctx: {
-            poolId: hop.poolId,
-            quoteExists: !!quote,
-            quoteKeys: quoteKeys.join(','),
-            otherAmount: otherAmount?.toString() || 'undefined',
-            estimatedAmountOut: estimatedAmountOut?.toString() || 'undefined',
-            estimatedAmountIn: estimatedAmountIn?.toString() || 'undefined',
-            aToB: aToB !== undefined ? String(aToB) : 'undefined',
-            sqrtPriceLimit: sqrtPriceLimit?.toString() || 'undefined',
-            quoteType: quote?.constructor?.name || typeof quote,
-          }
-        });
-      } catch (e) { logCatchError('resolver.quotes', e); }
-      
-      const out = BigInt((quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0);
-      
-      // Extract and cache tick arrays from quote result
-      // This ensures tick arrays are available in execution cache for the builder
-      try {
-        const { executionCache } = await import('../cache.js');
-        const poolIdStripped = hop.poolId.replace(/[#-]rev$/, '');
-        const existing = executionCache.getHot(poolIdStripped);
-        
-        // Extract tick array addresses from quote
-        // The Orca SDK quote provides tickArray0, tickArray1, tickArray2
-        // These correspond to lower, center, and upper tick arrays
-        const tickArray0 = (quote as any)?.tickArray0;
-        const tickArray1 = (quote as any)?.tickArray1;
-        const tickArray2 = (quote as any)?.tickArray2;
-        
-        // Convert PublicKey objects to base58 strings if needed
-        const tickArray0Str = tickArray0?.toBase58?.() || tickArray0;
-        const tickArray1Str = tickArray1?.toBase58?.() || tickArray1;
-        const tickArray2Str = tickArray2?.toBase58?.() || tickArray2;
-        
-        // Map to lower/center/upper structure expected by builder
-        // Note: lower and upper are arrays per type definition, center is a string
-        const tickArrays: { lower?: string[]; center?: string; upper?: string[] } = {};
-        if (tickArray0Str) tickArrays.lower = [String(tickArray0Str)];
-        if (tickArray1Str) tickArrays.center = String(tickArray1Str);
-        if (tickArray2Str) tickArrays.upper = [String(tickArray2Str)];
-        
-        // Only update cache if we have at least one tick array
-        if (tickArrays.lower || tickArrays.center || tickArrays.upper) {
-          executionCache.setHot(poolIdStripped, {
-            ...existing,
-            tickArrays: {
-              ...existing?.tickArrays,
-              ...tickArrays
-            }
-          });
-          
-          try {
-            logger.info('tx.resolve.quote.orca.tickarrays.cached', {
-              cat: 'tx',
-              ctx: {
-                poolId: hop.poolId,
-                lower: tickArrays.lower?.[0]?.slice(0, 8) + '…' || 'none',
-                center: tickArrays.center?.slice(0, 8) + '…' || 'none',
-                upper: tickArrays.upper?.[0]?.slice(0, 8) + '…' || 'none',
-              }
-            });
-          } catch (e) { logCatchError('resolver.quotes', e); }
-        }
-      } catch (err) {
-        // Log but don't fail if caching fails - builder will fallback to RPC if needed
-        try {
-          logger.debug('tx.resolve.quote.orca.tickarrays.cache.failed', {
-            cat: 'tx',
-            ctx: {
-              poolId: hop.poolId,
-              error: String((err as any)?.message || err)
-            }
-          });
-        } catch (e) { logCatchError('resolver.quotes', e); }
-      }
-      
-      try {
-        logger.info('tx.resolve.quote.orca.final', {
-          cat: 'tx',
-          ctx: {
-            poolId: hop.poolId,
-            out: out.toString(),
-            outIsZero: out === 0n,
-            usedOtherAmount: quote?.otherAmount !== undefined,
-            usedEstimatedAmountOut: quote?.estimatedAmountOut !== undefined,
-          }
-        });
-      } catch (e) { logCatchError('resolver.quotes', e); }
-      
-      if (out > 0n) return out;
+      // Return 0 - skip this opportunity rather than making slow SDK/RPC calls
+      return 0n;
     } else if (hop.dex === 'raydium') {
       const sys: any = (CONFIG as any)?.system || {};
       const minimalMathAllowed = sys.quotes?.enableMinimalMath !== false;
@@ -753,11 +495,79 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
     if (!poolId) return 0n;
     
     // Get cached state - both hot (prices) and static (mints)
-    const cached = executionCache.getHot(poolId);
-    const staticData = executionCache.getStatic(poolId);
+    let cached = executionCache.getHot(poolId);
+    let staticData = executionCache.getStatic(poolId);
+    
+    // FALLBACK: If execution cache misses, try pool cache (always available, not TTL-limited)
+    if (!cached?.sqrtPriceX64 || !staticData?.mint_a) {
+      try {
+        const { peekOrcaPools } = await import('../../server/pools.cache.js');
+        const pools = peekOrcaPools();
+        const pool = pools.clmm.find((p: any) => p.id === poolId || p.id === hop.poolId);
+        
+        if (pool) {
+          // Derive sqrtPriceX64 from pool cache
+          if (!cached?.sqrtPriceX64 && (pool as any).sqrt_price_x64_raw) {
+            const sqrtFromPool = BigInt((pool as any).sqrt_price_x64_raw);
+            const feeFromPool = (pool as any).fee_bps || 30;
+            cached = {
+              sqrtPriceX64: sqrtFromPool,
+              feeRate: feeFromPool,
+              currentTickIndex: (pool as any).tick_current_index,
+              liquidity: (pool as any).liquidity_raw ? BigInt((pool as any).liquidity_raw) : undefined,
+            };
+            
+            // Also populate execution cache for future use
+            executionCache.setHot(poolId, cached);
+          }
+          
+          // Get static data from pool cache
+          if (!staticData?.mint_a) {
+            staticData = {
+              mint_a: (pool as any).mint_a,
+              mint_b: (pool as any).mint_b,
+              decimals_a: (pool as any).decimals_a,
+              decimals_b: (pool as any).decimals_b,
+              native_mint_a: (pool as any).native_mint_a,
+              native_mint_b: (pool as any).native_mint_b,
+            };
+            
+            // Also populate execution cache for future use
+            executionCache.setStatic(poolId, {
+              ...staticData,
+              programId: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
+              dex: 'orca',
+              pool_kind: 'clmm',
+            });
+          }
+          
+          try {
+            const { logger } = await import('../../utils/logger.js');
+            logger.debug('orca.quote.local.fallback_from_pool_cache', {
+              cat: 'tx',
+              ctx: {
+                pool: poolId,
+                sqrtPriceX64: cached?.sqrtPriceX64?.toString(),
+                mintA: staticData?.mint_a?.slice(0, 8),
+                mintB: staticData?.mint_b?.slice(0, 8),
+              }
+            });
+          } catch (e) { logCatchError('resolver.quotes', e); }
+        }
+      } catch (fallbackErr) {
+        // Fallback failed, continue with original cache check
+        try {
+          const { logger } = await import('../../utils/logger.js');
+          logger.debug('orca.quote.local.fallback_failed', {
+            cat: 'tx',
+            ctx: { pool: poolId, error: String((fallbackErr as any)?.message || fallbackErr) }
+          });
+        } catch (e) { logCatchError('resolver.quotes', e); }
+      }
+    }
     
     if (!cached?.sqrtPriceX64) {
-      // Cache miss - SDK fallback will be used
+      // Cache miss even after fallback - SDK fallback will be used
       return 0n;
     }
     

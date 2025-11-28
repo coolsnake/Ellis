@@ -17,6 +17,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   const [cfg, setCfg] = useState<any>(uiPrefs.lastValues || {
 		// System
 		enablePoolWs: true,
+    poolSubscriptionMode: 'wss',  // 'wss' | 'grpc' | 'disabled'
+    grpc_endpoint: '',
+    grpc_xToken: '',
+    grpc_commitment: 'processed',  // 'processed' | 'confirmed' | 'finalized'
     poolsRefreshMs: 60000,
     poolRefreshMinGapMs: 3000,
     tokenUniverseMode: 'union',
@@ -149,6 +153,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
       raydium_shyftApiKey: '',
       orca_shyftApiKey: '',
       meteora_shyftApiKey: '',
+      grpc_xToken: '', // Don't persist gRPC x-token
     };
     updateUiPrefs({ lastValues: sanitized });
   }, [cfg]);
@@ -162,6 +167,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
 				setCfg((prev: any) => ({
             ...prev,
 					enablePoolWs: j?.system?.enablePoolWs !== false,
+            poolSubscriptionMode: j?.system?.poolSubscriptionMode || prev.poolSubscriptionMode || 'wss',
+            grpc_endpoint: j?.system?.grpc?.endpoint || prev.grpc_endpoint || '',
+            grpc_xToken: j?.system?.grpc?.xToken || prev.grpc_xToken || '',
+            grpc_commitment: j?.system?.grpc?.commitment || prev.grpc_commitment || 'processed',
             poolsRefreshMs: Number(j?.system?.poolsRefreshMs ?? prev.poolsRefreshMs),
             poolRefreshMinGapMs: Number(j?.system?.poolRefreshMinGapMs ?? prev.poolRefreshMinGapMs),
             tokenUniverseMode: j?.system?.tokenUniverseMode || prev.tokenUniverseMode,
@@ -335,6 +344,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
 		const body: any = {
       system: {
         enablePoolWs: !!cfg.enablePoolWs,
+        poolSubscriptionMode: cfg.poolSubscriptionMode || 'wss',
+        grpc: {
+          endpoint: String(cfg.grpc_endpoint || ''),
+          xToken: String(cfg.grpc_xToken || ''),
+          commitment: cfg.grpc_commitment || 'processed',
+        },
         poolsRefreshMs: Number(cfg.poolsRefreshMs),
         poolRefreshMinGapMs: Number(cfg.poolRefreshMinGapMs),
         wsAttachPerSec: Number(cfg.wsAttachPerSec),
@@ -505,6 +520,87 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <label className="block text-sm mb-1">WS Attach Rate (pools/sec)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.wsAttachPerSec} onChange={(e)=>set('wsAttachPerSec', Number(e.target.value)||0)} />
               </div>
+            </div>
+          </div>
+
+          {/* Pool Subscription Mode */}
+          <div className="bg-gray-700 rounded p-4 border-2 border-amber-500">
+            <h3 className="text-lg font-semibold mb-3">Pool Subscription Mode</h3>
+            <div className="mb-4 text-sm text-gray-300 bg-amber-900/30 border border-amber-500/50 rounded p-3">
+              <strong>gRPC Streaming:</strong> Low-latency pool updates via Yellowstone gRPC. 
+              Uses 'processed' commitment for fastest updates (unconfirmed transactions).
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm mb-1">Subscription Mode</label>
+                <select 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={cfg.poolSubscriptionMode} 
+                  onChange={(e) => set('poolSubscriptionMode', e.target.value)}
+                >
+                  <option value="wss">WebSocket (RPC)</option>
+                  <option value="grpc">gRPC (Yellowstone)</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">
+                  {cfg.poolSubscriptionMode === 'wss' && 'Standard RPC WebSocket subscriptions (onAccountChange)'}
+                  {cfg.poolSubscriptionMode === 'grpc' && 'Low-latency gRPC streaming via Shyft Yellowstone'}
+                  {cfg.poolSubscriptionMode === 'disabled' && 'No real-time updates (HTTP polling only)'}
+                </p>
+              </div>
+              
+              <div>
+                <label className="block text-sm mb-1">Commitment Level</label>
+                <select 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={cfg.grpc_commitment} 
+                  onChange={(e) => set('grpc_commitment', e.target.value)}
+                  disabled={cfg.poolSubscriptionMode !== 'grpc'}
+                >
+                  <option value="processed">Processed (fastest, unconfirmed)</option>
+                  <option value="confirmed">Confirmed (~400ms delay)</option>
+                  <option value="finalized">Finalized (~2s delay)</option>
+                </select>
+              </div>
+            </div>
+
+            {cfg.poolSubscriptionMode === 'grpc' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-800/50 rounded p-3 border border-gray-600">
+                <div className="md:col-span-2">
+                  <label className="block text-sm mb-1">gRPC Endpoint</label>
+                  <input 
+                    type="text" 
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 font-mono text-sm" 
+                    value={cfg.grpc_endpoint} 
+                    onChange={(e) => set('grpc_endpoint', e.target.value)} 
+                    placeholder="grpc.ams.shyft.to:443" 
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Shyft gRPC endpoint. Choose region closest to your server (ams, ny, etc.)
+                  </p>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm mb-1">X-Token (Shyft API Key)</label>
+                  <input 
+                    type="password" 
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 font-mono text-sm" 
+                    value={cfg.grpc_xToken} 
+                    onChange={(e) => set('grpc_xToken', e.target.value)} 
+                    placeholder="Your Shyft gRPC x-token" 
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Found in your Shyft dashboard under gRPC section
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-3 text-xs text-gray-300 bg-gray-600 rounded p-2">
+              <strong>💡 gRPC Benefits:</strong> Single multiplexed stream, no per-subscription limits, 
+              ~40% less bandwidth (Protobuf), slot-based delivery guarantees.
+              <br />
+              <strong>⚠️ Requires:</strong> Shyft gRPC subscription ($199+/mo) or dedicated node.
             </div>
           </div>
 

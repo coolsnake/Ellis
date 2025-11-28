@@ -43,6 +43,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         meteoraBalanced: (CONFIG as any).meteoraBalanced,
         pumpswap: (CONFIG as any).pumpswap,
         sanity: (CONFIG as any).sanity,
+        shyft: (CONFIG as any).shyft,
       });
     } catch (e: any) {
       logger.error('server: failed to get system config', { error: String(e?.message || e), cat: 'server' });
