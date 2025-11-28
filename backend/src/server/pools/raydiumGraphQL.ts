@@ -1470,6 +1470,14 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           decimals_b: pool.decimals_b,
           vault_a: pool.account_a,
           vault_b: pool.account_b,
+          // CRITICAL: Store native (on-chain) orientation for SDK compatibility
+          // The Raydium SDK expects native ordering for swap instructions
+          native_mint_a: (pool as any).native_mint_a,
+          native_mint_b: (pool as any).native_mint_b,
+          native_decimals_a: (pool as any).native_decimals_a,
+          native_decimals_b: (pool as any).native_decimals_b,
+          native_account_a: (pool as any).native_account_a,
+          native_account_b: (pool as any).native_account_b,
           tick_spacing: pool.tick_spacing,
           amm_config: rawData?.ammConfig || (pool as any).amm_config || (pool as any).ammConfig,
           observation_state: rawData?.observationState,

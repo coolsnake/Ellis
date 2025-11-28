@@ -436,6 +436,13 @@ async function handleClmmUpdate(
       mint_b: processedPrice.mintB,
       decimals_a: processedPrice.decimalsA,
       decimals_b: processedPrice.decimalsB,
+      // CRITICAL: Store native (on-chain) mint orientation for SDK compatibility
+      // native_mint_a/b are the actual on-chain values BEFORE canonicalization
+      // The Raydium SDK expects native ordering for swap instructions
+      native_mint_a: mintA,
+      native_mint_b: mintB,
+      native_decimals_a: decA,
+      native_decimals_b: decB,
     };
 
     if (derived) {

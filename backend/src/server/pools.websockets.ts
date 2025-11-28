@@ -1224,6 +1224,10 @@ function runWebsocketRefreshLoop(): void {
                           const rawBuffer = Buffer.isBuffer(info.data) ? Buffer.from(info.data) : Buffer.from(info.data ?? []);
                           const existing = executionCache.getStatic(pk58) || {} as any;
                           const derived = await deriveRaydiumClmmCacheFields(pk58, rawBuffer, { programId: owner?.toString?.() });
+                          // Derive native decimals from canonical decimals based on swap status
+                          const nativeDecA = processedPrice.wasSwapped ? processedPrice.decimalsB : processedPrice.decimalsA;
+                          const nativeDecB = processedPrice.wasSwapped ? processedPrice.decimalsA : processedPrice.decimalsB;
+                          
                           const nextStatic: any = {
                             ...existing,
                             rawAccountData: rawBuffer,
@@ -1234,6 +1238,12 @@ function runWebsocketRefreshLoop(): void {
                             mint_b: processedPrice.mintB,
                             decimals_a: processedPrice.decimalsA,
                             decimals_b: processedPrice.decimalsB,
+                            // CRITICAL: Store native (on-chain) mint orientation for SDK compatibility
+                            // The Raydium SDK expects native ordering for swap instructions
+                            native_mint_a: mintA,
+                            native_mint_b: mintB,
+                            native_decimals_a: nativeDecA,
+                            native_decimals_b: nativeDecB,
                           };
                           if (derived) {
                             if (derived.programId) nextStatic.programId = derived.programId;
