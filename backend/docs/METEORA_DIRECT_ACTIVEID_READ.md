@@ -1,146 +1,121 @@
-# Fix: Direct activeId Reading (No SDK Decode)
+# Meteora DLMM Account Decoding
 
-## Problem
-After implementing SDK module resolution fix, the decode errors persisted:
+## Current Status (Updated November 28, 2025)
+
+**⚠️ IMPORTANT: Direct binary reading at fixed offsets is UNRELIABLE.**
+
+Testing has confirmed that the SDK's `program.coder.accounts.decode('lbPair', data)` is the **only reliable method** for reading Meteora DLMM account data.
+
+## Why Direct Binary Offsets Don't Work
+
+Diagnostic logging revealed that documented binary offsets return garbage values:
+
+```
+sdk_activeId: 35149          ← Correct (from SDK decode)
+binary_activeId_240: 980298058  ← WRONG (constant garbage across all pools)
+binary_activeId_180: -866161189 ← WRONG (varies but clearly incorrect)
+```
+
+The SDK-decoded value (35149) produces correct prices (~$0.034), while the binary offsets return nonsensical values.
+
+### Offset 240 Returns Constant Garbage
+The same value (980298058) appears for different pools with different actual activeIds - this proves offset 240 is reading from the wrong memory location.
+
+### Offset 180 Returns Variable Garbage
+Different values per pool, but none match the SDK-decoded values.
+
+## The Correct Approach: SDK Decode
+
+```typescript
+import { createProgram } from '@meteora-ag/dlmm';
+
+const program = createProgram(connection);
+const state = program.coder.accounts.decode('lbPair', accountData);
+
+// Access fields directly from decoded state
+const activeId = state.activeId;      // Correct!
+const binStep = state.binStep;        // Correct!
+const tokenXMint = state.tokenXMint;  // Correct!
+const tokenYMint = state.tokenYMint;  // Correct!
+```
+
+### SDK Returns These Fields
+
+From diagnostic logging, the SDK returns these keys:
+```
+["parameters", "vParameters", "bumpSeed", "binStepSeed", "pairType", 
+ "activeId", "binStep", "status", "requireBaseFactorSeed", "baseFactorSeed",
+ "activationType", "creatorPoolOnOffControl", "tokenXMint", "tokenYMint", 
+ "reserveX", ...]
+```
+
+## Historical Context
+
+### Original Problem (November 11, 2025)
+The SDK's `decodeAccount` function had initialization issues:
 ```
 [WARN] meteora.activeId.decode_failed 
 {"error":"Cannot read properties of undefined (reading 'decode')"}
 ```
 
-**Root Cause:** The Meteora SDK's `decodeAccount` function has complex dependencies (coder, IDL, layouts) that weren't properly initialized, making it unreliable.
-
-## The Solution: Direct Binary Reading
-
-Instead of using the SDK's decode function, we now read the `activeId` directly from the raw pool data at a **known offset**.
-
-### How It Works
-
-Meteora DLMM pool accounts have a fixed structure. The `activeId` field is located at:
-- **Offset:** 240 bytes
-- **Type:** `i32` (signed 32-bit integer)
-- **Encoding:** Little-endian
-
+### Original "Solution" (Now Deprecated)
+Direct binary reading was attempted as a workaround:
 ```typescript
-// Direct binary read - NO SDK REQUIRED!
+// ❌ DEPRECATED - This doesn't work reliably!
 const ACTIVE_ID_OFFSET = 240;
 const activeId = Buffer.from(acc.data).readInt32LE(ACTIVE_ID_OFFSET);
 ```
 
-**Reference:** `backend/scripts/analyze-meteora-pool.ts` line 75
-
-### Changes Made
-
-**File:** `backend/src/server/pools/meteora.ts`
-
-**Before (broken):**
+### Actual Solution (Current)
+Use `createProgram()` from `@meteora-ag/dlmm` which properly initializes the Anchor coder:
 ```typescript
-// Tried to use SDK decode - failed due to undefined coder
-const decode = (DLMM as any).decodeAccount;
-const state = decode({ coder: DLMM.coder ?? {} }, 'lbPair', acc.data);
-const activeId = state?.activeId; // ❌ Never reached
+// ✅ CORRECT - Use SDK decode
+const program = createProgram(connection);
+const state = program.coder.accounts.decode('lbPair', data);
+const activeId = state.activeId;
 ```
 
-**After (working):**
-```typescript
-// Read directly from known offset - always works!
-const ACTIVE_ID_OFFSET = 240;
-const activeId = Buffer.from(acc.data).readInt32LE(ACTIVE_ID_OFFSET); // ✅
-```
+## Why the Offsets Were Wrong
 
-### Benefits
+The documented offset table was likely:
+1. Based on an older version of the Meteora program
+2. Not accounting for Anchor's 8-byte discriminator handling
+3. Derived from incomplete reverse-engineering
 
-1. ✅ **Reliable** - No SDK dependencies, no module resolution issues
-2. ✅ **Fast** - Direct memory read (nanoseconds)
-3. ✅ **Simple** - Just 1 line of code
-4. ✅ **Maintainable** - Won't break when SDK structure changes
-5. ✅ **Battle-tested** - Same approach used in analyze script
+Solana/Anchor account layouts can vary based on:
+- Program version
+- Account type discriminators
+- Padding/alignment
+- Optional fields
 
-### Verification
+## Current Implementation
 
-The `activeId` offset was confirmed by:
-1. Meteora's public documentation
-2. Your own `analyze-meteora-pool.ts` script
-3. On-chain data inspection
+The WebSocket decoder in `backend/src/server/pools/websockets/decoders/meteora.ts`:
+1. Uses `program.coder.accounts.decode('lbPair', data)` - ✅ Correct
+2. Extracts `activeId`, `binStep`, `tokenXMint`, `tokenYMint` from decoded state
+3. Produces correct prices via the price pipeline
 
-This is a standard Solana pattern - reading account data at fixed offsets is often more reliable than using SDK decoders.
+## Deprecated Code Locations
 
-### Expected Results
+The following locations have incorrect binary offset reads that should NOT be relied upon:
 
-**Before:**
-```
-[WARN] meteora.activeId.decode_failed (×500)
-cached: 0, failed: 500
-```
+1. **`backend/src/execution/utils/altManager.ts`** - Uses offset 180 for activeId
+   - This is only used for ALT population, not price calculation
+   - Should be updated to use SDK decode
 
-**After:**
-```
-[INFO] meteora.activeId.cache_populated
-cached: 500, failed: 0  ✅
-```
+2. **`backend/scripts/analyze-meteora-pool.ts`** - Reference script with offset 240
+   - For analysis/debugging only
+   - Shows both approaches for comparison
 
-## Technical Details
+## Verification
 
-### Meteora DLMM Pool Structure (Partial)
+Prices calculated from SDK-decoded values match expected market prices:
+- `activeId: 35149, binStep: 1` → `priceForward: 0.0336` ✓
+- `activeId: 15595, binStep: 1` → `priceForward: 0.2102` ✓
 
-| Offset | Field | Type | Size | Description |
-|--------|-------|------|------|-------------|
-| 8      | parameters | struct | 32 | Pool parameters |
-| 72     | tokenXMint | Pubkey | 32 | Token X mint address |
-| 104    | tokenYMint | Pubkey | 32 | Token Y mint address |
-| 136    | reserveX | Pubkey | 32 | Reserve X vault |
-| 168    | reserveY | Pubkey | 32 | Reserve Y vault |
-| 232    | binStep | u16 | 2 | Bin step parameter |
-| **240** | **activeId** | **i32** | **4** | **Active bin ID** ✅ |
-
-### Why Direct Reading Works
-
-Solana accounts are just byte arrays with a fixed structure defined by the program. As long as the program doesn't change its account layout (which would be a breaking change), reading at fixed offsets is guaranteed to work.
-
-The Meteora DLMM program hasn't changed its core account structure, making this approach safe and reliable.
-
-### Alternative Approaches Considered
-
-1. **SDK Decode** ❌ - Complex, unreliable, has hidden dependencies
-2. **Borsh Decode** ❌ - Requires schema, adds complexity
-3. **Anchor IDL** ❌ - Requires IDL file, parsing overhead
-4. **Direct Binary Read** ✅ - Simple, fast, reliable
-
-## Migration Path
-
-If Meteora ever changes their account structure (unlikely), we'd see:
-- Sudden spike in `failed` count
-- `activeId` values that don't make sense (e.g., extremely large/small)
-- Transaction failures due to wrong bin arrays
-
-**Mitigation:** Add sanity checks:
-```typescript
-const activeId = Buffer.from(acc.data).readInt32LE(240);
-
-// Sanity check: activeId should be reasonable
-if (Math.abs(activeId) > 1000000) {
-  logger.warn('meteora.activeId.out_of_range', { activeId });
-  continue; // Skip this pool
-}
-```
-
-## Testing
-
-1. **Restart backend** - Fresh import, fresh cache
-2. **Watch logs** - Should see successful caching now
-3. **Verify counts** - `cached` should equal `total` (or close)
-4. **Test transactions** - Meteora swaps should have bin arrays
-
-## Status
-
-✅ **IMPLEMENTED** - Direct binary reading replaces SDK decode  
-✅ **TESTED** - Approach proven in analyze script  
-✅ **PRODUCTION READY** - Simple, reliable, maintainable
+The formula `(1 + binStep/10000)^activeId` with SDK values produces correct results.
 
 ---
 
-**Date:** November 11, 2025  
-**Files Modified:** `backend/src/server/pools/meteora.ts`  
-**Approach:** Direct binary reading at offset 240  
-**Dependencies:** None (no SDK required for reading)  
-**Risk:** Low (fixed offset, stable structure)
-
+**Last Updated:** November 28, 2025  
+**Conclusion:** Always use SDK decode for Meteora DLMM accounts. Direct binary offsets are unreliable.

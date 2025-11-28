@@ -1657,41 +1657,32 @@ export class DexAltManager {
         } catch {}
       }
 
-      // Try to parse pool state to get token mints and active bin
-      // Meteora pool layout (rough structure based on on-chain observations):
-      // First 8 bytes: discriminator
-      // Then various fields including mints, reserves, bin step, active id, etc.
+      // Parse pool state using SDK decode (binary offsets are unreliable)
       let tokenXMint: PublicKey | null = null;
       let tokenYMint: PublicKey | null = null;
       let activeId: number | null = null;
       let binStep: number | null = null;
 
       try {
-        // Try to read mint addresses (at fixed offsets if layout is stable)
-        // This is fragile but better than nothing
-        const data = poolInfo.data;
-        if (data.length >= 200) {
-          // Typical offsets (may vary by version):
-          // tokenXMint: around offset 72-104
-          // tokenYMint: around offset 104-136
-          try {
-            tokenXMint = new PublicKey(data.slice(72, 104));
-          } catch {}
-          try {
-            tokenYMint = new PublicKey(data.slice(104, 136));
-          } catch {}
-          
-          // Active ID is typically a i32 or i24 around offset 180-184
-          try {
-            activeId = data.readInt32LE(180);
-          } catch {}
-          
-          // Bin step is typically a u16 around offset 176-178
-          try {
-            binStep = data.readUInt16LE(176);
-          } catch {}
+        // Use createProgram to get proper Anchor coder for decoding
+        const { createProgram } = await import('@meteora-ag/dlmm');
+        const connection = getConnection();
+        const program = createProgram(connection);
+        
+        if (program?.coder?.accounts?.decode) {
+          const state = program.coder.accounts.decode('lbPair', poolInfo.data);
+          if (state) {
+            // Extract fields from SDK-decoded state (authoritative source)
+            activeId = Number(state.activeId ?? state.active_id);
+            binStep = Number(state.binStep ?? state.bin_step);
+            tokenXMint = asPk(state.tokenXMint);
+            tokenYMint = asPk(state.tokenYMint);
+          }
         }
-      } catch {}
+      } catch {
+        // SDK decode failed - leave values as null
+        // This is acceptable since bin arrays are optional for ALT
+      }
 
       if (reserveX) accounts.push(reserveX);
       if (reserveY) accounts.push(reserveY);

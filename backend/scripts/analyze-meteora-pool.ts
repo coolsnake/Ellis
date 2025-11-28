@@ -62,7 +62,10 @@ async function analyzeMeteoraPool() {
   
   console.log('Attempting to extract public keys from pool data...\n');
 
-  // Common offsets for Meteora DLMM pool structure (based on known layouts)
+  // ⚠️ WARNING: These binary offsets are UNRELIABLE and may return garbage values!
+  // Testing confirmed that SDK decode (program.coder.accounts.decode('lbPair', data))
+  // is the ONLY reliable method. These offsets are kept for historical reference only.
+  // See: backend/docs/METEORA_DIRECT_ACTIVEID_READ.md
   const possibleOffsets = [
     { name: 'parameters', offset: 8, desc: 'Parameters struct' },
     { name: 'vFlags', offset: 40, desc: 'Various flags' },
@@ -71,8 +74,8 @@ async function analyzeMeteoraPool() {
     { name: 'reserveX', offset: 136, desc: 'Reserve X (vault)' },
     { name: 'reserveY', offset: 168, desc: 'Reserve Y (vault)' },
     { name: 'oracle', offset: 200, desc: 'Oracle account' },
-    { name: 'binStep', offset: 232, desc: 'Bin step (u16)' },
-    { name: 'activeId', offset: 240, desc: 'Active bin ID (i32)' },
+    { name: 'binStep', offset: 232, desc: 'Bin step (u16) - ⚠️ UNRELIABLE' },
+    { name: 'activeId', offset: 240, desc: 'Active bin ID (i32) - ⚠️ UNRELIABLE' },
   ];
 
   const extractedAccounts = new Map<string, { name: string; desc: string }>();
@@ -106,18 +109,24 @@ async function analyzeMeteoraPool() {
     }
   }
 
-  // Try to read numeric fields
+  // Try to read numeric fields using legacy binary offsets
+  // ⚠️ WARNING: These values are UNRELIABLE! Use SDK decode instead.
   console.log('─'.repeat(80));
-  console.log('🔢 Numeric Fields\n');
+  console.log('🔢 Numeric Fields (⚠️ BINARY OFFSETS - UNRELIABLE)\n');
   
   try {
-    const binStep = data.readUInt16LE(176);
-    console.log(`Bin Step: ${binStep}`);
+    const binStep176 = data.readUInt16LE(176);
+    const binStep232 = data.readUInt16LE(232);
+    console.log(`Bin Step (offset 176): ${binStep176} ⚠️`);
+    console.log(`Bin Step (offset 232): ${binStep232} ⚠️`);
   } catch {}
   
   try {
-    const activeId = data.readInt32LE(180);
-    console.log(`Active ID: ${activeId}\n`);
+    const activeId180 = data.readInt32LE(180);
+    const activeId240 = data.readInt32LE(240);
+    console.log(`Active ID (offset 180): ${activeId180} ⚠️`);
+    console.log(`Active ID (offset 240): ${activeId240} ⚠️`);
+    console.log('\n⚠️ These binary offset values may be WRONG! Use SDK decode for reliable values.\n');
   } catch {}
 
   // Now try using SDK to derive accounts (with better error handling)

@@ -191,7 +191,8 @@ export async function decodeMeteoraLbPair(
       try { binary_binStep_232 = rawBuffer.readUInt16LE(232); } catch {}
       try { binary_binStep_176 = rawBuffer.readUInt16LE(176); } catch {}
       
-      logger.info('meteora.decoder.values_comparison', {
+      // SDK decode is authoritative - binary offset comparison is for diagnostics only
+      logger.debug('meteora.decoder.values_comparison', {
         id: poolId.slice(0, 8) + '…',
         sdk_activeId: sdkActiveId,
         sdk_binStep: sdkBinStep,
@@ -204,24 +205,20 @@ export async function decodeMeteoraLbPair(
         cat: 'pools'
       });
       
-      // Warn if SDK values don't match either binary read offset
+      // Note: Binary offsets 180 and 240 are both incorrect for the current Meteora account layout.
+      // The SDK decode is the authoritative source - direct binary reads are unreliable.
+      // This debug log is kept for diagnostic purposes only.
       if (Number.isFinite(sdkActiveId)) {
         const matchesOffset240 = sdkActiveId === binary_activeId_240;
         const matchesOffset180 = sdkActiveId === binary_activeId_180;
         if (!matchesOffset240 && !matchesOffset180) {
-          logger.warn('meteora.decoder.activeId_offset_mismatch', {
+          // Expected: SDK decode doesn't match legacy binary offsets (which are outdated)
+          logger.debug('meteora.decoder.activeId_offset_mismatch', {
             id: poolId.slice(0, 8) + '…',
             sdk_activeId: sdkActiveId,
             binary_activeId_240,
             binary_activeId_180,
-            cat: 'pools'
-          });
-        } else {
-          logger.info('meteora.decoder.activeId_offset_match', {
-            id: poolId.slice(0, 8) + '…',
-            sdk_activeId: sdkActiveId,
-            matches_offset_240: matchesOffset240,
-            matches_offset_180: matchesOffset180,
+            note: 'SDK decode is authoritative; binary offsets are outdated',
             cat: 'pools'
           });
         }
