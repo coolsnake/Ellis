@@ -184,10 +184,12 @@ export async function decodeMeteoraLbPair(
       let binary_binStep_232: number | null = null;
       let binary_binStep_176: number | null = null;
       
-      try { binary_activeId_240 = data.readInt32LE(240); } catch {}
-      try { binary_activeId_180 = data.readInt32LE(180); } catch {}
-      try { binary_binStep_232 = data.readUInt16LE(232); } catch {}
-      try { binary_binStep_176 = data.readUInt16LE(176); } catch {}
+      // Ensure Buffer type for direct binary reads
+      const rawBuffer = Buffer.from(data);
+      try { binary_activeId_240 = rawBuffer.readInt32LE(240); } catch {}
+      try { binary_activeId_180 = rawBuffer.readInt32LE(180); } catch {}
+      try { binary_binStep_232 = rawBuffer.readUInt16LE(232); } catch {}
+      try { binary_binStep_176 = rawBuffer.readUInt16LE(176); } catch {}
       
       logger.info('meteora.decoder.values_comparison', {
         id: poolId.slice(0, 8) + '…',
