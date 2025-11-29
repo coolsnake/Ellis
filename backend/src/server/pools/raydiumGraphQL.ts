@@ -380,12 +380,13 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const retries = Number((CONFIG as any)?.raydium?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.raydium?.httpBackoffMs || 500);
   const pageSize = Number((CONFIG as any)?.raydium?.pageSize || 1000);
-  const maxPages = Number((CONFIG as any)?.raydium?.maxPages || 10);
+  // Use graphqlMaxPages for batch queries (higher limit for anchor tokens)
+  const maxPages = Number((CONFIG as any)?.raydium?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.raydium?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.raydium?.detailBatchSize || 50);
   const detailDelayMs = Number((CONFIG as any)?.raydium?.detailBatchDelayMs ?? pageDelayMs);
   // Batch optimization: query multiple mints at once using _in clause
-  const mintBatchSize = Number((CONFIG as any)?.raydium?.mintBatchSize || 50);
+  const mintBatchSize = Number((CONFIG as any)?.raydium?.mintBatchSize || 10);
 
   const poolsMap = new Map<string, any>();
 
@@ -811,12 +812,13 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
   const retries = Number((CONFIG as any)?.raydiumClmm?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.raydiumClmm?.httpBackoffMs || 500);
   const pageSize = Number((CONFIG as any)?.raydiumClmm?.pageSize || 1000);
-  const maxPages = Number((CONFIG as any)?.raydiumClmm?.maxPages || 10);
+  // Use higher maxPages for batch queries (anchor tokens have many pools)
+  const maxPages = Number((CONFIG as any)?.raydiumClmm?.maxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.raydiumClmm?.detailBatchSize || 50);
   const detailDelayMs = Number((CONFIG as any)?.raydiumClmm?.detailBatchDelayMs ?? pageDelayMs);
   // Batch optimization: query multiple mints at once using _in clause
-  const mintBatchSize = Number((CONFIG as any)?.raydiumClmm?.mintBatchSize || 50);
+  const mintBatchSize = Number((CONFIG as any)?.raydiumClmm?.mintBatchSize || 10);
 
   const poolsMap = new Map<string, any>();
 

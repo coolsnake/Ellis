@@ -41,10 +41,11 @@ export async function fetchPumpswapGraphQL(): Promise<PumpswapPoolApiResponse[]>
   const retries = Number((CONFIG as any)?.pumpswap?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.pumpswap?.httpBackoffMs || 500);
   const pageSize = Number((CONFIG as any)?.pumpswap?.pageSize || 1000);
-  const maxPages = Number((CONFIG as any)?.pumpswap?.maxPages || 10);
+  // Use graphqlMaxPages for batch queries (higher limit for anchor tokens)
+  const maxPages = Number((CONFIG as any)?.pumpswap?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.pumpswap?.pageDelayMs || 200);
   // Batch optimization: query multiple mints at once using _in clause
-  const mintBatchSize = Number((CONFIG as any)?.pumpswap?.mintBatchSize || 50);
+  const mintBatchSize = Number((CONFIG as any)?.pumpswap?.mintBatchSize || 10);
   
   // NEW: Get token universe instead of hardcoded SOL/USDC
   let mints: string[] = [];

@@ -102,8 +102,10 @@ export const CONFIG = {
     minAmmLiqBase: Number(process.env.ORCA_MIN_AMM_LIQ_BASE || 0),
     // Minimum CLMM liquidity required to include a pool (prefer USD TVL when available)
     minClmmLiquidity: Number(process.env.ORCA_MIN_CLMM_LIQUIDITY || 0),
-    // GraphQL batch optimization: number of mints per _in query (default 50)
-    mintBatchSize: Number(process.env.ORCA_MINT_BATCH_SIZE || 50),
+    // GraphQL batch optimization: number of mints per _in query
+    mintBatchSize: Number(process.env.ORCA_MINT_BATCH_SIZE || 10),
+    // GraphQL pagination: max pages per batch (50 pages * 1000 = 50k pools per batch)
+    graphqlMaxPages: Number(process.env.ORCA_GRAPHQL_MAX_PAGES || 50),
     // Optional: minimum liquidity filter for GraphQL queries (skip dust pools)
     minLiquidity: process.env.ORCA_MIN_LIQUIDITY ? Number(process.env.ORCA_MIN_LIQUIDITY) : undefined,
   },
@@ -422,17 +424,19 @@ export const CONFIG = {
     // TVL filtering (raw liquidity proxies)
     minAmmLiqBase: Number(process.env.RAYDIUM_MIN_AMM_LIQ_BASE || 0),
     minClmmLiquidity: Number(process.env.RAYDIUM_MIN_CLMM_LIQUIDITY || 0),
-    // GraphQL batch optimization: number of mints per _in query (default 50)
-    mintBatchSize: Number(process.env.RAYDIUM_MINT_BATCH_SIZE || 50),
+    // GraphQL batch optimization: number of mints per _in query
+    mintBatchSize: Number(process.env.RAYDIUM_MINT_BATCH_SIZE || 10),
+    // GraphQL pagination: max pages per batch (50 pages * 1000 = 50k pools per batch)
+    graphqlMaxPages: Number(process.env.RAYDIUM_GRAPHQL_MAX_PAGES || 50),
     // Optional: minimum liquidity filter for GraphQL queries (skip dust pools)
     minLiquidity: process.env.RAYDIUM_MIN_LIQUIDITY ? Number(process.env.RAYDIUM_MIN_LIQUIDITY) : undefined,
   },
   // Raydium CLMM specific configuration (inherits from raydium but can be overridden)
   raydiumClmm: {
-    mintBatchSize: Number(process.env.RAYDIUM_CLMM_MINT_BATCH_SIZE || 50),
+    mintBatchSize: Number(process.env.RAYDIUM_CLMM_MINT_BATCH_SIZE || 10),
     minLiquidity: process.env.RAYDIUM_CLMM_MIN_LIQUIDITY ? Number(process.env.RAYDIUM_CLMM_MIN_LIQUIDITY) : undefined,
     pageSize: Number(process.env.RAYDIUM_CLMM_PAGE_SIZE || 1000),
-    maxPages: Number(process.env.RAYDIUM_CLMM_MAX_PAGES || 10),
+    maxPages: Number(process.env.RAYDIUM_CLMM_MAX_PAGES || 50),
     pageDelayMs: Number(process.env.RAYDIUM_CLMM_PAGE_DELAY_MS || 200),
     detailBatchSize: Number(process.env.RAYDIUM_CLMM_DETAIL_BATCH_SIZE || 50),
     maxHttpRetries: Number(process.env.RAYDIUM_CLMM_MAX_RETRIES || 2),
@@ -460,8 +464,10 @@ export const CONFIG = {
     minClmmLiquidity: Number(process.env.METEORA_MIN_CLMM_LIQUIDITY || 0),
     // Optional conservative prefiltering by universe
     universePrefilter: (process.env.METEORA_UNIVERSE_PREFILTER || 'false') === 'true',
-    // GraphQL batch optimization: number of mints per _in query (default 50)
-    mintBatchSize: Number(process.env.METEORA_MINT_BATCH_SIZE || 50),
+    // GraphQL batch optimization: number of mints per _in query
+    mintBatchSize: Number(process.env.METEORA_MINT_BATCH_SIZE || 10),
+    // GraphQL pagination: max pages per batch (50 pages * 1000 = 50k pools per batch)
+    graphqlMaxPages: Number(process.env.METEORA_GRAPHQL_MAX_PAGES || 50),
     // Optional: minimum liquidity filter for GraphQL queries (skip dust pools)
     minLiquidity: process.env.METEORA_MIN_LIQUIDITY ? Number(process.env.METEORA_MIN_LIQUIDITY) : undefined,
   },
@@ -817,8 +823,10 @@ export const CONFIG = {
     rpcBatchSize: Number(process.env.PUMPSWAP_RPC_BATCH_SIZE || 100),
     validatePrices: process.env.PUMPSWAP_VALIDATE_PRICES === 'true',
     validationSamples: Number(process.env.PUMPSWAP_VALIDATION_SAMPLES || 10),
-    // GraphQL batch optimization: number of mints per _in query (default 50)
-    mintBatchSize: Number(process.env.PUMPSWAP_MINT_BATCH_SIZE || 50),
+    // GraphQL batch optimization: number of mints per _in query
+    mintBatchSize: Number(process.env.PUMPSWAP_MINT_BATCH_SIZE || 10),
+    // GraphQL pagination: max pages per batch (50 pages * 1000 = 50k pools per batch)
+    graphqlMaxPages: Number(process.env.PUMPSWAP_GRAPHQL_MAX_PAGES || 50),
     // Optional: minimum liquidity filter for GraphQL queries (skip dust pools)
     minLiquidity: process.env.PUMPSWAP_MIN_LIQUIDITY ? Number(process.env.PUMPSWAP_MIN_LIQUIDITY) : undefined,
   },

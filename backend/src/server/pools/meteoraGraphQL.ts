@@ -19,7 +19,8 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const retries = Number((CONFIG as any)?.meteora?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.meteora?.httpBackoffMs || 500);
   const pageSize = Number((CONFIG as any)?.meteora?.pageSize || 1000);
-  const maxPages = Number((CONFIG as any)?.meteora?.maxPages || 10);
+  // Use graphqlMaxPages for batch queries (higher limit for anchor tokens)
+  const maxPages = Number((CONFIG as any)?.meteora?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.meteora?.pageDelayMs || 200);
   // Reduced default batch size and add max limit to prevent query overload
   const maxDetailBatchSize = Number((CONFIG as any)?.meteora?.maxDetailBatchSize || 40);
@@ -29,7 +30,7 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   );
   const detailDelayMs = Number((CONFIG as any)?.meteora?.detailBatchDelayMs ?? pageDelayMs);
   // Batch optimization: query multiple mints at once using _in clause
-  const mintBatchSize = Number((CONFIG as any)?.meteora?.mintBatchSize || 50);
+  const mintBatchSize = Number((CONFIG as any)?.meteora?.mintBatchSize || 10);
   
   const poolsMap = new Map<string, any>();
   
