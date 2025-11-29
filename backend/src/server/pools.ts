@@ -2211,6 +2211,9 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
       
       let hotCached = 0;
       let tickArraysCached = 0;
+      let tickArraysSkipped = 0;
+      let tickArraysFailed = 0;
+      let tickArraysIncomplete = 0;
       
       for (const pool of normalized.clmm || []) {
         try {
@@ -2254,13 +2257,64 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
                     else if (offset === 0) tickArrayAddresses.center = address;
                     else if (offset === 1) tickArrayAddresses.upper = address;
                   }
-                } catch {}
+                } catch (offsetErr) {
+                  try {
+                    logger.info('orca.graphql.tick_array.offset_failed', {
+                      pool: pool.id?.slice(0, 8) + '…',
+                      offset,
+                      tickIndex,
+                      tickSpacing,
+                      error: String((offsetErr as any)?.message || offsetErr),
+                      cat: 'orca'
+                    });
+                  } catch {}
+                }
               }
               
               if (tickArrayAddresses.lower && tickArrayAddresses.center && tickArrayAddresses.upper) {
                 tickArrays = tickArrayAddresses;
                 tickArraysCached++;
+              } else {
+                tickArraysIncomplete++;
+                // Log when we couldn't derive all three tick arrays
+                try {
+                  logger.info('orca.graphql.tick_array.incomplete', {
+                    pool: pool.id?.slice(0, 8) + '…',
+                    tickIndex,
+                    tickSpacing,
+                    hasLower: !!tickArrayAddresses.lower,
+                    hasCenter: !!tickArrayAddresses.center,
+                    hasUpper: !!tickArrayAddresses.upper,
+                    cat: 'orca'
+                  });
+                } catch {}
               }
+            } catch (tickArrayErr) {
+              tickArraysFailed++;
+              try {
+                logger.warn('orca.graphql.tick_array.derivation_failed', {
+                  pool: pool.id?.slice(0, 8) + '…',
+                  tickIndex,
+                  tickSpacing,
+                  error: String((tickArrayErr as any)?.message || tickArrayErr),
+                  cat: 'orca'
+                });
+              } catch {}
+            }
+          } else {
+            tickArraysSkipped++;
+            // Log why tick arrays couldn't be derived (missing prerequisites)
+            try {
+              logger.info('orca.graphql.tick_array.skipped', {
+                pool: pool.id?.slice(0, 8) + '…',
+                hasTickIndex: tickIndex !== undefined,
+                hasTickSpacing: !!tickSpacing,
+                hasPDAUtil: !!PDAUtil,
+                hasTickUtil: !!TickUtil,
+                tickIndex,
+                tickSpacing,
+                cat: 'orca'
+              });
             } catch {}
           }
           
@@ -2293,6 +2347,9 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
         clmm: normalized.clmm.length,
         hotCached,
         tickArraysCached,
+        tickArraysSkipped,
+        tickArraysIncomplete,
+        tickArraysFailed,
         cat: 'orca'
       });
     } catch (e: any) {

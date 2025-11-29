@@ -523,6 +523,10 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
           
           // Get static data from pool cache
           if (!staticData?.mint_a) {
+            // Get vault addresses from pool (token_vault_a/b or account_a/b)
+            const vaultA = (pool as any).token_vault_a || (pool as any).account_a;
+            const vaultB = (pool as any).token_vault_b || (pool as any).account_b;
+            
             staticData = {
               mint_a: (pool as any).mint_a,
               mint_b: (pool as any).mint_b,
@@ -530,6 +534,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
               decimals_b: (pool as any).decimals_b,
               native_mint_a: (pool as any).native_mint_a,
               native_mint_b: (pool as any).native_mint_b,
+              tick_spacing: (pool as any).tick_spacing,
             };
             
             // Also populate execution cache for future use
@@ -538,6 +543,8 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
               programId: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
               dex: 'orca',
               pool_kind: 'clmm',
+              // Include vaults for builder
+              ...(vaultA && vaultB ? { vaults: { a: vaultA, b: vaultB } } : {}),
             });
           }
           
@@ -635,6 +642,75 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
           }
         });
       } catch (e) { logCatchError('resolver.quotes', e); }
+      
+      // Derive and cache tick arrays for builder (like Raydium does)
+      // This ensures tick arrays are available even for pools not in initial GraphQL fetch
+      (async () => {
+        try {
+          const existing = executionCache.getHot(poolId);
+          
+          // Only derive if not already cached
+          if (!existing?.tickArrays?.lower || !existing?.tickArrays?.center || !existing?.tickArrays?.upper) {
+            const tickIndex = cached?.currentTickIndex;
+            // Get tick_spacing from static data or pool cache
+            let tickSpacing = (staticData as any)?.tick_spacing;
+            if (!Number.isFinite(tickSpacing)) {
+              try {
+                const { peekOrcaPools } = await import('../../server/pools.cache.js');
+                const pools = peekOrcaPools();
+                const pool = pools.clmm.find((p: any) => p.id === poolId);
+                tickSpacing = (pool as any)?.tick_spacing;
+              } catch { /* ignore */ }
+            }
+            
+            if (Number.isFinite(tickIndex) && Number.isFinite(tickSpacing) && tickSpacing > 0) {
+              const PDAUtil = (await import('@orca-so/whirlpools-sdk').catch(() => null))?.PDAUtil;
+              const TickUtil = (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
+              const { PublicKey } = await import('@solana/web3.js');
+              
+              if (PDAUtil && TickUtil && typeof TickUtil.getStartTickIndex === 'function') {
+                const orcaProgramId = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+                const poolPk = new PublicKey(poolId);
+                
+                const tickArrays: { lower?: string; center?: string; upper?: string } = {};
+                for (let offset = -1; offset <= 1; offset++) {
+                  try {
+                    const startTick = TickUtil.getStartTickIndex(tickIndex, tickSpacing, offset);
+                    const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, poolPk, startTick);
+                    if (tickArrayPda?.publicKey) {
+                      const address = tickArrayPda.publicKey.toBase58();
+                      if (offset === -1) tickArrays.lower = address;
+                      else if (offset === 0) tickArrays.center = address;
+                      else if (offset === 1) tickArrays.upper = address;
+                    }
+                  } catch { /* ignore individual offset failures */ }
+                }
+                
+                if (tickArrays.lower && tickArrays.center && tickArrays.upper) {
+                  executionCache.setHot(poolId, {
+                    ...existing,
+                    tickArrays,
+                  });
+                  
+                  try {
+                    const { logger } = await import('../../utils/logger.js');
+                    logger.info('orca.quote.local.tickarrays.cached', {
+                      cat: 'tx',
+                      ctx: {
+                        pool: poolId,
+                        lower: tickArrays.lower?.slice(0, 8) + '…',
+                        center: tickArrays.center?.slice(0, 8) + '…',
+                        upper: tickArrays.upper?.slice(0, 8) + '…',
+                      }
+                    });
+                  } catch { /* ignore logging errors */ }
+                }
+              }
+            }
+          }
+        } catch { /* Silently fail - don't block quote */ }
+      })();
+      
       return outRaw;
     }
     
