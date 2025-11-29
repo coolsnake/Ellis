@@ -384,19 +384,31 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const pageDelayMs = Number((CONFIG as any)?.raydium?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.raydium?.detailBatchSize || 50);
   const detailDelayMs = Number((CONFIG as any)?.raydium?.detailBatchDelayMs ?? pageDelayMs);
+  // Batch optimization: query multiple mints at once using _in clause
+  const mintBatchSize = Number((CONFIG as any)?.raydium?.mintBatchSize || 50);
 
   const poolsMap = new Map<string, any>();
+
+  // Chunk mints into batches for efficient querying
+  const mintBatches = chunkArray(mints, mintBatchSize);
+  
+  logger.info('raydium.graphql.batch.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'raydium',
+  });
 
   // Add initial delay before first request to respect rate limits
   if (pageDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
 
-  for (let idx = 0; idx < mints.length; idx++) {
-    const mint = mints[idx];
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
     try {
-      const pools = await fetchRaydiumPoolsForToken({
-        mint,
+      const pools = await fetchRaydiumPoolsForMintBatch({
+        mints: mintBatch,
         retries,
         backoffMs,
         pageSize,
@@ -407,20 +419,23 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
         poolsMap.set(pool.pubkey, pool);
       }
 
-      logger.debug('raydium.graphql.mint.summary', {
-        mint: mint.slice(0, 8),
+      logger.debug('raydium.graphql.batch.summary', {
+        batchIdx,
+        batchSize: mintBatch.length,
         count: pools.length,
         total: poolsMap.size,
         cat: 'raydium',
       });
     } catch (e: any) {
-      logger.warn('raydium.graphql.mint.failed', {
-        mint: mint.slice(0, 8),
+      logger.warn('raydium.graphql.batch.failed', {
+        batchIdx,
+        batchSize: mintBatch.length,
         error: String(e?.message || e),
         cat: 'raydium',
       });
     }
-    if (pageDelayMs > 0 && idx < mints.length - 1) {
+    // Rate limit delay between batches
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
       await new Promise(resolve => setTimeout(resolve, pageDelayMs));
     }
   }
@@ -463,10 +478,96 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   logger.info('raydium.graphql.complete', {
     count: merged.length,
     mints: mints.length,
+    batches: mintBatches.length,
     detail: detailedPools.size,
     cat: 'raydium',
   });
   return merged;
+}
+
+/**
+ * Fetch Raydium AMM pools for a batch of mints using GraphQL _in clause
+ * Much more efficient than per-mint queries
+ */
+async function fetchRaydiumPoolsForMintBatch(opts: {
+  mints: string[];
+  retries: number;
+  backoffMs: number;
+  pageSize: number;
+  maxPages: number;
+  pageDelayMs: number;
+}): Promise<any[]> {
+  const allPools: any[] = [];
+  let offset = 0;
+  let page = 0;
+
+  while (page < opts.maxPages) {
+    const data = await executeShyftGraphQL<{ Raydium_LiquidityPoolv4: any[] }>({
+      dex: 'raydium',
+      query: `
+        query RaydiumPoolsByMints($mints: [String!]!, $limit: Int!, $offset: Int!) {
+          Raydium_LiquidityPoolv4(
+            where: {_or: [
+              {baseMint: {_in: $mints}},
+              {quoteMint: {_in: $mints}}
+            ]},
+            limit: $limit,
+            offset: $offset
+          ) {
+            pubkey
+            baseMint
+            quoteMint
+            baseDecimal
+            quoteDecimal
+            baseVault
+            quoteVault
+            lpMint
+            poolOpenTime
+            swapBaseInAmount
+            swapQuoteInAmount
+            swapBaseOutAmount
+            swapQuoteOutAmount
+            swapFeeNumerator
+            swapFeeDenominator
+            state
+            status
+            _updatedAt
+          }
+        }
+      `,
+      variables: {
+        mints: opts.mints,
+        limit: opts.pageSize,
+        offset,
+      },
+      extraLogContext: { phase: 'batch-summary', mintCount: opts.mints.length, page },
+      retries: opts.retries,
+      backoffMs: opts.backoffMs,
+    });
+
+    const pagePools = data?.Raydium_LiquidityPoolv4 || [];
+    if (pagePools.length === 0) break;
+
+    allPools.push(...pagePools);
+    logger.debug('raydium.graphql.batch.page', { 
+      mintCount: opts.mints.length, 
+      page, 
+      count: pagePools.length, 
+      total: allPools.length, 
+      cat: 'raydium' 
+    });
+
+    if (pagePools.length < opts.pageSize) break;
+
+    offset += opts.pageSize;
+    page++;
+    
+    if (page < opts.maxPages && opts.pageDelayMs > 0) {
+      await new Promise(r => setTimeout(r, opts.pageDelayMs));
+    }
+  }
+  
+  return allPools;
 }
 
 async function fetchRaydiumPoolsForToken(opts: {
@@ -714,8 +815,20 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
   const pageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.raydiumClmm?.detailBatchSize || 50);
   const detailDelayMs = Number((CONFIG as any)?.raydiumClmm?.detailBatchDelayMs ?? pageDelayMs);
+  // Batch optimization: query multiple mints at once using _in clause
+  const mintBatchSize = Number((CONFIG as any)?.raydiumClmm?.mintBatchSize || 50);
 
   const poolsMap = new Map<string, any>();
+
+  // Chunk mints into batches for efficient querying
+  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  logger.info('raydium.clmm.graphql.batch.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'raydium-clmm',
+  });
 
   // Add longer initial delay before first request to let Shyft rate limit window reset
   // after preceding AMM requests. Uses 10x page delay (e.g., 200ms → 2000ms)
@@ -731,16 +844,11 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
     await new Promise(resolve => setTimeout(resolve, initialDelayMs));
   }
 
-  for (let idx = 0; idx < mints.length; idx++) {
-    // Add delay BEFORE processing each mint (except the first one)
-    if (pageDelayMs > 0 && idx > 0) {
-      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
-    }
-    
-    const mint = mints[idx];
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
     try {
-      const pools = await fetchRaydiumClmmPoolsForToken({
-        mint,
+      const pools = await fetchRaydiumClmmPoolsForMintBatch({
+        mints: mintBatch,
         retries,
         backoffMs,
         pageSize,
@@ -751,18 +859,24 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
         poolsMap.set(pool.pubkey, pool);
       }
 
-      logger.debug('raydium.clmm.graphql.mint.summary', {
-        mint: mint.slice(0, 8),
+      logger.debug('raydium.clmm.graphql.batch.summary', {
+        batchIdx,
+        batchSize: mintBatch.length,
         count: pools.length,
         total: poolsMap.size,
         cat: 'raydium-clmm',
       });
     } catch (e: any) {
-      logger.warn('raydium.clmm.graphql.mint.failed', {
-        mint: mint.slice(0, 8),
+      logger.warn('raydium.clmm.graphql.batch.failed', {
+        batchIdx,
+        batchSize: mintBatch.length,
         error: String(e?.message || e),
         cat: 'raydium-clmm',
       });
+    }
+    // Rate limit delay between batches
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
     }
   }
 
@@ -804,10 +918,95 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
   logger.info('raydium.clmm.graphql.complete', {
     count: merged.length,
     mints: mints.length,
+    batches: mintBatches.length,
     detail: detailedPools.size,
     cat: 'raydium-clmm',
   });
   return merged;
+}
+
+/**
+ * Fetch Raydium CLMM pools for a batch of mints using GraphQL _in clause
+ * Much more efficient than per-mint queries
+ */
+async function fetchRaydiumClmmPoolsForMintBatch(opts: {
+  mints: string[];
+  retries: number;
+  backoffMs: number;
+  pageSize: number;
+  maxPages: number;
+  pageDelayMs: number;
+}): Promise<any[]> {
+  const allPools: any[] = [];
+  let offset = 0;
+  let page = 0;
+
+  while (page < opts.maxPages) {
+    // Add delay BEFORE each request (except the first page)
+    if (opts.pageDelayMs > 0 && page > 0) {
+      await new Promise(r => setTimeout(r, opts.pageDelayMs));
+    }
+    
+    const data = await executeShyftGraphQL<{ RAYDIUM_CLMM_PoolState: any[] }>({
+      dex: 'raydium-clmm',
+      query: `
+        query RaydiumClmmPoolsByMints($mints: [String!]!, $limit: Int!, $offset: Int!) {
+          RAYDIUM_CLMM_PoolState(
+            where: {_or: [
+              {tokenMint0: {_in: $mints}},
+              {tokenMint1: {_in: $mints}}
+            ]},
+            limit: $limit,
+            offset: $offset
+          ) {
+            pubkey
+            mintDecimals0
+            mintDecimals1
+            owner
+            bump
+            liquidity
+            tickArrayBitmap
+            tickCurrent
+            tickSpacing
+            tokenMint0
+            tokenMint1
+            tokenVault0
+            tokenVault1
+            sqrtPriceX64
+            ammConfig
+            _updatedAt
+          }
+        }
+      `,
+      variables: {
+        mints: opts.mints,
+        limit: opts.pageSize,
+        offset,
+      },
+      extraLogContext: { phase: 'clmm-batch-summary', mintCount: opts.mints.length, page },
+      retries: opts.retries,
+      backoffMs: opts.backoffMs,
+    });
+
+    const pagePools = data?.RAYDIUM_CLMM_PoolState || [];
+    if (pagePools.length === 0) break;
+
+    allPools.push(...pagePools);
+    logger.debug('raydium.clmm.graphql.batch.page', { 
+      mintCount: opts.mints.length, 
+      page, 
+      count: pagePools.length, 
+      total: allPools.length, 
+      cat: 'raydium-clmm' 
+    });
+
+    if (pagePools.length < opts.pageSize) break;
+
+    offset += opts.pageSize;
+    page++;
+  }
+  
+  return allPools;
 }
 
 async function fetchRaydiumPoolsByAddress(

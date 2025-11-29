@@ -28,14 +28,31 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
     maxDetailBatchSize
   );
   const detailDelayMs = Number((CONFIG as any)?.meteora?.detailBatchDelayMs ?? pageDelayMs);
+  // Batch optimization: query multiple mints at once using _in clause
+  const mintBatchSize = Number((CONFIG as any)?.meteora?.mintBatchSize || 50);
   
   const poolsMap = new Map<string, any>();
   
-  for (let idx = 0; idx < mints.length; idx++) {
-    const mint = mints[idx];
+  // Chunk mints into batches for efficient querying
+  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  logger.info('meteora.graphql.batch.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'meteora',
+  });
+
+  // Add initial delay before first request to respect rate limits
+  if (pageDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
     try {
-      const pools = await fetchMeteoraPoolsForToken({
-        mint,
+      const pools = await fetchMeteoraPoolsForMintBatch({
+        mints: mintBatch,
         retries,
         backoffMs,
         pageSize,
@@ -48,20 +65,23 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
         poolsMap.set(key, pool);
       }
       
-      logger.debug('meteora.graphql.mint.summary', { 
-        mint: mint.slice(0, 8), 
+      logger.debug('meteora.graphql.batch.summary', { 
+        batchIdx,
+        batchSize: mintBatch.length,
         count: pools.length,
         total: poolsMap.size,
         cat: 'meteora' 
       });
     } catch (e: any) {
-      logger.warn('meteora.graphql.mint.failed', { 
-        mint: mint.slice(0, 8), 
+      logger.warn('meteora.graphql.batch.failed', { 
+        batchIdx,
+        batchSize: mintBatch.length,
         error: String(e?.message || e), 
         cat: 'meteora' 
       });
     }
-    if (pageDelayMs > 0 && idx < mints.length - 1) {
+    // Rate limit delay between batches
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
       await new Promise(resolve => setTimeout(resolve, pageDelayMs));
     }
   }
@@ -105,8 +125,90 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
     });
   }
   
-  logger.info('meteora.graphql.complete', { count: merged.length, mints: mints.length, detail: detailedPools.size, cat: 'meteora' });
+  logger.info('meteora.graphql.complete', { count: merged.length, mints: mints.length, batches: mintBatches.length, detail: detailedPools.size, cat: 'meteora' });
   return merged;
+}
+
+/**
+ * Fetch Meteora DLMM pools for a batch of mints using GraphQL _in clause
+ * Much more efficient than per-mint queries
+ */
+async function fetchMeteoraPoolsForMintBatch(opts: {
+  mints: string[];
+  retries: number;
+  backoffMs: number;
+  pageSize: number;
+  maxPages: number;
+  pageDelayMs: number;
+}): Promise<any[]> {
+  // Validate pagination params
+  const safePageSize = Math.min(Math.max(1, opts.pageSize), 1000);
+  const safeMaxPages = Math.min(Math.max(1, opts.maxPages), 20);
+  
+  const allPools: any[] = [];
+  let offset = 0;
+  let page = 0;
+  
+  while (page < safeMaxPages) {
+    const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
+      dex: 'meteora',
+      query: `
+        query MeteoraPoolsByMints($mints: [String!]!, $limit: Int!, $offset: Int!) {
+          meteora_dlmm_LbPair(
+            where: {_or: [
+              {tokenXMint: {_in: $mints}}, 
+              {tokenYMint: {_in: $mints}}
+            ]},
+            limit: $limit,
+            offset: $offset
+          ) {
+            baseKey
+            pubkey
+            tokenXMint
+            tokenYMint
+            reserveX
+            reserveY
+            binStep
+            protocolFee
+            activeId
+            binArrayBitmap
+            _updatedAt
+          }
+        }
+      `,
+      variables: {
+        mints: opts.mints,
+        limit: safePageSize,
+        offset,
+      },
+      retries: opts.retries,
+      backoffMs: opts.backoffMs,
+      extraLogContext: { phase: 'batch-summary', mintCount: opts.mints.length, page },
+    });
+
+    const pagePools = data?.meteora_dlmm_LbPair || [];
+    if (pagePools.length === 0) break;
+
+    allPools.push(...pagePools);
+    logger.debug('meteora.graphql.batch.page', { 
+      mintCount: opts.mints.length, 
+      page, 
+      count: pagePools.length, 
+      total: allPools.length, 
+      cat: 'meteora' 
+    });
+
+    if (pagePools.length < safePageSize) break;
+
+    offset += safePageSize;
+    page++;
+    
+    if (page < safeMaxPages && opts.pageDelayMs > 0) {
+      await new Promise(r => setTimeout(r, opts.pageDelayMs));
+    }
+  }
+  
+  return allPools;
 }
 
 async function fetchMeteoraPoolsForToken(opts: {

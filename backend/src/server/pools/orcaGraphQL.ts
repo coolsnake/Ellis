@@ -26,14 +26,31 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
     maxDetailBatchSize
   );
   const detailDelayMs = Number((CONFIG as any)?.orca?.detailBatchDelayMs ?? pageDelayMs);
+  // Batch optimization: query multiple mints at once using _in clause
+  const mintBatchSize = Number((CONFIG as any)?.orca?.mintBatchSize || 50);
 
   const poolsMap = new Map<string, any>();
 
-  for (let idx = 0; idx < mints.length; idx++) {
-    const mint = mints[idx];
+  // Chunk mints into batches for efficient querying
+  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  logger.info('orca.graphql.batch.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'orca',
+  });
+
+  // Add initial delay before first request to respect rate limits
+  if (pageDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
     try {
-      const pools = await fetchOrcaPoolsForToken({
-        mint,
+      const pools = await fetchOrcaPoolsForMintBatch({
+        mints: mintBatch,
         retries,
         backoffMs,
         pageSize,
@@ -44,20 +61,23 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
         poolsMap.set(pool.pubkey, pool);
       }
 
-      logger.debug('orca.graphql.mint.summary', {
-        mint: mint.slice(0, 8),
+      logger.debug('orca.graphql.batch.summary', {
+        batchIdx,
+        batchSize: mintBatch.length,
         count: pools.length,
         total: poolsMap.size,
         cat: 'orca',
       });
     } catch (e: any) {
-      logger.warn('orca.graphql.mint.failed', { 
-        mint: mint.slice(0, 8), 
+      logger.warn('orca.graphql.batch.failed', { 
+        batchIdx,
+        batchSize: mintBatch.length,
         error: String(e?.message || e), 
         cat: 'orca' 
       });
     }
-    if (pageDelayMs > 0 && idx < mints.length - 1) {
+    // Rate limit delay between batches
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
       await new Promise(resolve => setTimeout(resolve, pageDelayMs));
     }
   }
@@ -87,8 +107,98 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
     });
   }
   
-  logger.info('orca.graphql.complete', { count: merged.length, mints: mints.length, detail: detailedPools.size, cat: 'orca' });
+  logger.info('orca.graphql.complete', { count: merged.length, mints: mints.length, batches: mintBatches.length, detail: detailedPools.size, cat: 'orca' });
   return merged;
+}
+
+/**
+ * Fetch Orca Whirlpool pools for a batch of mints using GraphQL _in clause
+ * Much more efficient than per-mint queries
+ */
+async function fetchOrcaPoolsForMintBatch(opts: {
+  mints: string[];
+  retries: number;
+  backoffMs: number;
+  pageSize: number;
+  maxPages: number;
+  pageDelayMs: number;
+}): Promise<any[]> {
+  // Validate pagination params
+  const safePageSize = Math.min(Math.max(1, opts.pageSize), 1000);
+  const safeMaxPages = Math.min(Math.max(1, opts.maxPages), 20);
+  
+  const allPools: any[] = [];
+  let offset = 0;
+  let page = 0;
+  
+  while (page < safeMaxPages) {
+    const data = await executeShyftGraphQL<{ ORCA_WHIRLPOOLS_whirlpool: any[] }>({
+      dex: 'orca',
+      query: `
+        query OrcaPoolsByMints($mints: [String!]!, $limit: Int!, $offset: Int!) {
+          ORCA_WHIRLPOOLS_whirlpool(
+            where: {_or: [
+              {tokenMintA: {_in: $mints}}, 
+              {tokenMintB: {_in: $mints}}
+            ]},
+            limit: $limit,
+            offset: $offset
+          ) {
+            pubkey
+            tokenMintA
+            tokenMintB
+            tokenVaultA
+            tokenVaultB
+            feeRate
+            protocolFeeRate
+            liquidity
+            sqrtPrice
+            tickCurrentIndex
+            tickSpacing
+            feeGrowthGlobalA
+            feeGrowthGlobalB
+            rewardLastUpdatedTimestamp
+            protocolFeeOwedA
+            protocolFeeOwedB
+            whirlpoolsConfig
+            whirlpoolBump
+            _updatedAt
+          }
+        }
+      `,
+      variables: {
+        mints: opts.mints,
+        limit: safePageSize,
+        offset,
+      },
+      retries: opts.retries,
+      backoffMs: opts.backoffMs,
+      extraLogContext: { phase: 'batch-summary', mintCount: opts.mints.length, page },
+    });
+
+    const pagePools = data?.ORCA_WHIRLPOOLS_whirlpool || [];
+    if (pagePools.length === 0) break;
+
+    allPools.push(...pagePools);
+    logger.debug('orca.graphql.batch.page', { 
+      mintCount: opts.mints.length, 
+      page, 
+      count: pagePools.length, 
+      total: allPools.length, 
+      cat: 'orca' 
+    });
+
+    if (pagePools.length < safePageSize) break;
+
+    offset += safePageSize;
+    page++;
+    
+    if (page < safeMaxPages && opts.pageDelayMs > 0) {
+      await new Promise(r => setTimeout(r, opts.pageDelayMs));
+    }
+  }
+  
+  return allPools;
 }
 
 async function fetchOrcaPoolsForToken(opts: {
