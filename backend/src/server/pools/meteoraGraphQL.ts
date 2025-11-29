@@ -1,7 +1,7 @@
 import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
-import type { ClmmPool, PoolsPayload } from './types.js';
+import type { ClmmPool, PoolsPayload, SummaryPool } from './types.js';
 import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
@@ -13,6 +13,85 @@ import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { executionCache } from '../../execution/cache.js';
 import { isValidPublicKey } from '../../execution/builder/utils.js';
 import { resolveMeteoraBitmapExtensions } from './meteora.js';
+
+/**
+ * Fetch Meteora DLMM pool summaries only (no detail fetch, no RPC enrichment).
+ * Used for early filtering before expensive detail+RPC phases.
+ */
+export async function fetchMeteoraSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
+  const retries = Number((CONFIG as any)?.meteora?.maxHttpRetries || 2);
+  const backoffMs = Number((CONFIG as any)?.meteora?.httpBackoffMs || 500);
+  const pageSize = Number((CONFIG as any)?.meteora?.pageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.meteora?.graphqlMaxPages || 50);
+  const pageDelayMs = Number((CONFIG as any)?.meteora?.pageDelayMs || 200);
+  const mintBatchSize = Number((CONFIG as any)?.meteora?.mintBatchSize || 10);
+
+  const poolsMap = new Map<string, SummaryPool>();
+  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  logger.info('meteora.graphql.summary_only.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'meteora',
+  });
+
+  if (pageDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
+    try {
+      const pools = await fetchMeteoraPoolsForMintBatch({
+        mints: mintBatch,
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        const key = pool.pubkey || pool.baseKey;
+        if (!key) continue;
+        poolsMap.set(key, {
+          pubkey: key,
+          mint_a: pool.tokenXMint,
+          mint_b: pool.tokenYMint,
+          dex: 'meteora',
+          type: 'clmm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.debug('meteora.graphql.summary_only.batch', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'meteora',
+      });
+    } catch (e: any) {
+      logger.warn('meteora.graphql.summary_only.batch.failed', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        error: String(e?.message || e),
+        cat: 'meteora',
+      });
+    }
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  const result = Array.from(poolsMap.values());
+  logger.info('meteora.graphql.summary_only.complete', {
+    count: result.length,
+    mints: mints.length,
+    cat: 'meteora',
+  });
+  return result;
+}
 
 export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'meteora-graphql-raw.json');
@@ -547,7 +626,11 @@ async function fetchMeteoraChunkWithRetry(
   } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
 }
 
-async function fetchMeteoraPoolsByAddress(
+/**
+ * Fetch Meteora DLMM pool details by pool addresses.
+ * Exported for use in early-filter flow where only survivor pools need detail fetching.
+ */
+export async function fetchMeteoraPoolsByAddress(
   poolIds: string[],
   opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
 ): Promise<Map<string, any>> {

@@ -5,7 +5,7 @@ import { readJson, writeJson, joinPath } from '../utils/fs.js';
 import { enablePriceFeed, isPriceFeedEnabled } from './feedRegistry.js';
 // Defer web3 imports to runtime to prevent type issues in environments without types
 // import { PublicKey } from '@solana/web3.js';
-import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
+import type { AmmPool, ClmmPool, PoolsPayload, SummaryPool, SurvivorPoolIds } from './pools/types.js';
 import { raydiumCache, orcaCache, meteoraCache, metbalCache, pumpswapCache } from './pools.cache.js';
 export {
   clearAllPoolCaches,
@@ -22,7 +22,11 @@ import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './p
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
-import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPools as normalizePumpswapPoolsImpl, enrichPumpswapPoolsWithRpc as enrichPumpswapPoolsWithRpcImpl } from './pools/pumpswap.js';
+import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPools as normalizePumpswapPoolsImpl, enrichPumpswapPoolsWithRpc as enrichPumpswapPoolsWithRpcImpl, fetchPumpswapSummaryOnly } from './pools/pumpswap.js';
+// Early filter optimization imports
+import { fetchRaydiumSummaryOnly, fetchRaydiumClmmSummaryOnly, fetchRaydiumPoolsByAddress, fetchRaydiumClmmPoolsByAddress, normalizeRaydiumGraphQL } from './pools/raydiumGraphQL.js';
+import { fetchOrcaSummaryOnly, fetchOrcaPoolsByAddress, normalizeOrcaGraphQL } from './pools/orcaGraphQL.js';
+import { fetchMeteoraSummaryOnly, fetchMeteoraPoolsByAddress, normalizeMeteoraGraphQL } from './pools/meteoraGraphQL.js';
 import { validateCrossDexPrices } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
@@ -362,7 +366,31 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   }
   
   // === PHASE 1: FETCH RAW DATA FROM ALL DEXES ===
-  logger.info('pools.refresh.phase.fetch', { enabled: shouldFetch, cat: 'pools' });
+  // Check if early filter optimization is enabled and GraphQL is used for all relevant DEXes
+  const enableEarlyFilter = (CONFIG.system as any)?.enableEarlyMinPoolsFilter !== false;
+  const useRaydiumGraphQL = !!(CONFIG as any)?.raydium?.useGraphQL;
+  const useOrcaGraphQL = !!(CONFIG as any)?.orca?.useGraphQL;
+  const useMeteoraGraphQL = !!(CONFIG as any)?.meteora?.useGraphQL;
+  const minPoolsThreshold = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));
+  
+  // Early filter optimization applies when: enabled in config AND minPools > 1 AND GraphQL is used
+  const useEarlyFilterPath = enableEarlyFilter && minPoolsThreshold > 1 && (
+    (shouldFetch.raydium && useRaydiumGraphQL) ||
+    (shouldFetch.orca && useOrcaGraphQL) ||
+    (shouldFetch.meteora && useMeteoraGraphQL) ||
+    shouldFetch.pumpswap
+  );
+  
+  // Track if early filters were applied (to skip Phase 2 and 3)
+  let earlyFiltersApplied = false;
+  
+  logger.info('pools.refresh.phase.fetch', { 
+    enabled: shouldFetch, 
+    useEarlyFilterPath,
+    minPoolsThreshold,
+    graphql: { raydium: useRaydiumGraphQL, orca: useOrcaGraphQL, meteora: useMeteoraGraphQL },
+    cat: 'pools' 
+  });
   
   let r: PoolsPayload = { amm: [], clmm: [] };
   let o: PoolsPayload = { amm: [], clmm: [] };
@@ -370,116 +398,414 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   let mb: PoolsPayload = { amm: [], clmm: [] };
   let pump: PoolsPayload = { amm: [], clmm: [] };
   
-  // Note: The fetch functions call normalizers which need decimals
-  // Normalizers load Jupiter token map at start, so enrichment must happen before first fetch
-  // We enrich based on previously cached pools to pre-populate decimals for known tokens
-  
-  if (shouldFetch.raydium) {
-    try {
-      const useGraphQL = (CONFIG as any)?.raydium?.useGraphQL;
-      
-      // Route to GraphQL if enabled, otherwise use HTTP
-      r = useGraphQL
-        ? await getRaydiumPoolsGraphQL(!!options.force) 
-        : await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
-      
-      // Check if CLMM is enabled in source control
-      const isClmmEnabled = (() => {
-        if (typeof options.sources?.raydium === 'object') {
-          return options.sources.raydium.clmm !== false; // Default to true if not specified
-        }
-        if (options.sources?.raydium === false) return false;
-        // Check config
-        const configRaydium = configSources.raydium;
-        if (typeof configRaydium === 'object') {
-          return configRaydium.clmm !== false;
-        }
-        return configRaydium !== false; // Default to true
-      })();
-      
-      // If GraphQL is enabled and CLMM is enabled, fetch CLMM pools separately and merge
-      if (useGraphQL && isClmmEnabled) {
-        try {
-          // Add inter-phase cooldown to let Shyft rate limit window reset after AMM requests
+  if (useEarlyFilterPath) {
+    // === OPTIMIZED PATH: Early filter before detail fetch ===
+    logger.info('pools.refresh.phase.fetch.early_filter_path', { cat: 'pools' });
+    
+    // Get token universe for summary queries
+    const { computeTokenUniverse } = await import('./universe.js');
+    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+    const mints = Array.from(universe);
+    
+    // === PHASE 1A: SUMMARY FETCH (lightweight) ===
+    logger.info('pools.refresh.phase.1A.summary_fetch', { mintCount: mints.length, cat: 'pools' });
+    
+    let raySummary: SummaryPool[] = [];
+    let rayClmmSummary: SummaryPool[] = [];
+    let orcaSummary: SummaryPool[] = [];
+    let metSummary: SummaryPool[] = [];
+    let pumpSummary: SummaryPool[] = [];
+    
+    // Store raw Pumpswap pools for later enrichment
+    let pumpRawPools: any[] = [];
+    
+    // Fetch summaries in sequence (to respect rate limits)
+    if (shouldFetch.raydium && useRaydiumGraphQL) {
+      try {
+        raySummary = await fetchRaydiumSummaryOnly(mints);
+        logger.debug('pools.refresh.phase.1A.raydium.amm', { count: raySummary.length, cat: 'pools' });
+        
+        // Check if CLMM is enabled
+        const isClmmEnabled = (() => {
+          if (typeof options.sources?.raydium === 'object') {
+            return options.sources.raydium.clmm !== false;
+          }
+          const configRaydium = configSources.raydium;
+          if (typeof configRaydium === 'object') {
+            return configRaydium.clmm !== false;
+          }
+          return true;
+        })();
+        
+        if (isClmmEnabled) {
+          // Add delay before CLMM fetch
           const clmmPageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
           const interPhaseMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
-          const interPhaseDelayMs = clmmPageDelayMs * interPhaseMultiplier;
-          if (interPhaseDelayMs > 0) {
-            logger.debug('pools.raydium.clmm.inter_phase_delay', { 
-              delayMs: interPhaseDelayMs, 
-              pageDelayMs: clmmPageDelayMs,
-              multiplier: interPhaseMultiplier,
-              cat: 'pools' 
-            });
-            await new Promise(resolve => setTimeout(resolve, interPhaseDelayMs));
-          }
+          await new Promise(resolve => setTimeout(resolve, clmmPageDelayMs * interPhaseMultiplier));
           
-          logger.info('pools.refresh.phase.fetch.raydium.clmm.start', { cat: 'pools' });
-          const clmmResult = await getRaydiumClmmPoolsGraphQL(!!options.force);
-          // Merge CLMM pools into the result
-          r.clmm = [...(r.clmm || []), ...(clmmResult.clmm || [])];
-          logger.info('pools.refresh.phase.fetch.raydium.clmm.complete', { 
-            clmmCount: clmmResult.clmm?.length || 0,
-            totalClmm: r.clmm.length,
-            cat: 'pools' 
-          });
-        } catch (err) {
-          logger.warn('pools.refresh.phase.fetch.raydium.clmm.failed', { 
-            error: String((err as any)?.message || err), 
-            cat: 'pools' 
-          });
-          // Don't fail the entire fetch if CLMM fails, just log the warning
+          rayClmmSummary = await fetchRaydiumClmmSummaryOnly(mints);
+          logger.debug('pools.refresh.phase.1A.raydium.clmm', { count: rayClmmSummary.length, cat: 'pools' });
+        }
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1A.raydium.failed', { error: String(e?.message || e), cat: 'pools' });
+      }
+    }
+    
+    if (shouldFetch.orca && useOrcaGraphQL) {
+      try {
+        orcaSummary = await fetchOrcaSummaryOnly(mints);
+        logger.debug('pools.refresh.phase.1A.orca', { count: orcaSummary.length, cat: 'pools' });
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1A.orca.failed', { error: String(e?.message || e), cat: 'pools' });
+      }
+    }
+    
+    if (shouldFetch.meteora && useMeteoraGraphQL) {
+      try {
+        metSummary = await fetchMeteoraSummaryOnly(mints);
+        logger.debug('pools.refresh.phase.1A.meteora', { count: metSummary.length, cat: 'pools' });
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1A.meteora.failed', { error: String(e?.message || e), cat: 'pools' });
+      }
+    }
+    
+    if (shouldFetch.pumpswap) {
+      try {
+        pumpSummary = await fetchPumpswapSummaryOnly();
+        // Also fetch raw pools for later enrichment (Pumpswap doesn't have separate detail fetch)
+        pumpRawPools = await fetchPumpswapGraphQLImpl();
+        logger.debug('pools.refresh.phase.1A.pumpswap', { count: pumpSummary.length, cat: 'pools' });
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1A.pumpswap.failed', { error: String(e?.message || e), cat: 'pools' });
+      }
+    }
+    
+    const summaryCounts = {
+      raydiumAmm: raySummary.length,
+      raydiumClmm: rayClmmSummary.length,
+      orca: orcaSummary.length,
+      meteora: metSummary.length,
+      pumpswap: pumpSummary.length,
+      total: raySummary.length + rayClmmSummary.length + orcaSummary.length + metSummary.length + pumpSummary.length,
+    };
+    logger.info('pools.refresh.phase.1A.complete', { counts: summaryCounts, cat: 'pools' });
+    
+    // === PHASE 1B: EARLY UNIVERSE FILTER (on summaries) ===
+    logger.info('pools.refresh.phase.1B.early_universe_filter', { cat: 'pools' });
+    const scopeMode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
+    const scoped = CONFIG.system.scopePools !== false && scopeMode !== 'none';
+    const anchorBridging = !!((CONFIG.system as any)?.enableAnchorBridging);
+    
+    const filterSummariesByUniverse = (summaries: SummaryPool[], uni: Set<string>, anchorBridge: boolean): SummaryPool[] => {
+      return summaries.filter(p => {
+        const aIn = uni.has(p.mint_a);
+        const bIn = uni.has(p.mint_b);
+        if (anchorBridge) return aIn || bIn;
+        return aIn && bIn;
+      });
+    };
+    
+    if (scoped) {
+      const beforeCounts = { ...summaryCounts };
+      raySummary = filterSummariesByUniverse(raySummary, universe, anchorBridging);
+      rayClmmSummary = filterSummariesByUniverse(rayClmmSummary, universe, anchorBridging);
+      orcaSummary = filterSummariesByUniverse(orcaSummary, universe, anchorBridging);
+      metSummary = filterSummariesByUniverse(metSummary, universe, anchorBridging);
+      pumpSummary = filterSummariesByUniverse(pumpSummary, universe, anchorBridging);
+      
+      const afterCounts = {
+        raydiumAmm: raySummary.length,
+        raydiumClmm: rayClmmSummary.length,
+        orca: orcaSummary.length,
+        meteora: metSummary.length,
+        pumpswap: pumpSummary.length,
+      };
+      logger.info('pools.refresh.phase.1B.complete', { mode: scopeMode, before: beforeCounts, after: afterCounts, cat: 'pools' });
+    }
+    
+    // === PHASE 1C: EARLY MIN POOLS FILTER (on summaries) ===
+    logger.info('pools.refresh.phase.1C.early_min_pools_filter', { minPools: minPoolsThreshold, cat: 'pools' });
+    
+    const canonicalPairKey = (mintA: string, mintB: string): string => {
+      const a = String(mintA || '');
+      const b = String(mintB || '');
+      return a <= b ? `${a}-${b}` : `${b}-${a}`;
+    };
+    
+    // Count pools per pair across all summaries
+    const poolCounts = new Map<string, number>();
+    const countSummaries = (arr: SummaryPool[]) => {
+      for (const p of arr) {
+        const pairKey = canonicalPairKey(p.mint_a, p.mint_b);
+        poolCounts.set(pairKey, (poolCounts.get(pairKey) || 0) + 1);
+      }
+    };
+    
+    countSummaries(raySummary);
+    countSummaries(rayClmmSummary);
+    countSummaries(orcaSummary);
+    countSummaries(metSummary);
+    countSummaries(pumpSummary);
+    
+    // Build allow set for pairs meeting threshold
+    const allowedPairs = new Set<string>();
+    for (const [k, count] of poolCounts.entries()) {
+      if (count >= minPoolsThreshold) {
+        allowedPairs.add(k);
+      }
+    }
+    
+    // Filter summaries and build survivor pool IDs
+    const filterAndGetIds = (arr: SummaryPool[]): Set<string> => {
+      const ids = new Set<string>();
+      for (const p of arr) {
+        if (allowedPairs.has(canonicalPairKey(p.mint_a, p.mint_b))) {
+          ids.add(p.pubkey);
         }
       }
-      
-      // Apply pool type filtering if specified
-      if (typeof options.sources?.raydium === 'object') {
-        const poolTypes = options.sources.raydium;
-        if (poolTypes.amm === false) r.amm = [];
-        if (poolTypes.clmm === false) r.clmm = [];
+      return ids;
+    };
+    
+    const survivorIds: SurvivorPoolIds = {
+      raydiumAmm: filterAndGetIds(raySummary),
+      raydiumClmm: filterAndGetIds(rayClmmSummary),
+      orca: filterAndGetIds(orcaSummary),
+      meteora: filterAndGetIds(metSummary),
+      pumpswap: filterAndGetIds(pumpSummary),
+    };
+    
+    const beforeMinPools = {
+      raydiumAmm: raySummary.length,
+      raydiumClmm: rayClmmSummary.length,
+      orca: orcaSummary.length,
+      meteora: metSummary.length,
+      pumpswap: pumpSummary.length,
+    };
+    const afterMinPools = {
+      raydiumAmm: survivorIds.raydiumAmm.size,
+      raydiumClmm: survivorIds.raydiumClmm.size,
+      orca: survivorIds.orca.size,
+      meteora: survivorIds.meteora.size,
+      pumpswap: survivorIds.pumpswap.size,
+    };
+    const totalBefore = Object.values(beforeMinPools).reduce((a, b) => a + b, 0);
+    const totalAfter = Object.values(afterMinPools).reduce((a, b) => a + b, 0);
+    const savings = totalBefore > 0 ? Math.round((1 - totalAfter / totalBefore) * 100) : 0;
+    
+    logger.info('pools.refresh.phase.1C.complete', { 
+      minPools: minPoolsThreshold,
+      before: beforeMinPools, 
+      after: afterMinPools,
+      totalBefore,
+      totalAfter,
+      savings: `${savings}%`,
+      cat: 'pools' 
+    });
+    
+    // === PHASE 1D: DETAIL FETCH + RPC + NORMALIZE (survivors only) ===
+    logger.info('pools.refresh.phase.1D.detail_fetch', { survivors: afterMinPools, cat: 'pools' });
+    
+    // Fetch details only for survivor pools
+    const detailBatchSize = Number((CONFIG as any)?.raydium?.detailBatchSize || 50);
+    const detailDelayMs = Number((CONFIG as any)?.raydium?.detailBatchDelayMs || 200);
+    const retries = Number((CONFIG as any)?.raydium?.maxHttpRetries || 2);
+    const backoffMs = Number((CONFIG as any)?.raydium?.httpBackoffMs || 500);
+    
+    // Raydium AMM detail fetch
+    if (survivorIds.raydiumAmm.size > 0) {
+      try {
+        const rayDetailMap = await fetchRaydiumPoolsByAddress(Array.from(survivorIds.raydiumAmm), {
+          retries,
+          backoffMs,
+          batchSize: detailBatchSize,
+          delayMs: detailDelayMs,
+        });
+        const rayNormalized = await normalizeRaydiumGraphQL([...rayDetailMap.values()]);
+        r.amm = rayNormalized.amm || [];
+        logger.debug('pools.refresh.phase.1D.raydium.amm', { count: r.amm.length, cat: 'pools' });
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1D.raydium.amm.failed', { error: String(e?.message || e), cat: 'pools' });
       }
-    } catch (err) {
-      logger.warn('pools.refresh.phase.fetch.raydium.failed', { error: String((err as any)?.message || err), cat: 'pools' });
-      r = { amm: [], clmm: [] };
     }
-  } else {
-    logger.info('pools.refresh.phase.fetch.raydium.skipped', { reason: 'disabled', cat: 'pools' });
-  }
-  
-  if (shouldFetch.orca) {
-    try {
-      // Route to GraphQL if enabled, otherwise use HTTP
-      o = (CONFIG as any)?.orca?.useGraphQL 
-        ? await getOrcaPoolsGraphQL(!!options.force) 
-        : await getOrcaPoolsCached(!!options.force, { skipUniverseFilter: true });
-      // Apply pool type filtering if specified
-      if (typeof options.sources?.orca === 'object') {
-        const poolTypes = options.sources.orca;
-        if (poolTypes.amm === false) o.amm = [];
-        if (poolTypes.clmm === false) o.clmm = [];
+    
+    // Raydium CLMM detail fetch
+    if (survivorIds.raydiumClmm.size > 0) {
+      try {
+        await new Promise(resolve => setTimeout(resolve, detailDelayMs)); // Rate limit
+        const rayClmmDetailMap = await fetchRaydiumClmmPoolsByAddress(Array.from(survivorIds.raydiumClmm), {
+          retries,
+          backoffMs,
+          batchSize: detailBatchSize,
+          delayMs: detailDelayMs,
+        });
+        const rayClmmNormalized = await normalizeRaydiumGraphQL([...rayClmmDetailMap.values()]);
+        r.clmm = rayClmmNormalized.clmm || [];
+        logger.debug('pools.refresh.phase.1D.raydium.clmm', { count: r.clmm.length, cat: 'pools' });
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1D.raydium.clmm.failed', { error: String(e?.message || e), cat: 'pools' });
       }
-    } catch (err) {
-      logger.warn('pools.refresh.phase.fetch.orca.failed', { error: String((err as any)?.message || err), cat: 'pools' });
-      o = { amm: [], clmm: [] };
     }
+    
+    // Orca detail fetch
+    if (survivorIds.orca.size > 0) {
+      try {
+        const orcaDetailBatchSize = Math.min(
+          Number((CONFIG as any)?.orca?.detailBatchSize || 20),
+          Number((CONFIG as any)?.orca?.maxDetailBatchSize || 40)
+        );
+        const orcaDetailMap = await fetchOrcaPoolsByAddress(Array.from(survivorIds.orca), {
+          retries: Number((CONFIG as any)?.orca?.maxHttpRetries || 2),
+          backoffMs: Number((CONFIG as any)?.orca?.httpBackoffMs || 500),
+          batchSize: orcaDetailBatchSize,
+          delayMs: Number((CONFIG as any)?.orca?.detailBatchDelayMs || 200),
+        });
+        o = await normalizeOrcaGraphQL([...orcaDetailMap.values()]);
+        logger.debug('pools.refresh.phase.1D.orca', { count: (o.amm?.length || 0) + (o.clmm?.length || 0), cat: 'pools' });
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1D.orca.failed', { error: String(e?.message || e), cat: 'pools' });
+      }
+    }
+    
+    // Meteora detail fetch
+    if (survivorIds.meteora.size > 0) {
+      try {
+        const metDetailBatchSize = Math.min(
+          Number((CONFIG as any)?.meteora?.detailBatchSize || 10),
+          Number((CONFIG as any)?.meteora?.maxDetailBatchSize || 40)
+        );
+        const metDetailMap = await fetchMeteoraPoolsByAddress(Array.from(survivorIds.meteora), {
+          retries: Number((CONFIG as any)?.meteora?.maxHttpRetries || 2),
+          backoffMs: Number((CONFIG as any)?.meteora?.httpBackoffMs || 500),
+          batchSize: metDetailBatchSize,
+          delayMs: Number((CONFIG as any)?.meteora?.detailBatchDelayMs || 200),
+        });
+        m = await normalizeMeteoraGraphQL([...metDetailMap.values()]);
+        logger.debug('pools.refresh.phase.1D.meteora', { count: (m.amm?.length || 0) + (m.clmm?.length || 0), cat: 'pools' });
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1D.meteora.failed', { error: String(e?.message || e), cat: 'pools' });
+      }
+    }
+    
+    // Pumpswap: filter raw pools by survivor IDs, then enrich
+    if (survivorIds.pumpswap.size > 0 && pumpRawPools.length > 0) {
+      try {
+        const survivorRaw = pumpRawPools.filter(p => survivorIds.pumpswap.has(p.pubkey));
+        logger.debug('pools.refresh.phase.1D.pumpswap.filter', { 
+          raw: pumpRawPools.length, 
+          survivors: survivorRaw.length, 
+          cat: 'pools' 
+        });
+        
+        const { pools: enriched } = await enrichPumpswapPoolsWithRpcImpl(survivorRaw);
+        pump = await normalizePumpswapPoolsImpl(enriched);
+        logger.debug('pools.refresh.phase.1D.pumpswap', { count: pump.amm?.length || 0, cat: 'pools' });
+      } catch (e: any) {
+        logger.warn('pools.refresh.phase.1D.pumpswap.failed', { error: String(e?.message || e), cat: 'pools' });
+      }
+    }
+    
+    // Mark that early filters were applied (skip Phase 2 and 3)
+    earlyFiltersApplied = true;
+    
+    logger.info('pools.refresh.phase.1D.complete', {
+      counts: {
+        raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
+        orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
+        meteora: { amm: m.amm?.length || 0, clmm: m.clmm?.length || 0 },
+        pumpswap: { amm: pump.amm?.length || 0, clmm: pump.clmm?.length || 0 },
+      },
+      cat: 'pools'
+    });
+    
   } else {
-    logger.info('pools.refresh.phase.fetch.orca.skipped', { reason: 'disabled', cat: 'pools' });
+    // === LEGACY PATH: Existing behavior (summary + detail + normalize, then filter) ===
+    logger.info('pools.refresh.phase.fetch.legacy_path', { cat: 'pools' });
+    
+    if (shouldFetch.raydium) {
+      try {
+        const useGraphQL = (CONFIG as any)?.raydium?.useGraphQL;
+        
+        r = useGraphQL
+          ? await getRaydiumPoolsGraphQL(!!options.force) 
+          : await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
+        
+        const isClmmEnabled = (() => {
+          if (typeof options.sources?.raydium === 'object') {
+            return options.sources.raydium.clmm !== false;
+          }
+          if (options.sources?.raydium === false) return false;
+          const configRaydium = configSources.raydium;
+          if (typeof configRaydium === 'object') {
+            return configRaydium.clmm !== false;
+          }
+          return configRaydium !== false;
+        })();
+        
+        if (useGraphQL && isClmmEnabled) {
+          try {
+            const clmmPageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
+            const interPhaseMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
+            const interPhaseDelayMs = clmmPageDelayMs * interPhaseMultiplier;
+            if (interPhaseDelayMs > 0) {
+              await new Promise(resolve => setTimeout(resolve, interPhaseDelayMs));
+            }
+            
+            const clmmResult = await getRaydiumClmmPoolsGraphQL(!!options.force);
+            r.clmm = [...(r.clmm || []), ...(clmmResult.clmm || [])];
+          } catch (err) {
+            logger.warn('pools.refresh.phase.fetch.raydium.clmm.failed', { 
+              error: String((err as any)?.message || err), 
+              cat: 'pools' 
+            });
+          }
+        }
+        
+        if (typeof options.sources?.raydium === 'object') {
+          const poolTypes = options.sources.raydium;
+          if (poolTypes.amm === false) r.amm = [];
+          if (poolTypes.clmm === false) r.clmm = [];
+        }
+      } catch (err) {
+        logger.warn('pools.refresh.phase.fetch.raydium.failed', { error: String((err as any)?.message || err), cat: 'pools' });
+        r = { amm: [], clmm: [] };
+      }
+    } else {
+      logger.info('pools.refresh.phase.fetch.raydium.skipped', { reason: 'disabled', cat: 'pools' });
+    }
+    
+    if (shouldFetch.orca) {
+      try {
+        o = (CONFIG as any)?.orca?.useGraphQL 
+          ? await getOrcaPoolsGraphQL(!!options.force) 
+          : await getOrcaPoolsCached(!!options.force, { skipUniverseFilter: true });
+        if (typeof options.sources?.orca === 'object') {
+          const poolTypes = options.sources.orca;
+          if (poolTypes.amm === false) o.amm = [];
+          if (poolTypes.clmm === false) o.clmm = [];
+        }
+      } catch (err) {
+        logger.warn('pools.refresh.phase.fetch.orca.failed', { error: String((err as any)?.message || err), cat: 'pools' });
+        o = { amm: [], clmm: [] };
+      }
+    } else {
+      logger.info('pools.refresh.phase.fetch.orca.skipped', { reason: 'disabled', cat: 'pools' });
+    }
+    
+    if (shouldFetch.meteora) {
+      try {
+        m = (CONFIG as any)?.meteora?.useGraphQL 
+          ? await getMeteoraPoolsGraphQL(!!options.force) 
+          : await getMeteoraPoolsCached(!!options.force, { skipUniverseFilter: true });
+      } catch (err) {
+        logger.warn('pools.refresh.phase.fetch.meteora.failed', { error: String((err as any)?.message || err), cat: 'pools' });
+        m = { amm: [], clmm: [] };
+      }
+    } else {
+      logger.info('pools.refresh.phase.fetch.meteora.skipped', { reason: 'disabled', cat: 'pools' });
+    }
   }
   
-  if (shouldFetch.meteora) {
-    try {
-      // Route to GraphQL if enabled, otherwise use HTTP
-      m = (CONFIG as any)?.meteora?.useGraphQL 
-        ? await getMeteoraPoolsGraphQL(!!options.force) 
-        : await getMeteoraPoolsCached(!!options.force, { skipUniverseFilter: true });
-    } catch (err) {
-      logger.warn('pools.refresh.phase.fetch.meteora.failed', { error: String((err as any)?.message || err), cat: 'pools' });
-      m = { amm: [], clmm: [] };
-    }
-  } else {
-    logger.info('pools.refresh.phase.fetch.meteora.skipped', { reason: 'disabled', cat: 'pools' });
-  }
-  
+  // Meteora Balanced always uses legacy path (no GraphQL)
   if (shouldFetch.meteora_balanced) {
     try {
       mb = await getMeteoraBalancedPoolsCached(!!options.force, { skipUniverseFilter: true });
@@ -491,14 +817,15 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     logger.info('pools.refresh.phase.fetch.meteora_balanced.skipped', { reason: 'disabled', cat: 'pools' });
   }
   
-  if (shouldFetch.pumpswap) {
+  // Pumpswap in legacy path
+  if (!useEarlyFilterPath && shouldFetch.pumpswap) {
     try {
       pump = await getPumpswapPoolsCached(!!options.force);
     } catch (err) {
       logger.warn('pools.refresh.phase.fetch.pumpswap.failed', { error: String((err as any)?.message || err), cat: 'pools' });
       pump = { amm: [], clmm: [] };
     }
-  } else {
+  } else if (!useEarlyFilterPath) {
     logger.info('pools.refresh.phase.fetch.pumpswap.skipped', { reason: 'disabled', cat: 'pools' });
   }
   
@@ -511,15 +838,20 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       pumpswap: { amm: pump.amm?.length || 0, clmm: pump.clmm?.length || 0 },
     };
     phaseStats.fetch = fetchCounts;
-    logger.info('pools.refresh.phase.fetch.complete', { counts: fetchCounts, cat: 'pools' });
+    logger.info('pools.refresh.phase.fetch.complete', { counts: fetchCounts, earlyFiltersApplied, cat: 'pools' });
   } catch {}
   
   // === PHASE 2: FILTER BY UNIVERSE (across all DEXes) ===
-  logger.info('pools.refresh.phase.universe_filter', { cat: 'pools' });
+  // Skip if early filters were already applied in Phase 1B
+  if (earlyFiltersApplied) {
+    logger.info('pools.refresh.phase.universe_filter.skipped', { reason: 'early_filters_applied', cat: 'pools' });
+  } else {
+    logger.info('pools.refresh.phase.universe_filter', { cat: 'pools' });
+  }
   try {
     const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
     const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
-    if (scoped) {
+    if (scoped && !earlyFiltersApplied) {
       const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
       const universe = await computeTokenUniverse(mode as any);
       const anchorBridging = !!((CONFIG.system as any)?.enableAnchorBridging);
@@ -565,11 +897,15 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   }
   
   // === PHASE 3: FILTER BY MINIMUM POOLS PER PAIR (first pass) ===
-  // This filter is applied regardless of token universe mode to ensure pool quality
-  logger.info('pools.refresh.phase.min_pools_filter', { cat: 'pools' });
+  // Skip if early filters were already applied in Phase 1C
+  if (earlyFiltersApplied) {
+    logger.info('pools.refresh.phase.min_pools_filter.skipped', { reason: 'early_filters_applied', cat: 'pools' });
+  } else {
+    logger.info('pools.refresh.phase.min_pools_filter', { cat: 'pools' });
+  }
   try {
     const minPools = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));
-    if (minPools > 1) {
+    if (minPools > 1 && !earlyFiltersApplied) {
       const canonicalPairKey = (mintA: string, mintB: string): string => {
         const a = String(mintA || '');
         const b = String(mintB || '');

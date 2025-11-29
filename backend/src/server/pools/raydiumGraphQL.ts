@@ -1,7 +1,7 @@
 import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
-import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
+import type { AmmPool, ClmmPool, PoolsPayload, SummaryPool } from './types.js';
 import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
@@ -375,6 +375,165 @@ async function fetchClmmPoolRawData(
   return result;
 }
 
+/**
+ * Fetch Raydium AMM pool summaries only (no detail fetch, no RPC enrichment).
+ * Used for early filtering before expensive detail+RPC phases.
+ */
+export async function fetchRaydiumSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
+  const retries = Number((CONFIG as any)?.raydium?.maxHttpRetries || 2);
+  const backoffMs = Number((CONFIG as any)?.raydium?.httpBackoffMs || 500);
+  const pageSize = Number((CONFIG as any)?.raydium?.pageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.raydium?.graphqlMaxPages || 50);
+  const pageDelayMs = Number((CONFIG as any)?.raydium?.pageDelayMs || 200);
+  const mintBatchSize = Number((CONFIG as any)?.raydium?.mintBatchSize || 10);
+
+  const poolsMap = new Map<string, SummaryPool>();
+  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  logger.info('raydium.graphql.summary_only.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'raydium',
+  });
+
+  if (pageDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
+    try {
+      const pools = await fetchRaydiumPoolsForMintBatch({
+        mints: mintBatch,
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.baseMint,
+          mint_b: pool.quoteMint,
+          dex: 'raydium',
+          type: 'amm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.debug('raydium.graphql.summary_only.batch', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'raydium',
+      });
+    } catch (e: any) {
+      logger.warn('raydium.graphql.summary_only.batch.failed', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        error: String(e?.message || e),
+        cat: 'raydium',
+      });
+    }
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  const result = Array.from(poolsMap.values());
+  logger.info('raydium.graphql.summary_only.complete', {
+    count: result.length,
+    mints: mints.length,
+    cat: 'raydium',
+  });
+  return result;
+}
+
+/**
+ * Fetch Raydium CLMM pool summaries only (no detail fetch, no RPC enrichment).
+ * Used for early filtering before expensive detail+RPC phases.
+ */
+export async function fetchRaydiumClmmSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
+  const retries = Number((CONFIG as any)?.raydiumClmm?.maxHttpRetries || 2);
+  const backoffMs = Number((CONFIG as any)?.raydiumClmm?.httpBackoffMs || 500);
+  const pageSize = Number((CONFIG as any)?.raydiumClmm?.pageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.raydiumClmm?.maxPages || 50);
+  const pageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
+  const mintBatchSize = Number((CONFIG as any)?.raydiumClmm?.mintBatchSize || 10);
+
+  const poolsMap = new Map<string, SummaryPool>();
+  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  logger.info('raydium.clmm.graphql.summary_only.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'raydium-clmm',
+  });
+
+  // Add initial delay for rate limiting
+  const initialDelayMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
+  const initialDelayMs = pageDelayMs * initialDelayMultiplier;
+  if (initialDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, initialDelayMs));
+  }
+
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
+    try {
+      const pools = await fetchRaydiumClmmPoolsForMintBatch({
+        mints: mintBatch,
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.tokenMint0,
+          mint_b: pool.tokenMint1,
+          dex: 'raydium-clmm',
+          type: 'clmm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.debug('raydium.clmm.graphql.summary_only.batch', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'raydium-clmm',
+      });
+    } catch (e: any) {
+      logger.warn('raydium.clmm.graphql.summary_only.batch.failed', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        error: String(e?.message || e),
+        cat: 'raydium-clmm',
+      });
+    }
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  const result = Array.from(poolsMap.values());
+  logger.info('raydium.clmm.graphql.summary_only.complete', {
+    count: result.length,
+    mints: mints.length,
+    cat: 'raydium-clmm',
+  });
+  return result;
+}
+
 export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-graphql-raw.json');
   const retries = Number((CONFIG as any)?.raydium?.maxHttpRetries || 2);
@@ -732,7 +891,11 @@ async function fetchRaydiumClmmPoolsForToken(opts: {
   return allPools;
 }
 
-async function fetchRaydiumClmmPoolsByAddress(
+/**
+ * Fetch Raydium CLMM pool details by pool addresses.
+ * Exported for use in early-filter flow where only survivor pools need detail fetching.
+ */
+export async function fetchRaydiumClmmPoolsByAddress(
   poolIds: string[],
   opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
 ): Promise<Map<string, any>> {
@@ -1011,7 +1174,11 @@ async function fetchRaydiumClmmPoolsForMintBatch(opts: {
   return allPools;
 }
 
-async function fetchRaydiumPoolsByAddress(
+/**
+ * Fetch Raydium AMM pool details by pool addresses.
+ * Exported for use in early-filter flow where only survivor pools need detail fetching.
+ */
+export async function fetchRaydiumPoolsByAddress(
   poolIds: string[],
   opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
 ): Promise<Map<string, any>> {

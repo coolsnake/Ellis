@@ -2,7 +2,7 @@ import { logger } from '../../utils/logger.js';
 import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
-import type { AmmPool, PoolsPayload } from './types.js';
+import type { AmmPool, PoolsPayload, SummaryPool } from './types.js';
 import { validateHttpUrl, swapABFields } from './common.js';
 import { canonicalizePools } from './canonical.js';
 import { resolveManyDecimals } from './decimals.js';
@@ -28,6 +28,94 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
     chunks.push(arr.slice(i, i + size));
   }
   return chunks;
+}
+
+/**
+ * Fetch Pumpswap pool summaries only (no RPC enrichment).
+ * Used for early filtering before expensive RPC enrichment phase.
+ */
+export async function fetchPumpswapSummaryOnly(): Promise<SummaryPool[]> {
+  const apiKey = (CONFIG as any)?.pumpswap?.shyftApiKey || '';
+  if (!apiKey) {
+    logger.warn('pumpswap.graphql.summary_only.apiKey_missing', { cat: 'pumpswap' });
+    return [];
+  }
+
+  const retries = Number((CONFIG as any)?.pumpswap?.maxHttpRetries || 2);
+  const backoffMs = Number((CONFIG as any)?.pumpswap?.httpBackoffMs || 500);
+  const pageSize = Number((CONFIG as any)?.pumpswap?.pageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.pumpswap?.graphqlMaxPages || 50);
+  const pageDelayMs = Number((CONFIG as any)?.pumpswap?.pageDelayMs || 200);
+  const mintBatchSize = Number((CONFIG as any)?.pumpswap?.mintBatchSize || 10);
+
+  // Get token universe
+  let mints: string[] = [];
+  try {
+    const { computeTokenUniverse } = await import('../universe.js');
+    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+    mints = Array.from(universe);
+    logger.info('pumpswap.graphql.summary_only.universe', { mintCount: mints.length, cat: 'pumpswap' });
+  } catch (e: any) {
+    logger.warn('pumpswap.graphql.summary_only.universe.failed', { error: String(e?.message || e), cat: 'pumpswap' });
+    mints = [SOL_MINT, USDC_MINT];
+  }
+
+  const poolsMap = new Map<string, SummaryPool>();
+  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  logger.info('pumpswap.graphql.summary_only.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'pumpswap',
+  });
+
+  if (pageDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
+    try {
+      const batchPools = await fetchPoolsForMintBatch(mintBatch, apiKey, retries, backoffMs, pageSize, maxPages, pageDelayMs);
+      for (const pool of batchPools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.base_mint,
+          mint_b: pool.quote_mint,
+          dex: 'pumpswap',
+          type: 'amm',
+        });
+      }
+
+      logger.debug('pumpswap.graphql.summary_only.batch', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        count: batchPools.length,
+        total: poolsMap.size,
+        cat: 'pumpswap',
+      });
+    } catch (e: any) {
+      logger.warn('pumpswap.graphql.summary_only.batch.failed', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        error: String(e?.message || e),
+        cat: 'pumpswap',
+      });
+    }
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  const result = Array.from(poolsMap.values());
+  logger.info('pumpswap.graphql.summary_only.complete', {
+    count: result.length,
+    mints: mints.length,
+    cat: 'pumpswap',
+  });
+  return result;
 }
 
 export async function fetchPumpswapGraphQL(): Promise<PumpswapPoolApiResponse[]> {

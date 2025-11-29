@@ -1,7 +1,7 @@
 import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
-import type { ClmmPool, PoolsPayload } from './types.js';
+import type { ClmmPool, PoolsPayload, SummaryPool } from './types.js';
 import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
@@ -11,6 +11,84 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { isValidPublicKey } from '../../execution/builder/utils.js';
+
+/**
+ * Fetch Orca Whirlpool summaries only (no detail fetch, no RPC enrichment).
+ * Used for early filtering before expensive detail+RPC phases.
+ */
+export async function fetchOrcaSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
+  const retries = Number((CONFIG as any)?.orca?.maxHttpRetries || 2);
+  const backoffMs = Number((CONFIG as any)?.orca?.httpBackoffMs || 500);
+  const pageSize = Number((CONFIG as any)?.orca?.pageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.orca?.graphqlMaxPages || 50);
+  const pageDelayMs = Number((CONFIG as any)?.orca?.pageDelayMs || 200);
+  const mintBatchSize = Number((CONFIG as any)?.orca?.mintBatchSize || 10);
+
+  const poolsMap = new Map<string, SummaryPool>();
+  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  logger.info('orca.graphql.summary_only.start', {
+    totalMints: mints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'orca',
+  });
+
+  if (pageDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
+    try {
+      const pools = await fetchOrcaPoolsForMintBatch({
+        mints: mintBatch,
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.tokenMintA,
+          mint_b: pool.tokenMintB,
+          dex: 'orca',
+          type: 'clmm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.debug('orca.graphql.summary_only.batch', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'orca',
+      });
+    } catch (e: any) {
+      logger.warn('orca.graphql.summary_only.batch.failed', {
+        batchIdx,
+        batchSize: mintBatch.length,
+        error: String(e?.message || e),
+        cat: 'orca',
+      });
+    }
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  const result = Array.from(poolsMap.values());
+  logger.info('orca.graphql.summary_only.complete', {
+    count: result.length,
+    mints: mints.length,
+    cat: 'orca',
+  });
+  return result;
+}
 
 export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'orca-graphql-raw.json');
@@ -519,7 +597,11 @@ async function fetchOrcaChunkWithRetry(
   } catch (e) { logCatchError('pools.orcaGraphQL', e); }
 }
 
-async function fetchOrcaPoolsByAddress(
+/**
+ * Fetch Orca Whirlpool details by pool addresses.
+ * Exported for use in early-filter flow where only survivor pools need detail fetching.
+ */
+export async function fetchOrcaPoolsByAddress(
   poolIds: string[],
   opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
 ): Promise<Map<string, any>> {

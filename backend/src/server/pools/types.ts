@@ -119,4 +119,38 @@ export type ClmmPool = {
 
 export type PoolsPayload = { amm: AmmPool[]; clmm: ClmmPool[] };
 
+/**
+ * Lightweight pool summary for early filtering (before detail fetch + RPC enrichment).
+ * Contains only the fields needed for universe and min pools filtering.
+ */
+export type SummaryPool = {
+  pubkey: string;
+  mint_a: string;
+  mint_b: string;
+  dex: 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'pumpswap';
+  type: 'amm' | 'clmm';
+  _updatedAt?: string;
+};
+
+/**
+ * Aggregated summary results from all DEXes, used for early filtering.
+ */
+export type DexSummaries = {
+  raydiumAmm: SummaryPool[];
+  raydiumClmm: SummaryPool[];
+  orca: SummaryPool[];
+  meteora: SummaryPool[];
+  pumpswap: SummaryPool[];
+};
+
+/**
+ * Survivor pool IDs after early filtering, grouped by DEX.
+ */
+export type SurvivorPoolIds = {
+  raydiumAmm: Set<string>;
+  raydiumClmm: Set<string>;
+  orca: Set<string>;
+  meteora: Set<string>;
+  pumpswap: Set<string>;
+};
 
