@@ -238,6 +238,19 @@ export async function defaultNormalizeRaydiumPools(raw: any): Promise<PoolsPaylo
 }
 
 export async function refreshAllSources(force = true, subscribe = true, opts?: RefreshSourcesOptions): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload; pumpswap: PoolsPayload }> {
+  // Track refresh timing for summary
+  const refreshStartTime = Date.now();
+  
+  // Accumulator for phase stats (used for summary log)
+  const phaseStats: {
+    fetch?: { raydium: { amm: number; clmm: number }; orca: { amm: number; clmm: number }; meteora: { amm: number; clmm: number }; meteora_balanced: { amm: number; clmm: number }; pumpswap: { amm: number; clmm: number } };
+    universe?: { mode: string; before: Record<string, number>; after: Record<string, number> };
+    minPools1?: { minPools: number; before: Record<string, number>; after: Record<string, number> };
+    tvl?: { minAmm: number; minClmm: number; before: Record<string, { a: number; c: number }>; after: Record<string, { a: number; c: number }> };
+    activity?: { maxInactiveMs: number; totalChecked: number; active: number; inactive: number };
+    minPools2?: { minPools: number; before: Record<string, number>; after: Record<string, number> };
+  } = {};
+  
   // Track last call time to prevent excessive refreshes
   (refreshAllSources as any).__lastCallTime = Date.now();
   
@@ -497,6 +510,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       meteora_balanced: { amm: mb.amm?.length || 0, clmm: mb.clmm?.length || 0 },
       pumpswap: { amm: pump.amm?.length || 0, clmm: pump.clmm?.length || 0 },
     };
+    phaseStats.fetch = fetchCounts;
     logger.info('pools.refresh.phase.fetch.complete', { counts: fetchCounts, cat: 'pools' });
   } catch {}
   
@@ -538,6 +552,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
       };
       
+      phaseStats.universe = { mode, before: beforeCounts, after: afterCounts };
       logger.info('pools.refresh.phase.universe_filter.complete', { 
         mode, 
         before: beforeCounts, 
@@ -612,6 +627,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
       };
       
+      phaseStats.minPools1 = { minPools, before: beforeCounts, after: afterCounts };
       logger.info('pools.refresh.phase.min_pools_filter.complete', { 
         minPools, 
         before: beforeCounts, 
@@ -619,6 +635,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         cat: 'pools' 
       });
     } else {
+      phaseStats.minPools1 = { minPools, before: {}, after: {} };
       logger.info('pools.refresh.phase.min_pools_filter.skipped', { 
         reason: 'minPoolsPerPair_is_1',
         minPools,
@@ -686,6 +703,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         pumpswap: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
       };
       
+      phaseStats.tvl = { minAmm, minClmm, before: beforeCounts, after: afterCounts };
       logger.info('pools.refresh.phase.tvl_filter.complete', { 
         minAmm, 
         minClmm, 
@@ -694,6 +712,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         cat: 'pools' 
       });
     } else {
+      phaseStats.tvl = { minAmm, minClmm, before: {}, after: {} };
       logger.info('pools.refresh.phase.tvl_filter.skipped', { 
         reason: 'thresholds_are_zero',
         minAmm, 
@@ -792,6 +811,15 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
           pumpswap: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
         };
         
+        // Calculate totals for summary
+        const totalBefore = Object.values(beforeCounts).reduce((sum, v) => sum + v.a + v.c, 0);
+        const totalAfter = Object.values(afterCounts).reduce((sum, v) => sum + v.a + v.c, 0);
+        phaseStats.activity = { 
+          maxInactiveMs, 
+          totalChecked: allPoolIds.length,
+          active: totalAfter,
+          inactive: totalBefore - totalAfter
+        };
         logger.info('pools.refresh.phase.activity_filter.complete', {
           maxInactiveMs,
           maxInactiveHours: Math.round(maxInactiveMs / (60 * 60 * 1000)),
@@ -823,12 +851,14 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
           cat: 'pools',
         });
       } else {
+        phaseStats.activity = { maxInactiveMs, totalChecked: 0, active: 0, inactive: 0 };
         logger.info('pools.refresh.phase.activity_filter.skipped', {
           reason: 'no_pools_to_check',
           cat: 'pools',
         });
       }
     } else {
+      phaseStats.activity = { maxInactiveMs, totalChecked: 0, active: 0, inactive: 0 };
       logger.info('pools.refresh.phase.activity_filter.skipped', {
         reason: 'disabled_or_zero_threshold',
         maxInactiveMs,
@@ -904,6 +934,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
       };
       
+      phaseStats.minPools2 = { minPools, before: beforeCounts, after: afterCounts };
       logger.info('pools.refresh.phase.min_pools_filter_2nd.complete', { 
         minPools, 
         before: beforeCounts, 
@@ -911,6 +942,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         cat: 'pools' 
       });
     } else {
+      phaseStats.minPools2 = { minPools, before: {}, after: {} };
       logger.info('pools.refresh.phase.min_pools_filter_2nd.skipped', { 
         reason: 'minPoolsPerPair_is_1',
         minPools,
@@ -1142,14 +1174,64 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   (refreshAllSources as any).__inProgress = false;
   (refreshAllSources as any).__isRunning = false;
   
-  logger.info('pools.refresh.complete', { 
-    fetched: {
-      raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
-      orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
-      meteora: { clmm: m.clmm?.length || 0 },
-      meteora_balanced: { amm: mb.amm?.length || 0 },
-      pumpswap: { amm: pump.amm?.length || 0 },
+  // Build comprehensive refresh summary
+  const refreshDurationMs = Date.now() - refreshStartTime;
+  const finalCounts = {
+    raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
+    orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
+    meteora: { amm: m.amm?.length || 0, clmm: m.clmm?.length || 0 },
+    meteora_balanced: { amm: mb.amm?.length || 0, clmm: mb.clmm?.length || 0 },
+    pumpswap: { amm: pump.amm?.length || 0, clmm: pump.clmm?.length || 0 },
+  };
+  const totalFinal = Object.values(finalCounts).reduce((sum, v) => sum + v.amm + v.clmm, 0);
+  const totalFetched = phaseStats.fetch 
+    ? Object.values(phaseStats.fetch).reduce((sum, v) => sum + v.amm + v.clmm, 0) 
+    : 0;
+  
+  const refreshSummary = {
+    durationMs: refreshDurationMs,
+    durationSec: Math.round(refreshDurationMs / 100) / 10,
+    totalFetched,
+    totalFinal,
+    dropRate: totalFetched > 0 ? `${Math.round((1 - totalFinal / totalFetched) * 100)}%` : 'n/a',
+    phases: {
+      fetch: phaseStats.fetch,
+      universe: phaseStats.universe ? {
+        mode: phaseStats.universe.mode,
+        dropped: Object.entries(phaseStats.universe.before).reduce((sum, [k, v]) => 
+          sum + (v - ((phaseStats.universe?.after as any)?.[k] || 0)), 0)
+      } : undefined,
+      minPools1: phaseStats.minPools1 ? {
+        threshold: phaseStats.minPools1.minPools,
+        before: Object.values(phaseStats.minPools1.before).reduce((a, b) => a + b, 0),
+        after: Object.values(phaseStats.minPools1.after).reduce((a, b) => a + b, 0),
+      } : undefined,
+      tvl: phaseStats.tvl ? {
+        minAmm: phaseStats.tvl.minAmm,
+        minClmm: phaseStats.tvl.minClmm,
+        before: Object.values(phaseStats.tvl.before).reduce((sum, v) => sum + v.a + v.c, 0),
+        after: Object.values(phaseStats.tvl.after).reduce((sum, v) => sum + v.a + v.c, 0),
+      } : undefined,
+      activity: phaseStats.activity ? {
+        maxInactiveHours: Math.round((phaseStats.activity.maxInactiveMs || 0) / (60 * 60 * 1000)),
+        checked: phaseStats.activity.totalChecked,
+        active: phaseStats.activity.active,
+        inactive: phaseStats.activity.inactive,
+      } : undefined,
+      minPools2: phaseStats.minPools2 ? {
+        threshold: phaseStats.minPools2.minPools,
+        before: Object.values(phaseStats.minPools2.before).reduce((a, b) => a + b, 0),
+        after: Object.values(phaseStats.minPools2.after).reduce((a, b) => a + b, 0),
+      } : undefined,
     },
+    final: finalCounts,
+  };
+  
+  logger.info('pools.refresh.summary', { ...refreshSummary, cat: 'pools' });
+  
+  logger.info('pools.refresh.complete', { 
+    durationMs: refreshDurationMs,
+    totalPools: totalFinal,
     cat: 'pools' 
   });
   
