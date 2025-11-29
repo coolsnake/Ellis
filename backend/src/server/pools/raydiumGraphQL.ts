@@ -159,7 +159,7 @@ export async function fetchAmmConfigFeeRates(
               const valueAt43 = buffer.length >= 47 ? buffer.readUInt32LE(43) : null;
               const valueAt47 = buffer.length >= 51 ? buffer.readUInt32LE(47) : null;
               
-              logger.info('raydium.clmm.ammConfig.diagnostic', {
+              logger.debug('raydium.clmm.ammConfig.diagnostic', {
                 config: configAddr.slice(0, 8),
                 bufferLength: buffer.length,
                 TRADE_FEE_RATE_OFFSET,
@@ -177,7 +177,7 @@ export async function fetchAmmConfigFeeRates(
               // Read trade_fee_rate as u32 little-endian at offset 43
               const tradeFeeRatePPM = buffer.readUInt32LE(TRADE_FEE_RATE_OFFSET);
               
-              logger.info('raydium.clmm.ammConfig.reading', {
+              logger.debug('raydium.clmm.ammConfig.reading', {
                 config: configAddr.slice(0, 8),
                 offset: TRADE_FEE_RATE_OFFSET,
                 tradeFeeRatePPM,
@@ -193,7 +193,7 @@ export async function fetchAmmConfigFeeRates(
                   const altValue = buffer.readUInt32LE(altOffset);
                   if (altValue > 0 && altValue <= 1000000) {
                     feeBps = altValue / 100;
-                    logger.info('raydium.clmm.ammConfig.alt_offset_used', {
+                    logger.debug('raydium.clmm.ammConfig.alt_offset_used', {
                       config: configAddr.slice(0, 8),
                       original: tradeFeeRatePPM,
                       altValue,
