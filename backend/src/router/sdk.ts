@@ -447,20 +447,20 @@ export function calculateRepayAmount(borrowedAmount: bigint): bigint {
 
 /**
  * Get the number of accounts needed for a DEX swap
- * These must match the on-chain ACCOUNTS_NEEDED constants
+ * These must match the on-chain ACCOUNTS_NEEDED constants in arb-router
  */
 export function getAccountsNeededForDex(dexType: DexType): number {
   switch (dexType) {
     case DexType.Raydium:
-      return 17; // Raydium CLMM needs many accounts
+      return 17; // Raydium CLMM
     case DexType.Meteora:
-      return 15; // Meteora DLMM
+      return 16; // Meteora DLMM
     case DexType.Orca:
-      return 11; // Orca Whirlpool
+      return 15; // Orca Whirlpool
     case DexType.PumpSwap:
-      return 10; // PumpSwap
+      return 12; // PumpSwap
     default:
-      return 10;
+      return 12;
   }
 }
 

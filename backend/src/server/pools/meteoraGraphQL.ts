@@ -1004,6 +1004,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         liquidity: pool.liquidity,
         reserve_x: pool.reserveX,
         reserve_y: pool.reserveY,
+        oracle: pool.oracle,
         _updatedAt: pool._updatedAt,
         was_swapped: wasSwapped,
         _pipelineProcessed: true, // Mark as processed by price pipeline

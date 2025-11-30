@@ -5,7 +5,7 @@
  * the on-chain arb-router program, with optional flash loan support.
  */
 
-import { PublicKey, TransactionInstruction, Keypair } from '@solana/web3.js';
+import { PublicKey, TransactionInstruction, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import BN from 'bn.js';
 import type { ExecutionPlan, DirectHop } from '../types.js';
@@ -13,6 +13,7 @@ import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection } from '../../wallet/wallet.js';
+import { executionCache } from '../cache.js';
 import {
   buildFlashBorrowIx,
   buildFlashRepayIx,
@@ -28,6 +29,15 @@ import {
   RouteStep,
 } from '../../router/index.js';
 import { loadRouterConfig, isFlashLoanAvailable } from '../../server/routerConfigStore.js';
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+const PUMPSWAP_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 
 // ============================================================================
 // Types
@@ -213,7 +223,7 @@ async function buildFlashLoanArbTx(
     );
 
     // 2. Execute swaps (using execute instruction for multi-hop)
-    const { steps, dexAccounts } = buildRouteSteps(plan.hops);
+    const { steps, dexAccounts } = buildRouteSteps(plan.hops, wallet.publicKey);
     
     instructions.push(
       buildExecuteIx(
@@ -282,7 +292,7 @@ async function buildDirectRouterTx(
     const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
 
     // Build route steps and execute
-    const { steps, dexAccounts } = buildRouteSteps(plan.hops);
+    const { steps, dexAccounts } = buildRouteSteps(plan.hops, wallet.publicKey);
 
     instructions.push(
       buildExecuteIx(
@@ -321,120 +331,178 @@ async function buildDirectRouterTx(
 
 /**
  * Build route steps from execution plan hops
+ * 
+ * For dynamic amount propagation:
+ * - First hop uses the specified amountInRaw
+ * - Subsequent hops use amountIn=0, which tells the on-chain router to
+ *   read the actual balance from the input token account (output of previous swap)
  */
-function buildRouteSteps(hops: DirectHop[]): {
+function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): {
   steps: RouteStep[];
   dexAccounts: PublicKey[];
 } {
   const steps: RouteStep[] = [];
   const dexAccounts: PublicKey[] = [];
 
-  for (const hop of hops) {
+  for (let i = 0; i < hops.length; i++) {
+    const hop = hops[i];
     const dexType = dexNameToType(hop.dex, hop.variant);
+
+    // First hop: use specified amount
+    // Subsequent hops: use 0 to trigger dynamic amount propagation
+    // The on-chain router will read the actual token account balance
+    const amountIn = i === 0 
+      ? BigInt(hop.amountInRaw.toString()) 
+      : 0n;
 
     steps.push({
       dexType,
-      amountIn: BigInt(hop.amountInRaw.toString()),
+      amountIn,
       minAmountOut: BigInt(hop.minOutRaw.toString()),
     });
 
-    // Collect DEX accounts for this hop
-    const hopAccounts = extractDexAccounts(hop, dexType);
+    // Collect DEX accounts for this hop - pass wallet for signer account positions
+    const hopAccounts = extractDexAccounts(hop, dexType, wallet);
     dexAccounts.push(...hopAccounts);
+
+    logger.debug('routerTx.buildStep', {
+      cat: 'tx',
+      ctx: {
+        hopIndex: i,
+        dex: hop.dex,
+        amountIn: amountIn.toString(),
+        minAmountOut: hop.minOutRaw.toString(),
+        isDynamic: i > 0,
+        accountCount: hopAccounts.length,
+      },
+    });
   }
 
   return { steps, dexAccounts };
 }
 
 /**
- * Extract DEX-specific accounts from a hop
+ * Extract DEX-specific accounts from a hop in the exact order expected by the router
  */
-function extractDexAccounts(hop: DirectHop, dexType: DexType): PublicKey[] {
+function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey): PublicKey[] {
   const accounts: PublicKey[] = [];
 
   try {
-    // Common accounts
-    const poolId = new PublicKey(hop.poolId);
+    const poolId = new PublicKey(hop.poolId.replace(/[#-]rev$/, ''));
     const programIdKey = new PublicKey(hop.programId);
     const inputMint = new PublicKey(hop.inputMint);
     const outputMint = new PublicKey(hop.outputMint);
+    const userSourceAta = new PublicKey(hop.userSourceAta);
+    const userDestAta = new PublicKey(hop.userDestAta);
+
+    // Get pool's native mint ordering from cache for direction determination
+    const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
+    const poolMintA = stat?.native_mint_a || stat?.mint_a;
+    const poolMintB = stat?.native_mint_b || stat?.mint_b;
+    const isAtoB = hop.inputMint === poolMintA;
 
     switch (dexType) {
       case DexType.Raydium:
-        // Raydium CLMM accounts
+        // Raydium CLMM: 17 accounts
+        // 0: Payer, 1: AmmConfig, 2: Pool, 3: UserInputToken, 4: UserOutputToken,
+        // 5: InputVault, 6: OutputVault, 7: Observation, 8: TokenProgram,
+        // 9-11: TickArrays, 12: Oracle, 13-14: Mints, 15: Memo, 16: Program
         accounts.push(
-          programIdKey,
-          poolId,
-          hop.ammConfig ? new PublicKey(hop.ammConfig) : poolId,
-          hop.vaultA ? new PublicKey(hop.vaultA) : poolId,
-          hop.vaultB ? new PublicKey(hop.vaultB) : poolId,
-          hop.observationId ? new PublicKey(hop.observationId) : poolId,
-          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,
-          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,
-          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,
-          inputMint,
-          outputMint,
-          new PublicKey(hop.userSourceAta),
-          new PublicKey(hop.userDestAta),
-          TOKEN_PROGRAM_ID,
-          // Additional accounts for Raydium
-          poolId, // owner
-          poolId, // ex_bitmap_account (placeholder)
-          poolId, // oracle (placeholder)
+          wallet,                                                              // 0: Payer (signer)
+          hop.ammConfig ? new PublicKey(hop.ammConfig) : poolId,              // 1: AMM Config
+          poolId,                                                              // 2: Pool State
+          userSourceAta,                                                       // 3: Input Token Account (user)
+          userDestAta,                                                         // 4: Output Token Account (user)
+          new PublicKey(isAtoB ? (hop.vaultA || hop.poolId) : (hop.vaultB || hop.poolId)), // 5: Input Vault
+          new PublicKey(isAtoB ? (hop.vaultB || hop.poolId) : (hop.vaultA || hop.poolId)), // 6: Output Vault
+          hop.observationId ? new PublicKey(hop.observationId) : poolId,      // 7: Observation State
+          TOKEN_PROGRAM_ID,                                                    // 8: Token Program
+          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 9: Tick Array Lower
+          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 10: Tick Array Current
+          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 11: Tick Array Upper
+          hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 12: Oracle
+          inputMint,                                                           // 13: Input Token Mint
+          outputMint,                                                          // 14: Output Token Mint
+          MEMO_PROGRAM_ID,                                                     // 15: Memo Program
+          programIdKey,                                                        // 16: Raydium CLMM Program
         );
         break;
 
       case DexType.Meteora:
-        // Meteora DLMM accounts
+        // Meteora DLMM: 16 accounts
+        // 0: LBPair, 1: BitmapExt, 2-3: Reserves, 4-5: UserTokens, 6-7: Mints,
+        // 8: Oracle, 9: HostFee, 10: User, 11: TokenProgram, 12: EventAuth, 13: Program, 14-15: BinArrays
+        const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
         accounts.push(
-          programIdKey,
-          poolId,
-          hop.reserveX ? new PublicKey(hop.reserveX) : poolId,
-          hop.reserveY ? new PublicKey(hop.reserveY) : poolId,
-          inputMint,
-          outputMint,
-          new PublicKey(hop.userSourceAta),
-          new PublicKey(hop.userDestAta),
-          hop.binArrayLower ? new PublicKey(hop.binArrayLower) : poolId,
-          hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : poolId,
-          hop.bitmapExtension ? new PublicKey(hop.bitmapExtension) : programIdKey,
-          TOKEN_PROGRAM_ID,
-          poolId, // oracle
-          poolId, // host_fee_in
-          poolId, // event_authority
+          poolId,                                                              // 0: LB Pair
+          hop.bitmapExtension 
+            ? new PublicKey(hop.bitmapExtension) 
+            : SystemProgram.programId,                                         // 1: Bitmap Extension
+          hop.reserveX ? new PublicKey(hop.reserveX) : new PublicKey(hop.vaultA || hop.poolId), // 2: Reserve X
+          hop.reserveY ? new PublicKey(hop.reserveY) : new PublicKey(hop.vaultB || hop.poolId), // 3: Reserve Y
+          userSourceAta,                                                       // 4: User Token In
+          userDestAta,                                                         // 5: User Token Out
+          poolMintA ? new PublicKey(poolMintA) : inputMint,                   // 6: Token X Mint
+          poolMintB ? new PublicKey(poolMintB) : outputMint,                  // 7: Token Y Mint
+          hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)
+          programIdKey,                                                        // 9: Host Fee In (use program as placeholder)
+          wallet,                                                              // 10: User (signer)
+          TOKEN_PROGRAM_ID,                                                    // 11: Token Program
+          meteoraEventAuthority,                                               // 12: Event Authority (PDA)
+          programIdKey,                                                        // 13: Meteora DLMM Program
+          hop.binArrayLower ? new PublicKey(hop.binArrayLower) : poolId,      // 14: Bin Array Lower
+          hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : poolId,      // 15: Bin Array Upper
         );
         break;
 
       case DexType.Orca:
-        // Orca Whirlpool accounts
+        // Orca Whirlpool: 15 accounts
+        // 0: TokenProgram, 1: User, 2: Whirlpool, 3: UserTokenA, 4: VaultA,
+        // 5: UserTokenB, 6: VaultB, 7-9: TickArrays, 10: Oracle, 11-12: Mints, 13: Memo, 14: Program
+        const userTokenA = isAtoB ? userSourceAta : userDestAta;
+        const userTokenB = isAtoB ? userDestAta : userSourceAta;
         accounts.push(
-          programIdKey,
-          poolId,
-          hop.vaultA ? new PublicKey(hop.vaultA) : poolId,
-          hop.vaultB ? new PublicKey(hop.vaultB) : poolId,
-          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,
-          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,
-          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,
-          new PublicKey(hop.userSourceAta),
-          new PublicKey(hop.userDestAta),
-          TOKEN_PROGRAM_ID,
-          hop.oracle ? new PublicKey(hop.oracle) : poolId,
+          TOKEN_PROGRAM_ID,                                                    // 0: Token Program
+          wallet,                                                              // 1: Token Authority (signer)
+          poolId,                                                              // 2: Whirlpool
+          userTokenA,                                                          // 3: Token Owner Account A
+          hop.vaultA ? new PublicKey(hop.vaultA) : poolId,                    // 4: Token Vault A
+          userTokenB,                                                          // 5: Token Owner Account B
+          hop.vaultB ? new PublicKey(hop.vaultB) : poolId,                    // 6: Token Vault B
+          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 7: Tick Array 0
+          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 8: Tick Array 1
+          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 9: Tick Array 2
+          hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 10: Oracle
+          poolMintA ? new PublicKey(poolMintA) : inputMint,                   // 11: Token Mint A
+          poolMintB ? new PublicKey(poolMintB) : outputMint,                  // 12: Token Mint B
+          MEMO_PROGRAM_ID,                                                     // 13: Memo Program
+          programIdKey,                                                        // 14: Whirlpool Program
         );
         break;
 
       case DexType.PumpSwap:
-        // PumpSwap accounts
+        // PumpSwap: 12 accounts
+        // 0: GlobalConfig, 1: FeeRecipient, 2: Mint, 3: BondingCurve, 4: BCTokenAccount,
+        // 5: AssociatedBC, 6: UserToken, 7: User, 8: System, 9: Token, 10: Rent, 11: Program
+        const globalConfig = derivePumpswapGlobalConfig();
+        const isBuying = hop.inputMint === SOL_MINT; // SOL -> Token = buy
+        const pumpMint = isBuying ? outputMint : inputMint; // The pump.fun token mint
+        const associatedBC = derivePumpswapAssociatedBondingCurve(poolId, pumpMint);
         accounts.push(
-          programIdKey,
-          poolId,
-          hop.vaultA ? new PublicKey(hop.vaultA) : poolId,
-          hop.vaultB ? new PublicKey(hop.vaultB) : poolId,
-          inputMint,
-          outputMint,
-          new PublicKey(hop.userSourceAta),
-          new PublicKey(hop.userDestAta),
-          TOKEN_PROGRAM_ID,
-          poolId, // fee_account
+          globalConfig,                                                        // 0: Global Config
+          (hop as any).protocolFeeRecipient 
+            ? new PublicKey((hop as any).protocolFeeRecipient) 
+            : programIdKey,                                                    // 1: Fee Recipient
+          pumpMint,                                                            // 2: Mint (pump.fun token)
+          poolId,                                                              // 3: Bonding Curve
+          hop.vaultA ? new PublicKey(hop.vaultA) : poolId,                    // 4: BC Token Account
+          associatedBC,                                                        // 5: Associated Bonding Curve
+          isBuying ? userDestAta : userSourceAta,                             // 6: User Token Account
+          wallet,                                                              // 7: User (signer)
+          SystemProgram.programId,                                             // 8: System Program
+          TOKEN_PROGRAM_ID,                                                    // 9: Token Program
+          SYSVAR_RENT_PUBKEY,                                                  // 10: Rent
+          programIdKey,                                                        // 11: PumpSwap Program
         );
         break;
     }
@@ -451,10 +519,48 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType): PublicKey[] {
   const expected = getAccountsNeededForDex(dexType);
   while (accounts.length < expected) {
     // Pad with pool ID as placeholder
-    accounts.push(new PublicKey(hop.poolId));
+    accounts.push(new PublicKey(hop.poolId.replace(/[#-]rev$/, '')));
   }
 
   return accounts.slice(0, expected);
+}
+
+// ============================================================================
+// PDA Derivation Helpers
+// ============================================================================
+
+/**
+ * Derive Meteora DLMM Event Authority PDA
+ */
+function deriveMeteoraDlmmEventAuthority(): PublicKey {
+  const [eventAuth] = PublicKey.findProgramAddressSync(
+    [Buffer.from('__event_authority')],
+    METEORA_DLMM_PROGRAM
+  );
+  return eventAuth;
+}
+
+/**
+ * Derive PumpSwap Global Config PDA
+ */
+function derivePumpswapGlobalConfig(): PublicKey {
+  const [globalConfig] = PublicKey.findProgramAddressSync(
+    [Buffer.from('global')],
+    PUMPSWAP_PROGRAM
+  );
+  return globalConfig;
+}
+
+/**
+ * Derive PumpSwap Associated Bonding Curve (ATA for bonding curve)
+ */
+function derivePumpswapAssociatedBondingCurve(bondingCurve: PublicKey, mint: PublicKey): PublicKey {
+  const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+  const [assocBC] = PublicKey.findProgramAddressSync(
+    [bondingCurve.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  return assocBC;
 }
 
 /**

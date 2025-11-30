@@ -226,6 +226,9 @@ pub mod arb_router {
     }
 
     /// Execute a multi-hop arbitrage route
+    /// 
+    /// Supports dynamic amount propagation: if step.amount_in == 0, uses the
+    /// entire balance of the input token account (output from previous swap).
     pub fn execute<'info>(
         ctx: Context<'_, '_, '_, 'info, Execute<'info>>,
         params: ExecuteParams,
@@ -247,18 +250,33 @@ pub mod arb_router {
             let accounts_needed = get_accounts_needed_for_dex(&step.dex_type);
             let step_accounts = &ctx.remaining_accounts[account_offset..account_offset + accounts_needed];
             
+            // Determine actual amount to swap
+            // If amount_in == 0, read the current balance of the input token account
+            // This enables dynamic amount propagation between hops
+            let actual_amount_in = if step.amount_in == 0 {
+                let input_token_idx = get_user_token_in_index(&step.dex_type);
+                let input_token_account = &step_accounts[input_token_idx];
+                let balance = read_token_account_balance(input_token_account)?;
+                msg!("Step {}: Using dynamic amount from balance: {}", i, balance);
+                balance
+            } else {
+                step.amount_in
+            };
+            
+            require!(actual_amount_in > 0, ArbRouterError::InsufficientFunds);
+            
             match step.dex_type {
                 DexType::Raydium => {
-                    dex::raydium::swap(step_accounts, step.amount_in, step.min_amount_out)?;
+                    dex::raydium::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
                 }
                 DexType::Meteora => {
-                    dex::meteora::swap(step_accounts, step.amount_in, step.min_amount_out)?;
+                    dex::meteora::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
                 }
                 DexType::Orca => {
-                    dex::orca::swap(step_accounts, step.amount_in, step.min_amount_out)?;
+                    dex::orca::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
                 }
                 DexType::PumpSwap => {
-                    dex::pumpswap::swap(step_accounts, step.amount_in, step.min_amount_out)?;
+                    dex::pumpswap::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
                 }
             }
             
@@ -546,5 +564,39 @@ fn get_accounts_needed_for_dex(dex_type: &DexType) -> usize {
         DexType::Orca => dex::orca::ACCOUNTS_NEEDED,
         DexType::PumpSwap => dex::pumpswap::ACCOUNTS_NEEDED,
     }
+}
+
+/// Get the index of the user's input token account within the DEX accounts array
+/// This is needed for dynamic amount propagation (reading balance when amount_in == 0)
+fn get_user_token_in_index(dex_type: &DexType) -> usize {
+    match dex_type {
+        // Raydium CLMM: position 3 (Input Token Account)
+        DexType::Raydium => 3,
+        // Meteora DLMM: position 4 (User Token In)
+        DexType::Meteora => 4,
+        // Orca Whirlpool: position 3 (Token Owner Account A - user's input for A->B)
+        DexType::Orca => 3,
+        // PumpSwap: position 6 (User Token Account)
+        DexType::PumpSwap => 6,
+    }
+}
+
+/// Read the balance from a token account without deserializing the full account
+/// Token account layout: ... balance at offset 64 (8 bytes, little endian)
+fn read_token_account_balance(account: &AccountInfo) -> Result<u64> {
+    let data = account.try_borrow_data()
+        .map_err(|_| ArbRouterError::InvalidAccount)?;
+    
+    // Token account balance is at offset 64, 8 bytes
+    if data.len() < 72 {
+        msg!("Token account data too short: {} bytes", data.len());
+        return Err(ArbRouterError::InvalidAccount.into());
+    }
+    
+    let balance_bytes: [u8; 8] = data[64..72]
+        .try_into()
+        .map_err(|_| ArbRouterError::InvalidAccount)?;
+    
+    Ok(u64::from_le_bytes(balance_bytes))
 }
 

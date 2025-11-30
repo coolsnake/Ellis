@@ -1,10 +1,15 @@
 # Lockstone Makefile
 
-.PHONY: build backend frontend arb deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs
+.PHONY: build backend frontend arb arb-router deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs arb-router-devnet arb-router-mainnet arb-router-test arb-router-airdrop
 
 WWW_DIR ?= /var/www/lockstone
 
-build: backend frontend arb ## Build all components
+# Helius RPC configuration
+HELIUS_API_KEY ?= 4673beb7-dcca-4942-91ac-c69babdf1f02
+HELIUS_DEVNET_RPC = https://devnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
+HELIUS_MAINNET_RPC = https://mainnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
+
+build: backend frontend arb arb-router ## Build all components
 
 backend: ## Build backend
 	cd backend && npm ci --legacy-peer-deps --include=dev && npm run build
@@ -16,6 +21,21 @@ frontend: ## Build frontend and sync to $(WWW_DIR)
 
 arb: ## Build Rust arb-rs
 	cd arb-rs && cargo build --release
+
+arb-router: ## Build Anchor arb-router program
+	cd arb-router && npm ci --legacy-peer-deps && anchor build
+
+arb-router-devnet: arb-router ## Deploy arb-router to devnet
+	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet
+
+arb-router-mainnet: arb-router ## Deploy arb-router to mainnet
+	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_MAINNET_RPC)" anchor deploy --provider.cluster mainnet
+
+arb-router-test: ## Run arb-router tests on devnet
+	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor test --provider.cluster devnet
+
+arb-router-airdrop: ## Request devnet airdrop (2 SOL)
+	solana airdrop 2 --url "$(HELIUS_DEVNET_RPC)"
 
 deploy: build ## Build and restart services + reload nginx
 	sudo systemctl restart lockstone-backend lockstone-arb

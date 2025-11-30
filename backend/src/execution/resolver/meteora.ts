@@ -7,6 +7,8 @@ import { logCatchError } from '../../utils/errorHandler.js';
 export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
   if (stat?.programId) hop.programId = stat.programId;
+  // Read oracle from static cache
+  if (stat?.oracle && !hop.oracle) hop.oracle = stat.oracle;
   const tokenProgramA = stat?.token_program_a;
   const tokenProgramB = stat?.token_program_b;
   if (!tokenProgramA || !tokenProgramB) {
@@ -48,6 +50,11 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
     if (p) {
       hop.binStep = Number((p as any)?.bin_step || (p as any)?.binStep || hop.binStep || 0);
       hop.activeId = Number((p as any)?.active_id || (p as any)?.activeId || hop.activeId || 0);
+      
+      // Get oracle from pool cache
+      const oracleFromPool = String((p as any)?.oracle || '');
+      if (oracleFromPool && !hop.oracle) hop.oracle = oracleFromPool;
+      
       // NOTE: vaultA/vaultB always represent the pool's natural token order (mint_a/mint_b)
       // The instruction builder will handle mapping these to reserves based on swap direction
       const accountA = String((p as any)?.account_a || '');
@@ -96,10 +103,11 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
           account_a: (p as any)?.account_a || existingStatic.account_a,
           account_b: (p as any)?.account_b || existingStatic.account_b,
           bin_array_bitmap_extension: (p as any)?.bin_array_bitmap_extension || existingStatic.bin_array_bitmap_extension,
+          oracle: (p as any)?.oracle || existingStatic.oracle,
         });
       }
       
-      // Debug logging for vaults and bitmap extension
+      // Debug logging for vaults, bitmap extension, and oracle
       try {
         const { logger } = await import('../../utils/logger.js');
         logger.info('meteora.resolver.accounts_set', {
@@ -111,7 +119,9 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
             hasVaultA: !!accountA,
             hasVaultB: !!accountB,
             bitmapExtension: bitmapExt || 'not_cached',
-            hasBitmapExtension: !!bitmapExt
+            hasBitmapExtension: !!bitmapExt,
+            oracle: hop.oracle || 'not_cached',
+            hasOracle: !!hop.oracle
           }
         });
       } catch (e) { logCatchError('resolver.meteora', e); }
