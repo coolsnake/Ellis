@@ -1,6 +1,6 @@
 # Lockstone Makefile
 
-.PHONY: build backend frontend arb arb-router deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs arb-router-devnet arb-router-mainnet arb-router-test arb-router-airdrop
+.PHONY: build build-all backend frontend arb arb-router deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs arb-router-devnet arb-router-mainnet arb-router-test arb-router-airdrop
 
 WWW_DIR ?= /var/www/lockstone
 
@@ -9,7 +9,9 @@ HELIUS_API_KEY ?= 4673beb7-dcca-4942-91ac-c69babdf1f02
 HELIUS_DEVNET_RPC = https://devnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
 HELIUS_MAINNET_RPC = https://mainnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
 
-build: backend frontend arb arb-router ## Build all components
+build: backend frontend arb ## Build backend, frontend, and arb-rs (use sudo)
+
+build-all: build arb-router ## Build everything (run arb-router without sudo)
 
 backend: ## Build backend
 	cd backend && npm ci --legacy-peer-deps --include=dev && npm run build
@@ -22,7 +24,7 @@ frontend: ## Build frontend and sync to $(WWW_DIR)
 arb: ## Build Rust arb-rs
 	cd arb-rs && cargo build --release
 
-arb-router: ## Build Anchor arb-router program
+arb-router: ## Build Anchor arb-router program (run WITHOUT sudo)
 	cd arb-router && npm ci --legacy-peer-deps && anchor build
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
