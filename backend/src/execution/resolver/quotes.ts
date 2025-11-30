@@ -514,6 +514,8 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
               sqrtPriceX64: sqrtFromPool,
               feeRate: feeFromPool,
               currentTickIndex: (pool as any).tick_current_index,
+              // Include tickSpacing for boundary crossing detection in cache
+              tickSpacing: (pool as any).tick_spacing,
               liquidity: (pool as any).liquidity_raw ? BigInt((pool as any).liquidity_raw) : undefined,
             };
             
@@ -687,8 +689,10 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
                 }
                 
                 if (tickArrays.lower && tickArrays.center && tickArrays.upper) {
+                  // Include tickSpacing for boundary crossing detection
                   executionCache.setHot(poolId, {
                     ...existing,
+                    tickSpacing,
                     tickArrays,
                   });
                   
@@ -948,8 +952,10 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
               if (upperPk) tickArrays.upper = [upperPk.toBase58()];
               
               if (tickArrays.lower || tickArrays.center || tickArrays.upper) {
+                // Include tickSpacing for boundary crossing detection
                 executionCache.setHot(poolIdStripped, {
                   ...existing,
+                  tickSpacing,
                   tickArrays: {
                     ...existing?.tickArrays,
                     ...tickArrays

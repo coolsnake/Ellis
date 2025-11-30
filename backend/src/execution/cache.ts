@@ -88,6 +88,10 @@ type PoolHot = {
   // OPTIMIZATION: Store liquidity and fee rate for local CLMM quotes (Orca/Raydium)
   liquidity?: bigint;
   feeRate?: number;  // Fee rate in basis points
+  // Store tick spacing / bin step for boundary crossing detection
+  // This enables intelligent cache invalidation when tick/bin crosses array boundaries
+  tickSpacing?: number;
+  binStep?: number;
   tickArrays?: { 
     center?: string;
     // Support both single value (backward compat) and arrays
@@ -149,21 +153,83 @@ export class ExecutionCache {
     const existingEntry = this.hotByPool.get(poolId);
     const existing = (existingEntry && Date.now() <= existingEntry.expiresAt) ? existingEntry.value : {};
     
+    // Detect if tick/bin crossed array boundaries - if so, replace arrays entirely
+    // This prevents stale array addresses from persisting when price moves significantly
+    const tickArrayBoundaryCrossed = this.didTickArrayBoundaryCross(existing, val);
+    const binArrayBoundaryCrossed = this.didBinArrayBoundaryCross(existing, val);
+    
     const merged: PoolHot = {
       ...existing,
       ...val,
-      // Deep merge nested objects to preserve existing tick/bin array data
-      tickArrays: val.tickArrays ? {
-        ...(existing.tickArrays || {}),
-        ...val.tickArrays,
-      } : existing.tickArrays,
-      binArrays: val.binArrays ? {
-        ...(existing.binArrays || {}),
-        ...val.binArrays,
-      } : existing.binArrays,
+      // If boundary crossed, replace arrays entirely; otherwise deep merge to preserve data
+      tickArrays: tickArrayBoundaryCrossed
+        ? val.tickArrays  // Replace entirely - old arrays are now stale
+        : (val.tickArrays ? {
+            ...(existing.tickArrays || {}),
+            ...val.tickArrays,
+          } : existing.tickArrays),
+      binArrays: binArrayBoundaryCrossed
+        ? val.binArrays  // Replace entirely - old arrays are now stale
+        : (val.binArrays ? {
+            ...(existing.binArrays || {}),
+            ...val.binArrays,
+          } : existing.binArrays),
     };
     
     this.hotByPool.set(poolId, { value: merged, expiresAt: Date.now() + this.ttlHotMs });
+  }
+
+  /**
+   * Check if the current tick has crossed a tick array boundary
+   * Each tick array covers 60 * tickSpacing ticks, so we check if the
+   * floor division changed (meaning we moved to a different array)
+   */
+  private didTickArrayBoundaryCross(existing: PoolHot, incoming: PoolHot): boolean {
+    // Need both old and new tick index to compare
+    if (existing.currentTickIndex === undefined || incoming.currentTickIndex === undefined) {
+      return false;
+    }
+    
+    // Use incoming tickSpacing if provided, otherwise fall back to existing
+    const tickSpacing = incoming.tickSpacing ?? existing.tickSpacing;
+    if (!tickSpacing || tickSpacing <= 0) {
+      return false;
+    }
+    
+    // Tick array size is 60 * tickSpacing
+    const arraySize = 60 * tickSpacing;
+    
+    // Calculate which tick array index each tick falls into
+    const oldArrayIndex = Math.floor(existing.currentTickIndex / arraySize);
+    const newArrayIndex = Math.floor(incoming.currentTickIndex / arraySize);
+    
+    // If array index changed, we crossed a boundary
+    return oldArrayIndex !== newArrayIndex;
+  }
+
+  /**
+   * Check if the active bin has crossed a bin array boundary
+   * Bin arrays are indexed differently than tick arrays - each bin array
+   * covers a range of bin IDs. We use a simplified check based on
+   * significant bin ID changes.
+   */
+  private didBinArrayBoundaryCross(existing: PoolHot, incoming: PoolHot): boolean {
+    // Need both old and new activeId to compare
+    if (existing.activeId === undefined || incoming.activeId === undefined) {
+      return false;
+    }
+    
+    // Meteora bin arrays typically cover ~70 bins per array (based on SDK internals)
+    // The exact formula is: binIdToBinArrayIndex(binId) = floor(binId / BIN_ARRAY_BITMAP_SIZE)
+    // where BIN_ARRAY_BITMAP_SIZE is typically 512 for the bitmap, but each array covers fewer bins
+    // Using 70 as a conservative estimate based on observed behavior
+    const BINS_PER_ARRAY = 70;
+    
+    const oldArrayIndex = Math.floor(existing.activeId / BINS_PER_ARRAY);
+    const newArrayIndex = Math.floor(incoming.activeId / BINS_PER_ARRAY);
+    
+    // If array index changed, we crossed a boundary
+    return oldArrayIndex !== newArrayIndex;
   }
 
   getTokenMeta(mint: string): { decimals: number; program: 'spl-token'|'token-2022' } | undefined {
@@ -244,12 +310,15 @@ export class ExecutionCache {
       });
       
       // Populate hot cache if we have price data
+      // Include tickSpacing/binStep for boundary crossing detection
       if (pool.sqrt_price_x64_raw) {
         this.setHot(poolId, {
           sqrtPriceX64: BigInt(pool.sqrt_price_x64_raw),
           feeRate: pool.fee_bps,
           currentTickIndex: pool.tick_current_index,
           activeId: pool.active_id,
+          tickSpacing: pool.tick_spacing,
+          binStep: pool.bin_step,
           liquidity: pool.liquidity_raw ? BigInt(pool.liquidity_raw) : undefined,
         });
       }

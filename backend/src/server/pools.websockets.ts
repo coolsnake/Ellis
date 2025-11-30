@@ -1368,6 +1368,8 @@ function runWebsocketRefreshLoop(): void {
                             executionCache.setHot(pk58, {
                               ...hotExisting,
                               currentTickIndex: derived?.tickCurrent ?? hotExisting.currentTickIndex,
+                              // Include tickSpacing for boundary crossing detection in cache
+                              tickSpacing: derived?.tickSpacing ?? hotExisting.tickSpacing,
                               tickArrays: {
                                 ...(hotExisting?.tickArrays || {}),
                                 ...(derived?.tickArrays || {}),
@@ -1800,9 +1802,11 @@ function runWebsocketRefreshLoop(): void {
                     });
                     
                     // Store hot pool data (frequently changing price/liquidity)
+                    // Include tickSpacing for boundary crossing detection in cache
                     executionCache.setHot(id, {
                       sqrtPriceX64: sqrtRaw,
                       currentTickIndex: Number(parsed.tickCurrentIndex),
+                      tickSpacing: tick_spacing,
                       liquidity: liquidityRaw,
                       feeRate: fee_bps
                     });
@@ -2230,11 +2234,13 @@ function runWebsocketRefreshLoop(): void {
                       executionCache.setStatic(poolId, nextStatic);
                       
                       // Store hot pool data (frequently changing active bin ID / bin arrays)
+                      // Include binStep for boundary crossing detection in cache
                       if (Number.isFinite(activeId as any) || binArrayAddresses.lower || binArrayAddresses.upper) {
                         const existingHot = executionCache.getHot(poolId) || {};
                         executionCache.setHot(poolId, {
                           ...existingHot,
                           activeId: Number.isFinite(activeId as any) ? Number(activeId) : existingHot.activeId,
+                          binStep: Number.isFinite(tickSpacing as any) ? tickSpacing : existingHot.binStep,
                           sqrtPriceX64: sqrtPriceRaw ?? existingHot.sqrtPriceX64,
                           liquidity: liquidityRaw ?? existingHot.liquidity,
                           feeRate: Number.isFinite(feeBps) ? feeBps : existingHot.feeRate,
@@ -2989,11 +2995,14 @@ function runWebsocketRefreshLoop(): void {
                   }
                   
                   // Cache tick array addresses in execution cache
+                  // Include tickSpacing for boundary crossing detection
                   try {
                     const { executionCache } = await import('../execution/cache.js');
                     const existing = executionCache.getHot(poolAddr);
                     executionCache.setHot(poolAddr, {
                       ...existing,
+                      tickSpacing,
+                      currentTickIndex: currentTick,
                       tickArrays: tickArrayAddresses
                     });
                     
@@ -3658,21 +3667,25 @@ function runWebsocketRefreshLoop(): void {
               try {
                 const pool = pumpswapCache.data?.amm?.find(p => p.id === addr);
                 if (pool) {
-                  if (pool.account_a) {
-                    const vaultAPk = new web3.PublicKey(pool.account_a);
+                  // Use native_account_a/b (set by pumpswap normalization) with fallback to account_a/b
+                  const vaultAddrA = pool.native_account_a || pool.account_a;
+                  const vaultAddrB = pool.native_account_b || pool.account_b;
+                  
+                  if (vaultAddrA) {
+                    const vaultAPk = new web3.PublicKey(vaultAddrA);
                     const vaultAId = await subscribeAccountWithRetry(vaultAPk, handle);
                     subs.push({ kind: 'account', id: vaultAId });
-                    derivedAccountToPool.set(pool.account_a, { poolId: addr, accountType: 'vault' });
-                    targetedSourceByAccount.set(pool.account_a, 'pumpswap');
-                    debugLogTargeted('pumpswap' as any, pool.account_a, { kind: 'vault', side: 'a' });
+                    derivedAccountToPool.set(vaultAddrA, { poolId: addr, accountType: 'vault' });
+                    targetedSourceByAccount.set(vaultAddrA, 'pumpswap');
+                    debugLogTargeted('pumpswap' as any, vaultAddrA, { kind: 'vault', side: 'a' });
                   }
-                  if (pool.account_b) {
-                    const vaultBPk = new web3.PublicKey(pool.account_b);
+                  if (vaultAddrB) {
+                    const vaultBPk = new web3.PublicKey(vaultAddrB);
                     const vaultBId = await subscribeAccountWithRetry(vaultBPk, handle);
                     subs.push({ kind: 'account', id: vaultBId });
-                    derivedAccountToPool.set(pool.account_b, { poolId: addr, accountType: 'vault' });
-                    targetedSourceByAccount.set(pool.account_b, 'pumpswap');
-                    debugLogTargeted('pumpswap' as any, pool.account_b, { kind: 'vault', side: 'b' });
+                    derivedAccountToPool.set(vaultAddrB, { poolId: addr, accountType: 'vault' });
+                    targetedSourceByAccount.set(vaultAddrB, 'pumpswap');
+                    debugLogTargeted('pumpswap' as any, vaultAddrB, { kind: 'vault', side: 'b' });
                   }
                 }
               } catch (e: any) {

@@ -37,9 +37,11 @@ export {
   METEORA_PROGRAM,
 } from './meteora.js';
 
-// Pumpswap decoder (AMM via vault updates)
+// Pumpswap decoder (AMM via pool and vault updates)
 export {
   decodePumpswapPool,
+  decodePumpswapPoolState,
+  handlePumpswapPoolAccountUpdate,
   handlePumpswapVaultUpdate,
   handlePumpswapUpdate,
   isPumpswapOwner,

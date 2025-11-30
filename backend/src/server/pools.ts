@@ -2737,12 +2737,14 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
           }
           
           // Only cache if we have at least sqrtPrice and liquidity
+          // Include tickSpacing for boundary crossing detection in cache
           if (sqrtPriceX64 && liquidity !== undefined) {
             const existing = executionCache.getHot(pool.id) || {};
             executionCache.setHot(pool.id, {
               ...existing,
               sqrtPriceX64,
               currentTickIndex: tickIndex,
+              tickSpacing,
               liquidity,
               feeRate: feeRateBps,
               ...(tickArrays ? { tickArrays } : {})

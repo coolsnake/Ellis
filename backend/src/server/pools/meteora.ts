@@ -604,8 +604,10 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                 );
                 
                 // Cache active bin ID AND bin array addresses
+                // Include binStep for boundary crossing detection in cache
                 executionCache.setHot(pool.id, {
                   activeId: activeId,
+                  binStep: (pool as any).bin_step,
                   binArrays: binArrayAddresses,
                 });
                 

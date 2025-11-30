@@ -574,9 +574,11 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               feeRateBps = Math.round(feeRateRaw / 100);
             }
             
+            // Include tickSpacing for boundary crossing detection in cache
             executionCache.setHot(pool.id, {
               sqrtPriceX64,
               currentTickIndex: tickIndex,
+              tickSpacing: (pool as any).tick_spacing,
               liquidity,
               feeRate: feeRateBps
             });

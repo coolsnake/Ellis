@@ -35,6 +35,88 @@ export const PUMPSWAP_PROGRAM_ID = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA'
 // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
 const DEFAULT_FEE_BPS = 25;
 
+/**
+ * Pumpswap pool account layout offsets
+ * 
+ * Pool account structure:
+ * [discriminator(8), pool_bump(1), index(2), creator(32), base_mint(32), quote_mint(32),
+ *  lp_mint(32), pool_base_token_account(32), pool_quote_token_account(32), lp_supply(8), ...]
+ */
+const POOL_LAYOUT = {
+  DISCRIMINATOR: 0,
+  POOL_BUMP: 8,
+  INDEX: 9,
+  CREATOR: 11,
+  BASE_MINT: 43,
+  QUOTE_MINT: 75,
+  LP_MINT: 107,
+  VAULT_A: 139,  // pool_base_token_account
+  VAULT_B: 171,  // pool_quote_token_account
+  LP_SUPPLY: 203,
+  MIN_LENGTH: 211,  // Minimum buffer length to decode vault addresses
+} as const;
+
+/**
+ * Decoded pumpswap pool state from account data
+ */
+interface PumpswapPoolState {
+  baseMint: string;
+  quoteMint: string;
+  vaultA: string;
+  vaultB: string;
+  lpSupply?: bigint;
+}
+
+/**
+ * Decode pumpswap pool state from account data buffer
+ * 
+ * Extracts mint addresses and vault addresses from the pool account.
+ * This allows us to look up vault balances and calculate price.
+ */
+export function decodePumpswapPoolState(data: Buffer): PumpswapPoolState | null {
+  try {
+    if (!data || data.length < POOL_LAYOUT.MIN_LENGTH) {
+      return null;
+    }
+
+    // Import PublicKey dynamically to avoid circular dependencies
+    const { PublicKey } = require('@solana/web3.js');
+
+    // Extract base_mint (32 bytes at offset 43)
+    const baseMintBytes = data.subarray(POOL_LAYOUT.BASE_MINT, POOL_LAYOUT.BASE_MINT + 32);
+    const baseMint = new PublicKey(baseMintBytes).toBase58();
+
+    // Extract quote_mint (32 bytes at offset 75)
+    const quoteMintBytes = data.subarray(POOL_LAYOUT.QUOTE_MINT, POOL_LAYOUT.QUOTE_MINT + 32);
+    const quoteMint = new PublicKey(quoteMintBytes).toBase58();
+
+    // Extract vault_a / pool_base_token_account (32 bytes at offset 139)
+    const vaultABytes = data.subarray(POOL_LAYOUT.VAULT_A, POOL_LAYOUT.VAULT_A + 32);
+    const vaultA = new PublicKey(vaultABytes).toBase58();
+
+    // Extract vault_b / pool_quote_token_account (32 bytes at offset 171)
+    const vaultBBytes = data.subarray(POOL_LAYOUT.VAULT_B, POOL_LAYOUT.VAULT_B + 32);
+    const vaultB = new PublicKey(vaultBBytes).toBase58();
+
+    // Optionally extract lp_supply (8 bytes at offset 203)
+    let lpSupply: bigint | undefined;
+    if (data.length >= POOL_LAYOUT.LP_SUPPLY + 8) {
+      lpSupply = data.readBigUInt64LE(POOL_LAYOUT.LP_SUPPLY);
+    }
+
+    return {
+      baseMint,
+      quoteMint,
+      vaultA,
+      vaultB,
+      lpSupply,
+    };
+  } catch (e) {
+    logCatchDebug('pumpswap.decodePoolState', e);
+    return null;
+  }
+}
+
 // Debounce state for graph updates
 let pumpswapApplyState: { baseline: PoolsPayload | null; timer: NodeJS.Timeout | null } = { baseline: null, timer: null };
 const DEBOUNCE_MS = 50;
@@ -145,6 +227,243 @@ export function decodePumpswapPool(
   } catch (e) {
     logCatchDebug('pumpswap.decode', e);
     return null;
+  }
+}
+
+/**
+ * Handle Pumpswap pool account update
+ * 
+ * This is called when a pool account update is received via WebSocket.
+ * We decode the pool state to get vault addresses, then look up cached vault balances.
+ */
+export async function handlePumpswapPoolAccountUpdate(
+  info: AccountInfo,
+  poolId: string
+): Promise<UpdateResult> {
+  try {
+    const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
+    
+    if (!data || data.length < POOL_LAYOUT.MIN_LENGTH) {
+      logger.debug('pumpswap.pool_update.data_too_short', {
+        pool: poolId.slice(0, 8) + '…',
+        len: data?.length || 0,
+        cat: 'pools'
+      });
+      return { success: false, error: 'data_too_short', skipped: true };
+    }
+
+    // Decode pool state to get vault addresses
+    const poolState = decodePumpswapPoolState(data);
+    if (!poolState) {
+      logger.debug('pumpswap.pool_update.decode_failed', {
+        pool: poolId.slice(0, 8) + '…',
+        cat: 'pools'
+      });
+      return { success: false, error: 'pool_decode_failed', skipped: true };
+    }
+
+    // Find existing pool in cache to get metadata (decimals, fee, etc.)
+    const poolData = findPoolInCache(poolId);
+    if (!poolData || poolData.source !== 'pumpswap') {
+      logger.debug('pumpswap.pool_update.not_in_cache', {
+        pool: poolId.slice(0, 8) + '…',
+        cat: 'pools'
+      });
+      return { success: true, skipped: true, skipReason: 'pool_not_in_cache' };
+    }
+
+    const existingPool = poolData.pool as AmmPool;
+    const { vaultA, vaultB, baseMint, quoteMint } = poolState;
+
+    // Get both vault balances from cache
+    const balanceA = vaultBalanceCache.get(vaultA) ?? null;
+    const balanceB = vaultBalanceCache.get(vaultB) ?? null;
+
+    if (balanceA === null || balanceB === null) {
+      logger.debug('pumpswap.pool_update.awaiting_vaults', {
+        pool: poolId.slice(0, 8) + '…',
+        hasA: balanceA !== null,
+        hasB: balanceB !== null,
+        vaultA: vaultA.slice(0, 8) + '…',
+        vaultB: vaultB.slice(0, 8) + '…',
+        cat: 'pools'
+      });
+      // Still a valid pool account - just waiting for vault data
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'awaiting_vault_balances');
+      return { success: true, skipped: true, skipReason: 'awaiting_vault_balances' };
+    }
+
+    // Use existing pool metadata with decoded vault info
+    const poolWithVaults: AmmPool = {
+      ...existingPool,
+      native_account_a: vaultA,
+      native_account_b: vaultB,
+      native_mint_a: baseMint,
+      native_mint_b: quoteMint,
+    };
+
+    // Decode the pool with vault balances
+    const decoded = decodePumpswapPool(poolWithVaults, balanceA, balanceB);
+    if (!decoded) {
+      return { success: false, error: 'decode_failed', skipped: true };
+    }
+
+    // Process through price pipeline
+    const mintA = decoded.native_mint_a || decoded.mint_a;
+    const mintB = decoded.native_mint_b || decoded.mint_b;
+    const reserveA = anyToBigInt(decoded.reserve_a_raw);
+    const reserveB = anyToBigInt(decoded.reserve_b_raw);
+    const decA = decoded.native_decimals_a ?? decoded.decimals_a ?? 9;
+    const decB = decoded.native_decimals_b ?? decoded.decimals_b ?? 6;
+
+    // Validate decimals against known tokens
+    try {
+      const { validateDecimalsForMint } = await import('../../decimals.js');
+      if (mintA) validateDecimalsForMint(mintA, decA, poolId, 'Pumpswap');
+      if (mintB) validateDecimalsForMint(mintB, decB, poolId, 'Pumpswap');
+    } catch {}
+
+    const processedPrice = processPriceThroughPipeline({
+      mintA,
+      mintB,
+      decimalsA: decA,
+      decimalsB: decB,
+      poolId,
+      dex: 'Pumpswap',
+      poolType: 'amm',
+      reserveA,
+      reserveB,
+    });
+
+    if (!processedPrice) {
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'price_calc_failed');
+      return { success: false, error: 'price_calc_failed', skipped: true };
+    }
+
+    // Calculate liquidity
+    const wholeA = reserveA ? Number(reserveA) / Math.pow(10, decA) : 0;
+    const wholeB = reserveB ? Number(reserveB) / Math.pow(10, decB) : 0;
+    const liquidityBase = Math.min(wholeA, wholeB);
+
+    // Build the updated pool item
+    const item: AmmPool = {
+      id: poolId,
+      dex: 'Pumpswap',
+      mint_a: processedPrice.mintA,
+      mint_b: processedPrice.mintB,
+      fee_bps: decoded.fee_bps || DEFAULT_FEE_BPS,
+      price_a_per_b: processedPrice.priceForward,
+      liquidity_base: liquidityBase,
+      updated_ms: Date.now(),
+      pool_kind: 'amm',
+      liquidity_display: liquidityBase,
+      decimals_a: processedPrice.decimalsA,
+      decimals_b: processedPrice.decimalsB,
+      reserve_a_raw: processedPrice.wasSwapped ? reserveB?.toString() : reserveA?.toString(),
+      reserve_b_raw: processedPrice.wasSwapped ? reserveA?.toString() : reserveB?.toString(),
+      was_swapped: processedPrice.wasSwapped,
+      native_mint_a: mintA,
+      native_mint_b: mintB,
+      native_decimals_a: decA,
+      native_decimals_b: decB,
+      native_reserve_a_raw: reserveA?.toString(),
+      native_reserve_b_raw: reserveB?.toString(),
+      native_account_a: vaultA,
+      native_account_b: vaultB,
+      _pipelineProcessed: true,
+    } as AmmPool;
+
+    // Validate decoded pool
+    const validation = validateDecodedPool('pumpswap', item, poolId);
+    if (!validation.valid) {
+      wsDecodeStats.pumpswap.failures += 1;
+      incrementSkipReason('pumpswap', `validation_failed:${validation.reasons.join(',')}`);
+      return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
+    }
+
+    // Update cache
+    const prev = pumpswapCache.data || { amm: [], clmm: [] };
+    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+    const idx = next.amm.findIndex(p => p.id === item.id);
+
+    // Validate price delta against previous value
+    if (idx >= 0) {
+      validatePriceDelta('pumpswap', poolId, item.price_a_per_b, next.amm[idx].price_a_per_b);
+    }
+
+    if (idx >= 0) {
+      const prevPool = next.amm[idx];
+      const orientationChanged = prevPool.mint_a !== item.mint_a || prevPool.mint_b !== item.mint_b;
+      if (orientationChanged) {
+        logger.warn('ws.update.orientation_changed', {
+          poolId: poolId.slice(0, 8) + '…',
+          dex: 'Pumpswap',
+          prevMintA: prevPool.mint_a?.slice(0, 8),
+          prevMintB: prevPool.mint_b?.slice(0, 8),
+          newMintA: item.mint_a?.slice(0, 8),
+          newMintB: item.mint_b?.slice(0, 8),
+          cat: 'pools'
+        });
+        
+        const orientationIndependentFields = {
+          tvl_usd: prevPool.tvl_usd,
+          liquidity_display: prevPool.liquidity_display,
+          pool_liquidity_raw: prevPool.pool_liquidity_raw,
+        };
+        next.amm[idx] = { ...item, ...orientationIndependentFields };
+      } else {
+        next.amm[idx] = { ...next.amm[idx], ...item };
+      }
+    } else {
+      next.amm.push(item);
+    }
+
+    // Update stats and cache
+    wsDecodeStats.pumpswap.successes += 1;
+    wsDeltaStats.pumpswap.decoded += 1;
+
+    const delta = diffNormalizedPools(prev, next);
+    pumpswapCache.data = next;
+    pumpswapCache.ts = Date.now();
+
+    const hasDelta = delta.amm.length || delta.clmm.length || delta.addedAmm || delta.removedAmm || delta.addedClmm || delta.removedClmm;
+    if (hasDelta) {
+      wsDeltaStats.pumpswap.applied += 1;
+    } else {
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'no_delta');
+    }
+
+    // Emit update event
+    try {
+      emit('pool-updates', {
+        source: 'pumpswap',
+        updatedAmm: delta.amm.length,
+        updatedClmm: 0,
+        sample: { amm: delta.amm.slice(0, 20), clmm: [] },
+        ts: Date.now()
+      });
+    } catch {}
+
+    // Schedule graph update
+    if (hasDelta) {
+      await scheduleDexApply('pumpswap', prev);
+    }
+
+    logger.debug('pumpswap.pool_update.success', {
+      pool: poolId.slice(0, 8) + '…',
+      price: item.price_a_per_b,
+      hasDelta,
+      cat: 'pools'
+    });
+
+    return { success: true, pool: item as DecodedPool, delta };
+  } catch (e) {
+    wsDecodeStats.pumpswap.failures += 1;
+    logCatchError('pumpswap.handlePoolAccountUpdate', e, { pool: poolId.slice(0, 8) + '…' });
+    return { success: false, error: String((e as Error)?.message || e) };
   }
 }
 
@@ -378,8 +697,11 @@ export async function handlePumpswapVaultUpdate(
 /**
  * Handle Pumpswap WebSocket account update
  * 
- * Pumpswap updates come from vault token accounts, not pool accounts.
- * This function routes to handlePumpswapVaultUpdate.
+ * Pumpswap can receive updates from:
+ * 1. Pool accounts (owned by pumpswap program) - decode pool state directly
+ * 2. Vault accounts (owned by SPL Token) - update vault balances
+ * 
+ * This function routes to the appropriate handler based on account owner.
  */
 export async function handlePumpswapUpdate(
   info: AccountInfo,
@@ -389,11 +711,24 @@ export async function handlePumpswapUpdate(
   try {
     wsDecodeStats.pumpswap.attempts += 1;
     
+    // Determine account owner
+    const owner = typeof info.owner === 'string' 
+      ? info.owner 
+      : info.owner?.toBase58?.() || '';
+    
+    // Route based on owner
+    if (owner === PUMPSWAP_PROGRAM_ID) {
+      // This is a pool account update (owned by pumpswap program)
+      // Decode the pool state directly
+      return handlePumpswapPoolAccountUpdate(info, accountAddress);
+    }
+    
     // Check if this is a derived account (vault)
     const derivedMeta = derivedAccountToPool.get(accountAddress);
     if (!derivedMeta) {
       logger.debug('pumpswap.update.unknown_account', {
         account: accountAddress.slice(0, 8) + '…',
+        owner: owner.slice(0, 8) + '…',
         cat: 'pools'
       });
       return { success: false, error: 'unknown_account', skipped: true };

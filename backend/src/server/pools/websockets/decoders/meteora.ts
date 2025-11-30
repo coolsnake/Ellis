@@ -572,11 +572,13 @@ export async function handleMeteoraUpdate(
       executionCache.setStatic(poolId, nextStatic);
 
       // Store hot pool data
+      // Include binStep for boundary crossing detection in cache
       if (Number.isFinite(activeId) || binArrayAddresses.lower || binArrayAddresses.upper) {
         const existingHot = executionCache.getHot(poolId) || {};
         executionCache.setHot(poolId, {
           ...existingHot,
           activeId: Number.isFinite(activeId) ? Number(activeId) : existingHot.activeId,
+          binStep: Number.isFinite(tickSpacing) ? tickSpacing : existingHot.binStep,
           sqrtPriceX64: sqrtPriceRaw ?? existingHot.sqrtPriceX64,
           liquidity: liquidityRaw ?? existingHot.liquidity,
           feeRate: Number.isFinite(feeBps) ? feeBps : existingHot.feeRate,

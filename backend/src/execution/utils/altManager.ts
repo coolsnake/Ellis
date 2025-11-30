@@ -2138,7 +2138,7 @@ export class DexAltManager {
     }
 
     try {
-      logger.info('alt.manager.preload.complete', {
+      logger.debug('alt.manager.preload.complete', {
         cat: 'tx',
         ctx: {
           loaded,

@@ -488,6 +488,8 @@ async function handleClmmUpdate(
       executionCache.setHot(poolId, {
         ...hotExisting,
         currentTickIndex: derived?.tickCurrent ?? hotExisting.currentTickIndex,
+        // Include tickSpacing for boundary crossing detection in cache
+        tickSpacing: derived?.tickSpacing ?? hotExisting.tickSpacing,
         tickArrays: {
           ...(hotExisting?.tickArrays || {}),
           ...(derived?.tickArrays || {}),

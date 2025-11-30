@@ -308,8 +308,8 @@ export async function buildDirectArbTx(
   let prevHopOutputTokenProgram: string | undefined = undefined;
   
   // Detect arb cycle: path starts and ends with same token
-  // For arb cycles, the resolver uses conservative (minOutRaw) amounts between hops.
-  // We should NOT override these amounts with quotedOutputRaw in the builder.
+  // For arb cycles, profitability is enforced via min_amount_out on the FINAL hop only.
+  // All intermediate hops use exact quotedOutputRaw amounts (minOutRaw=1n) to prevent token leakage.
   const isArbCycle = plan.path.length >= 3 && plan.path[0] === plan.path[plan.path.length - 1];
   if (isArbCycle) {
     try {
@@ -321,7 +321,7 @@ export async function buildDirectArbTx(
           pathLength: plan.path.length,
           hopCount: plan.hops.length,
           startToken: plan.path[0].slice(0, 8) + '...',
-          message: 'Using conservative amount propagation for reliability',
+          message: 'Profitability enforced on final hop only',
         }
       });
     } catch (e) { logCatchError('builder.tx', e); }
@@ -467,54 +467,10 @@ export async function buildDirectArbTx(
               });
             } catch (e) { logCatchError('builder.tx', e); }
             
-            // For arb cycles: ALWAYS enforce conservative amounts using prevHop.minOutRaw
-            // This prevents spending more tokens than the previous hop guaranteed to produce
-            // For non-arb routes: use quotedOutputRaw for exact amount propagation
-            if (isArbCycle) {
-              // ARB CYCLE: ALWAYS use minOutRaw from previous hop for safety
-              // This ensures we never try to spend more than the guaranteed minimum received
-              const conservativeAmount = prevHop?.minOutRaw && prevHop.minOutRaw > 0n 
-                ? prevHop.minOutRaw 
-                : hop.amountInRaw;
-              
-              if (conservativeAmount > 0n) {
-                if (hop.amountInRaw !== conservativeAmount) {
-                  try {
-                    logger.warn('tx.build.amount_propagation.arb_cycle_enforce_conservative', {
-                      cat: 'tx',
-                      code: LogCode.TX_BUILD_HOP,
-                      ctx: {
-                        traceId,
-                        hopIndex: i,
-                        originalAmount: hop.amountInRaw.toString(),
-                        conservativeAmount: conservativeAmount.toString(),
-                        prevHopMinOut: prevHop?.minOutRaw?.toString() || 'N/A',
-                        prevHopQuotedOut: prevHop?.quotedOutputRaw?.toString() || 'N/A',
-                        reason: 'enforcing_conservative_amount_for_arb_safety',
-                      }
-                    });
-                  } catch (e) { logCatchError('builder.tx', e); }
-                  hop.amountInRaw = conservativeAmount;
-                } else {
-                  try {
-                    logger.info('tx.build.amount_propagation.arb_cycle_preserve', {
-                      cat: 'tx',
-                      code: LogCode.TX_BUILD_HOP,
-                      ctx: {
-                        traceId,
-                        hopIndex: i,
-                        preservedAmount: hop.amountInRaw.toString(),
-                        prevHopQuotedOutput: prevHop?.quotedOutputRaw?.toString() || 'N/A',
-                        prevHopMinOut: prevHop?.minOutRaw?.toString() || 'N/A',
-                        reason: 'arb_cycle_conservative_propagation',
-                      }
-                    });
-                  } catch (e) { logCatchError('builder.tx', e); }
-                }
-              }
-              hop.useExactAmount = true;
-            } else if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
-              // NON-ARB ROUTE: Use exact quoted output for maximum token utilization
+            // ALWAYS use exact quoted output for amount propagation
+            // Profitability is enforced via min_amount_out on the FINAL hop only (set in resolver)
+            // This prevents token leakage from conservative amount propagation
+            if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
               const exactAmount = prevHop.quotedOutputRaw;
               if (hop.amountInRaw !== exactAmount) {
                 try {
@@ -527,80 +483,18 @@ export async function buildDirectArbTx(
                       prevHopIndex: i - 1,
                       previousAmount: hop.amountInRaw.toString(),
                       exactAmount: exactAmount.toString(),
-                      difference: (hop.amountInRaw > exactAmount 
-                        ? (hop.amountInRaw - exactAmount).toString() 
-                        : (exactAmount - hop.amountInRaw).toString()),
-                      inputMint: hop.inputMint,
-                      outputMint: prevHop.outputMint,
-                      prevHopQuotedOutputRaw: exactAmount.toString(),
-                    }
-                  });
-                } catch (e) { logCatchError('builder.tx', e); }
-                // CRITICAL: Set amountInRaw to the exact quotedOutputRaw from previous hop
-                // This ensures perfect amount propagation without any rounding errors
-                hop.amountInRaw = exactAmount;
-              }
-              hop.useExactAmount = true; // Flag to prevent re-quote adjustments
-              
-              // CRITICAL: Verify the amount was set correctly and log if there's any discrepancy
-              // This helps catch any code that might be modifying amountInRaw after propagation
-              if (hop.amountInRaw !== exactAmount) {
-                try {
-                  logger.error('tx.build.amount_propagation.verification_failed', {
-                    cat: 'tx',
-                    code: LogCode.TX_BUILD_ERR,
-                    ctx: {
-                      traceId,
-                      hopIndex: i,
-                      expectedAmount: exactAmount.toString(),
-                      actualAmount: hop.amountInRaw.toString(),
-                      difference: (hop.amountInRaw > exactAmount 
-                        ? (hop.amountInRaw - exactAmount).toString() 
-                        : (exactAmount - hop.amountInRaw).toString()),
                       inputMint: hop.inputMint,
                       outputMint: prevHop.outputMint,
                     }
                   });
                 } catch (e) { logCatchError('builder.tx', e); }
-                // Force correct amount even if something tried to modify it
                 hop.amountInRaw = exactAmount;
               }
-              
-              // Log after propagation
-              try {
-                logger.info('tx.build.amount_propagation.after', {
-                  cat: 'tx',
-                  code: LogCode.TX_BUILD_HOP,
-                  ctx: {
-                    traceId,
-                    hopIndex: i,
-                    amountInRaw: hop.amountInRaw.toString(),
-                    exactAmount: exactAmount.toString(),
-                    match: hop.amountInRaw === exactAmount,
-                    inputMint: hop.inputMint,
-                    outputMint: prevHop.outputMint,
-                  }
-                });
-              } catch (e) { logCatchError('builder.tx', e); }
+              hop.useExactAmount = true;
             } else {
-              // Fallback: if quotedOutputRaw not available, try other sources
-              // CRITICAL: Always try to fix amount for multi-hop swaps, even if amountInRaw is already set
-              // This handles cases where quotedOutputRaw might be missing but we still need correct propagation
+              // Fallback: if quotedOutputRaw not available, try tracked outputs
               const prevOutput = hopOutputs[i - 1];
-              let shouldUpdate = false;
-              let newAmount: bigint | null = null;
-              
-              if (prevOutput && prevOutput > 0n) {
-                // Use tracked output from previous hop
-                newAmount = prevOutput;
-                shouldUpdate = (hop.amountInRaw || 0n) <= 0n || hop.amountInRaw !== prevOutput;
-              } else if (prevHop?.minOutRaw && prevHop.minOutRaw > 0n) {
-                // Fallback to minOutRaw from previous hop
-                newAmount = prevHop.minOutRaw;
-                shouldUpdate = (hop.amountInRaw || 0n) <= 0n || hop.amountInRaw !== prevHop.minOutRaw;
-              }
-              
-              if (shouldUpdate && newAmount && newAmount > 0n) {
+              if (prevOutput && prevOutput > 0n && hop.amountInRaw !== prevOutput) {
                 try {
                   logger.warn('tx.build.amount_propagation.fallback', {
                     cat: 'tx',
@@ -608,16 +502,13 @@ export async function buildDirectArbTx(
                     ctx: {
                       traceId,
                       hopIndex: i,
-                      prevHopIndex: i - 1,
                       previousAmount: hop.amountInRaw.toString(),
-                      fallbackAmount: newAmount.toString(),
-                      reason: 'quotedOutputRaw_unavailable_using_fallback',
-                      inputMint: hop.inputMint,
-                      outputMint: prevHop.outputMint,
+                      fallbackAmount: prevOutput.toString(),
+                      reason: 'quotedOutputRaw_unavailable',
                     }
                   });
                 } catch (e) { logCatchError('builder.tx', e); }
-                hop.amountInRaw = newAmount;
+                hop.amountInRaw = prevOutput;
               }
             }
             
@@ -636,32 +527,6 @@ export async function buildDirectArbTx(
           }
         }
         hopMetrics.amountPropagation = Date.now() - amountPropStart;
-
-        // SAFETY CHECK: For arb cycles, verify we're not trying to spend more than minOutRaw
-        // This is a final safety net to prevent unprofitable arbs from consuming wallet balance
-        if (isArbCycle && i > 0) {
-          const prevHop = plan.hops[i - 1];
-          if (prevHop?.minOutRaw && prevHop.minOutRaw > 0n) {
-            if (hop.amountInRaw > prevHop.minOutRaw) {
-              try {
-                logger.error('tx.build.arb_safety.exceeded_minout', {
-                  cat: 'tx',
-                  code: LogCode.TX_BUILD_ERR,
-                  ctx: {
-                    traceId,
-                    hopIndex: i,
-                    amountInRaw: hop.amountInRaw.toString(),
-                    prevHopMinOut: prevHop.minOutRaw.toString(),
-                    excess: (hop.amountInRaw - prevHop.minOutRaw).toString(),
-                    action: 'enforcing_safe_amount',
-                  }
-                });
-              } catch (e) { logCatchError('builder.tx', e); }
-              // Enforce safe amount - never spend more than guaranteed from previous hop
-              hop.amountInRaw = prevHop.minOutRaw;
-            }
-          }
-        }
 
         // Guard: if amount is still zero, avoid invoking real SDK builders
         // - In simulate mode, insert a non-executable placeholder (no programId) so assembly skips it
@@ -698,58 +563,26 @@ export async function buildDirectArbTx(
         }
         hopMetrics.validation = Date.now() - validationStart;
 
-        // CRITICAL: Final verification before building instructions
-        // For arb cycles: verify we're using minOutRaw (conservative)
-        // For non-arb routes: verify we're using quotedOutputRaw (exact)
+        // Final verification: ensure we're using quotedOutputRaw from previous hop
         if (i > 0 && hop.useExactAmount) {
           const prevHop = plan.hops[i - 1];
-          if (isArbCycle) {
-            // ARB CYCLE: Ensure we're using the conservative minOutRaw
-            const expectedAmount = prevHop?.minOutRaw && prevHop.minOutRaw > 0n 
-              ? prevHop.minOutRaw 
-              : hop.amountInRaw;
-            if (hop.amountInRaw > expectedAmount && expectedAmount > 0n) {
-              try {
-                logger.error('tx.build.amount_propagation.arb_pre_build_exceeded', {
-                  cat: 'tx',
-                  code: LogCode.TX_BUILD_ERR,
-                  ctx: {
-                    traceId,
-                    hopIndex: i,
-                    expectedAmount: expectedAmount.toString(),
-                    actualAmount: hop.amountInRaw.toString(),
-                    excess: (hop.amountInRaw - expectedAmount).toString(),
-                    inputMint: hop.inputMint,
-                    outputMint: prevHop.outputMint,
-                    action: 'enforcing_conservative_amount',
-                  }
-                });
-              } catch (e) { logCatchError('builder.tx', e); }
-              // Enforce conservative amount for arb safety
-              hop.amountInRaw = expectedAmount;
-            }
-          } else if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
-            // NON-ARB: Use exact quotedOutputRaw for maximum token utilization
+          if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
             const expectedAmount = prevHop.quotedOutputRaw;
             if (hop.amountInRaw !== expectedAmount) {
               try {
-                logger.error('tx.build.amount_propagation.pre_build_mismatch', {
+                logger.warn('tx.build.amount_propagation.pre_build_fix', {
                   cat: 'tx',
-                  code: LogCode.TX_BUILD_ERR,
+                  code: LogCode.TX_BUILD_HOP,
                   ctx: {
                     traceId,
                     hopIndex: i,
                     expectedAmount: expectedAmount.toString(),
                     actualAmount: hop.amountInRaw.toString(),
-                    difference: (hop.amountInRaw > expectedAmount 
-                      ? (hop.amountInRaw - expectedAmount).toString() 
-                      : (expectedAmount - hop.amountInRaw).toString()),
                     inputMint: hop.inputMint,
                     outputMint: prevHop.outputMint,
                   }
                 });
               } catch (e) { logCatchError('builder.tx', e); }
-              // Force correct amount before building instruction
               hop.amountInRaw = expectedAmount;
             }
           }
@@ -780,21 +613,10 @@ export async function buildDirectArbTx(
         
         hopIxs.push(...ixs);
         
-        // Track output amount for next hop
-        // For arb cycles: use minOutRaw (conservative) to match resolver's propagation strategy
-        // For non-arb routes: use quotedOutputRaw (exact) for maximum token utilization
-        let outputForNextHop: bigint;
-        if (isArbCycle) {
-          // Conservative: use guaranteed minimum output
-          outputForNextHop = hop.minOutRaw && hop.minOutRaw > 0n 
-            ? hop.minOutRaw 
-            : (hop.quotedOutputRaw && hop.quotedOutputRaw > 0n ? hop.quotedOutputRaw : (hop.amountInRaw || 0n));
-        } else {
-          // Exact: use quoted output for non-arb routes
-          outputForNextHop = hop.quotedOutputRaw && hop.quotedOutputRaw > 0n 
-            ? hop.quotedOutputRaw 
-            : (hop.minOutRaw && hop.minOutRaw > 0n ? hop.minOutRaw : (hop.amountInRaw || 0n));
-        }
+        // Track output amount for next hop - always use exact quoted output
+        const outputForNextHop = hop.quotedOutputRaw && hop.quotedOutputRaw > 0n 
+          ? hop.quotedOutputRaw 
+          : (hop.amountInRaw || 0n);
         hopOutputs.push(outputForNextHop);
         
         // Track this hop's output ATA for chaining to next hop

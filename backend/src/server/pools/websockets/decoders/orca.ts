@@ -286,9 +286,11 @@ export async function handleOrcaUpdate(
       });
 
       // Store hot pool data (frequently changing price/liquidity)
+      // Include tickSpacing for boundary crossing detection in cache
       executionCache.setHot(poolId, {
         sqrtPriceX64: sqrtRaw,
         currentTickIndex: Number(parsed.tickCurrentIndex),
+        tickSpacing: tick_spacing,
         liquidity: liquidityRaw,
         feeRate: fee_bps
       });
