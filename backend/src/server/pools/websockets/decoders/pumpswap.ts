@@ -251,6 +251,8 @@ export async function handlePumpswapPoolAccountUpdate(
         len: data?.length || 0,
         cat: 'pools'
       });
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'data_too_short');
       return { success: false, error: 'data_too_short', skipped: true };
     }
 
@@ -261,6 +263,8 @@ export async function handlePumpswapPoolAccountUpdate(
         pool: poolId.slice(0, 8) + '…',
         cat: 'pools'
       });
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'pool_state_decode_failed');
       return { success: false, error: 'pool_decode_failed', skipped: true };
     }
 
@@ -271,6 +275,8 @@ export async function handlePumpswapPoolAccountUpdate(
         pool: poolId.slice(0, 8) + '…',
         cat: 'pools'
       });
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'pool_not_in_cache');
       return { success: true, skipped: true, skipReason: 'pool_not_in_cache' };
     }
 
@@ -308,6 +314,8 @@ export async function handlePumpswapPoolAccountUpdate(
     // Decode the pool with vault balances
     const decoded = decodePumpswapPool(poolWithVaults, balanceA, balanceB);
     if (!decoded) {
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'pool_decode_with_vaults_failed');
       return { success: false, error: 'decode_failed', skipped: true };
     }
 
@@ -733,6 +741,8 @@ export async function handlePumpswapUpdate(
         owner: owner.slice(0, 8) + '…',
         cat: 'pools'
       });
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'unknown_account');
       return { success: false, error: 'unknown_account', skipped: true };
     }
 
@@ -742,6 +752,8 @@ export async function handlePumpswapUpdate(
         accountType: derivedMeta.accountType,
         cat: 'pools'
       });
+      wsDeltaStats.pumpswap.skipped += 1;
+      incrementSkipReason('pumpswap', 'not_vault_account');
       return { success: true, skipped: true, skipReason: 'not_vault' };
     }
 
