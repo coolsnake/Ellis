@@ -101,7 +101,10 @@ export function decodePumpswapPoolState(data: Buffer): PumpswapPoolState | null 
     // Optionally extract lp_supply (8 bytes at offset 203)
     let lpSupply: bigint | undefined;
     if (data.length >= POOL_LAYOUT.LP_SUPPLY + 8) {
-      lpSupply = data.readBigUInt64LE(POOL_LAYOUT.LP_SUPPLY);
+      // Read as two 32-bit values and combine (little-endian)
+      const low = data.readUInt32LE(POOL_LAYOUT.LP_SUPPLY);
+      const high = data.readUInt32LE(POOL_LAYOUT.LP_SUPPLY + 4);
+      lpSupply = BigInt(low) + (BigInt(high) << 32n);
     }
 
     return {
