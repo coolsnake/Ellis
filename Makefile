@@ -9,9 +9,9 @@ HELIUS_API_KEY ?= 4673beb7-dcca-4942-91ac-c69babdf1f02
 HELIUS_DEVNET_RPC = https://devnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
 HELIUS_MAINNET_RPC = https://mainnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
 
-build: backend frontend arb ## Build backend, frontend, and arb-rs (use sudo)
+build: backend frontend arb arb-router ## Build backend, frontend, arb-rs, and arb-router (use sudo)
 
-build-all: build arb-router ## Build everything (run arb-router without sudo)
+build-all: build ## Alias for build (kept for backward compatibility)
 
 backend: ## Build backend
 	cd backend && npm ci --legacy-peer-deps --include=dev && npm run build
@@ -24,7 +24,7 @@ frontend: ## Build frontend and sync to $(WWW_DIR)
 arb: ## Build Rust arb-rs
 	cd arb-rs && cargo build --release
 
-arb-router: ## Build Anchor arb-router program (run WITHOUT sudo)
+arb-router: ## Build Anchor arb-router program
 	cd arb-router && npm ci --legacy-peer-deps && anchor build
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
