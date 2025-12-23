@@ -20,8 +20,8 @@ base64 = "0.22"
 once_cell = "1"
 
 [patch.crates-io]
-# Force time crate to >=0.3.35 to fix Rust 1.80+ inference errors
-time = { version = ">=0.3.35" }
+# Force time crate to 0.3.44 to fix Rust 1.80+ inference errors
+time = { version = "0.3.44" }
 
 [profile.release]
 # Maximum optimizations for production performance
