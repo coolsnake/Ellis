@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer, Mint};
+use anchor_lang::solana_program::sysvar::instructions as ix_sysvar;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use anchor_spl::token_interface::{TokenInterface, TokenAccount as InterfaceTokenAccount, Mint as InterfaceMint};
 
 pub mod constants;
@@ -478,7 +479,7 @@ pub struct FlashBorrow<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 
     /// CHECK: Instructions sysvar for verifying repay instruction exists
-    #[account(address = solana_program::sysvar::instructions::ID)]
+    #[account(address = ix_sysvar::ID)]
     pub instructions_sysvar: AccountInfo<'info>,
 }
 
@@ -552,7 +553,7 @@ fn verify_repay_instruction_exists(
     _borrowed_amount: u64,
     vault_key: Pubkey,
 ) -> Result<()> {
-    use solana_program::sysvar::instructions::{
+    use ix_sysvar::{
         get_instruction_relative,
         load_current_index_checked,
     };
