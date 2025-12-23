@@ -4,6 +4,10 @@ members = [
 ]
 resolver = "2"
 
+# Pin dependencies to versions compatible with Rust 1.79 (Agave platform tools)
+[workspace.dependencies]
+indexmap = "=2.5.0"
+
 [profile.release]
 overflow-checks = true
 lto = "fat"

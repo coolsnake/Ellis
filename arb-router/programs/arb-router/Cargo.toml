@@ -16,10 +16,12 @@ cpi = ["no-entrypoint"]
 default = []
 
 [dependencies]
-# Anchor 0.30.1 compatible with Agave 2.x (Solana 2.x)
-anchor-lang = { version = "0.30.1", features = ["init-if-needed"] }
-anchor-spl = { version = "0.30.1", features = ["token"] }
+# Anchor 0.32.1 to match CLI version
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+anchor-spl = { version = "0.32.1", features = ["token"] }
+# Pin indexmap to version compatible with Rust 1.79 (Agave platform tools)
+indexmap = "=2.5.0"
 
 [dev-dependencies]
-anchor-client = "0.30.1"
+anchor-client = "0.32.1"
 

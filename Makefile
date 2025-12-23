@@ -29,12 +29,12 @@ arb-router: ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
 	@echo ""
 	@echo "REQUIREMENTS:"
 	@echo "  - Agave/Solana CLI 2.x with platform tools (Rust 1.79+)"
-	@echo "  - Anchor CLI 0.30.1+"
+	@echo "  - Anchor CLI 0.32.1+"
 	@echo ""
 	@bash -c '\
 		if ! command -v anchor >/dev/null 2>&1; then \
 			echo "ERROR: Anchor CLI not found."; \
-			echo "Install with: cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1"; \
+			echo "Install with: cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.32.1"; \
 			exit 1; \
 		fi; \
 		ANCHOR_VER=$$(anchor --version 2>/dev/null | head -1 || echo "unknown"); \
@@ -49,6 +49,8 @@ arb-router: ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
 	cd arb-router && npm ci --legacy-peer-deps
 	@echo "Removing old Cargo.lock..."
 	@rm -f arb-router/Cargo.lock 2>/dev/null || true
+	@echo "Pinning indexmap to Rust 1.79 compatible version..."
+	cd arb-router && cargo generate-lockfile && cargo update indexmap --precise 2.5.0
 	@echo "Building Anchor program..."
 	cd arb-router && anchor build
 
