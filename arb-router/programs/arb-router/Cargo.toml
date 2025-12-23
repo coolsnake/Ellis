@@ -16,10 +16,10 @@ cpi = ["no-entrypoint"]
 default = []
 
 [dependencies]
-# Using 0.29.0 for better compatibility with Solana platform tools Rust 1.75
-anchor-lang = { version = "0.29.0", features = ["init-if-needed"] }
-anchor-spl = { version = "0.29.0", features = ["token"] }
+# Anchor 0.30.1 compatible with Agave 2.x (Solana 2.x)
+anchor-lang = { version = "0.30.1", features = ["init-if-needed"] }
+anchor-spl = { version = "0.30.1", features = ["token"] }
 
 [dev-dependencies]
-anchor-client = "0.29.0"
+anchor-client = "0.30.1"
 

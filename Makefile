@@ -9,9 +9,9 @@ HELIUS_API_KEY ?= 4673beb7-dcca-4942-91ac-c69babdf1f02
 HELIUS_DEVNET_RPC = https://devnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
 HELIUS_MAINNET_RPC = https://mainnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
 
-build: backend frontend arb ## Build backend, frontend, and arb-rs (use sudo)
+build: backend frontend arb arb-router ## Build backend, frontend, arb-rs, and arb-router (use sudo)
 
-build-all: build arb-router ## Build everything including arb-router (requires compatible Solana tooling)
+build-all: build ## Alias for build (kept for backward compatibility)
 
 backend: ## Build backend
 	cd backend && npm ci --legacy-peer-deps --include=dev && npm run build
@@ -24,59 +24,33 @@ frontend: ## Build frontend and sync to $(WWW_DIR)
 arb: ## Build Rust arb-rs
 	cd arb-rs && cargo build --release
 
-arb-router: ## Build Anchor arb-router program (requires Solana platform tools with Rust 1.76+)
+arb-router: ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
 	@echo "=== Building arb-router program ==="
 	@echo ""
 	@echo "REQUIREMENTS:"
-	@echo "  - Anchor CLI installed"
-	@echo "  - Solana CLI with platform tools (Rust 1.76+)"
-	@echo "  - Rust 1.75.0 for Cargo.lock generation"
+	@echo "  - Agave/Solana CLI 2.x with platform tools (Rust 1.79+)"
+	@echo "  - Anchor CLI 0.30.1+"
 	@echo ""
 	@bash -c '\
 		if ! command -v anchor >/dev/null 2>&1; then \
 			echo "ERROR: Anchor CLI not found."; \
-			echo "Install with: cargo install --git https://github.com/coral-xyz/anchor anchor-cli"; \
+			echo "Install with: cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1"; \
 			exit 1; \
 		fi; \
 		ANCHOR_VER=$$(anchor --version 2>/dev/null | head -1 || echo "unknown"); \
-		echo "Found Anchor CLI: $$ANCHOR_VER"'
+		echo "Found Anchor CLI: $$ANCHOR_VER"; \
+		if command -v solana >/dev/null 2>&1; then \
+			SOLANA_VER=$$(solana --version 2>/dev/null | head -1 || echo "unknown"); \
+			echo "Found Solana CLI: $$SOLANA_VER"; \
+		else \
+			echo "WARNING: Solana CLI not found in PATH."; \
+		fi'
 	@echo "Installing npm dependencies..."
 	cd arb-router && npm ci --legacy-peer-deps
-	@echo "Generating Cargo.lock and pinning dependencies for Rust 1.75 compatibility..."
-	@bash -c '\
-		cd arb-router; \
-		rm -f Cargo.lock 2>/dev/null || true; \
-		if ! rustup run 1.75.0 cargo --version >/dev/null 2>&1; then \
-			echo "Installing Rust 1.75.0..."; \
-			rustup install 1.75.0; \
-		fi; \
-		echo "Generating Cargo.lock with Rust 1.75.0..."; \
-		rustup run 1.75.0 cargo generate-lockfile 2>&1 || true; \
-		echo "Pinning problematic dependencies to Rust 1.75-compatible versions..."; \
-		rustup run 1.75.0 cargo update -p toml_datetime --precise 0.6.5 2>/dev/null || true; \
-		rustup run 1.75.0 cargo update -p toml_edit --precise 0.21.0 2>/dev/null || true; \
-		rustup run 1.75.0 cargo update -p winnow --precise 0.5.40 2>/dev/null || true; \
-		rustup run 1.75.0 cargo update -p borsh --precise 1.5.1 2>/dev/null || true; \
-		rustup run 1.75.0 cargo update -p borsh-derive --precise 1.5.1 2>/dev/null || true; \
-		echo "Cargo.lock prepared for Rust 1.75 compatibility."'
+	@echo "Removing old Cargo.lock..."
+	@rm -f arb-router/Cargo.lock 2>/dev/null || true
 	@echo "Building Anchor program..."
-	cd arb-router && anchor build || { \
-		echo ""; \
-		echo "=== BUILD FAILED ==="; \
-		echo ""; \
-		echo "The arb-router build failed. Common causes:"; \
-		echo "  1. Solana platform tools have old Rust (1.75.0-dev)"; \
-		echo "  2. Dependency version conflicts"; \
-		echo ""; \
-		echo "SOLUTIONS:"; \
-		echo "  1. Update Solana to latest version with newer platform tools"; \
-		echo "  2. Build on a machine with compatible Solana tooling"; \
-		echo "  3. Use Docker with the correct Solana/Anchor versions"; \
-		echo ""; \
-		echo "The main Lockstone application (backend, frontend, arb-rs) works without arb-router."; \
-		echo "arb-router is only needed for on-chain program deployment."; \
-		exit 1; \
-	}
+	cd arb-router && anchor build
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
 	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet

@@ -15,7 +15,7 @@
     "test:drift:mutating": "RUN_DRIFT_MUTATING=true DRIFT_MUTATING_MAINNET_ACK=I_ACCEPT_RISK vitest run src/drift/__tests__/drift.e2e.mutating.real.test.ts --pool=threads --maxWorkers=1 --reporter=basic"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "0.29.0",
+    "@coral-xyz/anchor": "0.30.1",
     "@drift-labs/sdk": "^2.87.0",
     "@pythnetwork/hermes-client": "^1.0.0",
     "@meteora-ag/cp-amm-sdk": "^1.0.0",
