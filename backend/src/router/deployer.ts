@@ -4,7 +4,8 @@
 
 import { spawn, execSync } from 'child_process';
 import { promises as fs } from 'fs';
-import path from 'path';
+import path, { dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { Connection, PublicKey, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { logger } from '../utils/logger.js';
 import { ProgramStatus } from './types.js';
@@ -13,7 +14,11 @@ import { ProgramStatus } from './types.js';
 // Configuration
 // ============================================================================
 
-const ARB_ROUTER_DIR = path.resolve(process.cwd(), '..', 'arb-router');
+// Use import.meta.url for reliable path resolution (same pattern as config.ts)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const BACKEND_ROOT = path.resolve(__dirname, '..', '..');
+// Allow environment variable override for custom deployments
+const ARB_ROUTER_DIR = process.env.ARB_ROUTER_DIR || path.resolve(BACKEND_ROOT, '..', 'arb-router');
 const PROGRAM_BINARY_PATH = path.join(ARB_ROUTER_DIR, 'target', 'deploy', 'arb_router.so');
 const KEYPAIR_PATH = path.join(ARB_ROUTER_DIR, 'target', 'deploy', 'arb_router-keypair.json');
 

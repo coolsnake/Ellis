@@ -113,9 +113,42 @@ export function createRouterRouter(io: SocketIOServer): Router {
   });
 
   /**
+   * POST /router/config/mode - Update execution mode (alias for PUT)
+   */
+  api.post('/router/config/mode', async (req: Request, res: Response) => {
+    try {
+      const { mode } = req.body;
+      if (!Object.values(ExecutionMode).includes(mode)) {
+        return res.status(400).json({ success: false, error: 'Invalid execution mode' });
+      }
+      const config = await setExecutionMode(mode);
+      emit('router:config', config);
+      res.json({ success: true, config });
+    } catch (err: any) {
+      logger.error('router.config.mode.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
    * PUT /router/config/enabled - Enable/disable router
    */
   api.put('/router/config/enabled', async (req: Request, res: Response) => {
+    try {
+      const { enabled } = req.body;
+      const config = await setRouterEnabled(!!enabled);
+      emit('router:config', config);
+      res.json({ success: true, config });
+    } catch (err: any) {
+      logger.error('router.config.enabled.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /router/config/enabled - Enable/disable router (alias for PUT)
+   */
+  api.post('/router/config/enabled', async (req: Request, res: Response) => {
     try {
       const { enabled } = req.body;
       const config = await setRouterEnabled(!!enabled);
