@@ -609,9 +609,21 @@ export async function getProgramStatus(
 ): Promise<ProgramStatus> {
   try {
     const pubkey = new PublicKey(programId);
-    const accountInfo = await connection.getAccountInfo(pubkey);
+    logger.debug('router.status.fetching', {
+      cat: 'router',
+      programId,
+      cluster: getSolanaCluster(),
+      rpcUrl: connection.rpcEndpoint,
+    });
+    
+    const accountInfo = await connection.getAccountInfo(pubkey, 'confirmed');
 
     if (!accountInfo) {
+      logger.warn('router.status.not_found', {
+        cat: 'router',
+        programId,
+        cluster: getSolanaCluster(),
+      });
       return {
         deployed: false,
         programId,
@@ -622,6 +634,14 @@ export async function getProgramStatus(
         cluster: getSolanaCluster(),
       };
     }
+    
+    logger.debug('router.status.found', {
+      cat: 'router',
+      programId,
+      executable: accountInfo.executable,
+      dataLength: accountInfo.data.length,
+      lamports: accountInfo.lamports,
+    });
 
     // For BPF programs, get the program data account
     let upgradeAuthority: string | null = null;

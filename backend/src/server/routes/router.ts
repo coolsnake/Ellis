@@ -85,6 +85,41 @@ export function createRouterRouter(io: SocketIOServer): Router {
   api.put('/router/config', async (req: Request, res: Response) => {
     try {
       const updates = req.body;
+      
+      // If setting programId, validate it exists on-chain
+      if (updates.programId) {
+        try {
+          const connection = getConnection();
+          const pubkey = new PublicKey(updates.programId);
+          const accountInfo = await connection.getAccountInfo(pubkey, 'confirmed');
+          
+          if (!accountInfo) {
+            return res.status(400).json({ 
+              success: false, 
+              error: `Program ${updates.programId} not found on ${getSolanaCluster()}` 
+            });
+          }
+          
+          if (!accountInfo.executable) {
+            return res.status(400).json({ 
+              success: false, 
+              error: `Account ${updates.programId} exists but is not executable` 
+            });
+          }
+          
+          logger.info('router.config.program_id_validated', {
+            cat: 'router',
+            programId: updates.programId,
+            cluster: getSolanaCluster(),
+          });
+        } catch (err: any) {
+          return res.status(400).json({ 
+            success: false, 
+            error: `Invalid program ID: ${err.message}` 
+          });
+        }
+      }
+      
       const config = await saveRouterConfig(updates);
       emit('router:config', config);
       res.json({ success: true, config });
@@ -174,8 +209,20 @@ export function createRouterRouter(io: SocketIOServer): Router {
 
       let status: ProgramStatus;
       if (config.programId) {
+        logger.info('router.status.checking', { 
+          cat: 'router', 
+          programId: config.programId,
+          cluster: getSolanaCluster() 
+        });
         status = await getProgramStatus(connection, config.programId);
+        logger.info('router.status.result', { 
+          cat: 'router', 
+          deployed: status.deployed,
+          executable: status.executable,
+          upgradeAuthority: status.upgradeAuthority 
+        });
       } else {
+        logger.info('router.status.no_program_id', { cat: 'router' });
         status = {
           deployed: false,
           programId: null,
@@ -203,7 +250,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         flashLoanAvailable: await isFlashLoanAvailable(),
       });
     } catch (err: any) {
-      logger.error('router.status.error', { cat: 'router', error: err.message });
+      logger.error('router.status.error', { cat: 'router', error: err.message, stack: err.stack });
       res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -779,6 +826,117 @@ export function createRouterRouter(io: SocketIOServer): Router {
       }
     } catch (err: any) {
       logger.error('router.cli.cluster.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // ============================================================================
+  // Test Routes - Devnet/Mainnet Integration Testing
+  // ============================================================================
+
+  /**
+   * POST /router/test/swap - Test a swap through a specific pool
+   */
+  api.post('/router/test/swap', async (req: Request, res: Response) => {
+    try {
+      const { 
+        poolId, 
+        dex = 'raydium', 
+        variant = 'clmm',
+        inputMint,
+        outputMint,
+        amountIn = '10000000', // 0.01 SOL default
+        minAmountOut = '1',
+        simulate = true, // Default to simulation only
+      } = req.body;
+
+      if (!poolId) {
+        return res.status(400).json({ success: false, error: 'poolId required' });
+      }
+
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      const connection = getConnection();
+      const cluster = getSolanaCluster();
+
+      logger.info('router.test.swap.start', { 
+        cat: 'router', 
+        poolId, 
+        dex, 
+        variant,
+        inputMint,
+        outputMint,
+        amountIn,
+        simulate,
+        cluster,
+      });
+
+      emit('router:test:start', { poolId, dex, timestamp: Date.now() });
+
+      // Import test utilities dynamically
+      const { runSwapTest } = await import('../../router/testSwap.js');
+      
+      const result = await runSwapTest({
+        connection,
+        wallet: Keypair.fromSecretKey(wallet.secretKey),
+        poolId,
+        dex,
+        variant,
+        inputMint,
+        outputMint,
+        amountIn: BigInt(amountIn),
+        minAmountOut: BigInt(minAmountOut),
+        simulateOnly: simulate,
+      });
+
+      if (result.success) {
+        logger.info('router.test.swap.success', { 
+          cat: 'router', 
+          poolId,
+          signature: result.signature,
+          simulated: simulate,
+        });
+        emit('router:test:complete', { success: true, ...result });
+      } else {
+        logger.warn('router.test.swap.failed', { 
+          cat: 'router', 
+          poolId,
+          error: result.error,
+        });
+        emit('router:test:complete', { success: false, error: result.error });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      logger.error('router.test.swap.error', { cat: 'router', error: err.message, stack: err.stack });
+      emit('router:test:complete', { success: false, error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * GET /router/test/pool/:poolId - Fetch pool details and derive accounts
+   */
+  api.get('/router/test/pool/:poolId', async (req: Request, res: Response) => {
+    try {
+      const { poolId } = req.params;
+      const { dex = 'raydium', variant = 'clmm' } = req.query;
+
+      const connection = getConnection();
+
+      logger.info('router.test.pool.fetch', { cat: 'router', poolId, dex, variant });
+
+      const { fetchPoolAccounts } = await import('../../router/testSwap.js');
+      
+      const result = await fetchPoolAccounts({
+        connection,
+        poolId,
+        dex: dex as string,
+        variant: variant as string,
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      logger.error('router.test.pool.error', { cat: 'router', error: err.message });
       res.status(500).json({ success: false, error: err.message });
     }
   });

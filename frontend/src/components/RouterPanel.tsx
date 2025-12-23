@@ -301,6 +301,45 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
         <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
           <h3 className="text-lg font-semibold text-white mb-3">Program Status</h3>
           
+          {/* Manual Program ID Entry */}
+          {!config?.programId && (
+            <div className="mb-4 p-3 bg-yellow-900/30 border border-yellow-600 rounded text-sm">
+              <div className="font-medium text-yellow-300 mb-2">Program ID Not Set</div>
+              <div className="text-yellow-400 text-xs mb-3">
+                If you deployed the program manually, enter the program ID below to track it.
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Enter program ID (e.g., ArbRtr1111111111111111111111111111111111111)"
+                  className="flex-1 bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
+                  id="manual-program-id"
+                />
+                <button
+                  onClick={async () => {
+                    const input = document.getElementById('manual-program-id') as HTMLInputElement;
+                    const programId = input?.value.trim();
+                    if (!programId) {
+                      setError('Please enter a program ID');
+                      return;
+                    }
+                    try {
+                      await apiPost('/router/config', { programId });
+                      setActionLogs(prev => [...prev, `Program ID set: ${programId}`]);
+                      await fetchStatus();
+                      input.value = '';
+                    } catch (err: any) {
+                      setError(err.message || 'Failed to set program ID');
+                    }
+                  }}
+                  className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded text-sm font-medium"
+                >
+                  Set Program ID
+                </button>
+              </div>
+            </div>
+          )}
+          
           <div className="grid grid-cols-2 gap-4 mb-4">
             <div>
               <span className="text-gray-400 text-sm">Status:</span>
@@ -459,7 +498,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
             >
               {deploying ? 'Deploying...' : 'Deploy'}
             </button>
-            {status?.deployed && (
+            {(status?.deployed || config?.programId) && (
               <button
                 onClick={handleUpgrade}
                 disabled={building || deploying || closing || !cli?.solana}
@@ -468,7 +507,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                 {deploying ? 'Upgrading...' : 'Upgrade'}
               </button>
             )}
-            {status?.deployed && (
+            {(status?.deployed || config?.programId) && (
               <button
                 onClick={handleCloseProgram}
                 disabled={building || deploying || closing || !cli?.solana}
@@ -476,7 +515,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                 title={
                   !status?.upgradeAuthority && status?.executable
                     ? 'Warning: Program may be immutable (no upgrade authority). Click to attempt close - backend will verify.'
-                    : !status?.executable
+                    : !status?.executable && status !== null
                     ? 'Program is not executable or already closed'
                     : 'Close program and recover rent (~2-3 SOL)'
                 }

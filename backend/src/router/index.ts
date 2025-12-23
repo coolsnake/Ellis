@@ -56,4 +56,12 @@ export {
   requestAirdrop,
 } from './deployer.js';
 
+// Test swap functions
+export {
+  runSwapTest,
+  fetchPoolAccounts,
+  type TestSwapParams,
+  type TestSwapResult,
+  type RaydiumClmmPoolState,
+} from './testSwap.js';
 

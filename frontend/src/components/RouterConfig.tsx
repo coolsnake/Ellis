@@ -43,6 +43,16 @@ export const RouterConfig: React.FC<RouterConfigProps> = ({
   const [feeAmount, setFeeAmount] = useState('');
   const [calculatedFee, setCalculatedFee] = useState<FeeResponse | null>(null);
 
+  // Swap testing
+  const [testPoolId, setTestPoolId] = useState('FXAXqgjNK6JVzVV2frumKTEuxC8hTEUhVTJTRhMMwLmM');
+  const [testDex, setTestDex] = useState('raydium');
+  const [testVariant, setTestVariant] = useState('clmm');
+  const [testAmountIn, setTestAmountIn] = useState('10000000'); // 0.01 SOL
+  const [testSimulate, setTestSimulate] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<any>(null);
+  const [poolInfo, setPoolInfo] = useState<any>(null);
+
   useEffect(() => {
     fetchConfig();
   }, []);
@@ -123,6 +133,46 @@ export const RouterConfig: React.FC<RouterConfigProps> = ({
       }
     } catch (err: any) {
       setError(err.message);
+    }
+  };
+
+  const handleFetchPool = async () => {
+    try {
+      setTesting(true);
+      setError(null);
+      const data = await apiGet<any>(`/router/test/pool/${testPoolId}?dex=${testDex}&variant=${testVariant}`);
+      setPoolInfo(data.pool);
+      setTestResult(null);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleRunTest = async () => {
+    try {
+      setTesting(true);
+      setError(null);
+      setTestResult(null);
+      
+      const data = await apiPost<any>('/router/test/swap', {
+        poolId: testPoolId,
+        dex: testDex,
+        variant: testVariant,
+        inputMint: poolInfo?.mintA,
+        outputMint: poolInfo?.mintB,
+        amountIn: testAmountIn,
+        minAmountOut: '1',
+        simulate: testSimulate,
+      });
+      
+      setTestResult(data);
+    } catch (err: any) {
+      setError(err.message);
+      setTestResult({ success: false, error: err.message });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -301,6 +351,148 @@ export const RouterConfig: React.FC<RouterConfigProps> = ({
               <div className="text-gray-400">
                 Repay: <span className="text-green-400">{calculatedFee.repayAmount}</span>
               </div>
+            </div>
+          )}
+        </div>
+
+        {/* Swap Testing Section */}
+        <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
+          <h3 className="text-lg font-semibold text-white mb-3">🧪 Swap Testing</h3>
+          <p className="text-gray-400 text-sm mb-4">
+            Test DEX swaps on {config?.cluster || 'devnet'} to verify account ordering and pool connectivity.
+          </p>
+          
+          {/* Pool Configuration */}
+          <div className="space-y-3 mb-4">
+            <div>
+              <label className="text-gray-300 text-sm block mb-1">Pool ID</label>
+              <input
+                type="text"
+                value={testPoolId}
+                onChange={(e) => setTestPoolId(e.target.value)}
+                placeholder="Pool address"
+                className="w-full px-3 py-2 bg-gray-700 text-white border border-gray-600 rounded focus:border-blue-500 focus:outline-none font-mono text-xs"
+              />
+            </div>
+            
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-gray-300 text-sm block mb-1">DEX</label>
+                <select
+                  value={testDex}
+                  onChange={(e) => setTestDex(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 text-white border border-gray-600 rounded focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="raydium">Raydium</option>
+                  <option value="orca">Orca</option>
+                  <option value="meteora">Meteora</option>
+                  <option value="pumpswap">PumpSwap</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-gray-300 text-sm block mb-1">Variant</label>
+                <select
+                  value={testVariant}
+                  onChange={(e) => setTestVariant(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 text-white border border-gray-600 rounded focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="clmm">CLMM</option>
+                  <option value="amm">AMM</option>
+                  <option value="dlmm">DLMM</option>
+                </select>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-gray-300 text-sm block mb-1">Amount In (raw)</label>
+                <input
+                  type="text"
+                  value={testAmountIn}
+                  onChange={(e) => setTestAmountIn(e.target.value)}
+                  placeholder="10000000"
+                  className="w-full px-3 py-2 bg-gray-700 text-white border border-gray-600 rounded focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div className="flex items-end">
+                <label className="flex items-center gap-2 text-gray-300 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={testSimulate}
+                    onChange={(e) => setTestSimulate(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  Simulate Only (safe)
+                </label>
+              </div>
+            </div>
+          </div>
+          
+          {/* Action Buttons */}
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={handleFetchPool}
+              disabled={testing || !testPoolId}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded text-sm"
+            >
+              {testing ? 'Fetching...' : 'Fetch Pool'}
+            </button>
+            <button
+              onClick={handleRunTest}
+              disabled={testing || !poolInfo}
+              className={`px-4 py-2 text-white rounded text-sm ${
+                testSimulate 
+                  ? 'bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600' 
+                  : 'bg-red-600 hover:bg-red-700 disabled:bg-gray-600'
+              }`}
+            >
+              {testing ? 'Testing...' : testSimulate ? 'Simulate Swap' : '⚠️ Execute Swap'}
+            </button>
+          </div>
+          
+          {/* Pool Info Display */}
+          {poolInfo && (
+            <div className="mb-4 p-3 bg-gray-800/50 rounded text-xs font-mono">
+              <div className="text-green-400 mb-2">Pool Accounts Derived:</div>
+              <div className="grid grid-cols-1 gap-1 text-gray-300">
+                <div>Mint A: <span className="text-white">{poolInfo.mintA}</span></div>
+                <div>Mint B: <span className="text-white">{poolInfo.mintB}</span></div>
+                <div>Vault A: <span className="text-white">{poolInfo.vaultA}</span></div>
+                <div>Vault B: <span className="text-white">{poolInfo.vaultB}</span></div>
+                <div>Tick: <span className="text-yellow-400">{poolInfo.tickCurrent}</span> (spacing: {poolInfo.tickSpacing})</div>
+                <div>Center Array: <span className="text-white">{poolInfo.tickArrays?.center?.slice(0, 12)}...</span></div>
+              </div>
+            </div>
+          )}
+          
+          {/* Test Result Display */}
+          {testResult && (
+            <div className={`p-3 rounded text-sm ${
+              testResult.success 
+                ? 'bg-green-900/50 border border-green-600 text-green-300' 
+                : 'bg-red-900/50 border border-red-600 text-red-300'
+            }`}>
+              <div className="font-semibold mb-2">
+                {testResult.success ? '✅ Test Passed!' : '❌ Test Failed'}
+                {testResult.simulated && ' (Simulated)'}
+              </div>
+              {testResult.signature && (
+                <div className="text-xs font-mono">Signature: {testResult.signature}</div>
+              )}
+              {testResult.unitsConsumed && (
+                <div className="text-xs">Compute Units: {testResult.unitsConsumed.toLocaleString()}</div>
+              )}
+              {testResult.error && (
+                <div className="text-xs mt-2 text-red-400">{testResult.error}</div>
+              )}
+              {testResult.logs && testResult.logs.length > 0 && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs">View Logs ({testResult.logs.length})</summary>
+                  <pre className="mt-2 text-xs overflow-auto max-h-40 p-2 bg-black/30 rounded">
+                    {testResult.logs.join('\n')}
+                  </pre>
+                </details>
+              )}
             </div>
           )}
         </div>
