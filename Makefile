@@ -66,8 +66,28 @@ arb-router: ## Build Anchor arb-router program
 		fi'
 	@echo "Installing npm dependencies..."
 	cd arb-router && npm ci --legacy-peer-deps
-	@echo "Building Anchor program (Anchor.toml will attempt to use 0.30.1)..."
-	@echo "Setting Rust toolchain to stable (Solana platform tools Rust 1.75 is too old)..."
+	@echo "Removing old Cargo.lock to regenerate with Anchor 0.32.1..."
+	@rm -f arb-router/Cargo.lock 2>/dev/null || true
+	@echo "Building Anchor program (using Anchor 0.32.1)..."
+	@echo "Attempting to update Solana platform tools (current Rust 1.75 is too old)..."
+	@bash -c '\
+		if command -v solana >/dev/null 2>&1; then \
+			SOLANA_VER=$$(solana --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1 || echo ""); \
+			echo "Current Solana version: $$SOLANA_VER"; \
+			echo "Note: Solana 1.18.26+ has Rust 1.77+ in platform tools."; \
+			if [ -n "$$SOLANA_VER" ]; then \
+				MAJOR=$$(echo $$SOLANA_VER | cut -d. -f1); \
+				MINOR=$$(echo $$SOLANA_VER | cut -d. -f2); \
+				PATCH=$$(echo $$SOLANA_VER | cut -d. -f3); \
+				if [ $$MAJOR -lt 1 ] || ([ $$MAJOR -eq 1 ] && [ $$MINOR -lt 18 ]) || ([ $$MAJOR -eq 1 ] && [ $$MINOR -eq 18 ] && [ $$PATCH -lt 26 ]); then \
+					echo "Warning: Solana version is too old. Platform tools may have Rust 1.75."; \
+					echo "Try updating Solana: solana-install update || (sh -c \"$$(curl -sSfL https://release.solana.com/stable/install)\")"; \
+				fi; \
+			fi; \
+		fi; \
+		rm -rf ~/.cache/solana/platform-tools 2>/dev/null || true; \
+		rm -rf /root/.cache/solana/platform-tools 2>/dev/null || true; \
+		echo "Cleared platform tools cache. Anchor will download newer version."'
 	cd arb-router && bash -c '\
 		rustup override set stable 2>/dev/null || true; \
 		if command -v avm >/dev/null 2>&1; then avm use 0.30.1 || true; fi; \
