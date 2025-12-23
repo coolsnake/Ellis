@@ -13,6 +13,9 @@ pub struct Vault {
     /// Token account that holds the vault's funds
     pub token_account: Pubkey,
     
+    /// Token program ID (SPL Token or Token-2022)
+    pub token_program: Pubkey,
+    
     /// Current balance (cached, actual balance is in token_account)
     pub balance: u64,
     
@@ -34,6 +37,7 @@ impl Vault {
         32 + // owner
         32 + // mint  
         32 + // token_account
+        32 + // token_program
         8 +  // balance
         8 +  // borrowed_amount
         1 +  // flash_loan_active
@@ -110,6 +114,10 @@ pub struct RouteStep {
     
     /// Minimum output amount (slippage protection)
     pub min_amount_out: u64,
+    
+    /// Swap direction: true = A to B, false = B to A
+    /// Used by Orca Whirlpool and other directional DEXs
+    pub a_to_b: bool,
 }
 
 /// Parameters for the execute instruction
@@ -133,6 +141,9 @@ pub struct SwapParams {
     
     /// Minimum output
     pub min_amount_out: u64,
+    
+    /// Swap direction: true = A to B, false = B to A
+    pub a_to_b: bool,
 }
 
 /// Flash loan borrow parameters

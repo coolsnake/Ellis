@@ -53,7 +53,8 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   
   const [building, setBuilding] = useState(false);
   const [deploying, setDeploying] = useState(false);
-  const [selectedCluster, setSelectedCluster] = useState<'devnet' | 'mainnet-beta'>('devnet');
+  const [closing, setClosing] = useState(false);
+  const [selectedCluster, setSelectedCluster] = useState<'devnet' | 'mainnet-beta' | 'localnet'>('devnet');
   const [actionLogs, setActionLogs] = useState<string[]>([]);
 
   const fetchStatus = useCallback(async () => {
@@ -67,7 +68,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
         setReady(data.ready);
         setFlashLoanAvailable(data.flashLoanAvailable);
         if (data.config?.cluster) {
-          setSelectedCluster(data.config.cluster === 'localnet' ? 'devnet' : data.config.cluster);
+          setSelectedCluster(data.config.cluster);
         }
       }
     } catch (err: any) {
@@ -194,6 +195,60 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
     }
   };
 
+  const handleCloseProgram = async () => {
+    if (closing || !config?.programId) return;
+    
+    // Confirmation dialog
+    const confirmed = window.confirm(
+      `Are you sure you want to close the program?\n\n` +
+      `Program ID: ${config.programId}\n` +
+      `Cluster: ${status?.cluster || 'unknown'}\n\n` +
+      `This will:\n` +
+      `- Stop the program from being executable\n` +
+      `- Recover the rent (~2-3 SOL) to your wallet\n\n` +
+      `This action cannot be undone. You would need to redeploy.`
+    );
+    
+    if (!confirmed) return;
+    
+    setClosing(true);
+    setActionLogs(['Starting program closure...']);
+    setError(null);
+    
+    try {
+      const result = await apiPost<{ 
+        success: boolean; 
+        rentRecovered?: number; 
+        error?: string; 
+        logs?: string[] 
+      }>('/router/close');
+      
+      if (result.logs) {
+        setActionLogs(prev => [...prev, ...result.logs!]);
+      }
+      
+      if (result.success) {
+        const rentSol = result.rentRecovered 
+          ? (result.rentRecovered / 1e9).toFixed(6) 
+          : 'unknown';
+        setActionLogs(prev => [
+          ...prev, 
+          `Program closed successfully`,
+          `Rent recovered: ${rentSol} SOL`
+        ]);
+        await fetchStatus();
+      } else {
+        setActionLogs(prev => [...prev, `Close failed: ${result.error}`]);
+        setError(result.error || 'Close failed');
+      }
+    } catch (err: any) {
+      setError(err.message);
+      setActionLogs(prev => [...prev, `Error: ${err.message}`]);
+    } finally {
+      setClosing(false);
+    }
+  };
+
   const getSolscanUrl = (programId: string, cluster: string) => {
     const base = cluster === 'mainnet-beta' ? 'https://solscan.io' : 'https://solscan.io';
     const clusterParam = cluster === 'mainnet-beta' ? '' : `?cluster=${cluster}`;
@@ -301,6 +356,24 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                   </span>
                 </div>
               </div>
+              
+              <div className="mt-3 pt-3 border-t border-gray-600">
+                <span className="text-gray-400 text-sm">Upgrade Authority:</span>
+                <div className="mt-1">
+                  {status.upgradeAuthority ? (
+                    <div className="flex items-center gap-2">
+                      <code className="text-green-400 text-xs font-mono bg-gray-900/50 px-2 py-1 rounded">
+                        {status.upgradeAuthority.slice(0, 8)}...{status.upgradeAuthority.slice(-8)}
+                      </code>
+                      <span className="text-green-400 text-xs">Closeable</span>
+                    </div>
+                  ) : (
+                    <span className="text-yellow-400 text-sm">
+                      No upgrade authority (immutable) - rent not recoverable
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -344,13 +417,14 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
             <label className="text-gray-400 text-sm">Target Cluster:</label>
             <select
               value={selectedCluster}
-              onChange={(e) => setSelectedCluster(e.target.value as 'devnet' | 'mainnet-beta')}
+              onChange={(e) => setSelectedCluster(e.target.value as 'devnet' | 'mainnet-beta' | 'localnet')}
               className="bg-gray-700 text-white px-3 py-1 rounded border border-gray-600"
             >
+              <option value="localnet">Localnet (Free)</option>
               <option value="devnet">Devnet</option>
               <option value="mainnet-beta">Mainnet-Beta</option>
             </select>
-            {selectedCluster === 'devnet' && (
+            {(selectedCluster === 'devnet' || selectedCluster === 'localnet') && (
               <button
                 onClick={handleAirdrop}
                 className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm"
@@ -359,6 +433,16 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
               </button>
             )}
           </div>
+          
+          {selectedCluster === 'localnet' && (
+            <div className="mb-4 p-3 bg-blue-900/30 border border-blue-600 rounded text-sm text-blue-300">
+              <div className="font-medium mb-1">Localnet Testing Mode</div>
+              <div className="text-xs text-blue-400">
+                Free testing - no real SOL required. Make sure you have a local validator running:
+                <code className="ml-1 bg-gray-800 px-1.5 py-0.5 rounded">solana-test-validator</code>
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-3">
             <button
@@ -378,10 +462,20 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
             {status?.deployed && (
               <button
                 onClick={handleUpgrade}
-                disabled={building || deploying || !cli?.solana}
+                disabled={building || deploying || closing || !cli?.solana}
                 className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded font-medium"
               >
                 {deploying ? 'Upgrading...' : 'Upgrade'}
+              </button>
+            )}
+            {status?.deployed && (
+              <button
+                onClick={handleCloseProgram}
+                disabled={building || deploying || closing || !cli?.solana}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded font-medium"
+                title={!status?.upgradeAuthority ? 'Program is immutable - cannot close' : 'Close program and recover rent'}
+              >
+                {closing ? 'Closing...' : 'Close & Recover Rent'}
               </button>
             )}
           </div>

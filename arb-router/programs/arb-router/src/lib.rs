@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer, Mint};
+use anchor_spl::token_interface::{TokenInterface, TokenAccount as InterfaceTokenAccount, Mint as InterfaceMint};
 
 pub mod constants;
 pub mod error;
@@ -17,17 +18,19 @@ pub mod arb_router {
     use super::*;
 
     /// Initialize a new vault for a user and token mint
+    /// Supports both SPL Token and Token-2022 programs
     pub fn vault_init(ctx: Context<VaultInit>) -> Result<()> {
         let vault = &mut ctx.accounts.vault;
         vault.owner = ctx.accounts.owner.key();
         vault.mint = ctx.accounts.mint.key();
         vault.token_account = ctx.accounts.vault_token_account.key();
+        vault.token_program = ctx.accounts.token_program.key();
         vault.balance = 0;
         vault.borrowed_amount = 0;
         vault.flash_loan_active = false;
         vault.bump = ctx.bumps.vault;
         
-        msg!("Vault initialized for owner: {}", vault.owner);
+        msg!("Vault initialized for owner: {}, token_program: {}", vault.owner, vault.token_program);
         Ok(())
     }
 
@@ -187,7 +190,7 @@ pub mod arb_router {
         ctx: Context<'_, '_, '_, 'info, RouteSwap<'info>>,
         params: SwapParams,
     ) -> Result<()> {
-        msg!("Executing swap on DEX type: {:?}", params.dex_type as u8);
+        msg!("Executing swap on DEX type: {:?}, a_to_b: {}", params.dex_type as u8, params.a_to_b);
         
         // Route to appropriate DEX
         match params.dex_type {
@@ -206,17 +209,21 @@ pub mod arb_router {
                 )?;
             }
             DexType::Orca => {
+                // Orca requires direction for sqrt_price_limit
                 dex::orca::swap(
                     &ctx.remaining_accounts,
                     params.amount_in,
                     params.min_amount_out,
+                    params.a_to_b,
                 )?;
             }
             DexType::PumpSwap => {
+                // PumpSwap: a_to_b = true means buy (SOL->Token), false means sell (Token->SOL)
                 dex::pumpswap::swap(
                     &ctx.remaining_accounts,
                     params.amount_in,
                     params.min_amount_out,
+                    params.a_to_b,
                 )?;
             }
         }
@@ -273,10 +280,12 @@ pub mod arb_router {
                     dex::meteora::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
                 }
                 DexType::Orca => {
-                    dex::orca::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
+                    // Orca requires direction for sqrt_price_limit
+                    dex::orca::swap(step_accounts, actual_amount_in, step.min_amount_out, step.a_to_b)?;
                 }
                 DexType::PumpSwap => {
-                    dex::pumpswap::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
+                    // PumpSwap: a_to_b = true means buy (SOL->Token), false means sell (Token->SOL)
+                    dex::pumpswap::swap(step_accounts, actual_amount_in, step.min_amount_out, step.a_to_b)?;
                 }
             }
             
@@ -306,7 +315,8 @@ pub struct VaultInit<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
 
-    pub mint: Account<'info, Mint>,
+    /// The mint - supports both Token and Token-2022
+    pub mint: InterfaceAccount<'info, InterfaceMint>,
 
     #[account(
         init,
@@ -317,15 +327,18 @@ pub struct VaultInit<'info> {
     )]
     pub vault: Account<'info, Vault>,
 
+    /// The vault's token account - supports both Token and Token-2022
     #[account(
         init,
         payer = owner,
         token::mint = mint,
         token::authority = vault,
+        token::token_program = token_program,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program - can be Token or Token-2022
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
@@ -335,7 +348,7 @@ pub struct VaultDeposit<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, InterfaceMint>,
 
     #[account(
         mut,
@@ -350,16 +363,20 @@ pub struct VaultDeposit<'info> {
         mut,
         constraint = vault_token_account.key() == vault.token_account,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
     #[account(
         mut,
         constraint = user_token_account.mint == mint.key(),
         constraint = user_token_account.owner == owner.key(),
     )]
-    pub user_token_account: Account<'info, TokenAccount>,
+    pub user_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program - must match the vault's stored token_program
+    #[account(
+        constraint = token_program.key() == vault.token_program @ ArbRouterError::InvalidAccount
+    )]
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -367,7 +384,7 @@ pub struct VaultWithdraw<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, InterfaceMint>,
 
     #[account(
         mut,
@@ -382,16 +399,20 @@ pub struct VaultWithdraw<'info> {
         mut,
         constraint = vault_token_account.key() == vault.token_account,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
     #[account(
         mut,
         constraint = user_token_account.mint == mint.key(),
         constraint = user_token_account.owner == owner.key(),
     )]
-    pub user_token_account: Account<'info, TokenAccount>,
+    pub user_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program - must match the vault's stored token_program
+    #[account(
+        constraint = token_program.key() == vault.token_program @ ArbRouterError::InvalidAccount
+    )]
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -399,7 +420,7 @@ pub struct VaultClose<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, InterfaceMint>,
 
     #[account(
         mut,
@@ -414,9 +435,13 @@ pub struct VaultClose<'info> {
         mut,
         constraint = vault_token_account.key() == vault.token_account,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program - must match the vault's stored token_program
+    #[account(
+        constraint = token_program.key() == vault.token_program @ ArbRouterError::InvalidAccount
+    )]
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -424,7 +449,7 @@ pub struct FlashBorrow<'info> {
     /// The borrower (can be anyone, will repay with interest)
     pub borrower: Signer<'info>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, InterfaceMint>,
 
     #[account(
         mut,
@@ -438,15 +463,19 @@ pub struct FlashBorrow<'info> {
         mut,
         constraint = vault_token_account.key() == vault.token_account,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
     #[account(
         mut,
         constraint = borrower_token_account.mint == mint.key(),
     )]
-    pub borrower_token_account: Account<'info, TokenAccount>,
+    pub borrower_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program - must match the vault's stored token_program
+    #[account(
+        constraint = token_program.key() == vault.token_program @ ArbRouterError::InvalidAccount
+    )]
+    pub token_program: Interface<'info, TokenInterface>,
 
     /// CHECK: Instructions sysvar for verifying repay instruction exists
     #[account(address = solana_program::sysvar::instructions::ID)]
@@ -458,7 +487,7 @@ pub struct FlashRepay<'info> {
     /// The borrower repaying the loan
     pub borrower: Signer<'info>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, InterfaceMint>,
 
     #[account(
         mut,
@@ -472,15 +501,19 @@ pub struct FlashRepay<'info> {
         mut,
         constraint = vault_token_account.key() == vault.token_account,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
     #[account(
         mut,
         constraint = borrower_token_account.mint == mint.key(),
     )]
-    pub borrower_token_account: Account<'info, TokenAccount>,
+    pub borrower_token_account: InterfaceAccount<'info, InterfaceTokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program - must match the vault's stored token_program
+    #[account(
+        constraint = token_program.key() == vault.token_program @ ArbRouterError::InvalidAccount
+    )]
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -509,6 +542,10 @@ pub struct Execute<'info> {
 // Helper Functions
 // ============================================================================
 
+/// flash_repay instruction discriminator
+/// Computed as: sha256("global:flash_repay")[0..8]
+const FLASH_REPAY_DISCRIMINATOR: [u8; 8] = [56, 28, 91, 52, 106, 68, 56, 134];
+
 /// Verify that a flash_repay instruction exists later in the current transaction
 fn verify_repay_instruction_exists(
     instructions_sysvar: &AccountInfo,
@@ -534,17 +571,26 @@ fn verify_repay_instruction_exists(
                     // Check if it's a flash_repay instruction (discriminator check)
                     // Anchor uses first 8 bytes as discriminator
                     if ix.data.len() >= 8 {
-                        // flash_repay discriminator (you may need to adjust this)
-                        let _discriminator = &ix.data[..8];
-                        // This is a simplified check - in practice you'd compute the actual discriminator
-                        // For now, we check that one of the accounts matches our vault
-                        for acc in &ix.accounts {
-                            if acc.pubkey == vault_key {
-                                found_repay = true;
-                                break;
+                        let discriminator: [u8; 8] = ix.data[..8]
+                            .try_into()
+                            .map_err(|_| ArbRouterError::InvalidAccount)?;
+                        
+                        // Verify this is actually a flash_repay instruction
+                        if discriminator == FLASH_REPAY_DISCRIMINATOR {
+                            // Also verify the vault account matches
+                            for acc in &ix.accounts {
+                                if acc.pubkey == vault_key {
+                                    found_repay = true;
+                                    msg!("Found valid flash_repay instruction at index {}", idx);
+                                    break;
+                                }
                             }
                         }
                     }
+                }
+                
+                if found_repay {
+                    break;
                 }
                 idx += 1;
             }

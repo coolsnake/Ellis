@@ -355,10 +355,17 @@ function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): {
       ? BigInt(hop.amountInRaw.toString()) 
       : 0n;
 
+    // Compute swap direction from pool's native mint ordering
+    // aToB = true means swapping mint A -> mint B
+    const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
+    const poolMintA = stat?.native_mint_a || stat?.mint_a;
+    const aToB = hop.inputMint === poolMintA;
+
     steps.push({
       dexType,
       amountIn,
       minAmountOut: BigInt(hop.minOutRaw.toString()),
+      aToB,
     });
 
     // Collect DEX accounts for this hop - pass wallet for signer account positions
@@ -374,6 +381,7 @@ function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): {
         minAmountOut: hop.minOutRaw.toString(),
         isDynamic: i > 0,
         accountCount: hopAccounts.length,
+        aToB,
       },
     });
   }

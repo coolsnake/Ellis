@@ -50,6 +50,7 @@ export {
   loadProgramKeypair,
   deployProgram,
   upgradeProgram,
+  closeProgram,
   getProgramStatus,
   checkDeploymentBalance,
   requestAirdrop,

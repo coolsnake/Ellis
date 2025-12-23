@@ -22,6 +22,10 @@ export const DEX_PROGRAMS = {
   PUMPSWAP: new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'),
 } as const;
 
+// Token Programs
+export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+export const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+
 // Flash loan fee (9 basis points = 0.09%)
 export const FLASH_LOAN_FEE_BPS = 9n;
 export const BPS_DENOMINATOR = 10000n;
@@ -55,7 +59,7 @@ export enum ExecutionMode {
 
 /**
  * Vault account structure (matches on-chain Vault)
- * Size: 8 (discriminator) + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 6 = 128 bytes
+ * Size: 8 (discriminator) + 32 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 6 = 160 bytes
  */
 export interface VaultAccount {
   /** Owner of this vault */
@@ -64,6 +68,8 @@ export interface VaultAccount {
   mint: PublicKey;
   /** Token account that holds the vault's funds */
   tokenAccount: PublicKey;
+  /** Token program ID (SPL Token or Token-2022) */
+  tokenProgram: PublicKey;
   /** Current balance (cached) */
   balance: bigint;
   /** Amount currently borrowed via flash loan */
@@ -102,6 +108,8 @@ export interface RouteStep {
   amountIn: bigint;
   /** Minimum output amount */
   minAmountOut: bigint;
+  /** Swap direction: true = A to B, false = B to A */
+  aToB: boolean;
 }
 
 /**
@@ -124,6 +132,8 @@ export interface SwapParams {
   amountIn: bigint;
   /** Minimum output */
   minAmountOut: bigint;
+  /** Swap direction: true = A to B, false = B to A */
+  aToB: boolean;
 }
 
 /**

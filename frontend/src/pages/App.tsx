@@ -2069,17 +2069,38 @@ export const App: React.FC = () => {
           <section className="bg-gray-900 rounded p-4">
             <h2 className="text-2xl font-semibold mb-3">Wallet</h2>
             <div className="text-base break-all">{wallet?.address}</div>
-            <div className="mt-2 text-base">SOL: {wallet?.balances?.sol ?? '-'}</div>
             {(() => {
-              const sol = Number(wallet?.balances?.sol || 0);
-              const solUsd = prices?.['So11111111111111111111111111111111111111112']?.usdc || null;
+              // Combine native SOL and wSOL for display
+              const SOL_MINT = 'So11111111111111111111111111111111111111112';
+              const nativeSol = Number(wallet?.balances?.sol || 0);
+              const wsolBalance = Number(wallet?.balances?.tokens?.[SOL_MINT] || 0);
+              const combinedSol = nativeSol + wsolBalance;
+              return (
+                <div className="mt-2 text-base">
+                  SOL: {combinedSol.toFixed(6)}
+                  {wsolBalance > 0 && (
+                    <span className="text-gray-500 text-sm ml-2">
+                      ({nativeSol.toFixed(4)} native + {wsolBalance.toFixed(4)} wSOL)
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+            {(() => {
+              const SOL_MINT = 'So11111111111111111111111111111111111111112';
+              const nativeSol = Number(wallet?.balances?.sol || 0);
+              const wsolBalance = Number(wallet?.balances?.tokens?.[SOL_MINT] || 0);
+              const combinedSol = nativeSol + wsolBalance;
+              const solUsd = prices?.[SOL_MINT]?.usdc || null;
               let tokensUsd = 0;
               for (const [mint, amount] of Object.entries(wallet?.balances?.tokens || {})) {
+                // Skip wSOL since it's counted with native SOL
+                if (mint === SOL_MINT) continue;
                 const p = prices?.[mint]?.usdc || 0;
                 tokensUsd += Number(amount) * p;
               }
-              const totalUsd = (solUsd ? sol * solUsd : 0) + tokensUsd;
-              const totalSol = sol + (solUsd ? (tokensUsd / solUsd) : 0);
+              const totalUsd = (solUsd ? combinedSol * solUsd : 0) + tokensUsd;
+              const totalSol = combinedSol + (solUsd ? (tokensUsd / solUsd) : 0);
               return (
                 <div className="mt-2 text-base text-gray-300">
                   <div className="text-gray-400">Portfolio Value</div>
@@ -2091,12 +2112,19 @@ export const App: React.FC = () => {
             <div className="mt-2">
               <div className="text-base text-gray-400 mb-1">SPL Balances</div>
               <ul className="text-sm text-gray-300 space-y-1">
-                {Object.entries(wallet?.balances?.tokens || {}).map(([mint, amount]) => {
-                  const alias = walletTokens.find((t) => t.id === mint);
-                  const label = wallet?.aliases?.[mint] || alias?.symbol || mint.slice(0, 4);
-                  return <li key={mint}>{label}: {Number(amount).toFixed(6)}</li>;
-                })}
-                {Object.keys(wallet?.balances?.tokens || {}).length === 0 && <li className="text-gray-500">No SPL tokens detected</li>}
+                {(() => {
+                  const SOL_MINT = 'So11111111111111111111111111111111111111112';
+                  // Filter out wSOL from SPL list since it's shown with native SOL
+                  const tokenEntries = Object.entries(wallet?.balances?.tokens || {}).filter(([mint]) => mint !== SOL_MINT);
+                  if (tokenEntries.length === 0) {
+                    return <li className="text-gray-500">No SPL tokens detected</li>;
+                  }
+                  return tokenEntries.map(([mint, amount]) => {
+                    const alias = walletTokens.find((t) => t.id === mint);
+                    const label = wallet?.aliases?.[mint] || alias?.symbol || mint.slice(0, 4);
+                    return <li key={mint}>{label}: {Number(amount).toFixed(6)}</li>;
+                  });
+                })()}
               </ul>
             </div>
             {(() => {

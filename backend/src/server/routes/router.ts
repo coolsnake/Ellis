@@ -47,6 +47,7 @@ import {
   buildProgram,
   deployProgram,
   upgradeProgram,
+  closeProgram,
   getProgramStatus,
   checkDeploymentBalance,
   requestAirdrop,
@@ -259,6 +260,83 @@ export function createRouterRouter(io: SocketIOServer): Router {
       res.json(result);
     } catch (err: any) {
       logger.error('router.upgrade.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /router/close - Close the program and recover rent
+   */
+  api.post('/router/close', async (req: Request, res: Response) => {
+    try {
+      const config = await loadRouterConfig();
+      if (!config.programId) {
+        return res.status(400).json({ success: false, error: 'No program deployed' });
+      }
+
+      const { recipient } = req.body; // Optional: specify rent recipient
+
+      // Verify upgrade authority before attempting close
+      const connection = getConnection();
+      const status = await getProgramStatus(connection, config.programId);
+      
+      if (!status.executable) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Program is not executable or already closed' 
+        });
+      }
+      
+      if (!status.upgradeAuthority) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Program has no upgrade authority (immutable). Cannot close.' 
+        });
+      }
+
+      // Verify the wallet is the upgrade authority
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      if (status.upgradeAuthority !== wallet.publicKey.toBase58()) {
+        return res.status(403).json({ 
+          success: false, 
+          error: `You are not the upgrade authority. ` +
+                 `Expected: ${status.upgradeAuthority}, ` +
+                 `Your wallet: ${wallet.publicKey.toBase58()}` 
+        });
+      }
+
+      logger.info('router.close.start', { cat: 'router', programId: config.programId });
+      emit('router:close:start', { programId: config.programId, timestamp: Date.now() });
+
+      const result = await closeProgram(config.programId, CONFIG.walletPath, recipient);
+
+      if (result.success) {
+        // Clear program from config
+        await saveRouterConfig({ 
+          programId: null, 
+          deployedAt: null,
+          enabled: false 
+        });
+        
+        logger.info('router.close.success', { 
+          cat: 'router', 
+          programId: config.programId,
+          rentRecovered: result.rentRecovered,
+          rentRecoveredSOL: result.rentRecovered ? (result.rentRecovered / 1e9).toFixed(6) : 'unknown'
+        });
+        emit('router:close:complete', { 
+          success: true, 
+          programId: config.programId,
+          rentRecovered: result.rentRecovered 
+        });
+      } else {
+        logger.error('router.close.failed', { cat: 'router', error: result.error });
+        emit('router:close:complete', { success: false, error: result.error });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      logger.error('router.close.error', { cat: 'router', error: err.message });
       res.status(500).json({ success: false, error: err.message });
     }
   });

@@ -93,6 +93,7 @@ export const ROUTES = {
     build: '/router/build',
     deploy: '/router/deploy',
     upgrade: '/router/upgrade',
+    close: '/router/close',
     airdrop: '/router/airdrop',
     vaults: '/router/vaults',
     cli: '/router/cli',

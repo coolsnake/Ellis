@@ -92,6 +92,9 @@ export function deserializeVault(data: Buffer): VaultAccount {
   const tokenAccount = new PublicKey(data.subarray(offset, offset + 32));
   offset += 32;
 
+  const tokenProgram = new PublicKey(data.subarray(offset, offset + 32));
+  offset += 32;
+
   const balance = BigInt(new BN(data.subarray(offset, offset + 8), 'le').toString());
   offset += 8;
 
@@ -107,6 +110,7 @@ export function deserializeVault(data: Buffer): VaultAccount {
     owner,
     mint,
     tokenAccount,
+    tokenProgram,
     balance,
     borrowedAmount,
     flashLoanActive,
@@ -139,7 +143,7 @@ export async function fetchVaultsForOwner(
   // Get all program accounts with the vault discriminator
   const accounts = await connection.getProgramAccounts(programId, {
     filters: [
-      { dataSize: 128 }, // Vault size
+      { dataSize: 160 }, // Vault size (8 + 32*4 + 8*2 + 1 + 1 + 6 = 160)
       { memcmp: { offset: 8, bytes: owner.toBase58() } }, // Owner at offset 8
     ],
   });
@@ -348,12 +352,13 @@ export function buildRouteSwapIx(
   dexAccounts: PublicKey[],
   programId: PublicKey = ARB_ROUTER_PROGRAM_ID
 ): TransactionInstruction {
-  // Serialize SwapParams
+  // Serialize SwapParams (includes a_to_b direction)
   const data = Buffer.concat([
     DISCRIMINATORS.routeSwap,
     Buffer.from([params.dexType]), // DexType enum
     new BN(params.amountIn.toString()).toArrayLike(Buffer, 'le', 8),
     new BN(params.minAmountOut.toString()).toArrayLike(Buffer, 'le', 8),
+    Buffer.from([params.aToB ? 1 : 0]), // a_to_b direction flag
   ]);
 
   const keys = [
@@ -385,12 +390,13 @@ export function buildExecuteIx(
   allDexAccounts: PublicKey[],
   programId: PublicKey = ARB_ROUTER_PROGRAM_ID
 ): TransactionInstruction {
-  // Serialize ExecuteParams
+  // Serialize ExecuteParams (each step includes a_to_b direction)
   const stepsData = params.steps.map((step) =>
     Buffer.concat([
       Buffer.from([step.dexType]),
       new BN(step.amountIn.toString()).toArrayLike(Buffer, 'le', 8),
       new BN(step.minAmountOut.toString()).toArrayLike(Buffer, 'le', 8),
+      Buffer.from([step.aToB ? 1 : 0]), // a_to_b direction flag
     ])
   );
 

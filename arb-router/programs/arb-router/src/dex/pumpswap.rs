@@ -52,28 +52,41 @@ pub struct SellParams {
 /// 9. `[]` Token Program
 /// 10. `[]` Rent
 /// 11. `[]` PumpSwap Program
+///
+/// # Arguments
+/// * `accounts` - DEX-specific accounts in the order above
+/// * `amount_in` - Amount of input tokens to swap
+/// * `min_amount_out` - Minimum output tokens (slippage protection)
+/// * `is_buy` - Direction: true = buy (SOL->Token), false = sell (Token->SOL)
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
+    is_buy: bool,
 ) -> Result<()> {
     if accounts.len() < ACCOUNTS_NEEDED {
         msg!("PumpSwap: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
-    // Determine if this is a buy or sell based on what token is being input
-    // For simplicity, we'll default to buy (SOL -> Token)
-    // In practice, you'd determine this from the account types
-    
-    let params = BuyParams {
-        amount: amount_in,
-        min_tokens_out: min_amount_out,
-    };
-
+    // Build instruction data based on direction
     let mut data = Vec::with_capacity(8 + 8 + 8);
-    data.extend_from_slice(&BUY_DISCRIMINATOR);
-    params.serialize(&mut data)?;
+    
+    if is_buy {
+        let params = BuyParams {
+            amount: amount_in,
+            min_tokens_out: min_amount_out,
+        };
+        data.extend_from_slice(&BUY_DISCRIMINATOR);
+        params.serialize(&mut data)?;
+    } else {
+        let params = SellParams {
+            amount: amount_in,
+            min_sol_out: min_amount_out,
+        };
+        data.extend_from_slice(&SELL_DISCRIMINATOR);
+        params.serialize(&mut data)?;
+    }
 
     // Build account metas
     let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
@@ -102,7 +115,7 @@ pub fn swap(
     let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
     invoke(&ix, &account_infos)?;
 
-    msg!("PumpSwap swap executed: {} in, min {} out", amount_in, min_amount_out);
+    msg!("PumpSwap swap executed: {} in, min {} out, is_buy: {}", amount_in, min_amount_out, is_buy);
     Ok(())
 }
 

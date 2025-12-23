@@ -36,6 +36,13 @@ export interface BuildResult {
   logs?: string[];
 }
 
+export interface CloseResult {
+  success: boolean;
+  rentRecovered?: number;
+  error?: string;
+  logs?: string[];
+}
+
 // ============================================================================
 // Deployment Functions
 // ============================================================================
@@ -432,6 +439,127 @@ export async function upgradeProgram(
     return {
       success: false,
       error: `Upgrade failed: ${err.message}`,
+      logs,
+    };
+  }
+}
+
+/**
+ * Close a deployed program and recover rent
+ * Requires: upgrade authority must be the wallet used
+ */
+export async function closeProgram(
+  programId: string,
+  walletPath?: string,
+  recipient?: string
+): Promise<CloseResult> {
+  const logs: string[] = [];
+
+  try {
+    if (!isSolanaCliAvailable()) {
+      return {
+        success: false,
+        error: 'Solana CLI not available',
+        logs,
+      };
+    }
+
+    logs.push(`Closing program: ${programId}`);
+    logs.push(`Cluster: ${getSolanaCluster()}`);
+
+    // Estimate rent to recover (best effort)
+    let estimatedRent = 0;
+    try {
+      const { getConnection } = await import('../wallet/wallet.js');
+      const connection = getConnection();
+      const programPubkey = new PublicKey(programId);
+      
+      const accountInfo = await connection.getAccountInfo(programPubkey);
+      if (accountInfo) {
+        estimatedRent = accountInfo.lamports;
+        
+        // Try to get program data account rent too
+        if (accountInfo.data.length >= 36) {
+          try {
+            const programDataAddress = new PublicKey(accountInfo.data.subarray(4, 36));
+            const programDataInfo = await connection.getAccountInfo(programDataAddress);
+            if (programDataInfo) {
+              estimatedRent += programDataInfo.lamports;
+            }
+          } catch {
+            // Ignore errors reading program data account
+          }
+        }
+      }
+      
+      logs.push(`Estimated rent to recover: ${(estimatedRent / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
+    } catch (e: any) {
+      logs.push(`Could not estimate rent: ${e.message}`);
+    }
+
+    // Build close command
+    // solana program close <PROGRAM_ID> [OPTIONS]
+    const args = ['program', 'close', programId, '--bypass-warning'];
+    
+    if (walletPath) {
+      args.push('--keypair', walletPath);
+    }
+    
+    if (recipient) {
+      args.push('--recipient', recipient);
+    }
+
+    return new Promise((resolve) => {
+      const close = spawn('solana', args, {
+        shell: true,
+      });
+
+      close.stdout.on('data', (data) => {
+        const line = data.toString().trim();
+        logs.push(line);
+        logger.info('solana.close.stdout', { cat: 'router', line });
+      });
+
+      close.stderr.on('data', (data) => {
+        const line = data.toString().trim();
+        logs.push(line);
+        // Check if this is an error or just info
+        if (line.toLowerCase().includes('error') || line.toLowerCase().includes('failed')) {
+          logger.error('solana.close.stderr', { cat: 'router', line });
+        } else {
+          logger.warn('solana.close.stderr', { cat: 'router', line });
+        }
+      });
+
+      close.on('close', (code) => {
+        if (code === 0) {
+          logs.push('Program closed successfully');
+          resolve({
+            success: true,
+            rentRecovered: estimatedRent,
+            logs,
+          });
+        } else {
+          resolve({
+            success: false,
+            error: `Close failed with exit code ${code}`,
+            logs,
+          });
+        }
+      });
+
+      close.on('error', (err) => {
+        resolve({
+          success: false,
+          error: `Close error: ${err.message}`,
+          logs,
+        });
+      });
+    });
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Close failed: ${err.message}`,
       logs,
     };
   }

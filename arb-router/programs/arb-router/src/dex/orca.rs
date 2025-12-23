@@ -14,8 +14,14 @@ use crate::error::ArbRouterError;
 pub const ACCOUNTS_NEEDED: usize = 15;
 
 /// Orca Whirlpool swap instruction discriminator
-/// swap instruction: [248, 198, 158, 145, 225, 117, 135, 200] - same as "swap"
-const SWAP_DISCRIMINATOR: [u8; 8] = [43, 4, 237, 11, 26, 201, 30, 98];
+/// Computed as: sha256("global:swap")[0..8]
+const SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
+
+/// Sqrt price limits for swap direction
+/// MIN_SQRT_PRICE_X64 + 1 for A->B (price decreases)
+const MIN_SQRT_PRICE_LIMIT: u128 = 4295048017;
+/// MAX_SQRT_PRICE_X64 - 1 for B->A (price increases)
+const MAX_SQRT_PRICE_LIMIT: u128 = 79226673515401279992447579055;
 
 /// Orca Whirlpool swap parameters
 #[derive(AnchorSerialize, AnchorDeserialize)]
@@ -50,23 +56,39 @@ pub struct SwapParams {
 /// 12. `[]` Token Mint B
 /// 13. `[]` Memo Program (optional)
 /// 14. `[]` Whirlpool Program
+///
+/// # Arguments
+/// * `accounts` - DEX-specific accounts in the order above
+/// * `amount_in` - Amount of input tokens to swap
+/// * `min_amount_out` - Minimum output tokens (slippage protection)
+/// * `a_to_b` - Swap direction: true = A->B, false = B->A
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
+    a_to_b: bool,
 ) -> Result<()> {
     if accounts.len() < ACCOUNTS_NEEDED {
         msg!("Orca: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
+    // Set sqrt_price_limit based on direction
+    // A->B: price decreases, use MIN limit
+    // B->A: price increases, use MAX limit
+    let sqrt_price_limit = if a_to_b {
+        MIN_SQRT_PRICE_LIMIT
+    } else {
+        MAX_SQRT_PRICE_LIMIT
+    };
+
     // Build the swap instruction data
     let params = SwapParams {
         amount: amount_in,
         other_amount_threshold: min_amount_out,
-        sqrt_price_limit: 0, // No price limit (will use MIN or MAX based on direction)
+        sqrt_price_limit,
         amount_specified_is_input: true,
-        a_to_b: true, // This should be determined by the route, simplified here
+        a_to_b,
     };
 
     let mut data = Vec::with_capacity(8 + 8 + 8 + 16 + 1 + 1);
@@ -100,7 +122,7 @@ pub fn swap(
     let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
     invoke(&ix, &account_infos)?;
 
-    msg!("Orca Whirlpool swap executed: {} in, min {} out", amount_in, min_amount_out);
+    msg!("Orca Whirlpool swap executed: {} in, min {} out, a_to_b: {}", amount_in, min_amount_out, a_to_b);
     Ok(())
 }
 
