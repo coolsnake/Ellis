@@ -37,37 +37,38 @@ arb-router: ## Build Anchor arb-router program
 			rm -rf /root/.cache/solana 2>/dev/null || true; \
 		fi; \
 		echo "Anchor will automatically reinstall platform tools during build."'
-	@echo "Note: Anchor.toml specifies version 0.30.1"
+	@echo "Note: Anchor.toml specifies version 0.32.1"
 	@bash -c '\
 		ANCHOR_INSTALLED=false; \
 		if command -v anchor >/dev/null 2>&1; then \
 			ANCHOR_VER=$$(anchor --version 2>/dev/null | head -1 || echo "unknown"); \
 			echo "Found Anchor: $$ANCHOR_VER"; \
-			if echo "$$ANCHOR_VER" | grep -q "0.30.1"; then \
+			if echo "$$ANCHOR_VER" | grep -q "0.32.1"; then \
 				ANCHOR_INSTALLED=true; \
+				echo "Anchor 0.32.1 is already installed."; \
 			fi; \
 		fi; \
 		if [ "$$ANCHOR_INSTALLED" != "true" ] && command -v avm >/dev/null 2>&1; then \
-			echo "Attempting to install Anchor 0.30.1 via AVM..."; \
-			if avm install 0.30.1 2>&1 | grep -v "already installed"; then \
-				avm use 0.30.1 && ANCHOR_INSTALLED=true || true; \
+			echo "Attempting to install Anchor 0.32.1 via AVM..."; \
+			if avm install 0.32.1 2>&1 | grep -v "already installed"; then \
+				avm use 0.32.1 && ANCHOR_INSTALLED=true || true; \
 			else \
-				avm use 0.30.1 && ANCHOR_INSTALLED=true || true; \
+				avm use 0.32.1 && ANCHOR_INSTALLED=true || true; \
 			fi; \
 		fi; \
 		if [ "$$ANCHOR_INSTALLED" != "true" ] && command -v cargo >/dev/null 2>&1; then \
-			echo "Attempting to install Anchor 0.30.1 via cargo (without --locked to allow dependency updates)..."; \
-			if ! CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1 --force 2>&1 | head -50; then \
-				echo "Anchor 0.30.1 installation failed (likely due to Rust 1.83+ compatibility)."; \
-				echo "Installing Anchor 0.32.1 as fallback (program code uses anchor-lang 0.30.1)..."; \
-				CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.32.1 --locked --force 2>&1 | head -50 || \
-				echo "Warning: Anchor installation failed. Build will attempt with available Anchor version."; \
-			fi; \
+			echo "Installing Anchor 0.32.1 via cargo..."; \
+			CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.32.1 --locked --force 2>&1 | head -50 || \
+			echo "Warning: Anchor 0.32.1 installation failed. Build will attempt with available Anchor version."; \
 		fi'
 	@echo "Installing npm dependencies..."
 	cd arb-router && npm ci --legacy-peer-deps
-	@echo "Removing old Cargo.lock to regenerate with Anchor 0.32.1..."
-	@rm -f arb-router/Cargo.lock 2>/dev/null || true
+	@echo "Removing old Cargo.lock files to regenerate with Anchor 0.32.1..."
+	@bash -c '\
+		rm -f arb-router/Cargo.lock 2>/dev/null || true; \
+		rm -f arb-router/programs/*/Cargo.lock 2>/dev/null || true; \
+		find arb-router -name "Cargo.lock" -delete 2>/dev/null || true; \
+		echo "Cargo.lock files removed. Anchor will regenerate during build."'
 	@echo "Building Anchor program (using Anchor 0.32.1)..."
 	@echo "Attempting to update Solana platform tools (current Rust 1.75 is too old)..."
 	@bash -c '\
@@ -90,7 +91,9 @@ arb-router: ## Build Anchor arb-router program
 		echo "Cleared platform tools cache. Anchor will download newer version."'
 	cd arb-router && bash -c '\
 		rustup override set stable 2>/dev/null || true; \
-		if command -v avm >/dev/null 2>&1; then avm use 0.30.1 || true; fi; \
+		if command -v avm >/dev/null 2>&1; then avm use 0.32.1 || true; fi; \
+		export CARGO_NET_GIT_FETCH_WITH_CLI=true; \
+		export CARGO_TARGET_DIR=target; \
 		anchor build'
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
