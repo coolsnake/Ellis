@@ -1,6 +1,6 @@
 # Lockstone Makefile
 
-.PHONY: build build-all backend frontend arb arb-router deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs arb-router-devnet arb-router-mainnet arb-router-test arb-router-airdrop
+.PHONY: build build-all backend frontend arb arb-router deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs arb-router-devnet arb-router-mainnet arb-router-test arb-router-airdrop clean clean-cargo clean-tmp
 
 WWW_DIR ?= /var/www/lockstone
 
@@ -45,9 +45,13 @@ arb-router: ## Build Anchor arb-router program
 			fi; \
 		fi; \
 		if [ "$$ANCHOR_INSTALLED" != "true" ] && command -v cargo >/dev/null 2>&1; then \
-			echo "Installing Anchor 0.30.1 directly via cargo (with git fetch workaround)..."; \
-			CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1 --locked --force 2>&1 | head -50 || \
-			echo "Warning: Anchor 0.30.1 installation failed. Build will attempt with available Anchor version."; \
+			echo "Attempting to install Anchor 0.30.1 via cargo (without --locked to allow dependency updates)..."; \
+			if ! CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1 --force 2>&1 | head -50; then \
+				echo "Anchor 0.30.1 installation failed (likely due to Rust 1.83+ compatibility)."; \
+				echo "Installing Anchor 0.32.1 as fallback (program code uses anchor-lang 0.30.1)..."; \
+				CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.32.1 --locked --force 2>&1 | head -50 || \
+				echo "Warning: Anchor installation failed. Build will attempt with available Anchor version."; \
+			fi; \
 		fi'
 	@echo "Installing npm dependencies..."
 	cd arb-router && npm ci --legacy-peer-deps
@@ -100,5 +104,21 @@ logs: ## Open tmux dashboard for backend and arb logs
 
 start-logs: start ## Start services then open tmux dashboard
 	@if [ -t 1 ]; then bash scripts/logdash.sh; else echo "Non-interactive shell detected; skipping log dashboard"; fi
+
+clean-cargo: ## Clean Cargo caches and temporary build files
+	@echo "Cleaning Cargo cache..."
+	cargo clean 2>/dev/null || true
+	rm -rf ~/.cargo/registry/cache 2>/dev/null || true
+	rm -rf /tmp/cargo-install* 2>/dev/null || true
+	@echo "Cargo cache cleaned."
+
+clean-tmp: ## Clean temporary files
+	@echo "Cleaning temporary files..."
+	rm -rf /tmp/cargo-install* 2>/dev/null || true
+	rm -rf /tmp/rustc* 2>/dev/null || true
+	@echo "Temporary files cleaned."
+
+clean: clean-cargo clean-tmp ## Clean all build artifacts and caches
+	@echo "All caches cleaned."
 
 
