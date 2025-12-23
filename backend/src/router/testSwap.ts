@@ -13,6 +13,7 @@ import {
 } from '@solana/web3.js';
 import {
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountInstruction,
   createSyncNativeInstruction,
@@ -67,6 +68,7 @@ export interface RaydiumClmmPoolState {
   observationId: string;
   tickCurrent: number;
   tickSpacing: number;
+  tokenProgram: string; // Token program ID used by the vaults
   tickArrays: {
     lower: string;
     center: string;
@@ -137,16 +139,40 @@ async function fetchRaydiumClmmPool(
       deriveTickArrayPda(programId, poolPubkey, centerStart + delta),
     ]);
 
+    // Determine token program by checking vault account owners
+    const vaultA = new PublicKey(state.vaultA || state.tokenVault0 || state.tokenVaultA);
+    const vaultB = new PublicKey(state.vaultB || state.tokenVault1 || state.tokenVaultB);
+    
+    const [vaultAInfo, vaultBInfo] = await Promise.all([
+      connection.getAccountInfo(vaultA),
+      connection.getAccountInfo(vaultB),
+    ]);
+    
+    // Check which token program owns the vaults (use vaultA as primary, fallback to vaultB)
+    let tokenProgramId = TOKEN_PROGRAM_ID;
+    if (vaultAInfo) {
+      const owner = vaultAInfo.owner.toBase58();
+      if (owner === TOKEN_2022_PROGRAM_ID.toBase58()) {
+        tokenProgramId = TOKEN_2022_PROGRAM_ID;
+      }
+    } else if (vaultBInfo) {
+      const owner = vaultBInfo.owner.toBase58();
+      if (owner === TOKEN_2022_PROGRAM_ID.toBase58()) {
+        tokenProgramId = TOKEN_2022_PROGRAM_ID;
+      }
+    }
+
     const pool: RaydiumClmmPoolState = {
       programId: accountInfo.owner.toBase58(),
       ammConfig: new PublicKey(state.ammConfig || state.amm_config).toBase58(),
-      vaultA: new PublicKey(state.vaultA || state.tokenVault0 || state.tokenVaultA).toBase58(),
-      vaultB: new PublicKey(state.vaultB || state.tokenVault1 || state.tokenVaultB).toBase58(),
+      vaultA: vaultA.toBase58(),
+      vaultB: vaultB.toBase58(),
       mintA: new PublicKey(state.mintA || state.tokenMint0 || state.mint0).toBase58(),
       mintB: new PublicKey(state.mintB || state.tokenMint1 || state.mint1).toBase58(),
       observationId: new PublicKey(state.observationId || state.observation_id || state.observationAccount).toBase58(),
       tickCurrent,
       tickSpacing,
+      tokenProgram: tokenProgramId.toBase58(),
       tickArrays: {
         lower: lower.toBase58(),
         center: center.toBase58(),
@@ -215,9 +241,22 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     // Build transaction with setup instructions
     const tx = new Transaction();
     
-    // Ensure user has ATAs
-    const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
-    const userOutAta = getAssociatedTokenAddressSync(outMint, wallet.publicKey);
+    // Detect token programs for mints (needed for ATA creation)
+    const [inMintInfo, outMintInfo] = await Promise.all([
+      connection.getAccountInfo(inMint),
+      connection.getAccountInfo(outMint),
+    ]);
+    
+    const inMintTokenProgram = inMintInfo?.owner.equals(TOKEN_2022_PROGRAM_ID) 
+      ? TOKEN_2022_PROGRAM_ID 
+      : TOKEN_PROGRAM_ID;
+    const outMintTokenProgram = outMintInfo?.owner.equals(TOKEN_2022_PROGRAM_ID)
+      ? TOKEN_2022_PROGRAM_ID
+      : TOKEN_PROGRAM_ID;
+    
+    // Ensure user has ATAs (use correct token program for each mint)
+    const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey, false, inMintTokenProgram);
+    const userOutAta = getAssociatedTokenAddressSync(outMint, wallet.publicKey, false, outMintTokenProgram);
     
     const [inAtaInfo, outAtaInfo] = await Promise.all([
       connection.getAccountInfo(userInAta),
@@ -226,7 +265,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     
     if (!inAtaInfo) {
       tx.add(createAssociatedTokenAccountInstruction(
-        wallet.publicKey, userInAta, wallet.publicKey, inMint
+        wallet.publicKey, userInAta, wallet.publicKey, inMint, inMintTokenProgram
       ));
       // If input is SOL, wrap some
       if (inMint.equals(NATIVE_MINT)) {
@@ -236,14 +275,14 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
             toPubkey: userInAta,
             lamports: Number(amountIn) + 10000, // Add extra for rent
           }),
-          createSyncNativeInstruction(userInAta)
+          createSyncNativeInstruction(userInAta, inMintTokenProgram)
         );
       }
     }
     
     if (!outAtaInfo) {
       tx.add(createAssociatedTokenAccountInstruction(
-        wallet.publicKey, userOutAta, wallet.publicKey, outMint
+        wallet.publicKey, userOutAta, wallet.publicKey, outMint, outMintTokenProgram
       ));
     }
     
@@ -335,6 +374,9 @@ function buildRaydiumClmmSwapIx(
     Buffer.from([1]), // is_base_input = true
   ]);
   
+  // Use the token program from pool state (detected from vault accounts)
+  const tokenProgram = new PublicKey(pool.tokenProgram);
+  
   const accounts = [
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: new PublicKey(pool.ammConfig), isSigner: false, isWritable: false },
@@ -344,7 +386,7 @@ function buildRaydiumClmmSwapIx(
     { pubkey: new PublicKey(inputVault), isSigner: false, isWritable: true },
     { pubkey: new PublicKey(outputVault), isSigner: false, isWritable: true },
     { pubkey: new PublicKey(pool.observationId), isSigner: false, isWritable: true },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: tokenProgram, isSigner: false, isWritable: false }, // Use detected token program
     { pubkey: new PublicKey(pool.tickArrays.lower), isSigner: false, isWritable: true },
     { pubkey: new PublicKey(pool.tickArrays.center), isSigner: false, isWritable: true },
     { pubkey: new PublicKey(pool.tickArrays.upper), isSigner: false, isWritable: true },
