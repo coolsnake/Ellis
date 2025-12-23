@@ -9,9 +9,9 @@ HELIUS_API_KEY ?= 4673beb7-dcca-4942-91ac-c69babdf1f02
 HELIUS_DEVNET_RPC = https://devnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
 HELIUS_MAINNET_RPC = https://mainnet.helius-rpc.com/?api-key=$(HELIUS_API_KEY)
 
-build: backend frontend arb arb-router ## Build backend, frontend, arb-rs, and arb-router (use sudo)
+build: backend frontend arb ## Build backend, frontend, and arb-rs (use sudo)
 
-build-all: build ## Alias for build (kept for backward compatibility)
+build-all: build arb-router ## Build everything including arb-router (requires compatible Solana tooling)
 
 backend: ## Build backend
 	cd backend && npm ci --legacy-peer-deps --include=dev && npm run build
@@ -24,33 +24,59 @@ frontend: ## Build frontend and sync to $(WWW_DIR)
 arb: ## Build Rust arb-rs
 	cd arb-rs && cargo build --release
 
-arb-router: ## Build Anchor arb-router program
+arb-router: ## Build Anchor arb-router program (requires Solana platform tools with Rust 1.76+)
 	@echo "=== Building arb-router program ==="
-	@echo "Note: Using anchor-lang 0.30.1 (compatible with Solana platform tools Rust 1.75)"
+	@echo ""
+	@echo "REQUIREMENTS:"
+	@echo "  - Anchor CLI installed"
+	@echo "  - Solana CLI with platform tools (Rust 1.76+)"
+	@echo "  - Rust 1.75.0 for Cargo.lock generation"
+	@echo ""
 	@bash -c '\
-		if command -v anchor >/dev/null 2>&1; then \
-			ANCHOR_VER=$$(anchor --version 2>/dev/null | head -1 || echo "unknown"); \
-			echo "Found Anchor CLI: $$ANCHOR_VER"; \
-		else \
-			echo "Anchor CLI not found. Please install with: cargo install --git https://github.com/coral-xyz/anchor anchor-cli"; \
+		if ! command -v anchor >/dev/null 2>&1; then \
+			echo "ERROR: Anchor CLI not found."; \
+			echo "Install with: cargo install --git https://github.com/coral-xyz/anchor anchor-cli"; \
 			exit 1; \
-		fi'
+		fi; \
+		ANCHOR_VER=$$(anchor --version 2>/dev/null | head -1 || echo "unknown"); \
+		echo "Found Anchor CLI: $$ANCHOR_VER"'
 	@echo "Installing npm dependencies..."
 	cd arb-router && npm ci --legacy-peer-deps
-	@echo "Generating Cargo.lock with Rust 1.75.0 (creates v3 format compatible with platform tools)..."
+	@echo "Generating Cargo.lock and pinning dependencies for Rust 1.75 compatibility..."
 	@bash -c '\
-		rm -f arb-router/Cargo.lock 2>/dev/null || true; \
-		if rustup run 1.75.0 cargo --version >/dev/null 2>&1; then \
-			cd arb-router && rustup run 1.75.0 cargo generate-lockfile; \
-			echo "Cargo.lock generated with Rust 1.75.0 (v3 format)"; \
-		else \
-			echo "Rust 1.75.0 not installed. Installing..."; \
+		cd arb-router; \
+		rm -f Cargo.lock 2>/dev/null || true; \
+		if ! rustup run 1.75.0 cargo --version >/dev/null 2>&1; then \
+			echo "Installing Rust 1.75.0..."; \
 			rustup install 1.75.0; \
-			cd arb-router && rustup run 1.75.0 cargo generate-lockfile; \
-			echo "Cargo.lock generated with Rust 1.75.0 (v3 format)"; \
-		fi'
+		fi; \
+		echo "Generating Cargo.lock with Rust 1.75.0..."; \
+		rustup run 1.75.0 cargo generate-lockfile 2>&1 || true; \
+		echo "Pinning problematic dependencies to Rust 1.75-compatible versions..."; \
+		rustup run 1.75.0 cargo update -p toml_datetime --precise 0.6.5 2>/dev/null || true; \
+		rustup run 1.75.0 cargo update -p toml_edit --precise 0.21.0 2>/dev/null || true; \
+		rustup run 1.75.0 cargo update -p winnow --precise 0.5.40 2>/dev/null || true; \
+		rustup run 1.75.0 cargo update -p borsh --precise 1.5.1 2>/dev/null || true; \
+		rustup run 1.75.0 cargo update -p borsh-derive --precise 1.5.1 2>/dev/null || true; \
+		echo "Cargo.lock prepared for Rust 1.75 compatibility."'
 	@echo "Building Anchor program..."
-	cd arb-router && anchor build
+	cd arb-router && anchor build || { \
+		echo ""; \
+		echo "=== BUILD FAILED ==="; \
+		echo ""; \
+		echo "The arb-router build failed. Common causes:"; \
+		echo "  1. Solana platform tools have old Rust (1.75.0-dev)"; \
+		echo "  2. Dependency version conflicts"; \
+		echo ""; \
+		echo "SOLUTIONS:"; \
+		echo "  1. Update Solana to latest version with newer platform tools"; \
+		echo "  2. Build on a machine with compatible Solana tooling"; \
+		echo "  3. Use Docker with the correct Solana/Anchor versions"; \
+		echo ""; \
+		echo "The main Lockstone application (backend, frontend, arb-rs) works without arb-router."; \
+		echo "arb-router is only needed for on-chain program deployment."; \
+		exit 1; \
+	}
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
 	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet
