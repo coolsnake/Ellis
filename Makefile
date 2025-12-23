@@ -26,6 +26,17 @@ arb: ## Build Rust arb-rs
 
 arb-router: ## Build Anchor arb-router program
 	@echo "=== Building arb-router program ==="
+	@echo "Cleaning corrupted Solana platform tools cache..."
+	@bash -c '\
+		if [ -d "$$HOME/.cache/solana" ]; then \
+			echo "Removing corrupted Solana cache..."; \
+			rm -rf $$HOME/.cache/solana 2>/dev/null || true; \
+		fi; \
+		if [ -d "/root/.cache/solana" ] && [ "$$(id -u)" = "0" ]; then \
+			echo "Removing root Solana cache..."; \
+			rm -rf /root/.cache/solana 2>/dev/null || true; \
+		fi; \
+		echo "Anchor will automatically reinstall platform tools during build."'
 	@echo "Note: Anchor.toml specifies version 0.30.1"
 	@bash -c '\
 		ANCHOR_INSTALLED=false; \
