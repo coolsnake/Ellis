@@ -67,7 +67,11 @@ arb-router: ## Build Anchor arb-router program
 	@echo "Installing npm dependencies..."
 	cd arb-router && npm ci --legacy-peer-deps
 	@echo "Building Anchor program (Anchor.toml will attempt to use 0.30.1)..."
-	cd arb-router && bash -c 'if command -v avm >/dev/null 2>&1; then avm use 0.30.1 || true; fi; anchor build'
+	@echo "Setting Rust toolchain to stable (Solana platform tools Rust 1.75 is too old)..."
+	cd arb-router && bash -c '\
+		rustup override set stable 2>/dev/null || true; \
+		if command -v avm >/dev/null 2>&1; then avm use 0.30.1 || true; fi; \
+		anchor build'
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
 	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet
