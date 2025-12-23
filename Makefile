@@ -25,21 +25,34 @@ arb: ## Build Rust arb-rs
 	cd arb-rs && cargo build --release
 
 arb-router: ## Build Anchor arb-router program
-	@echo "Ensuring Anchor 0.30.1 is installed..."
+	@echo "=== Building arb-router program ==="
+	@echo "Note: Anchor.toml specifies version 0.30.1"
 	@bash -c '\
-		if command -v avm >/dev/null 2>&1; then \
-			echo "Installing Anchor 0.30.1 via AVM..."; \
-			if ! avm install 0.30.1 2>&1; then \
-				echo "AVM install failed, trying cargo install..."; \
-				cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1 --locked --force || true; \
+		ANCHOR_INSTALLED=false; \
+		if command -v anchor >/dev/null 2>&1; then \
+			ANCHOR_VER=$$(anchor --version 2>/dev/null | head -1 || echo "unknown"); \
+			echo "Found Anchor: $$ANCHOR_VER"; \
+			if echo "$$ANCHOR_VER" | grep -q "0.30.1"; then \
+				ANCHOR_INSTALLED=true; \
 			fi; \
-			avm use 0.30.1 || true; \
-		else \
-			echo "AVM not found, installing Anchor 0.30.1 via cargo..."; \
-			cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1 --locked --force || true; \
+		fi; \
+		if [ "$$ANCHOR_INSTALLED" != "true" ] && command -v avm >/dev/null 2>&1; then \
+			echo "Attempting to install Anchor 0.30.1 via AVM..."; \
+			if avm install 0.30.1 2>&1 | grep -v "already installed"; then \
+				avm use 0.30.1 && ANCHOR_INSTALLED=true || true; \
+			else \
+				avm use 0.30.1 && ANCHOR_INSTALLED=true || true; \
+			fi; \
+		fi; \
+		if [ "$$ANCHOR_INSTALLED" != "true" ] && command -v cargo >/dev/null 2>&1; then \
+			echo "Installing Anchor 0.30.1 directly via cargo (with git fetch workaround)..."; \
+			CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1 --locked --force 2>&1 | head -50 || \
+			echo "Warning: Anchor 0.30.1 installation failed. Build will attempt with available Anchor version."; \
 		fi'
-	cd arb-router && npm ci --legacy-peer-deps && \
-		bash -c 'if command -v avm >/dev/null 2>&1; then avm use 0.30.1 || true; fi; anchor build'
+	@echo "Installing npm dependencies..."
+	cd arb-router && npm ci --legacy-peer-deps
+	@echo "Building Anchor program (Anchor.toml will attempt to use 0.30.1)..."
+	cd arb-router && bash -c 'if command -v avm >/dev/null 2>&1; then avm use 0.30.1 || true; fi; anchor build'
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
 	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet
