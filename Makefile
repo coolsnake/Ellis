@@ -26,75 +26,31 @@ arb: ## Build Rust arb-rs
 
 arb-router: ## Build Anchor arb-router program
 	@echo "=== Building arb-router program ==="
-	@echo "Cleaning corrupted Solana platform tools cache..."
+	@echo "Note: Using anchor-lang 0.30.1 (compatible with Solana platform tools Rust 1.75)"
 	@bash -c '\
-		if [ -d "$$HOME/.cache/solana" ]; then \
-			echo "Removing corrupted Solana cache..."; \
-			rm -rf $$HOME/.cache/solana 2>/dev/null || true; \
-		fi; \
-		if [ -d "/root/.cache/solana" ] && [ "$$(id -u)" = "0" ]; then \
-			echo "Removing root Solana cache..."; \
-			rm -rf /root/.cache/solana 2>/dev/null || true; \
-		fi; \
-		echo "Anchor will automatically reinstall platform tools during build."'
-	@echo "Note: Anchor.toml specifies version 0.32.1"
-	@bash -c '\
-		ANCHOR_INSTALLED=false; \
 		if command -v anchor >/dev/null 2>&1; then \
 			ANCHOR_VER=$$(anchor --version 2>/dev/null | head -1 || echo "unknown"); \
-			echo "Found Anchor: $$ANCHOR_VER"; \
-			if echo "$$ANCHOR_VER" | grep -q "0.32.1"; then \
-				ANCHOR_INSTALLED=true; \
-				echo "Anchor 0.32.1 is already installed."; \
-			fi; \
-		fi; \
-		if [ "$$ANCHOR_INSTALLED" != "true" ] && command -v avm >/dev/null 2>&1; then \
-			echo "Attempting to install Anchor 0.32.1 via AVM..."; \
-			if avm install 0.32.1 2>&1 | grep -v "already installed"; then \
-				avm use 0.32.1 && ANCHOR_INSTALLED=true || true; \
-			else \
-				avm use 0.32.1 && ANCHOR_INSTALLED=true || true; \
-			fi; \
-		fi; \
-		if [ "$$ANCHOR_INSTALLED" != "true" ] && command -v cargo >/dev/null 2>&1; then \
-			echo "Installing Anchor 0.32.1 via cargo..."; \
-			CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.32.1 --locked --force 2>&1 | head -50 || \
-			echo "Warning: Anchor 0.32.1 installation failed. Build will attempt with available Anchor version."; \
+			echo "Found Anchor CLI: $$ANCHOR_VER"; \
+		else \
+			echo "Anchor CLI not found. Please install with: cargo install --git https://github.com/coral-xyz/anchor anchor-cli"; \
+			exit 1; \
 		fi'
 	@echo "Installing npm dependencies..."
 	cd arb-router && npm ci --legacy-peer-deps
-	@echo "Removing old Cargo.lock files to regenerate with Anchor 0.32.1..."
+	@echo "Generating Cargo.lock with Rust 1.75.0 (creates v3 format compatible with platform tools)..."
 	@bash -c '\
 		rm -f arb-router/Cargo.lock 2>/dev/null || true; \
-		rm -f arb-router/programs/*/Cargo.lock 2>/dev/null || true; \
-		find arb-router -name "Cargo.lock" -delete 2>/dev/null || true; \
-		echo "Cargo.lock files removed. Anchor will regenerate during build."'
-	@echo "Building Anchor program (using Anchor 0.32.1)..."
-	@echo "Attempting to update Solana platform tools (current Rust 1.75 is too old)..."
-	@bash -c '\
-		if command -v solana >/dev/null 2>&1; then \
-			SOLANA_VER=$$(solana --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1 || echo ""); \
-			echo "Current Solana version: $$SOLANA_VER"; \
-			echo "Note: Solana 1.18.26+ has Rust 1.77+ in platform tools."; \
-			if [ -n "$$SOLANA_VER" ]; then \
-				MAJOR=$$(echo $$SOLANA_VER | cut -d. -f1); \
-				MINOR=$$(echo $$SOLANA_VER | cut -d. -f2); \
-				PATCH=$$(echo $$SOLANA_VER | cut -d. -f3); \
-				if [ $$MAJOR -lt 1 ] || ([ $$MAJOR -eq 1 ] && [ $$MINOR -lt 18 ]) || ([ $$MAJOR -eq 1 ] && [ $$MINOR -eq 18 ] && [ $$PATCH -lt 26 ]); then \
-					echo "Warning: Solana version is too old. Platform tools may have Rust 1.75."; \
-					echo "Try updating Solana: solana-install update || (sh -c \"$$(curl -sSfL https://release.solana.com/stable/install)\")"; \
-				fi; \
-			fi; \
-		fi; \
-		rm -rf ~/.cache/solana/platform-tools 2>/dev/null || true; \
-		rm -rf /root/.cache/solana/platform-tools 2>/dev/null || true; \
-		echo "Cleared platform tools cache. Anchor will download newer version."'
-	cd arb-router && bash -c '\
-		rustup override set stable 2>/dev/null || true; \
-		if command -v avm >/dev/null 2>&1; then avm use 0.32.1 || true; fi; \
-		export CARGO_NET_GIT_FETCH_WITH_CLI=true; \
-		export CARGO_TARGET_DIR=target; \
-		anchor build'
+		if rustup run 1.75.0 cargo --version >/dev/null 2>&1; then \
+			cd arb-router && rustup run 1.75.0 cargo generate-lockfile; \
+			echo "Cargo.lock generated with Rust 1.75.0 (v3 format)"; \
+		else \
+			echo "Rust 1.75.0 not installed. Installing..."; \
+			rustup install 1.75.0; \
+			cd arb-router && rustup run 1.75.0 cargo generate-lockfile; \
+			echo "Cargo.lock generated with Rust 1.75.0 (v3 format)"; \
+		fi'
+	@echo "Building Anchor program..."
+	cd arb-router && anchor build
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
 	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet

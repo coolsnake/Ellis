@@ -1,0 +1,8 @@
+# Force Cargo to use lock file version 3 for compatibility with Solana platform tools
+[net]
+git-fetch-with-cli = true
+
+# Note: Lock file version is determined by Cargo version, not configurable
+# This config helps with git fetching, but the lock file version issue
+# requires updating Solana platform tools or using a workaround
+
