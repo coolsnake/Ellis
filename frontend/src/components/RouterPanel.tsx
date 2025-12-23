@@ -473,7 +473,13 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                 onClick={handleCloseProgram}
                 disabled={building || deploying || closing || !cli?.solana}
                 className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded font-medium"
-                title={!status?.upgradeAuthority ? 'Program is immutable - cannot close' : 'Close program and recover rent'}
+                title={
+                  !status?.upgradeAuthority && status?.executable
+                    ? 'Warning: Program may be immutable (no upgrade authority). Click to attempt close - backend will verify.'
+                    : !status?.executable
+                    ? 'Program is not executable or already closed'
+                    : 'Close program and recover rent (~2-3 SOL)'
+                }
               >
                 {closing ? 'Closing...' : 'Close & Recover Rent'}
               </button>
