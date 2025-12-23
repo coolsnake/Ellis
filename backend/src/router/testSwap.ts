@@ -121,17 +121,20 @@ async function fetchRaydiumClmmPool(
 
     const state = layout.decode(accountInfo.data);
     
+    // Get the program ID from the account owner (works for both devnet and mainnet)
+    const programId = accountInfo.owner;
+    
     const tickCurrent = Number(state.tickCurrent ?? state.tick_current);
     const tickSpacing = Number(state.tickSpacing ?? state.tick_spacing);
     
-    // Derive tick arrays
+    // Derive tick arrays using the pool's program ID
     const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
     const delta = 60 * Math.max(1, tickSpacing);
     
     const [lower, center, upper] = await Promise.all([
-      deriveTickArrayPda(RAYDIUM_CLMM_PROGRAM, poolPubkey, centerStart - delta),
-      deriveTickArrayPda(RAYDIUM_CLMM_PROGRAM, poolPubkey, centerStart),
-      deriveTickArrayPda(RAYDIUM_CLMM_PROGRAM, poolPubkey, centerStart + delta),
+      deriveTickArrayPda(programId, poolPubkey, centerStart - delta),
+      deriveTickArrayPda(programId, poolPubkey, centerStart),
+      deriveTickArrayPda(programId, poolPubkey, centerStart + delta),
     ]);
 
     const pool: RaydiumClmmPoolState = {
@@ -352,7 +355,7 @@ function buildRaydiumClmmSwapIx(
   ];
   
   return new TransactionInstruction({
-    programId: RAYDIUM_CLMM_PROGRAM,
+    programId: new PublicKey(pool.programId), // Use the program ID from pool state (works for devnet/mainnet)
     keys: accounts,
     data,
   });
