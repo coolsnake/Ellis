@@ -4,6 +4,7 @@
  */
 
 import { resolve } from 'path';
+import { Connection } from '@solana/web3.js';
 import { CONFIG } from '../utils/config.js';
 import { ensureDir, readJson, writeJson } from '../utils/fs.js';
 import { RouterConfig, DEFAULT_ROUTER_CONFIG, ExecutionMode } from '../router/types.js';
@@ -117,4 +118,38 @@ export async function isFlashLoanAvailable(): Promise<boolean> {
   );
 }
 
+/**
+ * Get RPC URL for the router's configured cluster
+ * Uses Helius devnet/mainnet endpoints with the existing API key
+ */
+export function getRouterRpcUrl(cluster?: 'devnet' | 'mainnet-beta' | 'localnet'): string {
+  const clusterToUse = cluster || current?.cluster || 'devnet';
+  
+  // Extract API key from main RPC URL
+  const mainRpcUrl = CONFIG.rpcUrl || '';
+  const apiKeyMatch = mainRpcUrl.match(/api-key=([^&#]+)/i);
+  const apiKey = apiKeyMatch?.[1] || '';
+  
+  switch (clusterToUse) {
+    case 'devnet':
+      return apiKey 
+        ? `https://devnet.helius-rpc.com/?api-key=${apiKey}`
+        : 'https://api.devnet.solana.com';
+    case 'mainnet-beta':
+      return mainRpcUrl || 'https://api.mainnet-beta.solana.com';
+    case 'localnet':
+      return 'http://127.0.0.1:8899';
+    default:
+      return 'https://api.devnet.solana.com';
+  }
+}
+
+/**
+ * Get a Connection for the router's configured cluster
+ * This uses the appropriate RPC endpoint based on the stored cluster setting
+ */
+export function getRouterConnection(cluster?: 'devnet' | 'mainnet-beta' | 'localnet'): Connection {
+  const url = getRouterRpcUrl(cluster);
+  return new Connection(url, { commitment: 'confirmed' });
+}
 

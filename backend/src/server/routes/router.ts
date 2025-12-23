@@ -9,7 +9,7 @@ import { PublicKey, Keypair, Transaction, sendAndConfirmTransaction } from '@sol
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import BN from 'bn.js';
 import { logger } from '../../utils/logger.js';
-import { getConnection, ensureWallet } from '../../wallet/wallet.js';
+import { ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { emit } from '../realtime.js';
 import {
@@ -21,6 +21,7 @@ import {
   setRouterEnabled,
   isRouterReady,
   isFlashLoanAvailable,
+  getRouterConnection,
 } from '../routerConfigStore.js';
 import {
   // SDK
@@ -89,7 +90,10 @@ export function createRouterRouter(io: SocketIOServer): Router {
       // If setting programId, validate it exists on-chain
       if (updates.programId) {
         try {
-          const connection = getConnection();
+          // Use cluster from updates or current config
+          const currentConfig = await loadRouterConfig();
+          const targetCluster = updates.cluster || currentConfig.cluster;
+          const connection = getRouterConnection(targetCluster);
           const pubkey = new PublicKey(updates.programId);
           const accountInfo = await connection.getAccountInfo(pubkey, 'confirmed');
           
@@ -205,7 +209,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
   api.get('/router/status', async (_req: Request, res: Response) => {
     try {
       const config = await loadRouterConfig();
-      const connection = getConnection();
+      const connection = getRouterConnection(config.cluster);
 
       let status: ProgramStatus;
       if (config.programId) {
@@ -357,7 +361,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const { recipient } = req.body; // Optional: specify rent recipient
 
       // Verify upgrade authority before attempting close
-      const connection = getConnection();
+      const connection = getRouterConnection(config.cluster);
       const status = await getProgramStatus(connection, config.programId);
       
       if (!status.executable) {
@@ -427,14 +431,15 @@ export function createRouterRouter(io: SocketIOServer): Router {
   api.post('/router/airdrop', async (req: Request, res: Response) => {
     try {
       const { amount = 2 } = req.body;
-      const cluster = getSolanaCluster();
+      const routerConfig = await loadRouterConfig();
+      const cluster = routerConfig.cluster;
 
       if (cluster !== 'devnet' && cluster !== 'localnet') {
         return res.status(400).json({ success: false, error: 'Airdrop only available on devnet/localnet' });
       }
 
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
+      const connection = getRouterConnection(cluster);
 
       const success = await requestAirdrop(connection, wallet.publicKey, amount);
 
@@ -459,8 +464,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
    */
   api.get('/router/vaults', async (_req: Request, res: Response) => {
     try {
+      const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
+      const connection = getRouterConnection(routerConfig.cluster);
       const programId = await getProgramId();
 
       const vaultsData = await fetchVaultsForOwner(connection, wallet.publicKey, programId);
@@ -485,8 +491,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
   api.get('/router/vaults/:mint', async (req: Request, res: Response) => {
     try {
       const { mint } = req.params;
+      const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
+      const connection = getRouterConnection(routerConfig.cluster);
       const programId = await getProgramId();
 
       const mintPubkey = new PublicKey(mint);
@@ -517,8 +524,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
   api.post('/router/vaults/:mint/init', async (req: Request, res: Response) => {
     try {
       const { mint } = req.params;
+      const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
+      const connection = getRouterConnection(routerConfig.cluster);
       const programId = await getProgramId();
 
       const mintPubkey = new PublicKey(mint);
@@ -580,8 +588,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
         return res.status(400).json({ success: false, error: 'Invalid amount' });
       }
 
+      const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
+      const connection = getRouterConnection(routerConfig.cluster);
       const programId = await getProgramId();
 
       const mintPubkey = new PublicKey(mint);
@@ -636,8 +645,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
         return res.status(400).json({ success: false, error: 'Invalid amount' });
       }
 
+      const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
+      const connection = getRouterConnection(routerConfig.cluster);
       const programId = await getProgramId();
 
       const mintPubkey = new PublicKey(mint);
@@ -700,8 +710,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
   api.post('/router/vaults/:mint/close', async (req: Request, res: Response) => {
     try {
       const { mint } = req.params;
+      const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
+      const connection = getRouterConnection(routerConfig.cluster);
       const programId = await getProgramId();
 
       const mintPubkey = new PublicKey(mint);
@@ -785,8 +796,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
    */
   api.get('/router/cli', async (_req: Request, res: Response) => {
     try {
+      const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
+      const connection = getRouterConnection(routerConfig.cluster);
 
       const balanceCheck = await checkDeploymentBalance(connection, wallet.publicKey);
 
@@ -854,9 +866,10 @@ export function createRouterRouter(io: SocketIOServer): Router {
         return res.status(400).json({ success: false, error: 'poolId required' });
       }
 
+      const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
-      const connection = getConnection();
-      const cluster = getSolanaCluster();
+      const connection = getRouterConnection(routerConfig.cluster);
+      const cluster = routerConfig.cluster;
 
       logger.info('router.test.swap.start', { 
         cat: 'router', 
@@ -921,9 +934,10 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const { poolId } = req.params;
       const { dex = 'raydium', variant = 'clmm' } = req.query;
 
-      const connection = getConnection();
+      const routerConfig = await loadRouterConfig();
+      const connection = getRouterConnection(routerConfig.cluster);
 
-      logger.info('router.test.pool.fetch', { cat: 'router', poolId, dex, variant });
+      logger.info('router.test.pool.fetch', { cat: 'router', poolId, dex, variant, cluster: routerConfig.cluster });
 
       const { fetchPoolAccounts } = await import('../../router/testSwap.js');
       
