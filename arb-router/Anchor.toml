@@ -2,6 +2,9 @@
 seeds = false
 skip-lint = false
 
+[toolchain]
+anchor_version = "0.32.1"
+
 [programs.localnet]
 arb_router = "ArbRtr1111111111111111111111111111111111111"
 

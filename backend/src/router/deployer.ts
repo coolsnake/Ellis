@@ -22,6 +22,32 @@ const ARB_ROUTER_DIR = process.env.ARB_ROUTER_DIR || path.resolve(BACKEND_ROOT, 
 const PROGRAM_BINARY_PATH = path.join(ARB_ROUTER_DIR, 'target', 'deploy', 'arb_router.so');
 const KEYPAIR_PATH = path.join(ARB_ROUTER_DIR, 'target', 'deploy', 'arb_router-keypair.json');
 
+/**
+ * Get environment variables for spawn calls
+ * Ensures HOME is set (required by cargo_build_sbf and other tools)
+ */
+function getSpawnEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  // Ensure HOME is set (required by cargo_build_sbf and other tools)
+  if (!env.HOME) {
+    // Try common locations
+    if (process.env.USERPROFILE) {
+      // Windows
+      env.HOME = process.env.USERPROFILE;
+    } else if (process.getuid && process.getuid() === 0) {
+      // Running as root
+      env.HOME = '/root';
+    } else if (process.getuid) {
+      // Try to get user home from /etc/passwd or use /tmp
+      env.HOME = `/home/${process.env.USER || 'user'}`;
+    } else {
+      // Fallback
+      env.HOME = '/tmp';
+    }
+  }
+  return env;
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -146,6 +172,7 @@ export async function buildProgram(): Promise<BuildResult> {
       const build = spawn('anchor', ['build'], {
         cwd: ARB_ROUTER_DIR,
         shell: true,
+        env: getSpawnEnv(),
       });
 
       build.stdout.on('data', (data) => {
@@ -313,6 +340,7 @@ export async function deployProgram(
     return new Promise((resolve) => {
       const deploy = spawn('solana', args, {
         shell: true,
+        env: getSpawnEnv(),
       });
 
       deploy.stdout.on('data', (data) => {
@@ -402,6 +430,7 @@ export async function upgradeProgram(
     return new Promise((resolve) => {
       const upgrade = spawn('solana', args, {
         shell: true,
+        env: getSpawnEnv(),
       });
 
       upgrade.stdout.on('data', (data) => {
@@ -517,6 +546,7 @@ export async function closeProgram(
     return new Promise((resolve) => {
       const close = spawn('solana', args, {
         shell: true,
+        env: getSpawnEnv(),
       });
 
       close.stdout.on('data', (data) => {
