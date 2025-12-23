@@ -25,7 +25,21 @@ arb: ## Build Rust arb-rs
 	cd arb-rs && cargo build --release
 
 arb-router: ## Build Anchor arb-router program
-	cd arb-router && npm ci --legacy-peer-deps && anchor build
+	@echo "Ensuring Anchor 0.30.1 is installed..."
+	@bash -c '\
+		if command -v avm >/dev/null 2>&1; then \
+			echo "Installing Anchor 0.30.1 via AVM..."; \
+			if ! avm install 0.30.1 2>&1; then \
+				echo "AVM install failed, trying cargo install..."; \
+				cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1 --locked --force || true; \
+			fi; \
+			avm use 0.30.1 || true; \
+		else \
+			echo "AVM not found, installing Anchor 0.30.1 via cargo..."; \
+			cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1 --locked --force || true; \
+		fi'
+	cd arb-router && npm ci --legacy-peer-deps && \
+		bash -c 'if command -v avm >/dev/null 2>&1; then avm use 0.30.1 || true; fi; anchor build'
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
 	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet
