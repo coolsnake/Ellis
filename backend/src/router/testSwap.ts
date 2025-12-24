@@ -86,6 +86,36 @@ export interface RaydiumClmmPoolState {
   };
 }
 
+export interface MeteoraDlmmPoolState {
+  programId: string;
+  tokenXMint: string;
+  tokenYMint: string;
+  reserveX: string;
+  reserveY: string;
+  oracle: string;
+  activeId: number;
+  binStep: number;
+  tokenProgram: string;
+  binArrays: {
+    lower: string;
+    upper: string;
+  };
+  bitmapExtension?: string; // Optional - use SystemProgram if not present
+}
+
+// Union type for pool states
+export type PoolState = RaydiumClmmPoolState | MeteoraDlmmPoolState;
+
+// Type guard to check if pool is Raydium
+function isRaydiumPool(pool: PoolState): pool is RaydiumClmmPoolState {
+  return 'ammConfig' in pool && 'tickArrays' in pool;
+}
+
+// Type guard to check if pool is Meteora
+function isMeteoraDlmmPool(pool: PoolState): pool is MeteoraDlmmPoolState {
+  return 'tokenXMint' in pool && 'binArrays' in pool;
+}
+
 // ============================================================================
 // Pool Account Fetching
 // ============================================================================
@@ -95,7 +125,7 @@ export async function fetchPoolAccounts(params: {
   poolId: string;
   dex: string;
   variant?: string;
-}): Promise<{ success: boolean; pool?: RaydiumClmmPoolState; error?: string }> {
+}): Promise<{ success: boolean; pool?: PoolState; error?: string }> {
   const { connection, poolId, dex, variant } = params;
 
   try {
@@ -103,6 +133,10 @@ export async function fetchPoolAccounts(params: {
     
     if (dex === 'raydium' && variant === 'clmm') {
       return await fetchRaydiumClmmPool(connection, poolPubkey);
+    }
+    
+    if (dex === 'meteora' && variant === 'dlmm') {
+      return await fetchMeteoraDlmmPool(connection, poolPubkey);
     }
     
     return { success: false, error: `Unsupported DEX: ${dex}/${variant}` };
@@ -199,6 +233,121 @@ async function fetchRaydiumClmmPool(
   }
 }
 
+async function fetchMeteoraDlmmPool(
+  connection: Connection, 
+  poolPubkey: PublicKey
+): Promise<{ success: boolean; pool?: MeteoraDlmmPoolState; error?: string }> {
+  const accountInfo = await connection.getAccountInfo(poolPubkey);
+  
+  if (!accountInfo || !accountInfo.data) {
+    return { success: false, error: 'Pool account not found' };
+  }
+
+  try {
+    // Import Meteora SDK
+    const meteoraModule = await import('@meteora-ag/dlmm');
+    const { createProgram, deriveBinArray, deriveReserve, deriveOracle, binIdToBinArrayIndex } = meteoraModule as any;
+    
+    // Create program to decode pool state
+    const program = createProgram(connection);
+    if (!program?.coder?.accounts?.decode) {
+      return { success: false, error: 'Meteora SDK program not available' };
+    }
+    
+    const state = program.coder.accounts.decode('lbPair', accountInfo.data);
+    if (!state) {
+      return { success: false, error: 'Failed to decode Meteora pool state' };
+    }
+    
+    // Extract fields
+    const tokenXMint = state.tokenXMint?.toBase58?.() || String(state.tokenXMint);
+    const tokenYMint = state.tokenYMint?.toBase58?.() || String(state.tokenYMint);
+    const activeId = Number(state.activeId ?? state.active_id);
+    const binStep = Number(state.binStep ?? state.bin_step);
+    
+    // Derive reserve accounts
+    const programId = accountInfo.owner;
+    let reserveX = '';
+    let reserveY = '';
+    
+    if (deriveReserve) {
+      try {
+        const rxResult = deriveReserve(poolPubkey, new PublicKey(tokenXMint), programId);
+        reserveX = (rxResult?.publicKey || rxResult)?.toBase58?.() || String(rxResult?.publicKey || rxResult);
+      } catch {}
+      try {
+        const ryResult = deriveReserve(poolPubkey, new PublicKey(tokenYMint), programId);
+        reserveY = (ryResult?.publicKey || ryResult)?.toBase58?.() || String(ryResult?.publicKey || ryResult);
+      } catch {}
+    }
+    
+    // Derive oracle
+    let oracle = '';
+    if (deriveOracle) {
+      try {
+        const oracleResult = deriveOracle(poolPubkey, programId);
+        oracle = (oracleResult?.publicKey || oracleResult)?.toBase58?.() || String(oracleResult?.publicKey || oracleResult);
+      } catch {}
+    }
+    
+    // Derive bin arrays based on activeId
+    let binArrayLower = '';
+    let binArrayUpper = '';
+    
+    if (deriveBinArray && binIdToBinArrayIndex) {
+      try {
+        // Get current bin array index
+        const currentBinArrayIndex = binIdToBinArrayIndex(new BN(activeId));
+        const currentIdx = typeof currentBinArrayIndex === 'number' 
+          ? currentBinArrayIndex 
+          : currentBinArrayIndex.toNumber();
+        
+        // Lower bin array (current - 1)
+        const lowerResult = deriveBinArray(poolPubkey, new BN(currentIdx - 1), programId);
+        binArrayLower = (lowerResult?.publicKey || lowerResult)?.toBase58?.() || String(lowerResult?.publicKey || lowerResult);
+        
+        // Upper bin array (current)
+        const upperResult = deriveBinArray(poolPubkey, new BN(currentIdx), programId);
+        binArrayUpper = (upperResult?.publicKey || upperResult)?.toBase58?.() || String(upperResult?.publicKey || upperResult);
+      } catch (err: any) {
+        logger.warn('router.test.meteora.binarray.derive.error', { cat: 'router', error: err.message });
+      }
+    }
+    
+    // Determine token program
+    let tokenProgramId = TOKEN_PROGRAM_ID;
+    if (reserveX) {
+      const reserveInfo = await connection.getAccountInfo(new PublicKey(reserveX));
+      if (reserveInfo?.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+        tokenProgramId = TOKEN_2022_PROGRAM_ID;
+      }
+    }
+
+    const pool: MeteoraDlmmPoolState = {
+      programId: accountInfo.owner.toBase58(),
+      tokenXMint,
+      tokenYMint,
+      reserveX,
+      reserveY,
+      oracle,
+      activeId,
+      binStep,
+      tokenProgram: tokenProgramId.toBase58(),
+      binArrays: {
+        lower: binArrayLower,
+        upper: binArrayUpper,
+      },
+    };
+
+    logger.info('router.test.pool.decoded', { cat: 'router', poolId: poolPubkey.toBase58(), pool, dex: 'meteora_dlmm' });
+
+    return { success: true, pool };
+  } catch (err: any) {
+    logger.error('router.test.meteora.pool.decode.error', { cat: 'router', error: err.message, stack: err.stack });
+    return { success: false, error: `Failed to decode Meteora pool: ${err.message}` };
+  }
+}
+
 // ============================================================================
 // Swap Testing
 // ============================================================================
@@ -230,10 +379,23 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     }
     const pool = poolResult.pool;
 
-    // Determine mints for first hop
-    const inMint = inputMint ? new PublicKey(inputMint) : new PublicKey(pool.mintA);
-    const outMint = outputMint ? new PublicKey(outputMint) : new PublicKey(pool.mintB);
-    const isAtoB = inMint.toBase58() === pool.mintA;
+    // Determine mints for first hop (handle both Raydium and Meteora)
+    let poolMintA: string;
+    let poolMintB: string;
+    
+    if (isRaydiumPool(pool)) {
+      poolMintA = pool.mintA;
+      poolMintB = pool.mintB;
+    } else if (isMeteoraDlmmPool(pool)) {
+      poolMintA = pool.tokenXMint;
+      poolMintB = pool.tokenYMint;
+    } else {
+      return { success: false, simulated: false, error: 'Unknown pool type' };
+    }
+    
+    const inMint = inputMint ? new PublicKey(inputMint) : new PublicKey(poolMintA);
+    const outMint = outputMint ? new PublicKey(outputMint) : new PublicKey(poolMintB);
+    const isAtoB = inMint.toBase58() === poolMintA;
 
     let swapIxs: TransactionInstruction[] = [];
 
@@ -280,6 +442,16 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
         }
         const secondPool = secondPoolResult.pool;
 
+        // Determine second pool mints
+        let secondPoolMintA: string;
+        if (isRaydiumPool(secondPool)) {
+          secondPoolMintA = secondPool.mintA;
+        } else if (isMeteoraDlmmPool(secondPool)) {
+          secondPoolMintA = secondPool.tokenXMint;
+        } else {
+          return { success: false, simulated: false, error: 'Unknown second pool type' };
+        }
+
         // Determine intermediate mint (output of first hop = input of second hop)
         const intermediateMint = outMint;
         const finalMint = inMint; // For round trip: SOL -> USDC -> SOL
@@ -293,7 +465,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           aToB: isAtoB,
         };
 
-        const secondIsAtoB = intermediateMint.toBase58() === secondPool.mintA;
+        const secondIsAtoB = intermediateMint.toBase58() === secondPoolMintA;
         const secondDexType = dexNameToType(secondDex || dex, secondVariant || variant);
         
         const secondStep: RouteStep = {
@@ -471,14 +643,12 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
       // Simulate transaction
       const simulation = await connection.simulateTransaction(tx, [wallet]);
       
-      return {
-        success: !simulation.value.err,
-        simulated: true,
-        error: simulation.value.err ? JSON.stringify(simulation.value.err) : undefined,
-        logs: simulation.value.logs || [],
-        unitsConsumed: simulation.value.unitsConsumed,
-        poolAccounts: {
+      // Build pool accounts based on pool type
+      let poolAccounts: Record<string, string>;
+      if (isRaydiumPool(pool)) {
+        poolAccounts = {
           pool: poolId,
+          dex: 'raydium_clmm',
           ammConfig: pool.ammConfig,
           vaultA: pool.vaultA,
           vaultB: pool.vaultB,
@@ -488,7 +658,32 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           tickArrayLower: pool.tickArrays.lower,
           tickArrayCenter: pool.tickArrays.center,
           tickArrayUpper: pool.tickArrays.upper,
-        },
+        };
+      } else if (isMeteoraDlmmPool(pool)) {
+        poolAccounts = {
+          pool: poolId,
+          dex: 'meteora_dlmm',
+          tokenXMint: pool.tokenXMint,
+          tokenYMint: pool.tokenYMint,
+          reserveX: pool.reserveX,
+          reserveY: pool.reserveY,
+          oracle: pool.oracle,
+          activeId: String(pool.activeId),
+          binStep: String(pool.binStep),
+          binArrayLower: pool.binArrays.lower,
+          binArrayUpper: pool.binArrays.upper,
+        };
+      } else {
+        poolAccounts = { pool: poolId };
+      }
+      
+      return {
+        success: !simulation.value.err,
+        simulated: true,
+        error: simulation.value.err ? JSON.stringify(simulation.value.err) : undefined,
+        logs: simulation.value.logs || [],
+        unitsConsumed: simulation.value.unitsConsumed,
+        poolAccounts,
       };
     } else {
       // Execute transaction
@@ -499,16 +694,32 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
         { commitment: 'confirmed' }
       );
       
+      // Build pool accounts based on pool type
+      let poolAccounts: Record<string, string>;
+      if (isRaydiumPool(pool)) {
+        poolAccounts = {
+          pool: poolId,
+          dex: 'raydium_clmm',
+          ammConfig: pool.ammConfig,
+          vaultA: pool.vaultA,
+          vaultB: pool.vaultB,
+        };
+      } else if (isMeteoraDlmmPool(pool)) {
+        poolAccounts = {
+          pool: poolId,
+          dex: 'meteora_dlmm',
+          reserveX: pool.reserveX,
+          reserveY: pool.reserveY,
+        };
+      } else {
+        poolAccounts = { pool: poolId };
+      }
+      
       return {
         success: true,
         simulated: false,
         signature,
-        poolAccounts: {
-          pool: poolId,
-          ammConfig: pool.ammConfig,
-          vaultA: pool.vaultA,
-          vaultB: pool.vaultB,
-        },
+        poolAccounts,
       };
     }
   } catch (err: any) {
@@ -687,7 +898,7 @@ async function getRaydiumSdkAccountOrder(
 /**
  * Build DEX accounts in the order expected by the on-chain arb-router
  * 
- * For Raydium CLMM, the router expects 17 accounts:
+ * For Raydium CLMM, the router expects 18 accounts (17 + program ID):
  * 0. Payer (signer)
  * 1. AMM Config
  * 2. Pool State
@@ -697,47 +908,134 @@ async function getRaydiumSdkAccountOrder(
  * 6. Output Vault
  * 7. Observation State
  * 8. Token Program
- * 9. Tick Array Lower
- * 10. Tick Array Center
- * 11. Tick Array Upper
- * 12. Oracle (System Program if not used)
- * 13. Input Token Mint
- * 14. Output Token Mint
- * 15. Memo Program
- * 16. Raydium CLMM Program
+ * 9. Token-2022 Program
+ * 10. Memo Program
+ * 11. Input Token Mint
+ * 12. Output Token Mint
+ * 13. Oracle/exBitmap
+ * 14. Tick Array Center
+ * 15. Tick Array Lower
+ * 16. Tick Array Upper
+ * 17. Raydium CLMM Program
+ * 
+ * For Meteora DLMM, the router expects 16 accounts:
+ * 0. LB Pair
+ * 1. Bitmap Extension (optional, SystemProgram if not present)
+ * 2. Reserve X (token vault)
+ * 3. Reserve Y (token vault)
+ * 4. User Token In
+ * 5. User Token Out
+ * 6. Token X Mint
+ * 7. Token Y Mint
+ * 8. Oracle
+ * 9. Host Fee In (use program as placeholder)
+ * 10. User (signer)
+ * 11. Token Program
+ * 12. Event Authority
+ * 13. Meteora DLMM Program
+ * 14. Bin Array Lower
+ * 15. Bin Array Upper
  */
 async function buildDexAccountsForRouter(
   payer: PublicKey,
-  pool: RaydiumClmmPoolState,
+  pool: PoolState,
   poolPubkey: PublicKey,
   inputMint: PublicKey,
   outputMint: PublicKey,
   dexType: DexType
 ): Promise<PublicKey[]> {
-  if (dexType !== DexType.Raydium) {
-    throw new Error(`DEX type ${dexType} not yet supported for router test`);
+  if (dexType === DexType.Raydium && isRaydiumPool(pool)) {
+    // Use SDK to get the correct account order
+    const sdkAccountOrder = await getRaydiumSdkAccountOrder(
+      payer,
+      pool,
+      poolPubkey,
+      inputMint,
+      outputMint,
+      BigInt(1000000),
+      BigInt(900000)
+    );
+    
+    // Add the Raydium program ID as the last account (needed for CPI)
+    const dexProgramId = new PublicKey(pool.programId);
+    const accounts = [...sdkAccountOrder, dexProgramId];
+    
+    logger.info('router.test.dex_accounts', { 
+      cat: 'router', 
+      accountCount: accounts.length,
+      dexType: 'raydium_clmm',
+      isAtoB: inputMint.toBase58() === pool.mintA,
+    });
+    
+    return accounts;
   }
   
-  // Use SDK to get the correct account order
-  const sdkAccountOrder = await getRaydiumSdkAccountOrder(
-    payer,
-    pool,
-    poolPubkey,
-    inputMint,
-    outputMint,
-    BigInt(1000000),
-    BigInt(900000)
-  );
+  if (dexType === DexType.Meteora && isMeteoraDlmmPool(pool)) {
+    return buildMeteoraDexAccountsForRouter(payer, pool, poolPubkey, inputMint, outputMint);
+  }
   
-  // Add the Raydium program ID as the last account (needed for CPI)
-  const dexProgramId = new PublicKey(pool.programId);
-  const accounts = [...sdkAccountOrder, dexProgramId];
+  throw new Error(`DEX type ${dexType} not supported for router test`);
+}
+
+/**
+ * Derive Meteora DLMM Event Authority PDA
+ */
+function deriveMeteoraDlmmEventAuthority(): PublicKey {
+  const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  const [eventAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from('__event_authority')],
+    METEORA_DLMM_PROGRAM
+  );
+  return eventAuthority;
+}
+
+/**
+ * Build Meteora DLMM accounts in the order expected by the on-chain router
+ */
+async function buildMeteoraDexAccountsForRouter(
+  payer: PublicKey,
+  pool: MeteoraDlmmPoolState,
+  poolPubkey: PublicKey,
+  inputMint: PublicKey,
+  outputMint: PublicKey
+): Promise<PublicKey[]> {
+  const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  
+  // Determine swap direction (X -> Y or Y -> X)
+  const isXtoY = inputMint.toBase58() === pool.tokenXMint;
+  
+  // Get user token accounts
+  const userTokenIn = getAssociatedTokenAddressSync(inputMint, payer);
+  const userTokenOut = getAssociatedTokenAddressSync(outputMint, payer);
+  
+  // Build accounts in the order expected by meteora.rs
+  const accounts: PublicKey[] = [
+    poolPubkey,                                                    // 0: LB Pair
+    pool.bitmapExtension 
+      ? new PublicKey(pool.bitmapExtension) 
+      : SystemProgram.programId,                                   // 1: Bitmap Extension (optional)
+    new PublicKey(pool.reserveX),                                  // 2: Reserve X
+    new PublicKey(pool.reserveY),                                  // 3: Reserve Y
+    userTokenIn,                                                   // 4: User Token In
+    userTokenOut,                                                  // 5: User Token Out
+    new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
+    new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
+    new PublicKey(pool.oracle),                                    // 8: Oracle
+    METEORA_DLMM_PROGRAM,                                          // 9: Host Fee In (use program as placeholder)
+    payer,                                                         // 10: User (signer)
+    new PublicKey(pool.tokenProgram),                              // 11: Token Program
+    deriveMeteoraDlmmEventAuthority(),                             // 12: Event Authority (PDA)
+    METEORA_DLMM_PROGRAM,                                          // 13: Meteora DLMM Program
+    new PublicKey(pool.binArrays.lower),                           // 14: Bin Array Lower
+    new PublicKey(pool.binArrays.upper),                           // 15: Bin Array Upper
+  ];
   
   logger.info('router.test.dex_accounts', { 
     cat: 'router', 
     accountCount: accounts.length,
-    dexType: 'raydium_clmm',
-    isAtoB: inputMint.toBase58() === pool.mintA,
+    dexType: 'meteora_dlmm',
+    isXtoY,
+    accounts: accounts.map((acc, i) => ({ index: i, address: acc.toBase58() })),
   });
   
   return accounts;

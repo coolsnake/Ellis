@@ -59,8 +59,12 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [actionLogs, setActionLogs] = useState<string[]>([]);
 
   const [hops, setHops] = useState<number>(1);
+  const [testDex, setTestDex] = useState<'raydium' | 'meteora'>('raydium');
+  const [testVariant, setTestVariant] = useState<'clmm' | 'dlmm'>('clmm');
   const [testPoolId, setTestPoolId] = useState('');
   const [testSecondPoolId, setTestSecondPoolId] = useState('');
+  const [testSecondDex, setTestSecondDex] = useState<'raydium' | 'meteora'>('raydium');
+  const [testSecondVariant, setTestSecondVariant] = useState<'clmm' | 'dlmm'>('clmm');
   const [testInputMint, setTestInputMint] = useState('So11111111111111111111111111111111111111112');
   const [testOutputMint, setTestOutputMint] = useState('USDCoctVLVnvTXBEuP9s8hntucdJokbo17RwHuNXemT');
   const [testAmountIn, setTestAmountIn] = useState('10000000');
@@ -68,6 +72,17 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [testSimulate, setTestSimulate] = useState(true);
   const [testingSwap, setTestingSwap] = useState(false);
   const [testSwapResult, setTestSwapResult] = useState<{success: boolean; signature?: string; error?: string} | null>(null);
+
+  // Update variant when DEX changes
+  const handleDexChange = (dex: 'raydium' | 'meteora') => {
+    setTestDex(dex);
+    setTestVariant(dex === 'raydium' ? 'clmm' : 'dlmm');
+  };
+  
+  const handleSecondDexChange = (dex: 'raydium' | 'meteora') => {
+    setTestSecondDex(dex);
+    setTestSecondVariant(dex === 'raydium' ? 'clmm' : 'dlmm');
+  };
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -302,8 +317,8 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
     try {
       const result = await apiPost('/router/test/swap', {
         poolId: testPoolId,
-        dex: 'raydium',
-        variant: 'clmm',
+        dex: testDex,
+        variant: testVariant,
         inputMint: testInputMint || undefined,
         outputMint: testOutputMint || undefined,
         amountIn: testAmountIn,
@@ -312,6 +327,8 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
         useRouter: true,
         hops,
         secondPoolId: hops === 2 ? testSecondPoolId : undefined,
+        secondDex: hops === 2 ? testSecondDex : undefined,
+        secondVariant: hops === 2 ? testSecondVariant : undefined,
       });
       
       setTestSwapResult({
@@ -547,27 +564,57 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-gray-400 text-sm mb-1">Pool ID</label>
-                <input
-                  type="text"
-                  value={testPoolId}
-                  onChange={(e) => setTestPoolId(e.target.value)}
-                  placeholder="FXAXqgjNK6JVzVV2frumKTEuxC8hTEUhVTJTRhMMwLmM"
-                  className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
-                />
-              </div>
-
-              {hops === 2 && (
+              {/* First Pool DEX Selector */}
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-gray-400 text-sm mb-1">Second Pool ID</label>
+                  <label className="block text-gray-400 text-sm mb-1">DEX {hops === 2 ? '(Hop 1)' : ''}</label>
+                  <select
+                    value={testDex}
+                    onChange={(e) => handleDexChange(e.target.value as 'raydium' | 'meteora')}
+                    className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm"
+                  >
+                    <option value="raydium">Raydium CLMM</option>
+                    <option value="meteora">Meteora DLMM</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-gray-400 text-sm mb-1">Pool ID {hops === 2 ? '(Hop 1)' : ''}</label>
                   <input
                     type="text"
-                    value={testSecondPoolId}
-                    onChange={(e) => setTestSecondPoolId(e.target.value)}
-                    placeholder="Same pool ID for round trip"
+                    value={testPoolId}
+                    onChange={(e) => setTestPoolId(e.target.value)}
+                    placeholder={testDex === 'raydium' 
+                      ? "FXAXqgjNK6JVzVV2frumKTEuxC8hTEUhVTJTRhMMwLmM" 
+                      : "24fA4td938Lt9PcZXBWQeST5KCNucHw9GimbKSVKFutq"}
                     className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
                   />
+                </div>
+              </div>
+
+              {/* Second Pool DEX Selector (for 2-hop) */}
+              {hops === 2 && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-gray-400 text-sm mb-1">DEX (Hop 2)</label>
+                    <select
+                      value={testSecondDex}
+                      onChange={(e) => handleSecondDexChange(e.target.value as 'raydium' | 'meteora')}
+                      className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm"
+                    >
+                      <option value="raydium">Raydium CLMM</option>
+                      <option value="meteora">Meteora DLMM</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-gray-400 text-sm mb-1">Pool ID (Hop 2)</label>
+                    <input
+                      type="text"
+                      value={testSecondPoolId}
+                      onChange={(e) => setTestSecondPoolId(e.target.value)}
+                      placeholder="Same pool for round trip"
+                      className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
+                    />
+                  </div>
                 </div>
               )}
 
