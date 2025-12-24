@@ -55,6 +55,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [deploying, setDeploying] = useState(false);
   const [closing, setClosing] = useState(false);
   const [selectedCluster, setSelectedCluster] = useState<'devnet' | 'mainnet-beta' | 'localnet'>('devnet');
+  const [forceNewProgramId, setForceNewProgramId] = useState(false);
   const [actionLogs, setActionLogs] = useState<string[]>([]);
 
   const fetchStatus = useCallback(async () => {
@@ -109,20 +110,39 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
 
   const handleDeploy = async () => {
     if (deploying) return;
+    
+    // Confirm if forcing new program ID
+    if (forceNewProgramId) {
+      const confirmed = window.confirm(
+        'Generate New Program ID?\n\n' +
+        'This will:\n' +
+        '• Generate a new program keypair\n' +
+        '• Update source files (lib.rs, Anchor.toml)\n' +
+        '• Rebuild the program\n' +
+        '• Deploy with the new ID\n\n' +
+        'Use this after closing a program or if the previous ID is unusable.'
+      );
+      if (!confirmed) return;
+    }
+    
     setDeploying(true);
-    setActionLogs(['Starting deployment...']);
+    setActionLogs(forceNewProgramId 
+      ? ['Starting deployment with new program ID...'] 
+      : ['Starting deployment...']
+    );
     setError(null);
     
     try {
       const result = await apiPost<{ success: boolean; programId?: string; error?: string; logs?: string[] }>(
         '/router/deploy',
-        { cluster: selectedCluster }
+        { cluster: selectedCluster, forceNewProgramId }
       );
       if (result.logs) {
         setActionLogs(prev => [...prev, ...result.logs!]);
       }
       if (result.success) {
         setActionLogs(prev => [...prev, `Deployed successfully: ${result.programId}`]);
+        setForceNewProgramId(false); // Reset checkbox after successful deploy
         await fetchStatus();
       } else {
         setActionLogs(prev => [...prev, `Deploy failed: ${result.error}`]);
@@ -482,6 +502,29 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
               </div>
             </div>
           )}
+
+          {/* Force New Program ID Option */}
+          <div className="mb-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={forceNewProgramId}
+                onChange={(e) => setForceNewProgramId(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-500 bg-gray-700 text-orange-500 focus:ring-orange-500"
+              />
+              <span className="text-gray-300 text-sm">Force New Program ID</span>
+            </label>
+            {forceNewProgramId && (
+              <div className="mt-2 p-3 bg-orange-900/30 border border-orange-600 rounded text-sm text-orange-300">
+                <div className="font-medium mb-1">⚠️ New Program ID Mode</div>
+                <div className="text-xs text-orange-400">
+                  This will generate a new keypair, update source files (lib.rs, Anchor.toml), 
+                  rebuild, and deploy with a fresh program ID. Use this after closing a program 
+                  or if deployment fails with "program has been closed" error.
+                </div>
+              </div>
+            )}
+          </div>
 
           <div className="flex gap-3">
             <button
