@@ -335,7 +335,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           userInAta,
           {
             steps: [firstStep, secondStep],
-            minProfit: 0n, // No minimum profit requirement for testing
+            minProfit: -1000000000n, // Allow large loss for testing (fees will cause loss in round-trip swaps)
           },
           allDexAccounts,
           routerProgram
