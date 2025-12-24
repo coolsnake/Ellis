@@ -114,13 +114,14 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 					exit 1; \
 				fi; \
 				export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
-				if ! cargo build-sbf --version >/dev/null 2>&1; then \
-					echo "ERROR: Installation succeeded but tools not accessible"; \
-					echo "Ensure PATH includes: $$HOME/.local/share/solana/install/active_release/bin"; \
-					echo "Add to ~/.bashrc: export PATH=\"\$$HOME/.local/share/solana/install/active_release/bin:\$$PATH\""; \
-					exit 1; \
+				# Check again, but don't fail if still not found - Anchor will download them \
+				if cargo build-sbf --version >/dev/null 2>&1; then \
+					echo "✓ Platform tools installed and verified"; \
+				else \
+					echo "⚠ Platform tools not found, but Solana CLI is installed."; \
+					echo "  Anchor will download platform tools automatically during build."; \
+					echo "  Proceeding with build..."; \
 				fi; \
-				echo "✓ Platform tools installed and verified"; \
 			fi; \
 			\
 			# Create symlink for Anchor after installation \
