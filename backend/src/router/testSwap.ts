@@ -322,12 +322,11 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           secondDexType
         );
 
-        // Combine all DEX accounts (remove program IDs from individual accounts, add at end)
+        // Combine all DEX accounts - each step needs its own complete set including program ID
+        // The execute function expects: [step1_accounts (18), step2_accounts (18), ...]
         const allDexAccounts = [
-          ...firstDexAccounts.slice(0, -1), // Remove program ID from first
-          ...secondDexAccounts.slice(0, -1), // Remove program ID from second
-          firstDexAccounts[firstDexAccounts.length - 1], // Add first program ID
-          secondDexAccounts[secondDexAccounts.length - 1], // Add second program ID
+          ...firstDexAccounts,  // All 18 accounts for first hop (including program ID)
+          ...secondDexAccounts, // All 18 accounts for second hop (including program ID)
         ];
 
         const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
