@@ -1021,7 +1021,7 @@ async function getRaydiumSdkAccountOrder(
  * 16. Tick Array Upper
  * 17. Raydium CLMM Program
  * 
- * For Meteora DLMM, the router expects 16 accounts:
+ * For Meteora DLMM, the router expects 18 accounts:
  * 0. LB Pair
  * 1. Bitmap Extension (optional, use program ID as placeholder)
  * 2. Reserve X (token vault)
@@ -1031,13 +1031,15 @@ async function getRaydiumSdkAccountOrder(
  * 6. Token X Mint
  * 7. Token Y Mint
  * 8. Oracle
- * 9. Host Fee In (user's input token account)
+ * 9. Host Fee In (use program ID as placeholder)
  * 10. User (signer)
- * 11. Token Program
- * 12. Event Authority
- * 13. Bin Array Lower
- * 14. Bin Array Upper
- * 15. Meteora DLMM Program (for CPI invoke)
+ * 11. Token X Program
+ * 12. Token Y Program
+ * 13. Memo Program
+ * 14. Event Authority
+ * 15. Meteora DLMM Program
+ * 16. Bin Array Lower (remaining account)
+ * 17. Bin Array Upper (remaining account)
  */
 async function buildDexAccountsForRouter(
   payer: PublicKey,
@@ -1122,8 +1124,10 @@ async function buildMeteoraDexAccountsForRouter(
   };
   
   // Build accounts in the order expected by Meteora DLMM swap
-  // Accounts 0-12: fixed accounts, 13+: bin arrays as remaining accounts
-  // NOTE: Meteora program ID is NOT in the accounts list - only in instruction program_id
+  // Based on successful swap transaction analysis:
+  // Accounts 0-15: fixed accounts, 16+: bin arrays as remaining accounts
+  const MEMO_PROGRAM = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+  
   const accounts: PublicKey[] = [
     poolPubkey,                                                    // 0: LB Pair
     pool.bitmapExtension 
@@ -1136,13 +1140,16 @@ async function buildMeteoraDexAccountsForRouter(
     new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
     new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
     toPkOrFallback(pool.oracle, poolPubkey),                       // 8: Oracle
-    userTokenIn,                                                   // 9: Host Fee In (user's input token account)
+    METEORA_DLMM_PROGRAM,                                          // 9: Host Fee In (use program ID as placeholder)
     payer,                                                         // 10: User (signer)
-    new PublicKey(pool.tokenProgram),                              // 11: Token Program
-    deriveMeteoraDlmmEventAuthority(),                             // 12: Event Authority (PDA)
-    toPkOrFallback(pool.binArrays.lower, poolPubkey),              // 13: Bin Array Lower
-    toPkOrFallback(pool.binArrays.upper, poolPubkey),              // 14: Bin Array Upper
-    METEORA_DLMM_PROGRAM,                                          // 15: Meteora DLMM Program (required for CPI)
+    new PublicKey(pool.tokenProgram),                              // 11: Token X Program
+    new PublicKey(pool.tokenProgram),                              // 12: Token Y Program
+    MEMO_PROGRAM,                                                  // 13: Memo Program
+    deriveMeteoraDlmmEventAuthority(),                             // 14: Event Authority (PDA)
+    METEORA_DLMM_PROGRAM,                                          // 15: Meteora DLMM Program
+    // Remaining accounts: bin arrays
+    toPkOrFallback(pool.binArrays.lower, poolPubkey),              // 16: Bin Array Lower
+    toPkOrFallback(pool.binArrays.upper, poolPubkey),              // 17: Bin Array Upper
   ];
   
   logger.info('router.test.dex_accounts', { 

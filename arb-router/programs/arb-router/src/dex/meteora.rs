@@ -12,7 +12,8 @@ use crate::constants::dex_programs::METEORA_DLMM;
 use crate::error::ArbRouterError;
 
 /// Number of accounts needed for a Meteora DLMM swap
-pub const ACCOUNTS_NEEDED: usize = 16;
+/// 16 fixed accounts + 2 bin arrays = 18 total
+pub const ACCOUNTS_NEEDED: usize = 18;
 
 /// Meteora DLMM swap instruction discriminator
 /// swap instruction: [248, 198, 158, 145, 225, 117, 135, 200]
@@ -31,7 +32,7 @@ pub struct SwapParams {
 ///
 /// Expected accounts (in order):
 /// 0. `[writable]` LB Pair
-/// 1. `[writable]` Bin Array Bitmap Extension (optional, can use program ID as placeholder)
+/// 1. `[]` Bin Array Bitmap Extension (optional, use program ID as placeholder)
 /// 2. `[writable]` Reserve X (token vault)
 /// 3. `[writable]` Reserve Y (token vault)
 /// 4. `[writable]` User Token In
@@ -39,13 +40,15 @@ pub struct SwapParams {
 /// 6. `[]` Token X Mint
 /// 7. `[]` Token Y Mint
 /// 8. `[writable]` Oracle
-/// 9. `[writable]` Host Fee In (user's input token account)
-/// 10. `[signer]` User (authority)
-/// 11. `[]` Token Program
-/// 12. `[]` Event Authority
-/// 13. `[writable]` Bin Array Lower
-/// 14. `[writable]` Bin Array Upper
-/// 15. `[]` Meteora DLMM Program (for CPI invoke)
+/// 9. `[]` Host Fee In (use program ID as placeholder)
+/// 10. `[signer, writable]` User (authority)
+/// 11. `[]` Token X Program
+/// 12. `[]` Token Y Program
+/// 13. `[]` Memo Program
+/// 14. `[]` Event Authority
+/// 15. `[]` Meteora DLMM Program
+/// 16. `[writable]` Bin Array Lower (remaining account)
+/// 17. `[writable]` Bin Array Upper (remaining account)
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
@@ -67,22 +70,16 @@ pub fn swap(
     params.serialize(&mut data)?;
 
     // Build account metas for Meteora swap instruction
-    // Accounts 0-14 go into the instruction, account 15 (Meteora program) is for CPI invoke
-    // Note: Index 1 (bitmap extension) may use program ID as placeholder (not writable)
-    let meteora_program = METEORA_DLMM;
-    
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
+    // Accounts 0-15 are fixed, accounts 16-17 are bin arrays (remaining accounts)
+    // Account 15 (Meteora program) is for the instruction program_id, not in account metas
+    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED]
         .iter()
         .enumerate()
+        .filter(|(i, _)| *i != 15) // Skip index 15 (program ID - goes in instruction, not accounts)
         .map(|(i, acc)| {
             let is_signer = i == 10; // User is signer
-            // Index 1 (bitmap extension) should only be writable if it's a real PDA (not program ID placeholder)
-            let is_writable = if i == 1 {
-                *acc.key != meteora_program
-            } else {
-                // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), hostFee(9), binArrays(13,14)
-                matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 9 | 13 | 14)
-            };
+            // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), user(10), binArrays(16,17)
+            let is_writable = matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 10 | 16 | 17);
             if is_signer {
                 AccountMeta::new(*acc.key, true)
             } else if is_writable {
