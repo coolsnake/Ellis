@@ -1037,9 +1037,9 @@ async function getRaydiumSdkAccountOrder(
  * 12. Token Y Program
  * 13. Memo Program
  * 14. Event Authority
- * 15. Meteora DLMM Program
- * 16. Bin Array Lower (remaining account)
- * 17. Bin Array Upper (remaining account)
+ * 15. Bin Array Lower (remaining account)
+ * 16. Bin Array Upper (remaining account)
+ * 17. Meteora DLMM Program (for CPI invoke, must be last)
  */
 async function buildDexAccountsForRouter(
   payer: PublicKey,
@@ -1125,7 +1125,7 @@ async function buildMeteoraDexAccountsForRouter(
   
   // Build accounts in the order expected by Meteora DLMM swap
   // Based on successful swap transaction analysis:
-  // Accounts 0-15: fixed accounts, 16+: bin arrays as remaining accounts
+  // Accounts 0-14: fixed accounts, 15-16: bin arrays, 17: program (for CPI)
   const MEMO_PROGRAM = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
   
   const accounts: PublicKey[] = [
@@ -1146,10 +1146,11 @@ async function buildMeteoraDexAccountsForRouter(
     new PublicKey(pool.tokenProgram),                              // 12: Token Y Program
     MEMO_PROGRAM,                                                  // 13: Memo Program
     deriveMeteoraDlmmEventAuthority(),                             // 14: Event Authority (PDA)
-    METEORA_DLMM_PROGRAM,                                          // 15: Meteora DLMM Program
     // Remaining accounts: bin arrays
-    toPkOrFallback(pool.binArrays.lower, poolPubkey),              // 16: Bin Array Lower
-    toPkOrFallback(pool.binArrays.upper, poolPubkey),              // 17: Bin Array Upper
+    toPkOrFallback(pool.binArrays.lower, poolPubkey),              // 15: Bin Array Lower
+    toPkOrFallback(pool.binArrays.upper, poolPubkey),              // 16: Bin Array Upper
+    // Program for CPI (must be last)
+    METEORA_DLMM_PROGRAM,                                          // 17: Meteora DLMM Program (for CPI invoke)
   ];
   
   logger.info('router.test.dex_accounts', { 

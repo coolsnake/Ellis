@@ -46,9 +46,9 @@ pub struct SwapParams {
 /// 12. `[]` Token Y Program
 /// 13. `[]` Memo Program
 /// 14. `[]` Event Authority
-/// 15. `[]` Meteora DLMM Program
-/// 16. `[writable]` Bin Array Lower (remaining account)
-/// 17. `[writable]` Bin Array Upper (remaining account)
+/// 15. `[writable]` Bin Array Lower (remaining account)
+/// 16. `[writable]` Bin Array Upper (remaining account)
+/// 17. `[]` Meteora DLMM Program (for CPI invoke, must be last)
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
@@ -70,16 +70,15 @@ pub fn swap(
     params.serialize(&mut data)?;
 
     // Build account metas for Meteora swap instruction
-    // Accounts 0-15 are fixed, accounts 16-17 are bin arrays (remaining accounts)
-    // Account 15 (Meteora program) is for the instruction program_id, not in account metas
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED]
+    // Accounts 0-14 are fixed, 15-16 are bin arrays, 17 is the program for CPI
+    // Take accounts 0-16 (17 accounts) for the instruction, account 17 is for CPI invoke
+    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
         .iter()
         .enumerate()
-        .filter(|(i, _)| *i != 15) // Skip index 15 (program ID - goes in instruction, not accounts)
         .map(|(i, acc)| {
             let is_signer = i == 10; // User is signer
-            // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), user(10), binArrays(16,17)
-            let is_writable = matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 10 | 16 | 17);
+            // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), user(10), binArrays(15,16)
+            let is_writable = matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 10 | 15 | 16);
             if is_signer {
                 AccountMeta::new(*acc.key, true)
             } else if is_writable {
