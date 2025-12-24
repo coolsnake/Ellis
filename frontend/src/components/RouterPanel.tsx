@@ -58,6 +58,17 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [forceNewProgramId, setForceNewProgramId] = useState(false);
   const [actionLogs, setActionLogs] = useState<string[]>([]);
 
+  const [hops, setHops] = useState<number>(1);
+  const [testPoolId, setTestPoolId] = useState('');
+  const [testSecondPoolId, setTestSecondPoolId] = useState('');
+  const [testInputMint, setTestInputMint] = useState('So11111111111111111111111111111111111111112');
+  const [testOutputMint, setTestOutputMint] = useState('USDCoctVLVnvTXBEuP9s8hntucdJokbo17RwHuNXemT');
+  const [testAmountIn, setTestAmountIn] = useState('10000000');
+  const [testMinAmountOut, setTestMinAmountOut] = useState('1');
+  const [testSimulate, setTestSimulate] = useState(true);
+  const [testingSwap, setTestingSwap] = useState(false);
+  const [testSwapResult, setTestSwapResult] = useState<{success: boolean; signature?: string; error?: string} | null>(null);
+
   const fetchStatus = useCallback(async () => {
     try {
       setLoading(true);
@@ -275,6 +286,46 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
     return `${base}/account/${programId}${clusterParam}`;
   };
 
+  const handleTestSwap = async () => {
+    if (!testPoolId) {
+      setTestSwapResult({ success: false, error: 'Pool ID required' });
+      return;
+    }
+    if (hops === 2 && !testSecondPoolId) {
+      setTestSwapResult({ success: false, error: 'Second Pool ID required for 2-hop swap' });
+      return;
+    }
+
+    setTestingSwap(true);
+    setTestSwapResult(null);
+    
+    try {
+      const result = await apiPost('/router/test/swap', {
+        poolId: testPoolId,
+        dex: 'raydium',
+        variant: 'clmm',
+        inputMint: testInputMint || undefined,
+        outputMint: testOutputMint || undefined,
+        amountIn: testAmountIn,
+        minAmountOut: testMinAmountOut,
+        simulate: testSimulate,
+        useRouter: true,
+        hops,
+        secondPoolId: hops === 2 ? testSecondPoolId : undefined,
+      });
+      
+      setTestSwapResult({
+        success: result.success,
+        signature: result.signature,
+        error: result.error,
+      });
+    } catch (err: any) {
+      setTestSwapResult({ success: false, error: err.message });
+    } finally {
+      setTestingSwap(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -467,6 +518,145 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
             </span>
           </div>
         </div>
+
+        {/* Test Swap Section */}
+        {status?.deployed && (
+          <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
+            <h3 className="text-lg font-semibold text-white mb-3">Test Swap</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-gray-400 text-sm mb-2">Number of Hops</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setHops(1)}
+                    className={`px-4 py-2 rounded text-sm ${
+                      hops === 1 ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'
+                    }`}
+                  >
+                    Single Hop
+                  </button>
+                  <button
+                    onClick={() => setHops(2)}
+                    className={`px-4 py-2 rounded text-sm ${
+                      hops === 2 ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'
+                    }`}
+                  >
+                    Double Hop
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-gray-400 text-sm mb-1">Pool ID</label>
+                <input
+                  type="text"
+                  value={testPoolId}
+                  onChange={(e) => setTestPoolId(e.target.value)}
+                  placeholder="FXAXqgjNK6JVzVV2frumKTEuxC8hTEUhVTJTRhMMwLmM"
+                  className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
+                />
+              </div>
+
+              {hops === 2 && (
+                <div>
+                  <label className="block text-gray-400 text-sm mb-1">Second Pool ID</label>
+                  <input
+                    type="text"
+                    value={testSecondPoolId}
+                    onChange={(e) => setTestSecondPoolId(e.target.value)}
+                    placeholder="Same pool ID for round trip"
+                    className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-gray-400 text-sm mb-1">Input Mint</label>
+                  <input
+                    type="text"
+                    value={testInputMint}
+                    onChange={(e) => setTestInputMint(e.target.value)}
+                    placeholder="So11111111111111111111111111111111111111112"
+                    className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-400 text-sm mb-1">Output Mint</label>
+                  <input
+                    type="text"
+                    value={testOutputMint}
+                    onChange={(e) => setTestOutputMint(e.target.value)}
+                    placeholder="USDCoctVLVnvTXBEuP9s8hntucdJokbo17RwHuNXemT"
+                    className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-gray-400 text-sm mb-1">Amount In</label>
+                  <input
+                    type="text"
+                    value={testAmountIn}
+                    onChange={(e) => setTestAmountIn(e.target.value)}
+                    placeholder="10000000"
+                    className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-400 text-sm mb-1">Min Amount Out</label>
+                  <input
+                    type="text"
+                    value={testMinAmountOut}
+                    onChange={(e) => setTestMinAmountOut(e.target.value)}
+                    placeholder="1"
+                    className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={testSimulate}
+                  onChange={(e) => setTestSimulate(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label className="text-gray-300 text-sm">Simulate Only</label>
+              </div>
+
+              <button
+                onClick={handleTestSwap}
+                disabled={testingSwap}
+                className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white rounded font-medium"
+              >
+                {testingSwap ? 'Testing...' : `Test ${hops === 1 ? 'Single' : 'Double'} Hop Swap`}
+              </button>
+
+              {testSwapResult && (
+                <div className={`p-3 rounded text-sm ${
+                  testSwapResult.success ? 'bg-green-900/30 text-green-300' : 'bg-red-900/30 text-red-300'
+                }`}>
+                  {testSwapResult.success ? (
+                    <div>
+                      <div className="font-medium">✓ Swap Successful</div>
+                      {testSwapResult.signature && (
+                        <div className="text-xs mt-1 font-mono">{testSwapResult.signature}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="font-medium">✗ Swap Failed</div>
+                      <div className="text-xs mt-1">{testSwapResult.error}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Deploy Actions */}
         <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">

@@ -51,6 +51,11 @@ export interface TestSwapParams {
   simulateOnly: boolean;
   /** Router program ID - if provided, swap goes through the on-chain router */
   routerProgramId?: string;
+  // Multi-hop parameters
+  hops?: number; // 1 or 2
+  secondPoolId?: string;
+  secondDex?: string;
+  secondVariant?: string;
 }
 
 export interface TestSwapResult {
@@ -211,67 +216,142 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     minAmountOut,
     simulateOnly,
     routerProgramId,
+    hops = 1,
+    secondPoolId,
+    secondDex,
+    secondVariant,
   } = params;
 
   try {
-    // Fetch pool accounts
+    // Fetch first pool
     const poolResult = await fetchPoolAccounts({ connection, poolId, dex, variant });
-    
     if (!poolResult.success || !poolResult.pool) {
       return { success: false, simulated: false, error: poolResult.error || 'Failed to fetch pool' };
     }
-
     const pool = poolResult.pool;
-    
-    // Determine mints
+
+    // Determine mints for first hop
     const inMint = inputMint ? new PublicKey(inputMint) : new PublicKey(pool.mintA);
     const outMint = outputMint ? new PublicKey(outputMint) : new PublicKey(pool.mintB);
-    
-    // Determine swap direction (A to B or B to A)
     const isAtoB = inMint.toBase58() === pool.mintA;
-    
-    // Build swap instructions based on mode
+
     let swapIxs: TransactionInstruction[] = [];
-    
+
     if (routerProgramId) {
-      // === ROUTER MODE: Call swap through the on-chain arb-router ===
-      logger.info('router.test.mode', { cat: 'router', mode: 'router', routerProgramId });
-      
       const routerProgram = new PublicKey(routerProgramId);
       const dexType = dexNameToType(dex, variant);
-      
-      // Build DEX accounts in the order expected by the router
-      const dexAccounts = await buildDexAccountsForRouter(
-        wallet.publicKey,
-        pool,
-        new PublicKey(poolId),
-        inMint,
-        outMint,
-        dexType
-      );
-      
-      // User's input token account
-      const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
-      
-      // Build the route_swap instruction through the router
-      const routerSwapIx = buildRouteSwapIx(
-        wallet.publicKey,
-        userInAta,
-        {
-          dexType,
-          amountIn,
-          minAmountOut,
+
+      if (hops === 1) {
+        // Single hop: use route_swap
+        const dexAccounts = await buildDexAccountsForRouter(
+          wallet.publicKey,
+          pool,
+          new PublicKey(poolId),
+          inMint,
+          outMint,
+          dexType
+        );
+
+        const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
+        const routerSwapIx = buildRouteSwapIx(
+          wallet.publicKey,
+          userInAta,
+          {
+            dexType,
+            amountIn,
+            minAmountOut,
+            aToB: isAtoB,
+          },
+          dexAccounts,
+          routerProgram
+        );
+        swapIxs = [routerSwapIx];
+      } else if (hops === 2 && secondPoolId) {
+        // Two hops: use execute instruction
+        const secondPoolResult = await fetchPoolAccounts({ 
+          connection, 
+          poolId: secondPoolId, 
+          dex: secondDex || dex, 
+          variant: secondVariant || variant 
+        });
+        
+        if (!secondPoolResult.success || !secondPoolResult.pool) {
+          return { success: false, simulated: false, error: 'Failed to fetch second pool' };
+        }
+        const secondPool = secondPoolResult.pool;
+
+        // Determine intermediate mint (output of first hop = input of second hop)
+        const intermediateMint = outMint;
+        const finalMint = inMint; // For round trip: SOL -> USDC -> SOL
+        
+        // Build steps for execute instruction
+        const { buildExecuteIx, DexType } = await import('./sdk.js');
+        const { RouteStep } = await import('./types.js');
+        
+        const firstStep: RouteStep = {
+          dexType: dexType,
+          amountIn: amountIn, // Use specified amount for first hop
+          minAmountOut: minAmountOut,
           aToB: isAtoB,
-        },
-        dexAccounts,
-        routerProgram
-      );
-      
-      swapIxs = [routerSwapIx];
-      
+        };
+
+        const secondIsAtoB = intermediateMint.toBase58() === secondPool.mintA;
+        const secondDexType = dexNameToType(secondDex || dex, secondVariant || variant);
+        
+        const secondStep: RouteStep = {
+          dexType: secondDexType,
+          amountIn: 0n, // 0 = use all from previous step (amount propagation)
+          minAmountOut: 1n, // Minimum output for second hop
+          aToB: secondIsAtoB,
+        };
+
+        // Build DEX accounts for both hops
+        const firstDexAccounts = await buildDexAccountsForRouter(
+          wallet.publicKey,
+          pool,
+          new PublicKey(poolId),
+          inMint,
+          intermediateMint,
+          dexType
+        );
+
+        const secondDexAccounts = await buildDexAccountsForRouter(
+          wallet.publicKey,
+          secondPool,
+          new PublicKey(secondPoolId),
+          intermediateMint,
+          finalMint,
+          secondDexType
+        );
+
+        // Combine all DEX accounts (remove program IDs from individual accounts, add at end)
+        const allDexAccounts = [
+          ...firstDexAccounts.slice(0, -1), // Remove program ID from first
+          ...secondDexAccounts.slice(0, -1), // Remove program ID from second
+          firstDexAccounts[firstDexAccounts.length - 1], // Add first program ID
+          secondDexAccounts[secondDexAccounts.length - 1], // Add second program ID
+        ];
+
+        const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
+        const executeIx = buildExecuteIx(
+          wallet.publicKey,
+          userInAta,
+          {
+            steps: [firstStep, secondStep],
+            minProfit: 0n, // No minimum profit requirement for testing
+          },
+          allDexAccounts,
+          routerProgram
+        );
+        swapIxs = [executeIx];
+      } else {
+        return { success: false, simulated: false, error: 'Invalid hops configuration' };
+      }
     } else {
-      // === DIRECT MODE: Call DEX directly using SDK ===
-      logger.info('router.test.mode', { cat: 'router', mode: 'direct' });
+      // Direct mode (not using router) - single hop only for now
+      if (hops !== 1) {
+        return { success: false, simulated: false, error: 'Multi-hop only supported with router' };
+      }
       
       if (dex === 'raydium' && variant === 'clmm') {
         swapIxs = await buildRaydiumClmmSwapIxWithSdk(

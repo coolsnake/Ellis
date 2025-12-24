@@ -880,26 +880,31 @@ export function createRouterRouter(io: SocketIOServer): Router {
         variant = 'clmm',
         inputMint,
         outputMint,
-        amountIn = '10000000', // 0.01 SOL default
+        amountIn = '10000000',
         minAmountOut = '1',
-        simulate = true, // Default to simulation only
-        useRouter, // undefined = auto (use router if deployed), true = force router, false = force direct
+        simulate = true,
+        useRouter,
+        // New: Multi-hop support
+        hops = 1, // Number of hops (1 or 2)
+        secondPoolId, // Optional: second pool for 2-hop swap
+        secondDex = 'raydium',
+        secondVariant = 'clmm',
       } = req.body;
 
       if (!poolId) {
         return res.status(400).json({ success: false, error: 'poolId required' });
       }
 
+      if (hops === 2 && !secondPoolId) {
+        return res.status(400).json({ success: false, error: 'secondPoolId required for 2-hop swap' });
+      }
+
       const routerConfig = await loadRouterConfig();
       const wallet = await ensureWallet(CONFIG.walletPath);
       const connection = getRouterConnection(routerConfig.cluster);
-      const cluster = routerConfig.cluster;
       
-      // Determine whether to use the on-chain router
-      // Default: use router if deployed, otherwise direct
       let routerProgramId: string | undefined;
       if (useRouter === true) {
-        // Force router mode - fail if not deployed
         if (!routerConfig.programId) {
           return res.status(400).json({ 
             success: false, 
@@ -908,10 +913,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
         }
         routerProgramId = routerConfig.programId;
       } else if (useRouter === false) {
-        // Force direct mode
         routerProgramId = undefined;
       } else {
-        // Auto mode: use router if deployed
         routerProgramId = routerConfig.programId || undefined;
       }
 
@@ -924,14 +927,14 @@ export function createRouterRouter(io: SocketIOServer): Router {
         outputMint,
         amountIn,
         simulate,
-        cluster,
+        hops,
+        secondPoolId,
         useRouter: !!routerProgramId,
         routerProgramId,
       });
 
       emit('router:test:start', { poolId, dex, timestamp: Date.now() });
 
-      // Import test utilities dynamically
       const { runSwapTest } = await import('../../router/testSwap.js');
       
       const result = await runSwapTest({
@@ -946,12 +949,18 @@ export function createRouterRouter(io: SocketIOServer): Router {
         minAmountOut: BigInt(minAmountOut),
         simulateOnly: simulate,
         routerProgramId,
+        // Multi-hop parameters
+        hops,
+        secondPoolId,
+        secondDex,
+        secondVariant,
       });
 
       if (result.success) {
         logger.info('router.test.swap.success', { 
           cat: 'router', 
           poolId,
+          hops,
           signature: result.signature,
           simulated: simulate,
         });
@@ -960,6 +969,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         logger.warn('router.test.swap.failed', { 
           cat: 'router', 
           poolId,
+          hops,
           error: result.error,
         });
         emit('router:test:complete', { success: false, error: result.error });
