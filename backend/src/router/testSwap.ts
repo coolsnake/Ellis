@@ -544,7 +544,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
         return { success: false, simulated: false, error: 'Multi-hop only supported with router' };
       }
       
-      if (dex === 'raydium' && variant === 'clmm') {
+      if (dex === 'raydium' && variant === 'clmm' && isRaydiumPool(pool)) {
         swapIxs = await buildRaydiumClmmSwapIxWithSdk(
           wallet.publicKey,
           pool,
@@ -559,7 +559,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           return { success: false, simulated: false, error: 'SDK failed to generate swap instructions' };
         }
       } else {
-        return { success: false, simulated: false, error: `Unsupported DEX: ${dex}/${variant}` };
+        return { success: false, simulated: false, error: `Unsupported DEX for direct mode: ${dex}/${variant}` };
       }
     }
 
