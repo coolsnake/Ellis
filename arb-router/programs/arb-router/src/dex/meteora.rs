@@ -67,12 +67,21 @@ pub fn swap(
     params.serialize(&mut data)?;
 
     // Build account metas
+    // Note: Index 1 (bitmap extension) is optional and may be System Program
+    // System Program cannot be writable, so we skip writable flag for it
+    let system_program = anchor_lang::solana_program::system_program::ID;
+    
     let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 10; // User is signer
-            let is_writable = matches!(i, 0 | 1 | 2 | 3 | 4 | 5 | 8 | 9 | 14 | 15);
+            // Index 1 (bitmap extension) should only be writable if it's NOT the system program
+            let is_writable = if i == 1 {
+                *acc.key != system_program
+            } else {
+                matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 9 | 14 | 15)
+            };
             if is_signer {
                 AccountMeta::new(*acc.key, true)
             } else if is_writable {
