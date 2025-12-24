@@ -31,6 +31,14 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 		PLATFORM_TOOLS_DIR="$$HOME/.local/share/solana/install/active_release/platform-tools"; \
 		ANCHOR_CACHE_DIR="$$HOME/.cache/solana/platform-tools"; \
 		\
+		# First check if Solana CLI exists anywhere in PATH \
+		if command -v solana >/dev/null 2>&1; then \
+			SOLANA_PATH=$$(command -v solana); \
+			echo "✓ Found Solana CLI at: $$SOLANA_PATH"; \
+			SOLANA_DIR=$$(dirname "$$SOLANA_PATH"); \
+			export PATH="$$SOLANA_DIR:$$PATH"; \
+		fi; \
+		\
 		# Check if platform tools exist \
 		if cargo build-sbf --version >/dev/null 2>&1; then \
 			echo "✓ Platform tools already installed: $$(cargo build-sbf --version 2>&1 | head -1)"; \
@@ -43,20 +51,46 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 				echo "✓ Symlink created: $$ANCHOR_CACHE_DIR -> $$PLATFORM_TOOLS_DIR"; \
 			fi; \
 		else \
-			echo "✗ Platform tools not found. Installing via Python..."; \
-			if ! python3 scripts/install-solana-platform-tools.py; then \
-				echo "ERROR: Failed to install platform tools"; \
-				echo "Try manually: solana-install init 2.0.0"; \
-				exit 1; \
+			echo "✗ Platform tools not found."; \
+			\
+			# Check if Solana CLI exists but platform tools are missing \
+			if command -v solana-install >/dev/null 2>&1; then \
+				echo "Found solana-install, attempting to install platform tools..."; \
+				if solana-install init 2.0.0 2>&1; then \
+					export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
+					if cargo build-sbf --version >/dev/null 2>&1; then \
+						echo "✓ Platform tools installed via solana-install"; \
+					else \
+						echo "⚠ solana-install completed but tools not accessible"; \
+					fi; \
+				else \
+					echo "⚠ solana-install failed, trying Python script..."; \
+				fi; \
 			fi; \
-			export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
+			\
+			# If still not found, try Python installer \
 			if ! cargo build-sbf --version >/dev/null 2>&1; then \
-				echo "ERROR: Installation succeeded but tools not accessible"; \
-				echo "Ensure PATH includes: $$HOME/.local/share/solana/install/active_release/bin"; \
-				echo "Add to ~/.bashrc: export PATH=\"\$$HOME/.local/share/solana/install/active_release/bin:\$$PATH\""; \
-				exit 1; \
+				echo "Installing via Python script..."; \
+				if ! python3 scripts/install-solana-platform-tools.py; then \
+					echo ""; \
+					echo "ERROR: Failed to install platform tools"; \
+					echo ""; \
+					echo "Manual installation options:"; \
+					echo "  1. If Solana CLI is already installed: solana-install init 2.0.0"; \
+					echo "  2. Install requests library: pip3 install --user requests"; \
+					echo "  3. Use curl directly: sh -c \"\$$(curl -sSfL https://release.solana.com/stable/install)\""; \
+					echo ""; \
+					exit 1; \
+				fi; \
+				export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
+				if ! cargo build-sbf --version >/dev/null 2>&1; then \
+					echo "ERROR: Installation succeeded but tools not accessible"; \
+					echo "Ensure PATH includes: $$HOME/.local/share/solana/install/active_release/bin"; \
+					echo "Add to ~/.bashrc: export PATH=\"\$$HOME/.local/share/solana/install/active_release/bin:\$$PATH\""; \
+					exit 1; \
+				fi; \
+				echo "✓ Platform tools installed and verified"; \
 			fi; \
-			echo "✓ Platform tools installed and verified"; \
 			\
 			# Create symlink for Anchor after installation \
 			if [ -d "$$PLATFORM_TOOLS_DIR" ] && [ ! -d "$$ANCHOR_CACHE_DIR" ]; then \

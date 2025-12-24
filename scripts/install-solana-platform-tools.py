@@ -41,8 +41,16 @@ def download_with_requests(url, dest_path):
     try:
         import requests
         print(f"Downloading {url}...")
-        response = requests.get(url, stream=True, verify=True, timeout=30)
-        response.raise_for_status()
+        # Try with verify=True first
+        try:
+            response = requests.get(url, stream=True, verify=True, timeout=60)
+            response.raise_for_status()
+        except requests.exceptions.SSLError:
+            # If SSL fails, try with verify=False (less secure but works)
+            print("⚠ SSL verification failed, trying without verification...")
+            response = requests.get(url, stream=True, verify=False, timeout=60)
+            response.raise_for_status()
+        
         with open(dest_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
@@ -63,7 +71,16 @@ def download_with_requests(url, dest_path):
             except ImportError:
                 pass
             
-            with urllib.request.urlopen(url, context=ctx, timeout=30) as response:
+            with urllib.request.urlopen(url, context=ctx, timeout=60) as response:
+                with open(dest_path, 'wb') as f:
+                    shutil.copyfileobj(response, f)
+            print(f"✓ Downloaded to {dest_path}")
+            return True
+        except ssl.SSLError:
+            # Try with unverified context as last resort
+            print("⚠ SSL error, trying with unverified context...")
+            ctx = ssl._create_unverified_context()
+            with urllib.request.urlopen(url, context=ctx, timeout=60) as response:
                 with open(dest_path, 'wb') as f:
                     shutil.copyfileobj(response, f)
             print(f"✓ Downloaded to {dest_path}")
@@ -79,25 +96,60 @@ def install_solana_cli():
     """Install Solana CLI using Python"""
     print("=== Installing Solana CLI ===")
     
-    # Check if already installed
+    # Check if already installed in multiple locations
     solana_bin = Path.home() / ".local" / "share" / "solana" / "install" / "active_release" / "bin"
-    if (solana_bin / "solana").exists() or shutil.which('solana'):
-        print("✓ Solana CLI already installed")
+    solana_path = shutil.which('solana')
+    
+    if (solana_bin / "solana").exists():
+        print(f"✓ Solana CLI already installed at {solana_bin}")
         # Update PATH for this session
         os.environ['PATH'] = f"{solana_bin}:{os.environ.get('PATH', '')}"
         return True
+    elif solana_path:
+        print(f"✓ Solana CLI found in PATH at {solana_path}")
+        # Extract directory and add to PATH
+        solana_dir = str(Path(solana_path).parent)
+        os.environ['PATH'] = f"{solana_dir}:{os.environ.get('PATH', '')}"
+        return True
     
-    # Download installer script
+    # Try multiple download methods
     installer_url = "https://release.solana.com/stable/install"
     installer_path = Path(tempfile.gettempdir()) / "solana-install.sh"
     
+    # Try downloading with requests first
     if not download_with_requests(installer_url, installer_path):
-        print("ERROR: Failed to download Solana installer")
-        print("\nTrying alternative: Install requests library for better TLS support:")
-        print("  pip3 install --user requests")
-        print("\nOr install Solana CLI manually:")
-        print("  sh -c \"$(curl -sSfL https://release.solana.com/stable/install)\"")
-        return False
+        print("⚠ Direct download failed, trying alternative methods...")
+        
+        # Try using curl if available
+        curl_path = shutil.which('curl')
+        if curl_path:
+            print("Trying curl...")
+            try:
+                result = subprocess.run(
+                    [curl_path, '-sSfL', installer_url],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                installer_path.write_text(result.stdout)
+                os.chmod(installer_path, 0o755)
+                print("✓ Downloaded via curl")
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                print(f"✗ Curl download failed: {e}")
+                print("\nERROR: All download methods failed")
+                print("\nManual installation options:")
+                print("1. Install requests library: pip3 install --user requests")
+                print("2. Install Solana manually: sh -c \"$(curl -sSfL https://release.solana.com/stable/install)\"")
+                print("3. Download installer manually and place at:", installer_path)
+                return False
+        else:
+            print("\nERROR: All download methods failed")
+            print("\nManual installation options:")
+            print("1. Install requests library: pip3 install --user requests")
+            print("2. Install curl: sudo apt-get install curl")
+            print("3. Install Solana manually: sh -c \"$(curl -sSfL https://release.solana.com/stable/install)\"")
+            return False
     
     # Make executable and run
     os.chmod(installer_path, 0o755)
