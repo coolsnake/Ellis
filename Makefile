@@ -1,6 +1,6 @@
 # Lockstone Makefile
 
-.PHONY: build build-all backend frontend arb arb-router deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs arb-router-devnet arb-router-mainnet arb-router-test arb-router-airdrop clean clean-cargo clean-tmp
+.PHONY: build build-all backend frontend arb arb-router check-solana-tools deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs arb-router-devnet arb-router-mainnet arb-router-test arb-router-airdrop clean clean-cargo clean-tmp
 
 WWW_DIR ?= /var/www/lockstone
 
@@ -24,7 +24,30 @@ frontend: ## Build frontend and sync to $(WWW_DIR)
 arb: ## Build Rust arb-rs
 	cd arb-rs && cargo build --release
 
-arb-router: ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
+check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids curl TLS issues)
+	@echo "=== Checking Solana Platform Tools ==="
+	@bash -c '\
+		export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
+		if cargo build-sbf --version >/dev/null 2>&1; then \
+			echo "✓ Platform tools already installed: $$(cargo build-sbf --version 2>&1 | head -1)"; \
+		else \
+			echo "✗ Platform tools not found. Installing via Python..."; \
+			if ! python3 scripts/install-solana-platform-tools.py; then \
+				echo "ERROR: Failed to install platform tools"; \
+				echo "Try manually: solana-install init 2.0.0"; \
+				exit 1; \
+			fi; \
+			export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
+			if ! cargo build-sbf --version >/dev/null 2>&1; then \
+				echo "ERROR: Installation succeeded but tools not accessible"; \
+				echo "Ensure PATH includes: $$HOME/.local/share/solana/install/active_release/bin"; \
+				echo "Add to ~/.bashrc: export PATH=\"\$$HOME/.local/share/solana/install/active_release/bin:\$$PATH\""; \
+				exit 1; \
+			fi; \
+			echo "✓ Platform tools installed and verified"; \
+		fi'
+
+arb-router: check-solana-tools ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
 	@echo "=== Building arb-router program ==="
 	@echo ""
 	@echo "REQUIREMENTS:"
@@ -32,6 +55,7 @@ arb-router: ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
 	@echo "  - Anchor CLI 0.32.1+"
 	@echo ""
 	@bash -c '\
+		export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
 		if ! command -v anchor >/dev/null 2>&1; then \
 			echo "ERROR: Anchor CLI not found."; \
 			echo "Install with: cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.32.1"; \
@@ -44,7 +68,14 @@ arb-router: ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
 			echo "Found Solana CLI: $$SOLANA_VER"; \
 		else \
 			echo "WARNING: Solana CLI not found in PATH."; \
-		fi'
+		fi; \
+		if ! cargo build-sbf --version >/dev/null 2>&1; then \
+			echo "ERROR: Platform tools not found even after check-solana-tools."; \
+			echo "Try manually: solana-install init 2.0.0"; \
+			echo "Then ensure PATH includes: $$HOME/.local/share/solana/install/active_release/bin"; \
+			exit 1; \
+		fi; \
+		echo "Found platform tools: $$(cargo build-sbf --version 2>&1 | head -1)"'
 	@echo "Installing npm dependencies..."
 	cd arb-router && npm ci --legacy-peer-deps
 	@echo "Removing old Cargo.lock..."
@@ -52,7 +83,7 @@ arb-router: ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
 	@echo "Pinning indexmap to Rust 1.79 compatible version..."
 	cd arb-router && cargo generate-lockfile && cargo update indexmap --precise 2.5.0
 	@echo "Building Anchor program..."
-	cd arb-router && anchor build
+	@bash -c 'export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; cd arb-router && anchor build'
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
 	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet
