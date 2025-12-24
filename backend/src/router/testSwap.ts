@@ -259,14 +259,9 @@ async function fetchMeteoraDlmmPool(
   }
 
   try {
-    // Import Meteora SDK - derivation functions are under DLMM.DLMM namespace
+    // Import Meteora SDK for decoding pool state
     const meteoraModule = await import('@meteora-ag/dlmm');
-    const DLMM = (meteoraModule as any).DLMM;
     const createProgram = (meteoraModule as any).createProgram;
-    
-    // Get derivation functions from DLMM.DLMM namespace (they're async!)
-    const deriveReserve = DLMM?.DLMM?.deriveReserve;
-    const deriveOracle = DLMM?.DLMM?.deriveOracle;
     
     // Create program to decode pool state
     const program = createProgram(connection);
@@ -292,43 +287,47 @@ async function fetchMeteoraDlmmPool(
     const activeId = Number(state.activeId ?? state.active_id);
     const binStep = Number(state.binStep ?? state.bin_step);
     
-    // Derive reserve accounts - async! Signature: deriveReserve(programId, lbPair, isReserveX)
+    // Derive reserve and oracle accounts using direct PDA derivation
+    // (SDK functions may not work reliably)
     const programId = accountInfo.owner;
     let reserveX = '';
     let reserveY = '';
+    let oracle = '';
     
-    if (typeof deriveReserve === 'function') {
-      try {
-        // Reserve X (isReserveX = true)
-        const rxResult = await deriveReserve(programId, poolPubkey, true);
-        const rxPk = toPublicKeySafe(rxResult?.publicKey || rxResult);
-        reserveX = rxPk?.toBase58() || '';
-        logger.debug('router.test.meteora.reserveX.derived', { cat: 'router', reserveX });
-      } catch (e: any) {
-        logger.debug('router.test.meteora.reserveX.derive.error', { cat: 'router', error: e.message });
-      }
-      try {
-        // Reserve Y (isReserveX = false)
-        const ryResult = await deriveReserve(programId, poolPubkey, false);
-        const ryPk = toPublicKeySafe(ryResult?.publicKey || ryResult);
-        reserveY = ryPk?.toBase58() || '';
-        logger.debug('router.test.meteora.reserveY.derived', { cat: 'router', reserveY });
-      } catch (e: any) {
-        logger.debug('router.test.meteora.reserveY.derive.error', { cat: 'router', error: e.message });
-      }
+    try {
+      // Reserve X PDA: seeds = [lbPair, tokenXMint]
+      const [reserveXPda] = PublicKey.findProgramAddressSync(
+        [poolPubkey.toBuffer(), tokenXMintPk.toBuffer()],
+        programId
+      );
+      reserveX = reserveXPda.toBase58();
+      logger.info('router.test.meteora.reserveX.derived', { cat: 'router', reserveX });
+    } catch (e: any) {
+      logger.warn('router.test.meteora.reserveX.derive.error', { cat: 'router', error: e.message });
     }
     
-    // Derive oracle - async! Signature: deriveOracle(programId, lbPair)
-    let oracle = '';
-    if (typeof deriveOracle === 'function') {
-      try {
-        const oracleResult = await deriveOracle(programId, poolPubkey);
-        const oraclePk = toPublicKeySafe(oracleResult?.publicKey || oracleResult);
-        oracle = oraclePk?.toBase58() || '';
-        logger.debug('router.test.meteora.oracle.derived', { cat: 'router', oracle });
-      } catch (e: any) {
-        logger.debug('router.test.meteora.oracle.derive.error', { cat: 'router', error: e.message });
-      }
+    try {
+      // Reserve Y PDA: seeds = [lbPair, tokenYMint]
+      const [reserveYPda] = PublicKey.findProgramAddressSync(
+        [poolPubkey.toBuffer(), tokenYMintPk.toBuffer()],
+        programId
+      );
+      reserveY = reserveYPda.toBase58();
+      logger.info('router.test.meteora.reserveY.derived', { cat: 'router', reserveY });
+    } catch (e: any) {
+      logger.warn('router.test.meteora.reserveY.derive.error', { cat: 'router', error: e.message });
+    }
+    
+    try {
+      // Oracle PDA: seeds = ["oracle", lbPair]
+      const [oraclePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('oracle'), poolPubkey.toBuffer()],
+        programId
+      );
+      oracle = oraclePda.toBase58();
+      logger.info('router.test.meteora.oracle.derived', { cat: 'router', oracle });
+    } catch (e: any) {
+      logger.warn('router.test.meteora.oracle.derive.error', { cat: 'router', error: e.message });
     }
     
     // Derive bin arrays using direct PDA derivation (like pools.derivation.ts)
