@@ -286,28 +286,48 @@ export function createRouterRouter(io: SocketIOServer): Router {
 
   /**
    * POST /router/deploy - Deploy the program
+   * 
+   * Options:
+   * - cluster: Target cluster (devnet, mainnet-beta, localnet)
+   * - forceNewProgramId: Generate a new program ID (use after closing a program)
    */
   api.post('/router/deploy', async (req: Request, res: Response) => {
     try {
-      const { cluster } = req.body;
+      const { cluster, forceNewProgramId } = req.body;
 
       // Set cluster if provided
       if (cluster && ['devnet', 'mainnet-beta', 'localnet'].includes(cluster)) {
         setSolanaCluster(cluster);
       }
 
-      logger.info('router.deploy.start', { cat: 'router', cluster: getSolanaCluster() });
-      emit('router:deploy:start', { cluster: getSolanaCluster(), timestamp: Date.now() });
+      const currentCluster = getSolanaCluster();
+      const config = await loadRouterConfig();
+      const connection = getRouterConnection(config.cluster);
 
-      const result = await deployProgram(CONFIG.walletPath);
+      logger.info('router.deploy.start', { 
+        cat: 'router', 
+        cluster: currentCluster,
+        forceNewProgramId: !!forceNewProgramId,
+      });
+      emit('router:deploy:start', { 
+        cluster: currentCluster, 
+        forceNewProgramId: !!forceNewProgramId,
+        timestamp: Date.now() 
+      });
+
+      const result = await deployProgram({
+        walletPath: CONFIG.walletPath,
+        forceNewProgramId: !!forceNewProgramId,
+        connection,
+      });
 
       if (result.success && result.programId) {
         // Save to config
-        await setDeployedProgramId(result.programId, getSolanaCluster() as any);
+        await setDeployedProgramId(result.programId, currentCluster as any);
         logger.info('router.deploy.success', { cat: 'router', programId: result.programId });
         emit('router:deploy:complete', { success: true, programId: result.programId });
       } else {
-        logger.error('router.deploy.failed', { cat: 'router', error: result.error });
+        logger.error('router.deploy.failed', { cat: 'router', error: result.error, logs: result.logs });
         emit('router:deploy:complete', { success: false, error: result.error });
       }
 

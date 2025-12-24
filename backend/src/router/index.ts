@@ -48,12 +48,15 @@ export {
   buildProgram,
   generateProgramKeypair,
   loadProgramKeypair,
+  updateProgramIdInSource,
+  isProgramClosed,
   deployProgram,
   upgradeProgram,
   closeProgram,
   getProgramStatus,
   checkDeploymentBalance,
   requestAirdrop,
+  type DeployOptions,
 } from './deployer.js';
 
 // Test swap functions

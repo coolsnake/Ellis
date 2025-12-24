@@ -290,13 +290,99 @@ export async function loadProgramKeypair(): Promise<Keypair | null> {
 }
 
 /**
- * Deploy the program to the configured cluster
+ * Update the program ID in source files (lib.rs and Anchor.toml)
+ * This is necessary when generating a new program keypair after closing a program
  */
-export async function deployProgram(
-  walletPath?: string,
-  binaryPath: string = PROGRAM_BINARY_PATH,
-  keypairPath: string = KEYPAIR_PATH
-): Promise<DeployResult> {
+export async function updateProgramIdInSource(newProgramId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const libRsPath = path.join(ARB_ROUTER_DIR, 'programs', 'arb-router', 'src', 'lib.rs');
+    const anchorTomlPath = path.join(ARB_ROUTER_DIR, 'Anchor.toml');
+
+    // Update lib.rs - replace declare_id! macro
+    let libRsContent = await fs.readFile(libRsPath, 'utf-8');
+    const declareIdRegex = /declare_id!\s*\(\s*"[A-Za-z0-9]{32,44}"\s*\)/;
+    
+    if (!declareIdRegex.test(libRsContent)) {
+      return { success: false, error: 'Could not find declare_id! in lib.rs' };
+    }
+    
+    libRsContent = libRsContent.replace(declareIdRegex, `declare_id!("${newProgramId}")`);
+    await fs.writeFile(libRsPath, libRsContent, 'utf-8');
+    
+    logger.info('router.source.updated', { cat: 'router', file: 'lib.rs', programId: newProgramId });
+
+    // Update Anchor.toml - replace all arb_router program IDs
+    let anchorTomlContent = await fs.readFile(anchorTomlPath, 'utf-8');
+    const programIdRegex = /arb_router\s*=\s*"[A-Za-z0-9]{32,44}"/g;
+    
+    anchorTomlContent = anchorTomlContent.replace(programIdRegex, `arb_router = "${newProgramId}"`);
+    await fs.writeFile(anchorTomlPath, anchorTomlContent, 'utf-8');
+    
+    logger.info('router.source.updated', { cat: 'router', file: 'Anchor.toml', programId: newProgramId });
+
+    return { success: true };
+  } catch (err: any) {
+    logger.error('router.source.update_failed', { cat: 'router', error: err.message });
+    return { success: false, error: `Failed to update source files: ${err.message}` };
+  }
+}
+
+/**
+ * Check if a program ID has been closed (account doesn't exist or is not executable)
+ */
+export async function isProgramClosed(
+  connection: Connection,
+  programId: string
+): Promise<boolean> {
+  try {
+    const pubkey = new PublicKey(programId);
+    const accountInfo = await connection.getAccountInfo(pubkey);
+    
+    // If account doesn't exist or isn't executable, it's been closed
+    if (!accountInfo) {
+      return true;
+    }
+    
+    // Also check if it's the BPF Upgradeable Loader - if not, it may have been closed
+    const BPF_LOADER_UPGRADEABLE = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
+    if (!accountInfo.owner.equals(BPF_LOADER_UPGRADEABLE)) {
+      return true;
+    }
+    
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Options for deployProgram
+ */
+export interface DeployOptions {
+  walletPath?: string;
+  binaryPath?: string;
+  keypairPath?: string;
+  /** Force generation of a new program ID (use after closing a program) */
+  forceNewProgramId?: boolean;
+  /** Connection for checking program status */
+  connection?: Connection;
+}
+
+/**
+ * Deploy the program to the configured cluster
+ * 
+ * @param options - Deployment options
+ * @param options.forceNewProgramId - If true, generates a new keypair, updates source files, and rebuilds
+ */
+export async function deployProgram(options: DeployOptions = {}): Promise<DeployResult> {
+  const {
+    walletPath,
+    binaryPath = PROGRAM_BINARY_PATH,
+    keypairPath = KEYPAIR_PATH,
+    forceNewProgramId = false,
+    connection,
+  } = options;
+  
   const logs: string[] = [];
 
   try {
@@ -308,29 +394,120 @@ export async function deployProgram(
       };
     }
 
-    // Check binary exists
-    try {
-      await fs.access(binaryPath);
-    } catch {
-      return {
-        success: false,
-        error: `Program binary not found at ${binaryPath}. Run build first.`,
-        logs,
-      };
-    }
-
-    // Check or generate keypair
-    try {
-      await fs.access(keypairPath);
-    } catch {
+    // Handle force new program ID scenario (after closing a program)
+    if (forceNewProgramId) {
+      logs.push('Force new program ID requested...');
+      
+      // Generate new keypair (overwrites existing)
       logs.push('Generating new program keypair...');
-      const result = await generateProgramKeypair();
-      if (!result) {
+      const newKeypair = await generateProgramKeypair();
+      if (!newKeypair) {
         return {
           success: false,
-          error: 'Failed to generate program keypair',
+          error: 'Failed to generate new program keypair',
           logs,
         };
+      }
+      
+      const newProgramId = newKeypair.keypair.publicKey.toBase58();
+      logs.push(`New program ID: ${newProgramId}`);
+      
+      // Update source files with new program ID
+      logs.push('Updating source files with new program ID...');
+      const updateResult = await updateProgramIdInSource(newProgramId);
+      if (!updateResult.success) {
+        return {
+          success: false,
+          error: updateResult.error || 'Failed to update source files',
+          logs,
+        };
+      }
+      logs.push('Source files updated successfully');
+      
+      // Rebuild the program with new program ID
+      logs.push('Rebuilding program with new program ID...');
+      const buildResult = await buildProgram();
+      if (!buildResult.success) {
+        return {
+          success: false,
+          error: `Rebuild failed: ${buildResult.error}`,
+          logs: [...logs, ...(buildResult.logs || [])],
+        };
+      }
+      logs.push('Program rebuilt successfully');
+    } else {
+      // Check if existing keypair's program was closed
+      let keypairExists = false;
+      try {
+        await fs.access(keypairPath);
+        keypairExists = true;
+      } catch {
+        keypairExists = false;
+      }
+      
+      if (keypairExists && connection) {
+        const existingKeypair = await loadProgramKeypair();
+        if (existingKeypair) {
+          const closed = await isProgramClosed(connection, existingKeypair.publicKey.toBase58());
+          if (closed) {
+            // Check if there's still an account (closed programs have specific state)
+            const accountInfo = await connection.getAccountInfo(existingKeypair.publicKey);
+            if (accountInfo === null) {
+              // Program was closed - need new keypair
+              logs.push('Existing program ID was closed. Use forceNewProgramId: true to generate a new one.');
+              return {
+                success: false,
+                error: 'Program ID was closed and cannot be reused. Set forceNewProgramId: true to generate a new program ID.',
+                logs,
+              };
+            }
+          }
+        }
+      }
+      
+      // Check binary exists
+      try {
+        await fs.access(binaryPath);
+      } catch {
+        return {
+          success: false,
+          error: `Program binary not found at ${binaryPath}. Run build first.`,
+          logs,
+        };
+      }
+
+      // Check or generate keypair
+      if (!keypairExists) {
+        logs.push('Generating new program keypair...');
+        const result = await generateProgramKeypair();
+        if (!result) {
+          return {
+            success: false,
+            error: 'Failed to generate program keypair',
+            logs,
+          };
+        }
+        
+        // For new keypairs, also update source files and rebuild
+        const newProgramId = result.keypair.publicKey.toBase58();
+        logs.push(`New program ID: ${newProgramId}`);
+        
+        logs.push('Updating source files with new program ID...');
+        const updateResult = await updateProgramIdInSource(newProgramId);
+        if (!updateResult.success) {
+          logs.push(`Warning: Could not update source files: ${updateResult.error}`);
+          // Continue anyway - source might already match or user can fix manually
+        }
+        
+        logs.push('Rebuilding program...');
+        const buildResult = await buildProgram();
+        if (!buildResult.success) {
+          return {
+            success: false,
+            error: `Build failed: ${buildResult.error}`,
+            logs: [...logs, ...(buildResult.logs || [])],
+          };
+        }
       }
     }
 
