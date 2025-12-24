@@ -39,7 +39,7 @@ pub struct SwapParams {
 /// 6. `[]` Token X Mint
 /// 7. `[]` Token Y Mint
 /// 8. `[writable]` Oracle
-/// 9. `[writable]` Host Fee In
+/// 9. `[writable]` Host Fee In (user's input token account)
 /// 10. `[signer]` User (authority)
 /// 11. `[]` Token Program
 /// 12. `[]` Event Authority
