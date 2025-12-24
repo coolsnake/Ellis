@@ -28,8 +28,20 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 	@echo "=== Checking Solana Platform Tools ==="
 	@bash -c '\
 		export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
+		PLATFORM_TOOLS_DIR="$$HOME/.local/share/solana/install/active_release/platform-tools"; \
+		ANCHOR_CACHE_DIR="$$HOME/.cache/solana/platform-tools"; \
+		\
+		# Check if platform tools exist \
 		if cargo build-sbf --version >/dev/null 2>&1; then \
 			echo "✓ Platform tools already installed: $$(cargo build-sbf --version 2>&1 | head -1)"; \
+			\
+			# Ensure Anchor can find them by creating symlink if needed \
+			if [ -d "$$PLATFORM_TOOLS_DIR" ] && [ ! -d "$$ANCHOR_CACHE_DIR" ]; then \
+				echo "Creating symlink for Anchor to find platform tools..."; \
+				mkdir -p "$$HOME/.cache/solana" 2>/dev/null || true; \
+				ln -sf "$$PLATFORM_TOOLS_DIR" "$$ANCHOR_CACHE_DIR" 2>/dev/null || true; \
+				echo "✓ Symlink created: $$ANCHOR_CACHE_DIR -> $$PLATFORM_TOOLS_DIR"; \
+			fi; \
 		else \
 			echo "✗ Platform tools not found. Installing via Python..."; \
 			if ! python3 scripts/install-solana-platform-tools.py; then \
@@ -45,6 +57,14 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 				exit 1; \
 			fi; \
 			echo "✓ Platform tools installed and verified"; \
+			\
+			# Create symlink for Anchor after installation \
+			if [ -d "$$PLATFORM_TOOLS_DIR" ] && [ ! -d "$$ANCHOR_CACHE_DIR" ]; then \
+				echo "Creating symlink for Anchor to find platform tools..."; \
+				mkdir -p "$$HOME/.cache/solana" 2>/dev/null || true; \
+				ln -sf "$$PLATFORM_TOOLS_DIR" "$$ANCHOR_CACHE_DIR" 2>/dev/null || true; \
+				echo "✓ Symlink created: $$ANCHOR_CACHE_DIR -> $$PLATFORM_TOOLS_DIR"; \
+			fi; \
 		fi'
 
 arb-router: check-solana-tools ## Build Anchor arb-router program (requires Agave 2.x / Solana 2.x)
@@ -83,7 +103,23 @@ arb-router: check-solana-tools ## Build Anchor arb-router program (requires Agav
 	@echo "Pinning indexmap to Rust 1.79 compatible version..."
 	cd arb-router && cargo generate-lockfile && cargo update indexmap --precise 2.5.0
 	@echo "Building Anchor program..."
-	@bash -c 'export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; cd arb-router && anchor build'
+	@bash -c '\
+		export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
+		PLATFORM_TOOLS_DIR="$$HOME/.local/share/solana/install/active_release/platform-tools"; \
+		ANCHOR_CACHE_DIR="$$HOME/.cache/solana/platform-tools"; \
+		\
+		# Ensure Anchor can find platform tools via symlink \
+		if [ -d "$$PLATFORM_TOOLS_DIR" ] && [ ! -e "$$ANCHOR_CACHE_DIR" ]; then \
+			mkdir -p "$$HOME/.cache/solana" 2>/dev/null || true; \
+			ln -sf "$$PLATFORM_TOOLS_DIR" "$$ANCHOR_CACHE_DIR" 2>/dev/null || true; \
+			echo "✓ Linked Anchor cache to platform tools: $$ANCHOR_CACHE_DIR -> $$PLATFORM_TOOLS_DIR"; \
+		fi; \
+		\
+		# Set environment variables to prevent Anchor from downloading platform tools \
+		export SOLANA_PLATFORM_TOOLS_DIR="$$PLATFORM_TOOLS_DIR"; \
+		export ANCHOR_PLATFORM_TOOLS_DIR="$$ANCHOR_CACHE_DIR"; \
+		\
+		cd arb-router && anchor build'
 
 arb-router-devnet: arb-router ## Deploy arb-router to devnet
 	cd arb-router && ANCHOR_PROVIDER_URL="$(HELIUS_DEVNET_RPC)" anchor deploy --provider.cluster devnet

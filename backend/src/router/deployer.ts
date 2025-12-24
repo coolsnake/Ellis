@@ -169,10 +169,27 @@ export async function buildProgram(): Promise<BuildResult> {
     logs.push(`Building program in ${ARB_ROUTER_DIR}...`);
 
     return new Promise((resolve) => {
+      const env = getSpawnEnv();
+      
+      // Ensure PATH includes Solana platform tools
+      const solanaBinPath = `${process.env.HOME || process.env.USERPROFILE || '/tmp'}/.local/share/solana/install/active_release/bin`;
+      const existingPath = env.PATH || process.env.PATH || '';
+      if (!existingPath.includes(solanaBinPath)) {
+        env.PATH = `${solanaBinPath}:${existingPath}`;
+      }
+      
+      // Set SOLANA_PLATFORM_TOOLS_DIR to prevent Anchor from downloading its own
+      const platformToolsDir = `${process.env.HOME || process.env.USERPROFILE || '/tmp'}/.local/share/solana/install/active_release/platform-tools`;
+      env.SOLANA_PLATFORM_TOOLS_DIR = platformToolsDir;
+      
+      // Also set Anchor's cache directory to point to our installation
+      const anchorCacheDir = `${process.env.HOME || process.env.USERPROFILE || '/tmp'}/.cache/solana/platform-tools`;
+      env.ANCHOR_PLATFORM_TOOLS_DIR = anchorCacheDir;
+      
       const build = spawn('anchor', ['build'], {
         cwd: ARB_ROUTER_DIR,
         shell: true,
-        env: getSpawnEnv(),
+        env,
       });
 
       build.stdout.on('data', (data) => {
