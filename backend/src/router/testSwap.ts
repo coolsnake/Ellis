@@ -321,17 +321,18 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
       tx.add(createAssociatedTokenAccountInstruction(
         wallet.publicKey, userInAta, wallet.publicKey, inMint, inMintTokenProgram
       ));
-      // If input is SOL, wrap some
-      if (inMint.equals(NATIVE_MINT)) {
-        tx.add(
-          SystemProgram.transfer({
-            fromPubkey: wallet.publicKey,
-            toPubkey: userInAta,
-            lamports: Number(amountIn) + 10000, // Add extra for rent
-          }),
-          createSyncNativeInstruction(userInAta, inMintTokenProgram)
-        );
-      }
+    }
+    
+    // If input is SOL, always wrap the required amount (even if account exists)
+    if (inMint.equals(NATIVE_MINT)) {
+      tx.add(
+        SystemProgram.transfer({
+          fromPubkey: wallet.publicKey,
+          toPubkey: userInAta,
+          lamports: Number(amountIn) + 10000, // Add extra for fees
+        }),
+        createSyncNativeInstruction(userInAta, inMintTokenProgram)
+      );
     }
     
     if (!outAtaInfo) {
