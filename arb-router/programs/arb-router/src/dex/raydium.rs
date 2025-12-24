@@ -55,6 +55,7 @@ pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
+    a_to_b: bool,  // Add this parameter
 ) -> Result<()> {
     if accounts.len() < ACCOUNTS_NEEDED {
         msg!("Raydium: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
@@ -65,8 +66,8 @@ pub fn swap(
     let params = SwapParams {
         amount: amount_in,
         other_amount_threshold: min_amount_out,
-        sqrt_price_limit_x64: 0, // No price limit
-        is_base_input: true,
+        sqrt_price_limit_x64: 0,
+        is_base_input: a_to_b,  // Set based on direction: true for A->B, false for B->A
     };
 
     let mut data = Vec::with_capacity(8 + 8 + 8 + 16 + 1);

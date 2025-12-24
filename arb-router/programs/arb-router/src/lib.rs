@@ -200,6 +200,7 @@ pub mod arb_router {
                     &ctx.remaining_accounts,
                     params.amount_in,
                     params.min_amount_out,
+                    params.a_to_b,
                 )?;
             }
             DexType::Meteora => {
@@ -275,7 +276,7 @@ pub mod arb_router {
             
             match step.dex_type {
                 DexType::Raydium => {
-                    dex::raydium::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
+                    dex::raydium::swap(step_accounts, actual_amount_in, step.min_amount_out, step.a_to_b)?;
                 }
                 DexType::Meteora => {
                     dex::meteora::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
