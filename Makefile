@@ -31,6 +31,15 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 		PLATFORM_TOOLS_DIR="$$HOME/.local/share/solana/install/active_release/platform-tools"; \
 		ANCHOR_CACHE_DIR="$$HOME/.cache/solana/platform-tools"; \
 		\
+		# Check system time (critical for SSL/TLS) \
+		CURRENT_TIME=$$(date +%s); \
+		MIN_TIME=1577836800; \
+		MAX_TIME=1893456000; \
+		if [ $$CURRENT_TIME -lt $$MIN_TIME ] || [ $$CURRENT_TIME -gt $$MAX_TIME ]; then \
+			echo "⚠ WARNING: System time may be incorrect (current: $$CURRENT_TIME)"; \
+			echo "  SSL/TLS connections will fail. Fix with: sudo ntpdate -s time.nist.gov"; \
+		fi; \
+		\
 		# First check if Solana CLI exists anywhere in PATH \
 		if command -v solana >/dev/null 2>&1; then \
 			SOLANA_PATH=$$(command -v solana); \
@@ -39,12 +48,32 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 			export PATH="$$SOLANA_DIR:$$PATH"; \
 		fi; \
 		\
+		# Check common installation locations \
+		for SOLANA_HOME in "$$HOME/.local/share/solana" "/root/.local/share/solana" "/usr/local/share/solana"; do \
+			if [ -d "$$SOLANA_HOME/install/active_release/bin" ]; then \
+				export PATH="$$SOLANA_HOME/install/active_release/bin:$$PATH"; \
+				echo "✓ Found Solana installation at: $$SOLANA_HOME"; \
+				break; \
+			fi; \
+		done; \
+		\
 		# Check if platform tools exist \
 		if cargo build-sbf --version >/dev/null 2>&1; then \
 			echo "✓ Platform tools already installed: $$(cargo build-sbf --version 2>&1 | head -1)"; \
 			\
+			# Find actual platform tools directory \
+			BUILD_SBF_PATH=$$(command -v cargo-build-sbf 2>/dev/null || command -v cargo build-sbf 2>/dev/null || echo ""); \
+			if [ -n "$$BUILD_SBF_PATH" ]; then \
+				BUILD_SBF_DIR=$$(dirname "$$BUILD_SBF_PATH"); \
+				ACTUAL_TOOLS_DIR=$$(dirname "$$BUILD_SBF_DIR")/platform-tools; \
+				if [ -d "$$ACTUAL_TOOLS_DIR" ]; then \
+					PLATFORM_TOOLS_DIR="$$ACTUAL_TOOLS_DIR"; \
+					echo "✓ Found platform tools at: $$PLATFORM_TOOLS_DIR"; \
+				fi; \
+			fi; \
+			\
 			# Ensure Anchor can find them by creating symlink if needed \
-			if [ -d "$$PLATFORM_TOOLS_DIR" ] && [ ! -d "$$ANCHOR_CACHE_DIR" ]; then \
+			if [ -d "$$PLATFORM_TOOLS_DIR" ] && [ ! -e "$$ANCHOR_CACHE_DIR" ]; then \
 				echo "Creating symlink for Anchor to find platform tools..."; \
 				mkdir -p "$$HOME/.cache/solana" 2>/dev/null || true; \
 				ln -sf "$$PLATFORM_TOOLS_DIR" "$$ANCHOR_CACHE_DIR" 2>/dev/null || true; \
@@ -75,10 +104,12 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 					echo ""; \
 					echo "ERROR: Failed to install platform tools"; \
 					echo ""; \
-					echo "Manual installation options:"; \
-					echo "  1. If Solana CLI is already installed: solana-install init 2.0.0"; \
-					echo "  2. Install requests library: pip3 install --user requests"; \
-					echo "  3. Use curl directly: sh -c \"\$$(curl -sSfL https://release.solana.com/stable/install)\""; \
+					echo "TROUBLESHOOTING:"; \
+					echo "  1. Check system time: date (should be current)"; \
+					echo "     Fix with: sudo ntpdate -s time.nist.gov"; \
+					echo "  2. If Solana CLI is already installed: solana-install init 2.0.0"; \
+					echo "  3. Check if Solana exists: which solana"; \
+					echo "  4. Check installation: ls -la ~/.local/share/solana/install/active_release/bin/"; \
 					echo ""; \
 					exit 1; \
 				fi; \
@@ -93,7 +124,7 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 			fi; \
 			\
 			# Create symlink for Anchor after installation \
-			if [ -d "$$PLATFORM_TOOLS_DIR" ] && [ ! -d "$$ANCHOR_CACHE_DIR" ]; then \
+			if [ -d "$$PLATFORM_TOOLS_DIR" ] && [ ! -e "$$ANCHOR_CACHE_DIR" ]; then \
 				echo "Creating symlink for Anchor to find platform tools..."; \
 				mkdir -p "$$HOME/.cache/solana" 2>/dev/null || true; \
 				ln -sf "$$PLATFORM_TOOLS_DIR" "$$ANCHOR_CACHE_DIR" 2>/dev/null || true; \

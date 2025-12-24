@@ -6,6 +6,28 @@ import subprocess
 import shutil
 import tempfile
 from pathlib import Path
+from datetime import datetime
+
+def check_system_time():
+    """Check if system time is correct (critical for SSL/TLS)"""
+    try:
+        import time
+        current_time = time.time()
+        # Check if time is reasonable (between 2020 and 2030)
+        min_time = 1577836800  # 2020-01-01
+        max_time = 1893456000  # 2030-01-01
+        
+        if current_time < min_time or current_time > max_time:
+            print("⚠ WARNING: System time appears incorrect!")
+            print(f"  Current Unix timestamp: {current_time}")
+            print(f"  Expected range: {min_time} - {max_time}")
+            print("  SSL/TLS connections will fail with incorrect system time.")
+            print("  Fix with: sudo ntpdate -s time.nist.gov  (or similar)")
+            return False
+        return True
+    except Exception as e:
+        print(f"⚠ Could not verify system time: {e}")
+        return True  # Assume OK if we can't check
 
 def ensure_requests():
     """Ensure requests library is available (better TLS handling)"""
@@ -223,6 +245,11 @@ def install_platform_tools():
     """Install Solana platform tools"""
     print("=== Installing Solana Platform Tools ===")
     
+    # Check system time first (critical for SSL)
+    if not check_system_time():
+        print("\n⚠ System time check failed. SSL connections may fail.")
+        print("  Attempting to continue anyway...\n")
+    
     # First ensure Solana CLI is installed
     if not install_solana_cli():
         return False
@@ -305,6 +332,9 @@ def verify_installation():
     return False
 
 if __name__ == "__main__":
+    # Check system time first
+    check_system_time()
+    
     # Try to ensure requests is available for better TLS handling
     ensure_requests()
     
