@@ -259,16 +259,14 @@ async function fetchMeteoraDlmmPool(
   }
 
   try {
-    // Import Meteora SDK - functions are under DLMM.DLMM namespace
+    // Import Meteora SDK - derivation functions are under DLMM.DLMM namespace
     const meteoraModule = await import('@meteora-ag/dlmm');
-    const DLMM = (meteoraModule as any).DLMM || (meteoraModule as any).default?.DLMM || meteoraModule;
-    const createProgram = (meteoraModule as any).createProgram || DLMM?.createProgram;
+    const DLMM = (meteoraModule as any).DLMM;
+    const createProgram = (meteoraModule as any).createProgram;
     
-    // Get derivation functions from DLMM namespace
-    const deriveReserve = DLMM?.deriveReserve;
-    const deriveOracle = DLMM?.deriveOracle;
-    const deriveBinArray = DLMM?.deriveBinArray;
-    const binIdToBinArrayIndex = DLMM?.binIdToBinArrayIndex;
+    // Get derivation functions from DLMM.DLMM namespace (they're async!)
+    const deriveReserve = DLMM?.DLMM?.deriveReserve;
+    const deriveOracle = DLMM?.DLMM?.deriveOracle;
     
     // Create program to decode pool state
     const program = createProgram(connection);
@@ -294,7 +292,7 @@ async function fetchMeteoraDlmmPool(
     const activeId = Number(state.activeId ?? state.active_id);
     const binStep = Number(state.binStep ?? state.bin_step);
     
-    // Derive reserve accounts - signature: deriveReserve(programId, lbPair, isReserveX)
+    // Derive reserve accounts - async! Signature: deriveReserve(programId, lbPair, isReserveX)
     const programId = accountInfo.owner;
     let reserveX = '';
     let reserveY = '';
@@ -302,58 +300,81 @@ async function fetchMeteoraDlmmPool(
     if (typeof deriveReserve === 'function') {
       try {
         // Reserve X (isReserveX = true)
-        const rxResult = deriveReserve(programId, poolPubkey, true);
+        const rxResult = await deriveReserve(programId, poolPubkey, true);
         const rxPk = toPublicKeySafe(rxResult?.publicKey || rxResult);
         reserveX = rxPk?.toBase58() || '';
+        logger.debug('router.test.meteora.reserveX.derived', { cat: 'router', reserveX });
       } catch (e: any) {
         logger.debug('router.test.meteora.reserveX.derive.error', { cat: 'router', error: e.message });
       }
       try {
         // Reserve Y (isReserveX = false)
-        const ryResult = deriveReserve(programId, poolPubkey, false);
+        const ryResult = await deriveReserve(programId, poolPubkey, false);
         const ryPk = toPublicKeySafe(ryResult?.publicKey || ryResult);
         reserveY = ryPk?.toBase58() || '';
+        logger.debug('router.test.meteora.reserveY.derived', { cat: 'router', reserveY });
       } catch (e: any) {
         logger.debug('router.test.meteora.reserveY.derive.error', { cat: 'router', error: e.message });
       }
     }
     
-    // Derive oracle - signature: deriveOracle(programId, lbPair)
+    // Derive oracle - async! Signature: deriveOracle(programId, lbPair)
     let oracle = '';
     if (typeof deriveOracle === 'function') {
       try {
-        const oracleResult = deriveOracle(programId, poolPubkey);
+        const oracleResult = await deriveOracle(programId, poolPubkey);
         const oraclePk = toPublicKeySafe(oracleResult?.publicKey || oracleResult);
         oracle = oraclePk?.toBase58() || '';
+        logger.debug('router.test.meteora.oracle.derived', { cat: 'router', oracle });
       } catch (e: any) {
         logger.debug('router.test.meteora.oracle.derive.error', { cat: 'router', error: e.message });
       }
     }
     
-    // Derive bin arrays based on activeId
+    // Derive bin arrays using direct PDA derivation (like pools.derivation.ts)
     let binArrayLower = '';
     let binArrayUpper = '';
     
-    if (typeof deriveBinArray === 'function' && typeof binIdToBinArrayIndex === 'function') {
-      try {
-        // Get current bin array index
-        const currentBinArrayIndex = binIdToBinArrayIndex(new BN(activeId));
-        const currentIdx = typeof currentBinArrayIndex === 'number' 
-          ? currentBinArrayIndex 
-          : currentBinArrayIndex.toNumber();
+    try {
+      // Import bin helpers
+      const { getMeteoraBinHelpers } = await import('../server/pools.derivation.js');
+      const helpers = await getMeteoraBinHelpers();
+      
+      if (helpers.getBounds && helpers.binIdToBinArrayIndex) {
+        const activeBn = new BN(String(activeId));
+        const [lowerBin, upperBin] = helpers.getBounds(activeBn) || [];
         
-        // Lower bin array (current - 1)
-        const lowerResult = deriveBinArray(programId, poolPubkey, new BN(currentIdx - 1));
-        const lowerPk = toPublicKeySafe(lowerResult?.publicKey || lowerResult);
-        binArrayLower = lowerPk?.toBase58() || '';
+        const toInt = (val: any): number | undefined => {
+          if (val == null) return undefined;
+          if (typeof val === 'number') return val;
+          try { return Number(val.toString()); } catch { return undefined; }
+        };
         
-        // Upper bin array (current)
-        const upperResult = deriveBinArray(programId, poolPubkey, new BN(currentIdx));
-        const upperPk = toPublicKeySafe(upperResult?.publicKey || upperResult);
-        binArrayUpper = upperPk?.toBase58() || '';
-      } catch (err: any) {
-        logger.warn('router.test.meteora.binarray.derive.error', { cat: 'router', error: err.message });
+        const lowerIdxBn = lowerBin ? helpers.binIdToBinArrayIndex(lowerBin) : undefined;
+        const upperIdxBn = upperBin ? helpers.binIdToBinArrayIndex(upperBin) : undefined;
+        const lowerIdx = toInt(lowerIdxBn);
+        const upperIdx = toInt(upperIdxBn);
+        
+        // Derive bin array PDAs directly
+        const deriveBinArrayPda = (idx: number | undefined): string => {
+          if (idx == null) return '';
+          const idxBn = new BN(idx);
+          const seed = idxBn.isNeg()
+            ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
+            : idxBn.toArrayLike(Buffer, 'le', 8);
+          const [pda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('bin_array'), poolPubkey.toBuffer(), Buffer.from(seed)],
+            programId
+          );
+          return pda.toBase58();
+        };
+        
+        binArrayLower = deriveBinArrayPda(lowerIdx);
+        binArrayUpper = deriveBinArrayPda(upperIdx);
+        logger.debug('router.test.meteora.binarrays.derived', { cat: 'router', binArrayLower, binArrayUpper });
       }
+    } catch (err: any) {
+      logger.warn('router.test.meteora.binarray.derive.error', { cat: 'router', error: err.message });
     }
     
     // Determine token program
