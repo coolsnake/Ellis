@@ -259,9 +259,16 @@ async function fetchMeteoraDlmmPool(
   }
 
   try {
-    // Import Meteora SDK
+    // Import Meteora SDK - functions are under DLMM.DLMM namespace
     const meteoraModule = await import('@meteora-ag/dlmm');
-    const { createProgram, deriveBinArray, deriveReserve, deriveOracle, binIdToBinArrayIndex } = meteoraModule as any;
+    const DLMM = (meteoraModule as any).DLMM || (meteoraModule as any).default?.DLMM || meteoraModule;
+    const createProgram = (meteoraModule as any).createProgram || DLMM?.createProgram;
+    
+    // Get derivation functions from DLMM namespace
+    const deriveReserve = DLMM?.deriveReserve;
+    const deriveOracle = DLMM?.deriveOracle;
+    const deriveBinArray = DLMM?.deriveBinArray;
+    const binIdToBinArrayIndex = DLMM?.binIdToBinArrayIndex;
     
     // Create program to decode pool state
     const program = createProgram(connection);
@@ -287,21 +294,23 @@ async function fetchMeteoraDlmmPool(
     const activeId = Number(state.activeId ?? state.active_id);
     const binStep = Number(state.binStep ?? state.bin_step);
     
-    // Derive reserve accounts
+    // Derive reserve accounts - signature: deriveReserve(programId, lbPair, isReserveX)
     const programId = accountInfo.owner;
     let reserveX = '';
     let reserveY = '';
     
-    if (deriveReserve) {
+    if (typeof deriveReserve === 'function') {
       try {
-        const rxResult = deriveReserve(poolPubkey, tokenXMintPk, programId);
+        // Reserve X (isReserveX = true)
+        const rxResult = deriveReserve(programId, poolPubkey, true);
         const rxPk = toPublicKeySafe(rxResult?.publicKey || rxResult);
         reserveX = rxPk?.toBase58() || '';
       } catch (e: any) {
         logger.debug('router.test.meteora.reserveX.derive.error', { cat: 'router', error: e.message });
       }
       try {
-        const ryResult = deriveReserve(poolPubkey, tokenYMintPk, programId);
+        // Reserve Y (isReserveX = false)
+        const ryResult = deriveReserve(programId, poolPubkey, false);
         const ryPk = toPublicKeySafe(ryResult?.publicKey || ryResult);
         reserveY = ryPk?.toBase58() || '';
       } catch (e: any) {
@@ -309,11 +318,11 @@ async function fetchMeteoraDlmmPool(
       }
     }
     
-    // Derive oracle
+    // Derive oracle - signature: deriveOracle(programId, lbPair)
     let oracle = '';
-    if (deriveOracle) {
+    if (typeof deriveOracle === 'function') {
       try {
-        const oracleResult = deriveOracle(poolPubkey, programId);
+        const oracleResult = deriveOracle(programId, poolPubkey);
         const oraclePk = toPublicKeySafe(oracleResult?.publicKey || oracleResult);
         oracle = oraclePk?.toBase58() || '';
       } catch (e: any) {
@@ -325,7 +334,7 @@ async function fetchMeteoraDlmmPool(
     let binArrayLower = '';
     let binArrayUpper = '';
     
-    if (deriveBinArray && binIdToBinArrayIndex) {
+    if (typeof deriveBinArray === 'function' && typeof binIdToBinArrayIndex === 'function') {
       try {
         // Get current bin array index
         const currentBinArrayIndex = binIdToBinArrayIndex(new BN(activeId));
@@ -334,12 +343,12 @@ async function fetchMeteoraDlmmPool(
           : currentBinArrayIndex.toNumber();
         
         // Lower bin array (current - 1)
-        const lowerResult = deriveBinArray(poolPubkey, new BN(currentIdx - 1), programId);
+        const lowerResult = deriveBinArray(programId, poolPubkey, new BN(currentIdx - 1));
         const lowerPk = toPublicKeySafe(lowerResult?.publicKey || lowerResult);
         binArrayLower = lowerPk?.toBase58() || '';
         
         // Upper bin array (current)
-        const upperResult = deriveBinArray(poolPubkey, new BN(currentIdx), programId);
+        const upperResult = deriveBinArray(programId, poolPubkey, new BN(currentIdx));
         const upperPk = toPublicKeySafe(upperResult?.publicKey || upperResult);
         binArrayUpper = upperPk?.toBase58() || '';
       } catch (err: any) {
@@ -1043,26 +1052,37 @@ async function buildMeteoraDexAccountsForRouter(
   const userTokenIn = getAssociatedTokenAddressSync(inputMint, payer);
   const userTokenOut = getAssociatedTokenAddressSync(outputMint, payer);
   
+  // Helper to safely convert to PublicKey with fallback
+  const toPkOrFallback = (val: string | undefined, fallback: PublicKey): PublicKey => {
+    if (!val || val === '') return fallback;
+    try {
+      return new PublicKey(val);
+    } catch {
+      return fallback;
+    }
+  };
+  
   // Build accounts in the order expected by meteora.rs
+  // Use poolPubkey as fallback for missing derived accounts
   const accounts: PublicKey[] = [
     poolPubkey,                                                    // 0: LB Pair
     pool.bitmapExtension 
       ? new PublicKey(pool.bitmapExtension) 
       : SystemProgram.programId,                                   // 1: Bitmap Extension (optional)
-    new PublicKey(pool.reserveX),                                  // 2: Reserve X
-    new PublicKey(pool.reserveY),                                  // 3: Reserve Y
+    toPkOrFallback(pool.reserveX, poolPubkey),                     // 2: Reserve X
+    toPkOrFallback(pool.reserveY, poolPubkey),                     // 3: Reserve Y
     userTokenIn,                                                   // 4: User Token In
     userTokenOut,                                                  // 5: User Token Out
     new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
     new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
-    new PublicKey(pool.oracle),                                    // 8: Oracle
+    toPkOrFallback(pool.oracle, poolPubkey),                       // 8: Oracle
     METEORA_DLMM_PROGRAM,                                          // 9: Host Fee In (use program as placeholder)
     payer,                                                         // 10: User (signer)
     new PublicKey(pool.tokenProgram),                              // 11: Token Program
     deriveMeteoraDlmmEventAuthority(),                             // 12: Event Authority (PDA)
     METEORA_DLMM_PROGRAM,                                          // 13: Meteora DLMM Program
-    new PublicKey(pool.binArrays.lower),                           // 14: Bin Array Lower
-    new PublicKey(pool.binArrays.upper),                           // 15: Bin Array Upper
+    toPkOrFallback(pool.binArrays.lower, poolPubkey),              // 14: Bin Array Lower
+    toPkOrFallback(pool.binArrays.upper, poolPubkey),              // 15: Bin Array Upper
   ];
   
   logger.info('router.test.dex_accounts', { 
