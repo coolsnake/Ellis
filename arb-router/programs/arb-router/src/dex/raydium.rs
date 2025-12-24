@@ -12,7 +12,7 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::error::ArbRouterError;
 
 /// Number of accounts needed for a Raydium CLMM swap
-pub const ACCOUNTS_NEEDED: usize = 17;
+pub const ACCOUNTS_NEEDED: usize = 18; // Updated from 17 to include Token-2022 Program
 
 /// Raydium CLMM Swap instruction discriminator
 /// swap instruction: [43, 4, 237, 11, 26, 201, 30, 98]
@@ -43,14 +43,15 @@ pub struct SwapParams {
 /// 6. `[writable]` Output Vault
 /// 7. `[]` Observation State
 /// 8. `[]` Token Program
-/// 9. `[writable]` Tick Array Lower
-/// 10. `[writable]` Tick Array Current
-/// 11. `[writable]` Tick Array Upper
-/// 12. `[]` Oracle (optional, can be system program if not used)
-/// 13. `[writable]` Input Token Mint
-/// 14. `[writable]` Output Token Mint
-/// 15. `[]` Memo Program (optional)
-/// 16. `[]` Raydium CLMM Program
+/// 9. `[]` Token-2022 Program (required by Raydium CLMM)
+/// 10. `[writable]` Tick Array Lower
+/// 11. `[writable]` Tick Array Current
+/// 12. `[writable]` Tick Array Upper
+/// 13. `[]` Oracle (optional, can be system program if not used)
+/// 14. `[writable]` Input Token Mint
+/// 15. `[writable]` Output Token Mint
+/// 16. `[]` Memo Program (optional)
+/// 17. `[]` Raydium CLMM Program
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
@@ -80,7 +81,8 @@ pub fn swap(
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 0; // Only first account (payer) is signer
-            let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14);
+            // Updated writable indices: 2, 3, 4, 5, 6, 10, 11, 12, 14, 15 (shifted by 1 due to Token-2022)
+            let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 10 | 11 | 12 | 14 | 15);
             if is_signer {
                 AccountMeta::new(*acc.key, true)
             } else if is_writable {

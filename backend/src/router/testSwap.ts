@@ -557,11 +557,13 @@ function buildDexAccountsForRouter(
   
   // Use the token program from pool state
   const tokenProgram = new PublicKey(pool.tokenProgram);
+  const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
   
   // Get the actual DEX program ID from the pool (supports devnet and mainnet)
   const dexProgramId = new PublicKey(pool.programId);
   
   // Build accounts in the order expected by arb-router's raydium.rs
+  // NOTE: Raydium CLMM requires BOTH Token Program AND Token-2022 Program accounts
   const accounts: PublicKey[] = [
     payer,                                              // 0: Payer (signer)
     new PublicKey(pool.ammConfig),                     // 1: AMM Config
@@ -572,14 +574,15 @@ function buildDexAccountsForRouter(
     new PublicKey(outputVault),                        // 6: Output Vault
     new PublicKey(pool.observationId),                 // 7: Observation State
     tokenProgram,                                       // 8: Token Program
-    new PublicKey(pool.tickArrays.lower),              // 9: Tick Array Lower
-    new PublicKey(pool.tickArrays.center),             // 10: Tick Array Current
-    new PublicKey(pool.tickArrays.upper),              // 11: Tick Array Upper
-    SystemProgram.programId,                            // 12: Oracle (System Program placeholder)
-    inputMint,                                          // 13: Input Token Mint
-    outputMint,                                         // 14: Output Token Mint
-    MEMO_PROGRAM_ID,                                    // 15: Memo Program
-    dexProgramId,                                       // 16: Raydium CLMM Program (from pool)
+    TOKEN_2022_PROGRAM_ID,                              // 9: Token-2022 Program (required by Raydium CLMM)
+    new PublicKey(pool.tickArrays.lower),              // 10: Tick Array Lower
+    new PublicKey(pool.tickArrays.center),             // 11: Tick Array Current
+    new PublicKey(pool.tickArrays.upper),              // 12: Tick Array Upper
+    SystemProgram.programId,                            // 13: Oracle (System Program placeholder)
+    inputMint,                                          // 14: Input Token Mint
+    outputMint,                                         // 15: Output Token Mint
+    MEMO_PROGRAM_ID,                                    // 16: Memo Program
+    dexProgramId,                                       // 17: Raydium CLMM Program (from pool)
   ];
   
   logger.info('router.test.dex_accounts', { 
