@@ -377,12 +377,6 @@ function buildRaydiumClmmSwapIx(
   // Use the token program from pool state (detected from vault accounts)
   const tokenProgram = new PublicKey(pool.tokenProgram);
   
-  // token_program_2022 must be included even when using standard token program
-  // When using standard token program, set it to TOKEN_2022_PROGRAM_ID (the program will check but allow it)
-  // When using Token 2022, set it to TOKEN_2022_PROGRAM_ID
-  // The program validates this account exists, so we always include it
-  const tokenProgram2022 = TOKEN_2022_PROGRAM_ID;
-  
   const accounts = [
     { pubkey: payer, isSigner: true, isWritable: true },                    // 0: Payer
     { pubkey: new PublicKey(pool.ammConfig), isSigner: false, isWritable: false }, // 1: AMM Config
@@ -393,14 +387,14 @@ function buildRaydiumClmmSwapIx(
     { pubkey: new PublicKey(outputVault), isSigner: false, isWritable: true }, // 6: Output Vault
     { pubkey: new PublicKey(pool.observationId), isSigner: false, isWritable: true }, // 7: Observation State
     { pubkey: tokenProgram, isSigner: false, isWritable: false },           // 8: Token Program
-    { pubkey: tokenProgram2022, isSigner: false, isWritable: false },     // 9: Token Program 2022 (required even if not using Token 2022)
-    { pubkey: new PublicKey(pool.tickArrays.lower), isSigner: false, isWritable: true }, // 10: Tick Array Lower
-    { pubkey: new PublicKey(pool.tickArrays.center), isSigner: false, isWritable: true }, // 11: Tick Array Center
-    { pubkey: new PublicKey(pool.tickArrays.upper), isSigner: false, isWritable: true }, // 12: Tick Array Upper
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 13: Oracle (use System Program as placeholder)
-    { pubkey: inputMint, isSigner: false, isWritable: false },             // 14: Input Token Mint
-    { pubkey: outputMint, isSigner: false, isWritable: false },           // 15: Output Token Mint
-    { pubkey: MEMO_PROGRAM_ID, isSigner: false, isWritable: false },       // 16: Memo Program
+    { pubkey: new PublicKey(pool.tickArrays.lower), isSigner: false, isWritable: true }, // 9: Tick Array Lower
+    { pubkey: new PublicKey(pool.tickArrays.center), isSigner: false, isWritable: true }, // 10: Tick Array Center
+    { pubkey: new PublicKey(pool.tickArrays.upper), isSigner: false, isWritable: true }, // 11: Tick Array Upper
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 12: Oracle (use System Program as placeholder)
+    { pubkey: inputMint, isSigner: false, isWritable: false },             // 13: Input Token Mint
+    { pubkey: outputMint, isSigner: false, isWritable: false },           // 14: Output Token Mint
+    { pubkey: MEMO_PROGRAM_ID, isSigner: false, isWritable: false },       // 15: Memo Program
+    { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false }, // 16: Token Program 2022 (required by on-chain program)
   ];
   
   return new TransactionInstruction({
