@@ -298,9 +298,10 @@ pub mod arb_router {
         ctx.accounts.user_token_account.reload()?;
         let final_balance = ctx.accounts.user_token_account.amount;
 
-        // Verify profit
-        let profit = final_balance.checked_sub(initial_balance)
-            .ok_or(ArbRouterError::NoProfitFromRoute)?;
+        // Verify profit (can be negative for losing trades)
+        // Use signed arithmetic to handle losses
+        let profit: i64 = (final_balance as i64).checked_sub(initial_balance as i64)
+            .ok_or(ArbRouterError::MathOverflow)?;
         require!(profit >= params.min_profit, ArbRouterError::NoProfitFromRoute);
 
         msg!("Route executed successfully. Profit: {}", profit);

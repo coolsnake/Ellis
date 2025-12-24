@@ -127,7 +127,8 @@ pub struct ExecuteParams {
     pub steps: Vec<RouteStep>,
     
     /// Minimum profit required (in output token)
-    pub min_profit: u64,
+    /// Can be negative to allow losses (useful for testing)
+    pub min_profit: i64,
 }
 
 /// Parameters for a single swap
