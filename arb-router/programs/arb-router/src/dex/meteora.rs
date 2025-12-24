@@ -31,7 +31,7 @@ pub struct SwapParams {
 ///
 /// Expected accounts (in order):
 /// 0. `[writable]` LB Pair
-/// 1. `[writable]` Bin Array Bitmap Extension (optional, can be system program)
+/// 1. `[writable]` Bin Array Bitmap Extension (optional, can use program ID as placeholder)
 /// 2. `[writable]` Reserve X (token vault)
 /// 3. `[writable]` Reserve Y (token vault)
 /// 4. `[writable]` User Token In
@@ -43,9 +43,9 @@ pub struct SwapParams {
 /// 10. `[signer]` User (authority)
 /// 11. `[]` Token Program
 /// 12. `[]` Event Authority
-/// 13. `[]` Program (Meteora DLMM)
-/// 14. `[writable]` Bin Array Lower
-/// 15. `[writable]` Bin Array Upper
+/// 13. `[writable]` Bin Array Lower
+/// 14. `[writable]` Bin Array Upper
+/// 15. `[]` Meteora DLMM Program (for CPI invoke)
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
@@ -66,21 +66,22 @@ pub fn swap(
     data.extend_from_slice(&SWAP_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
-    // Build account metas
-    // Note: Index 1 (bitmap extension) is optional and may be System Program
-    // System Program cannot be writable, so we skip writable flag for it
-    let system_program = anchor_lang::solana_program::system_program::ID;
+    // Build account metas for Meteora swap instruction
+    // Accounts 0-14 go into the instruction, account 15 (Meteora program) is for CPI invoke
+    // Note: Index 1 (bitmap extension) may use program ID as placeholder (not writable)
+    let meteora_program = METEORA_DLMM;
     
     let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 10; // User is signer
-            // Index 1 (bitmap extension) should only be writable if it's NOT the system program
+            // Index 1 (bitmap extension) should only be writable if it's a real PDA (not program ID placeholder)
             let is_writable = if i == 1 {
-                *acc.key != system_program
+                *acc.key != meteora_program
             } else {
-                matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 9 | 14 | 15)
+                // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), hostFee(9), binArrays(13,14)
+                matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 9 | 13 | 14)
             };
             if is_signer {
                 AccountMeta::new(*acc.key, true)

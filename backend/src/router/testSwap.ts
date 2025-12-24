@@ -1023,7 +1023,7 @@ async function getRaydiumSdkAccountOrder(
  * 
  * For Meteora DLMM, the router expects 16 accounts:
  * 0. LB Pair
- * 1. Bitmap Extension (optional, SystemProgram if not present)
+ * 1. Bitmap Extension (optional, use program ID as placeholder)
  * 2. Reserve X (token vault)
  * 3. Reserve Y (token vault)
  * 4. User Token In
@@ -1035,9 +1035,9 @@ async function getRaydiumSdkAccountOrder(
  * 10. User (signer)
  * 11. Token Program
  * 12. Event Authority
- * 13. Meteora DLMM Program
- * 14. Bin Array Lower
- * 15. Bin Array Upper
+ * 13. Bin Array Lower
+ * 14. Bin Array Upper
+ * 15. Meteora DLMM Program (for CPI invoke)
  */
 async function buildDexAccountsForRouter(
   payer: PublicKey,
@@ -1121,8 +1121,9 @@ async function buildMeteoraDexAccountsForRouter(
     }
   };
   
-  // Build accounts in the order expected by meteora.rs
-  // Use poolPubkey as fallback for missing derived accounts
+  // Build accounts in the order expected by Meteora DLMM swap
+  // Accounts 0-12: fixed accounts, 13+: bin arrays as remaining accounts
+  // NOTE: Meteora program ID is NOT in the accounts list - only in instruction program_id
   const accounts: PublicKey[] = [
     poolPubkey,                                                    // 0: LB Pair
     pool.bitmapExtension 
@@ -1139,9 +1140,9 @@ async function buildMeteoraDexAccountsForRouter(
     payer,                                                         // 10: User (signer)
     new PublicKey(pool.tokenProgram),                              // 11: Token Program
     deriveMeteoraDlmmEventAuthority(),                             // 12: Event Authority (PDA)
-    METEORA_DLMM_PROGRAM,                                          // 13: Meteora DLMM Program
-    toPkOrFallback(pool.binArrays.lower, poolPubkey),              // 14: Bin Array Lower
-    toPkOrFallback(pool.binArrays.upper, poolPubkey),              // 15: Bin Array Upper
+    toPkOrFallback(pool.binArrays.lower, poolPubkey),              // 13: Bin Array Lower
+    toPkOrFallback(pool.binArrays.upper, poolPubkey),              // 14: Bin Array Upper
+    METEORA_DLMM_PROGRAM,                                          // 15: Meteora DLMM Program (required for CPI)
   ];
   
   logger.info('router.test.dex_accounts', { 
