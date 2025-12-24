@@ -57,7 +57,7 @@ pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
-    a_to_b: bool,
+    _a_to_b: bool, // Direction is encoded in account ordering (input/output ATAs and vaults)
 ) -> Result<()> {
     if accounts.len() < ACCOUNTS_NEEDED {
         msg!("Raydium: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
@@ -65,20 +65,25 @@ pub fn swap(
     }
 
     // Build the swap instruction data
+    // Note: is_base_input = true means amount is the INPUT amount (what we're swapping in)
+    // This should always be true since we specify amount_in, regardless of swap direction
     let params = SwapParams {
         amount: amount_in,
         other_amount_threshold: min_amount_out,
         sqrt_price_limit_x64: 0,
-        is_base_input: a_to_b,
+        is_base_input: true, // Always true - we're specifying input amount
     };
 
     let mut data = Vec::with_capacity(8 + 8 + 8 + 16 + 1);
     data.extend_from_slice(&SWAP_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
-    // Build account metas - all 17 accounts go to Raydium (no program ID in the list)
+    // Get the DEX program ID from the last account (index 17)
+    let dex_program_id = *accounts[ACCOUNTS_NEEDED - 1].key;
+
+    // Build account metas - only first 17 accounts go to Raydium (exclude program ID at index 17)
     // Writable accounts based on SDK: 2, 3, 4, 5, 6, 7, 13, 14, 15, 16
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED]
+    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
@@ -94,9 +99,6 @@ pub fn swap(
             }
         })
         .collect();
-
-    // Get the DEX program ID from the last account (index 17)
-    let dex_program_id = *accounts[ACCOUNTS_NEEDED - 1].key;
     
     let ix = Instruction {
         program_id: dex_program_id,
