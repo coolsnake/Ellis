@@ -35,14 +35,14 @@ import {
  * These are precomputed for performance
  */
 export const DISCRIMINATORS = {
-  vaultInit: Buffer.from([48, 191, 163, 44, 71, 129, 63, 164]),
-  vaultDeposit: Buffer.from([28, 129, 238, 250, 168, 178, 183, 112]),
-  vaultWithdraw: Buffer.from([183, 18, 70, 156, 148, 109, 161, 34]),
-  vaultClose: Buffer.from([140, 103, 53, 173, 250, 113, 155, 55]),
-  flashBorrow: Buffer.from([237, 167, 192, 127, 215, 73, 129, 130]),
-  flashRepay: Buffer.from([56, 28, 91, 52, 106, 68, 56, 134]),
-  routeSwap: Buffer.from([134, 82, 186, 51, 124, 15, 93, 197]),
-  execute: Buffer.from([130, 221, 242, 154, 13, 193, 189, 140]),
+  vaultInit: Buffer.from([122, 77, 201, 111, 70, 97, 114, 22]),        // vault_init from IDL
+  vaultDeposit: Buffer.from([231, 150, 41, 113, 180, 104, 162, 120]), // vault_deposit from IDL
+  vaultWithdraw: Buffer.from([98, 28, 187, 98, 87, 69, 46, 64]),      // vault_withdraw from IDL
+  vaultClose: Buffer.from([81, 73, 155, 182, 37, 130, 252, 91]),       // vault_close from IDL
+  flashBorrow: Buffer.from([166, 221, 220, 25, 61, 73, 127, 240]),    // flash_borrow from IDL
+  flashRepay: Buffer.from([182, 143, 19, 23, 39, 221, 184, 78]),      // flash_repay from IDL
+  routeSwap: Buffer.from([114, 150, 13, 192, 140, 252, 221, 31]),     // route_swap from IDL (THIS WAS THE ISSUE!)
+  execute: Buffer.from([130, 221, 242, 154, 13, 193, 189, 29]),       // execute from IDL
 } as const;
 
 // ============================================================================
