@@ -287,47 +287,66 @@ async function fetchMeteoraDlmmPool(
     const activeId = Number(state.activeId ?? state.active_id);
     const binStep = Number(state.binStep ?? state.bin_step);
     
-    // Derive reserve and oracle accounts using direct PDA derivation
-    // (SDK functions may not work reliably)
     const programId = accountInfo.owner;
-    let reserveX = '';
-    let reserveY = '';
-    let oracle = '';
     
-    try {
-      // Reserve X PDA: seeds = [lbPair, tokenXMint]
-      const [reserveXPda] = PublicKey.findProgramAddressSync(
-        [poolPubkey.toBuffer(), tokenXMintPk.toBuffer()],
-        programId
-      );
-      reserveX = reserveXPda.toBase58();
-      logger.info('router.test.meteora.reserveX.derived', { cat: 'router', reserveX });
-    } catch (e: any) {
-      logger.warn('router.test.meteora.reserveX.derive.error', { cat: 'router', error: e.message });
+    // Try to extract reserves and oracle directly from decoded state first
+    // The lbPair account stores these addresses directly
+    const reserveXFromState = toPublicKeySafe(state.reserveX);
+    const reserveYFromState = toPublicKeySafe(state.reserveY);
+    const oracleFromState = toPublicKeySafe(state.oracle);
+    
+    let reserveX = reserveXFromState?.toBase58() || '';
+    let reserveY = reserveYFromState?.toBase58() || '';
+    let oracle = oracleFromState?.toBase58() || '';
+    
+    logger.info('router.test.meteora.state_fields', { 
+      cat: 'router', 
+      hasReserveX: !!reserveXFromState, 
+      hasReserveY: !!reserveYFromState,
+      hasOracle: !!oracleFromState,
+      reserveX,
+      reserveY,
+      oracle
+    });
+    
+    // Fallback to PDA derivation only if not found in state
+    if (!reserveX) {
+      try {
+        const [reserveXPda] = PublicKey.findProgramAddressSync(
+          [poolPubkey.toBuffer(), tokenXMintPk.toBuffer()],
+          programId
+        );
+        reserveX = reserveXPda.toBase58();
+        logger.info('router.test.meteora.reserveX.derived', { cat: 'router', reserveX });
+      } catch (e: any) {
+        logger.warn('router.test.meteora.reserveX.derive.error', { cat: 'router', error: e.message });
+      }
     }
     
-    try {
-      // Reserve Y PDA: seeds = [lbPair, tokenYMint]
-      const [reserveYPda] = PublicKey.findProgramAddressSync(
-        [poolPubkey.toBuffer(), tokenYMintPk.toBuffer()],
-        programId
-      );
-      reserveY = reserveYPda.toBase58();
-      logger.info('router.test.meteora.reserveY.derived', { cat: 'router', reserveY });
-    } catch (e: any) {
-      logger.warn('router.test.meteora.reserveY.derive.error', { cat: 'router', error: e.message });
+    if (!reserveY) {
+      try {
+        const [reserveYPda] = PublicKey.findProgramAddressSync(
+          [poolPubkey.toBuffer(), tokenYMintPk.toBuffer()],
+          programId
+        );
+        reserveY = reserveYPda.toBase58();
+        logger.info('router.test.meteora.reserveY.derived', { cat: 'router', reserveY });
+      } catch (e: any) {
+        logger.warn('router.test.meteora.reserveY.derive.error', { cat: 'router', error: e.message });
+      }
     }
     
-    try {
-      // Oracle PDA: seeds = ["oracle", lbPair]
-      const [oraclePda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('oracle'), poolPubkey.toBuffer()],
-        programId
-      );
-      oracle = oraclePda.toBase58();
-      logger.info('router.test.meteora.oracle.derived', { cat: 'router', oracle });
-    } catch (e: any) {
-      logger.warn('router.test.meteora.oracle.derive.error', { cat: 'router', error: e.message });
+    if (!oracle) {
+      try {
+        const [oraclePda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('oracle'), poolPubkey.toBuffer()],
+          programId
+        );
+        oracle = oraclePda.toBase58();
+        logger.info('router.test.meteora.oracle.derived', { cat: 'router', oracle });
+      } catch (e: any) {
+        logger.warn('router.test.meteora.oracle.derive.error', { cat: 'router', error: e.message });
+      }
     }
     
     // Derive bin arrays using direct PDA derivation (like pools.derivation.ts)
@@ -376,6 +395,25 @@ async function fetchMeteoraDlmmPool(
       logger.warn('router.test.meteora.binarray.derive.error', { cat: 'router', error: err.message });
     }
     
+    // Derive bitmap extension PDA and check if it exists
+    let bitmapExtension: string | undefined;
+    try {
+      const [bitmapExtPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('BitmapExtension'), poolPubkey.toBuffer()],
+        programId
+      );
+      // Check if the bitmap extension account exists on-chain
+      const bitmapExtInfo = await connection.getAccountInfo(bitmapExtPda);
+      if (bitmapExtInfo && bitmapExtInfo.owner.equals(programId)) {
+        bitmapExtension = bitmapExtPda.toBase58();
+        logger.info('router.test.meteora.bitmapExt.found', { cat: 'router', bitmapExtension });
+      } else {
+        logger.info('router.test.meteora.bitmapExt.not_found', { cat: 'router', pda: bitmapExtPda.toBase58() });
+      }
+    } catch (err: any) {
+      logger.debug('router.test.meteora.bitmapExt.derive.error', { cat: 'router', error: err.message });
+    }
+    
     // Determine token program
     let tokenProgramId = TOKEN_PROGRAM_ID;
     if (reserveX) {
@@ -401,6 +439,7 @@ async function fetchMeteoraDlmmPool(
         lower: binArrayLower,
         upper: binArrayUpper,
       },
+      bitmapExtension,
     };
 
     logger.info('router.test.pool.decoded', { cat: 'router', poolId: poolPubkey.toBase58(), pool, dex: 'meteora_dlmm' });
@@ -1088,7 +1127,7 @@ async function buildMeteoraDexAccountsForRouter(
     poolPubkey,                                                    // 0: LB Pair
     pool.bitmapExtension 
       ? new PublicKey(pool.bitmapExtension) 
-      : SystemProgram.programId,                                   // 1: Bitmap Extension (optional)
+      : METEORA_DLMM_PROGRAM,                                      // 1: Bitmap Extension (use program ID as fallback)
     toPkOrFallback(pool.reserveX, poolPubkey),                     // 2: Reserve X
     toPkOrFallback(pool.reserveY, poolPubkey),                     // 3: Reserve Y
     userTokenIn,                                                   // 4: User Token In
