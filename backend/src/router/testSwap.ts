@@ -593,12 +593,20 @@ async function buildRaydiumClmmSwapIxWithSdk(
     tokenAccountB: isAtoB ? userOutAta : userInAta,
   };
   
-  // Get tick array PDAs - center first (most likely needed)
-  const tickArrayKeys = [
-    new PublicKey(pool.tickArrays.center),
-    new PublicKey(pool.tickArrays.lower),
-    new PublicKey(pool.tickArrays.upper),
-  ];
+  // Get tick array PDAs - ORDER MATTERS based on swap direction
+  // A→B: price moves down (tick decreases), need arrays in descending order
+  // B→A: price moves up (tick increases), need arrays in ascending order
+  const tickArrayKeys = isAtoB
+    ? [
+        new PublicKey(pool.tickArrays.center),
+        new PublicKey(pool.tickArrays.lower),
+        new PublicKey(pool.tickArrays.upper),
+      ]
+    : [
+        new PublicKey(pool.tickArrays.center),
+        new PublicKey(pool.tickArrays.upper),
+        new PublicKey(pool.tickArrays.lower),
+      ];
   
   const observationId = new PublicKey(pool.observationId);
   
