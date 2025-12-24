@@ -8,7 +8,7 @@ import { PublicKey } from '@solana/web3.js';
 // Program Constants
 // ============================================================================
 
-export const ARB_ROUTER_PROGRAM_ID = new PublicKey('ArbRtr1111111111111111111111111111111111111');
+export const ARB_ROUTER_PROGRAM_ID = new PublicKey('BjHLNpBdhGU3EFqsdnhipv6t6RRiK518kM8kZNyyNzJQ');
 
 // PDA Seeds
 export const VAULT_SEED = Buffer.from('vault');
