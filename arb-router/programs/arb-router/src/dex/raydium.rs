@@ -12,7 +12,7 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::error::ArbRouterError;
 
 /// Number of accounts needed for a Raydium CLMM swap
-pub const ACCOUNTS_NEEDED: usize = 17; // 17 accounts total (Raydium program ID is NOT in the list)
+pub const ACCOUNTS_NEEDED: usize = 18; // 17 SDK accounts + 1 Raydium program ID
 
 /// Raydium CLMM Swap instruction discriminator
 /// swap instruction: [43, 4, 237, 11, 26, 201, 30, 98]
@@ -95,17 +95,16 @@ pub fn swap(
         })
         .collect();
 
-    // Get the DEX program ID from the pool state account's owner
-    let pool_state = &accounts[2]; // Pool state is at index 2
-    let dex_program_id = *pool_state.owner; // Dereference to get Pubkey instead of &Pubkey
+    // Get the DEX program ID from the last account (index 17)
+    let dex_program_id = *accounts[ACCOUNTS_NEEDED - 1].key;
     
     let ix = Instruction {
-        program_id: dex_program_id, // Now it's the correct type
+        program_id: dex_program_id,
         accounts: account_metas,
         data,
     };
 
-    // Invoke the swap - include all accounts for CPI
+    // Invoke the swap - include all accounts for CPI (including the program account)
     let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
     invoke(&ix, &account_infos)?;
 

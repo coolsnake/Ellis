@@ -604,7 +604,17 @@ async function buildDexAccountsForRouter(
     BigInt(900000)
   );
   
-  // Return the SDK account order directly (it already has 17 accounts, no program ID)
-  return sdkAccountOrder;
+  // Add the Raydium program ID as the last account (needed for CPI)
+  const dexProgramId = new PublicKey(pool.programId);
+  const accounts = [...sdkAccountOrder, dexProgramId];
+  
+  logger.info('router.test.dex_accounts', { 
+    cat: 'router', 
+    accountCount: accounts.length,
+    dexType: 'raydium_clmm',
+    isAtoB: inputMint.toBase58() === pool.mintA,
+  });
+  
+  return accounts;
 }
 
