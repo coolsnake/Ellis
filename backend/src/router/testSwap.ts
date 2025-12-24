@@ -233,6 +233,21 @@ async function fetchRaydiumClmmPool(
   }
 }
 
+// Helper to safely convert to PublicKey
+function toPublicKeySafe(val: any): PublicKey | null {
+  try {
+    if (!val) return null;
+    if (val instanceof PublicKey) return val;
+    if (typeof val?.toBase58 === 'function') return val as PublicKey;
+    if (typeof val === 'string' && val.length >= 32 && val.length <= 44) {
+      return new PublicKey(val);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchMeteoraDlmmPool(
   connection: Connection, 
   poolPubkey: PublicKey
@@ -259,9 +274,16 @@ async function fetchMeteoraDlmmPool(
       return { success: false, error: 'Failed to decode Meteora pool state' };
     }
     
-    // Extract fields
-    const tokenXMint = state.tokenXMint?.toBase58?.() || String(state.tokenXMint);
-    const tokenYMint = state.tokenYMint?.toBase58?.() || String(state.tokenYMint);
+    // Extract mint PublicKeys directly (they're already PublicKey objects from SDK)
+    const tokenXMintPk = toPublicKeySafe(state.tokenXMint);
+    const tokenYMintPk = toPublicKeySafe(state.tokenYMint);
+    
+    if (!tokenXMintPk || !tokenYMintPk) {
+      return { success: false, error: 'Failed to extract token mints from Meteora pool state' };
+    }
+    
+    const tokenXMint = tokenXMintPk.toBase58();
+    const tokenYMint = tokenYMintPk.toBase58();
     const activeId = Number(state.activeId ?? state.active_id);
     const binStep = Number(state.binStep ?? state.bin_step);
     
@@ -272,13 +294,19 @@ async function fetchMeteoraDlmmPool(
     
     if (deriveReserve) {
       try {
-        const rxResult = deriveReserve(poolPubkey, new PublicKey(tokenXMint), programId);
-        reserveX = (rxResult?.publicKey || rxResult)?.toBase58?.() || String(rxResult?.publicKey || rxResult);
-      } catch {}
+        const rxResult = deriveReserve(poolPubkey, tokenXMintPk, programId);
+        const rxPk = toPublicKeySafe(rxResult?.publicKey || rxResult);
+        reserveX = rxPk?.toBase58() || '';
+      } catch (e: any) {
+        logger.debug('router.test.meteora.reserveX.derive.error', { cat: 'router', error: e.message });
+      }
       try {
-        const ryResult = deriveReserve(poolPubkey, new PublicKey(tokenYMint), programId);
-        reserveY = (ryResult?.publicKey || ryResult)?.toBase58?.() || String(ryResult?.publicKey || ryResult);
-      } catch {}
+        const ryResult = deriveReserve(poolPubkey, tokenYMintPk, programId);
+        const ryPk = toPublicKeySafe(ryResult?.publicKey || ryResult);
+        reserveY = ryPk?.toBase58() || '';
+      } catch (e: any) {
+        logger.debug('router.test.meteora.reserveY.derive.error', { cat: 'router', error: e.message });
+      }
     }
     
     // Derive oracle
@@ -286,8 +314,11 @@ async function fetchMeteoraDlmmPool(
     if (deriveOracle) {
       try {
         const oracleResult = deriveOracle(poolPubkey, programId);
-        oracle = (oracleResult?.publicKey || oracleResult)?.toBase58?.() || String(oracleResult?.publicKey || oracleResult);
-      } catch {}
+        const oraclePk = toPublicKeySafe(oracleResult?.publicKey || oracleResult);
+        oracle = oraclePk?.toBase58() || '';
+      } catch (e: any) {
+        logger.debug('router.test.meteora.oracle.derive.error', { cat: 'router', error: e.message });
+      }
     }
     
     // Derive bin arrays based on activeId
@@ -304,11 +335,13 @@ async function fetchMeteoraDlmmPool(
         
         // Lower bin array (current - 1)
         const lowerResult = deriveBinArray(poolPubkey, new BN(currentIdx - 1), programId);
-        binArrayLower = (lowerResult?.publicKey || lowerResult)?.toBase58?.() || String(lowerResult?.publicKey || lowerResult);
+        const lowerPk = toPublicKeySafe(lowerResult?.publicKey || lowerResult);
+        binArrayLower = lowerPk?.toBase58() || '';
         
         // Upper bin array (current)
         const upperResult = deriveBinArray(poolPubkey, new BN(currentIdx), programId);
-        binArrayUpper = (upperResult?.publicKey || upperResult)?.toBase58?.() || String(upperResult?.publicKey || upperResult);
+        const upperPk = toPublicKeySafe(upperResult?.publicKey || upperResult);
+        binArrayUpper = upperPk?.toBase58() || '';
       } catch (err: any) {
         logger.warn('router.test.meteora.binarray.derive.error', { cat: 'router', error: err.message });
       }
@@ -317,10 +350,12 @@ async function fetchMeteoraDlmmPool(
     // Determine token program
     let tokenProgramId = TOKEN_PROGRAM_ID;
     if (reserveX) {
-      const reserveInfo = await connection.getAccountInfo(new PublicKey(reserveX));
-      if (reserveInfo?.owner.equals(TOKEN_2022_PROGRAM_ID)) {
-        tokenProgramId = TOKEN_2022_PROGRAM_ID;
-      }
+      try {
+        const reserveInfo = await connection.getAccountInfo(new PublicKey(reserveX));
+        if (reserveInfo?.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+          tokenProgramId = TOKEN_2022_PROGRAM_ID;
+        }
+      } catch {}
     }
 
     const pool: MeteoraDlmmPoolState = {
