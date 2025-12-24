@@ -848,6 +848,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
 
   /**
    * POST /router/test/swap - Test a swap through a specific pool
+   * 
+   * Options:
+   * - useRouter: true = use on-chain router, false = direct DEX call (default: true if router deployed)
    */
   api.post('/router/test/swap', async (req: Request, res: Response) => {
     try {
@@ -860,6 +863,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         amountIn = '10000000', // 0.01 SOL default
         minAmountOut = '1',
         simulate = true, // Default to simulation only
+        useRouter, // undefined = auto (use router if deployed), true = force router, false = force direct
       } = req.body;
 
       if (!poolId) {
@@ -870,6 +874,26 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const wallet = await ensureWallet(CONFIG.walletPath);
       const connection = getRouterConnection(routerConfig.cluster);
       const cluster = routerConfig.cluster;
+      
+      // Determine whether to use the on-chain router
+      // Default: use router if deployed, otherwise direct
+      let routerProgramId: string | undefined;
+      if (useRouter === true) {
+        // Force router mode - fail if not deployed
+        if (!routerConfig.programId) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Router not deployed. Deploy the router first or set useRouter: false' 
+          });
+        }
+        routerProgramId = routerConfig.programId;
+      } else if (useRouter === false) {
+        // Force direct mode
+        routerProgramId = undefined;
+      } else {
+        // Auto mode: use router if deployed
+        routerProgramId = routerConfig.programId || undefined;
+      }
 
       logger.info('router.test.swap.start', { 
         cat: 'router', 
@@ -881,6 +905,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
         amountIn,
         simulate,
         cluster,
+        useRouter: !!routerProgramId,
+        routerProgramId,
       });
 
       emit('router:test:start', { poolId, dex, timestamp: Date.now() });
@@ -899,6 +925,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         amountIn: BigInt(amountIn),
         minAmountOut: BigInt(minAmountOut),
         simulateOnly: simulate,
+        routerProgramId,
       });
 
       if (result.success) {

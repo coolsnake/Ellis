@@ -1,13 +1,14 @@
 //! Raydium CLMM (Concentrated Liquidity Market Maker) CPI integration
 //!
-//! Program ID: CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK
+//! Mainnet Program ID: CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK
+//! Devnet Program ID: DRayAUgENGQBKVaX8owNhgzkEDyoHTGVEGHVJT1E9pfH
 //!
 //! Raydium CLMM is a concentrated liquidity DEX similar to Uniswap V3.
+//! The DEX program ID is passed as the last account to support both devnet and mainnet.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 
-use crate::constants::dex_programs::RAYDIUM_CLMM;
 use crate::error::ArbRouterError;
 
 /// Number of accounts needed for a Raydium CLMM swap
@@ -89,13 +90,17 @@ pub fn swap(
         })
         .collect();
 
+    // Get the DEX program ID from the last account (index 16)
+    // This allows supporting both devnet and mainnet without hardcoding
+    let dex_program_id = *accounts[ACCOUNTS_NEEDED - 1].key;
+    
     let ix = Instruction {
-        program_id: RAYDIUM_CLMM,
+        program_id: dex_program_id,
         accounts: account_metas,
         data,
     };
 
-    // Invoke the swap
+    // Invoke the swap - include all accounts for CPI
     let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
     invoke(&ix, &account_infos)?;
 

@@ -23,7 +23,7 @@ import BN from 'bn.js';
 import { logger } from '../utils/logger.js';
 import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/raydiumTickArrays.js';
 import { buildRouteSwapIx, dexNameToType } from './sdk.js';
-import { DexType, DEX_PROGRAMS } from './types.js';
+import { DexType } from './types.js';
 
 // ============================================================================
 // Constants
@@ -558,6 +558,9 @@ function buildDexAccountsForRouter(
   // Use the token program from pool state
   const tokenProgram = new PublicKey(pool.tokenProgram);
   
+  // Get the actual DEX program ID from the pool (supports devnet and mainnet)
+  const dexProgramId = new PublicKey(pool.programId);
+  
   // Build accounts in the order expected by arb-router's raydium.rs
   const accounts: PublicKey[] = [
     payer,                                              // 0: Payer (signer)
@@ -576,7 +579,7 @@ function buildDexAccountsForRouter(
     inputMint,                                          // 13: Input Token Mint
     outputMint,                                         // 14: Output Token Mint
     MEMO_PROGRAM_ID,                                    // 15: Memo Program
-    DEX_PROGRAMS.RAYDIUM_CLMM,                         // 16: Raydium CLMM Program
+    dexProgramId,                                       // 16: Raydium CLMM Program (from pool)
   ];
   
   logger.info('router.test.dex_accounts', { 
