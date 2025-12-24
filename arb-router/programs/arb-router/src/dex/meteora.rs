@@ -15,17 +15,19 @@ use crate::error::ArbRouterError;
 /// 16 fixed accounts + 2 bin arrays = 18 total
 pub const ACCOUNTS_NEEDED: usize = 18;
 
-/// Meteora DLMM swap instruction discriminator
-/// swap instruction: [248, 198, 158, 145, 225, 117, 135, 200]
-const SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
+/// Meteora DLMM swap2 instruction discriminator
+/// swap2 is preferred over swap - handles bitmap extension edge cases better
+/// SHA256("global:swap2")[0..8] = [65, 75, 63, 76, 235, 91, 91, 136]
+const SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
-/// Meteora DLMM swap parameters
+/// Meteora DLMM swap2 parameters
 #[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct SwapParams {
+pub struct Swap2Params {
     /// Amount to swap
     pub amount_in: u64,
     /// Minimum output amount
     pub min_amount_out: u64,
+    // Note: slices Vec is serialized separately as empty (4 bytes of zeros)
 }
 
 /// Execute a swap on Meteora DLMM
@@ -59,15 +61,18 @@ pub fn swap(
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
-    // Build the swap instruction data
-    let params = SwapParams {
+    // Build the swap2 instruction data
+    let params = Swap2Params {
         amount_in,
         min_amount_out,
     };
 
-    let mut data = Vec::with_capacity(8 + 8 + 8);
-    data.extend_from_slice(&SWAP_DISCRIMINATOR);
+    // swap2 data format: [discriminator(8), amount_in(8), min_amount_out(8), slices_len(4)]
+    // slices is an empty Vec, so we just write 4 bytes of zeros for the length
+    let mut data = Vec::with_capacity(8 + 8 + 8 + 4);
+    data.extend_from_slice(&SWAP2_DISCRIMINATOR);
     params.serialize(&mut data)?;
+    data.extend_from_slice(&[0u8; 4]); // Empty slices Vec (length = 0)
 
     // Build account metas for Meteora swap instruction
     // Accounts 0-14 are fixed, 15-16 are bin arrays, 17 is the program for CPI
@@ -99,7 +104,7 @@ pub fn swap(
     let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
     invoke(&ix, &account_infos)?;
 
-    msg!("Meteora DLMM swap executed: {} in, min {} out", amount_in, min_amount_out);
+    msg!("Meteora DLMM swap2 executed: {} in, min {} out", amount_in, min_amount_out);
     Ok(())
 }
 
@@ -123,8 +128,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_swap_params_serialize() {
-        let params = SwapParams {
+    fn test_swap2_params_serialize() {
+        let params = Swap2Params {
             amount_in: 1000000,
             min_amount_out: 990000,
         };
@@ -132,7 +137,7 @@ mod tests {
         let mut data = Vec::new();
         params.serialize(&mut data).unwrap();
         
-        // Should be 8 + 8 = 16 bytes
+        // Should be 8 + 8 = 16 bytes (slices added separately)
         assert_eq!(data.len(), 16);
     }
 }
