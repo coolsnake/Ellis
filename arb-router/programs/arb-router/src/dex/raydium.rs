@@ -95,17 +95,12 @@ pub fn swap(
         })
         .collect();
 
-    // Get the DEX program ID from the router's context
-    // We need to get it from the remaining_accounts or pass it separately
-    // For now, we'll derive it from the account owner or use a constant
-    // Actually, we should get it from the pool account's owner
-    // But since we're doing CPI, we need to get it from somewhere
-    // Let's check if we can get it from the pool state account
+    // Get the DEX program ID from the pool state account's owner
     let pool_state = &accounts[2]; // Pool state is at index 2
-    let dex_program_id = pool_state.owner;
+    let dex_program_id = *pool_state.owner; // Dereference to get Pubkey instead of &Pubkey
     
     let ix = Instruction {
-        program_id: dex_program_id,
+        program_id: dex_program_id, // Now it's the correct type
         accounts: account_metas,
         data,
     };
