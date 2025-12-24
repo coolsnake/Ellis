@@ -22,13 +22,17 @@ import {
 import BN from 'bn.js';
 import { logger } from '../utils/logger.js';
 import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/raydiumTickArrays.js';
+import { buildRouteSwapIx, dexNameToType } from './sdk.js';
+import { DexType, DEX_PROGRAMS } from './types.js';
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-// Note: We use the Raydium SDK to build swap instructions, which handles
-// program-specific account ordering for both devnet and mainnet automatically.
+const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+
+// Note: When using the on-chain router, we build DEX accounts manually.
+// When calling DEX directly, we use the Raydium SDK for correct account ordering.
 
 // ============================================================================
 // Types
@@ -45,6 +49,8 @@ export interface TestSwapParams {
   amountIn: bigint;
   minAmountOut: bigint;
   simulateOnly: boolean;
+  /** Router program ID - if provided, swap goes through the on-chain router */
+  routerProgramId?: string;
 }
 
 export interface TestSwapResult {
@@ -204,6 +210,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     amountIn, 
     minAmountOut,
     simulateOnly,
+    routerProgramId,
   } = params;
 
   try {
@@ -220,25 +227,69 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     const inMint = inputMint ? new PublicKey(inputMint) : new PublicKey(pool.mintA);
     const outMint = outputMint ? new PublicKey(outputMint) : new PublicKey(pool.mintB);
     
-    // Build swap instructions based on DEX
+    // Determine swap direction (A to B or B to A)
+    const isAtoB = inMint.toBase58() === pool.mintA;
+    
+    // Build swap instructions based on mode
     let swapIxs: TransactionInstruction[] = [];
     
-    if (dex === 'raydium' && variant === 'clmm') {
-      swapIxs = await buildRaydiumClmmSwapIxWithSdk(
+    if (routerProgramId) {
+      // === ROUTER MODE: Call swap through the on-chain arb-router ===
+      logger.info('router.test.mode', { cat: 'router', mode: 'router', routerProgramId });
+      
+      const routerProgram = new PublicKey(routerProgramId);
+      const dexType = dexNameToType(dex, variant);
+      
+      // Build DEX accounts in the order expected by the router
+      const dexAccounts = buildDexAccountsForRouter(
         wallet.publicKey,
         pool,
         new PublicKey(poolId),
         inMint,
         outMint,
-        amountIn,
-        minAmountOut
+        dexType
       );
       
-      if (!swapIxs.length) {
-        return { success: false, simulated: false, error: 'SDK failed to generate swap instructions' };
-      }
+      // User's input token account
+      const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
+      
+      // Build the route_swap instruction through the router
+      const routerSwapIx = buildRouteSwapIx(
+        wallet.publicKey,
+        userInAta,
+        {
+          dexType,
+          amountIn,
+          minAmountOut,
+          aToB: isAtoB,
+        },
+        dexAccounts,
+        routerProgram
+      );
+      
+      swapIxs = [routerSwapIx];
+      
     } else {
-      return { success: false, simulated: false, error: `Unsupported DEX: ${dex}/${variant}` };
+      // === DIRECT MODE: Call DEX directly using SDK ===
+      logger.info('router.test.mode', { cat: 'router', mode: 'direct' });
+      
+      if (dex === 'raydium' && variant === 'clmm') {
+        swapIxs = await buildRaydiumClmmSwapIxWithSdk(
+          wallet.publicKey,
+          pool,
+          new PublicKey(poolId),
+          inMint,
+          outMint,
+          amountIn,
+          minAmountOut
+        );
+        
+        if (!swapIxs.length) {
+          return { success: false, simulated: false, error: 'SDK failed to generate swap instructions' };
+        }
+      } else {
+        return { success: false, simulated: false, error: `Unsupported DEX: ${dex}/${variant}` };
+      }
     }
 
     // Build transaction with setup instructions
@@ -459,5 +510,81 @@ async function buildRaydiumClmmSwapIxWithSdk(
   });
   
   return ixs;
+}
+
+/**
+ * Build DEX accounts in the order expected by the on-chain arb-router
+ * 
+ * For Raydium CLMM, the router expects 17 accounts:
+ * 0. Payer (signer)
+ * 1. AMM Config
+ * 2. Pool State
+ * 3. Input Token Account (user)
+ * 4. Output Token Account (user)
+ * 5. Input Vault
+ * 6. Output Vault
+ * 7. Observation State
+ * 8. Token Program
+ * 9. Tick Array Lower
+ * 10. Tick Array Current
+ * 11. Tick Array Upper
+ * 12. Oracle (System Program if not used)
+ * 13. Input Token Mint
+ * 14. Output Token Mint
+ * 15. Memo Program
+ * 16. Raydium CLMM Program
+ */
+function buildDexAccountsForRouter(
+  payer: PublicKey,
+  pool: RaydiumClmmPoolState,
+  poolPubkey: PublicKey,
+  inputMint: PublicKey,
+  outputMint: PublicKey,
+  dexType: DexType
+): PublicKey[] {
+  if (dexType !== DexType.Raydium) {
+    throw new Error(`DEX type ${dexType} not yet supported for router test`);
+  }
+  
+  const isAtoB = inputMint.toBase58() === pool.mintA;
+  
+  const userInAta = getAssociatedTokenAddressSync(inputMint, payer);
+  const userOutAta = getAssociatedTokenAddressSync(outputMint, payer);
+  
+  const inputVault = isAtoB ? pool.vaultA : pool.vaultB;
+  const outputVault = isAtoB ? pool.vaultB : pool.vaultA;
+  
+  // Use the token program from pool state
+  const tokenProgram = new PublicKey(pool.tokenProgram);
+  
+  // Build accounts in the order expected by arb-router's raydium.rs
+  const accounts: PublicKey[] = [
+    payer,                                              // 0: Payer (signer)
+    new PublicKey(pool.ammConfig),                     // 1: AMM Config
+    poolPubkey,                                         // 2: Pool State
+    userInAta,                                          // 3: Input Token Account (user)
+    userOutAta,                                         // 4: Output Token Account (user)
+    new PublicKey(inputVault),                         // 5: Input Vault
+    new PublicKey(outputVault),                        // 6: Output Vault
+    new PublicKey(pool.observationId),                 // 7: Observation State
+    tokenProgram,                                       // 8: Token Program
+    new PublicKey(pool.tickArrays.lower),              // 9: Tick Array Lower
+    new PublicKey(pool.tickArrays.center),             // 10: Tick Array Current
+    new PublicKey(pool.tickArrays.upper),              // 11: Tick Array Upper
+    SystemProgram.programId,                            // 12: Oracle (System Program placeholder)
+    inputMint,                                          // 13: Input Token Mint
+    outputMint,                                         // 14: Output Token Mint
+    MEMO_PROGRAM_ID,                                    // 15: Memo Program
+    DEX_PROGRAMS.RAYDIUM_CLMM,                         // 16: Raydium CLMM Program
+  ];
+  
+  logger.info('router.test.dex_accounts', { 
+    cat: 'router', 
+    accountCount: accounts.length,
+    dexType: 'raydium_clmm',
+    isAtoB,
+  });
+  
+  return accounts;
 }
 

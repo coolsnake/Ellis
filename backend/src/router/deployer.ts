@@ -687,52 +687,88 @@ export async function getProgramStatus(
               programDataAddress: programDataAddress.toBase58(),
             });
             
-            // Program data account structure for BPF Upgradeable Loader:
-            // Bytes 0-7: slot (u64, little-endian)
-            // Byte 8: upgrade authority option (0 = None, 1 = Some)
-            // Bytes 9-40: upgrade authority Pubkey (32 bytes) if option is Some
-            // Minimum length should be at least 9 bytes (slot + option), 41 bytes if upgrade authority exists
-            if (programDataInfo.data.length >= 9) {
-              // Read slot as little-endian uint64
-              const slotBytes = programDataInfo.data.subarray(0, 8);
-              lastDeploySlot = Number(
-                BigInt(slotBytes[0]) |
-                (BigInt(slotBytes[1]) << 8n) |
-                (BigInt(slotBytes[2]) << 16n) |
-                (BigInt(slotBytes[3]) << 24n) |
-                (BigInt(slotBytes[4]) << 32n) |
-                (BigInt(slotBytes[5]) << 40n) |
-                (BigInt(slotBytes[6]) << 48n) |
-                (BigInt(slotBytes[7]) << 56n)
-              );
+            // Program data account structure for BPF Upgradeable Loader (bincode serialized):
+            // Bytes 0-3: enum variant discriminator (3 = ProgramData, u32 little-endian)
+            // Bytes 4-11: slot (u64, little-endian)
+            // Byte 12: upgrade authority option (0 = None, 1 = Some)
+            // Bytes 13-44: upgrade authority Pubkey (32 bytes) if option is Some
+            // Minimum length should be at least 13 bytes (discriminator + slot + option)
+            // 45 bytes if upgrade authority exists
+            const DISCRIMINATOR_SIZE = 4;
+            const SLOT_SIZE = 8;
+            const OPTION_SIZE = 1;
+            const PUBKEY_SIZE = 32;
+            const MIN_LENGTH = DISCRIMINATOR_SIZE + SLOT_SIZE + OPTION_SIZE; // 13 bytes
+            const LENGTH_WITH_AUTHORITY = MIN_LENGTH + PUBKEY_SIZE; // 45 bytes
+            
+            if (programDataInfo.data.length >= MIN_LENGTH) {
+              // Verify the discriminator is 3 (ProgramData)
+              const discriminator = programDataInfo.data.readUInt32LE(0);
               
-              const hasUpgradeAuthority = programDataInfo.data[8] === 1;
-              
-              logger.debug('router.status.upgrade_auth_check', {
+              logger.debug('router.status.program_data_discriminator', {
                 cat: 'router',
-                hasUpgradeAuthority,
-                dataLength: programDataInfo.data.length,
-                optionByte: programDataInfo.data[8],
+                discriminator,
+                expected: 3,
               });
               
-              if (hasUpgradeAuthority && programDataInfo.data.length >= 41) {
-                upgradeAuthority = new PublicKey(programDataInfo.data.subarray(9, 41)).toBase58();
+              if (discriminator === 3) {
+                // Read slot as little-endian uint64 (bytes 4-11)
+                const slotBytes = programDataInfo.data.subarray(DISCRIMINATOR_SIZE, DISCRIMINATOR_SIZE + SLOT_SIZE);
+                lastDeploySlot = Number(
+                  BigInt(slotBytes[0]) |
+                  (BigInt(slotBytes[1]) << 8n) |
+                  (BigInt(slotBytes[2]) << 16n) |
+                  (BigInt(slotBytes[3]) << 24n) |
+                  (BigInt(slotBytes[4]) << 32n) |
+                  (BigInt(slotBytes[5]) << 40n) |
+                  (BigInt(slotBytes[6]) << 48n) |
+                  (BigInt(slotBytes[7]) << 56n)
+                );
                 
-                logger.debug('router.status.upgrade_auth_found', {
+                // Read upgrade authority option (byte 12)
+                const optionOffset = DISCRIMINATOR_SIZE + SLOT_SIZE;
+                const hasUpgradeAuthority = programDataInfo.data[optionOffset] === 1;
+                
+                logger.debug('router.status.upgrade_auth_check', {
                   cat: 'router',
-                  upgradeAuthority,
+                  hasUpgradeAuthority,
+                  dataLength: programDataInfo.data.length,
+                  optionByte: programDataInfo.data[optionOffset],
+                  optionOffset,
                 });
-              } else if (!hasUpgradeAuthority) {
-                logger.debug('router.status.no_upgrade_auth', {
+                
+                if (hasUpgradeAuthority && programDataInfo.data.length >= LENGTH_WITH_AUTHORITY) {
+                  // Read upgrade authority pubkey (bytes 13-44)
+                  const authorityOffset = optionOffset + OPTION_SIZE;
+                  upgradeAuthority = new PublicKey(
+                    programDataInfo.data.subarray(authorityOffset, authorityOffset + PUBKEY_SIZE)
+                  ).toBase58();
+                  
+                  logger.debug('router.status.upgrade_auth_found', {
+                    cat: 'router',
+                    upgradeAuthority,
+                    authorityOffset,
+                  });
+                } else if (!hasUpgradeAuthority) {
+                  logger.debug('router.status.no_upgrade_auth', {
+                    cat: 'router',
+                    optionByte: programDataInfo.data[optionOffset],
+                    message: 'Program is immutable (no upgrade authority)',
+                  });
+                }
+              } else {
+                logger.warn('router.status.unexpected_discriminator', {
                   cat: 'router',
-                  optionByte: programDataInfo.data[8],
+                  discriminator,
+                  expected: 3,
+                  message: 'Expected ProgramData discriminator (3)',
                 });
               }
             } else {
               logger.warn('router.status.invalid_program_data_length', {
                 cat: 'router',
                 dataLength: programDataInfo.data.length,
-                expectedMin: 9,
+                expectedMin: MIN_LENGTH,
               });
             }
           } else {
