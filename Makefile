@@ -85,13 +85,8 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 			# Check if Solana CLI exists but platform tools are missing \
 			if command -v solana-install >/dev/null 2>&1; then \
 				echo "Found solana-install, attempting to install platform tools..."; \
-				solana-install init 2.0.0 2>&1 || echo "⚠ solana-install failed"; \
+				solana-install init 2.0.0 2>&1 || true; \
 				export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
-				if cargo build-sbf --version >/dev/null 2>&1; then \
-					echo "✓ Platform tools installed via solana-install"; \
-				else \
-					echo "⚠ solana-install completed but tools not accessible, trying Python script..."; \
-				fi; \
 			fi; \
 			\
 			# If still not found, try Python installer \
@@ -111,14 +106,15 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 					exit 1; \
 				fi; \
 				export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
-				# Check again, but don't fail if still not found - Anchor will download them \
-				if cargo build-sbf --version >/dev/null 2>&1; then \
-					echo "✓ Platform tools installed and verified"; \
-				else \
-					echo "⚠ Platform tools not found, but Solana CLI is installed."; \
-					echo "  Anchor will download platform tools automatically during build."; \
-					echo "  Proceeding with build..."; \
-				fi; \
+			fi; \
+			\
+			# Final check - warn if still not found but allow build to proceed \
+			if ! cargo build-sbf --version >/dev/null 2>&1; then \
+				echo "⚠ Platform tools not found, but Solana CLI is installed."; \
+				echo "  Anchor will download platform tools automatically during build."; \
+				echo "  Proceeding with build..."; \
+			else \
+				echo "✓ Platform tools installed and verified"; \
 			fi; \
 			\
 			# Create symlink for Anchor after installation \
