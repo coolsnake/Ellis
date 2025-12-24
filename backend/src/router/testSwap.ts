@@ -22,8 +22,8 @@ import {
 import BN from 'bn.js';
 import { logger } from '../utils/logger.js';
 import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/raydiumTickArrays.js';
-import { buildRouteSwapIx, dexNameToType } from './sdk.js';
-import { DexType } from './types.js';
+import { buildRouteSwapIx, dexNameToType, buildExecuteIx } from './sdk.js';
+import { DexType, RouteStep } from './types.js';
 
 // ============================================================================
 // Constants
@@ -285,8 +285,6 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
         const finalMint = inMint; // For round trip: SOL -> USDC -> SOL
         
         // Build steps for execute instruction
-        const { buildExecuteIx, DexType } = await import('./sdk.js');
-        const { RouteStep } = await import('./types.js');
         
         const firstStep: RouteStep = {
           dexType: dexType,
