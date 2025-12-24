@@ -27,9 +27,8 @@ import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/r
 // Constants
 // ============================================================================
 
-const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
-const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
-const RAYDIUM_SWAP_DISCRIMINATOR = Buffer.from([43, 4, 237, 11, 26, 201, 30, 98]);
+// Note: We use the Raydium SDK to build swap instructions, which handles
+// program-specific account ordering for both devnet and mainnet automatically.
 
 // ============================================================================
 // Types
@@ -221,11 +220,11 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     const inMint = inputMint ? new PublicKey(inputMint) : new PublicKey(pool.mintA);
     const outMint = outputMint ? new PublicKey(outputMint) : new PublicKey(pool.mintB);
     
-    // Build swap transaction based on DEX
-    let swapIx: TransactionInstruction;
+    // Build swap instructions based on DEX
+    let swapIxs: TransactionInstruction[] = [];
     
     if (dex === 'raydium' && variant === 'clmm') {
-      swapIx = buildRaydiumClmmSwapIx(
+      swapIxs = await buildRaydiumClmmSwapIxWithSdk(
         wallet.publicKey,
         pool,
         new PublicKey(poolId),
@@ -234,6 +233,10 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
         amountIn,
         minAmountOut
       );
+      
+      if (!swapIxs.length) {
+        return { success: false, simulated: false, error: 'SDK failed to generate swap instructions' };
+      }
     } else {
       return { success: false, simulated: false, error: `Unsupported DEX: ${dex}/${variant}` };
     }
@@ -286,8 +289,10 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
       ));
     }
     
-    // Add swap instruction
-    tx.add(swapIx);
+    // Add swap instructions from SDK
+    for (const ix of swapIxs) {
+      tx.add(ix);
+    }
     
     // Set recent blockhash and fee payer
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
@@ -348,7 +353,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
   }
 }
 
-function buildRaydiumClmmSwapIx(
+async function buildRaydiumClmmSwapIxWithSdk(
   payer: PublicKey,
   pool: RaydiumClmmPoolState,
   poolPubkey: PublicKey,
@@ -356,57 +361,103 @@ function buildRaydiumClmmSwapIx(
   outputMint: PublicKey,
   amountIn: bigint,
   minAmountOut: bigint
-): TransactionInstruction {
+): Promise<TransactionInstruction[]> {
   const isAtoB = inputMint.toBase58() === pool.mintA;
   
   const userInAta = getAssociatedTokenAddressSync(inputMint, payer);
   const userOutAta = getAssociatedTokenAddressSync(outputMint, payer);
   
-  const inputVault = isAtoB ? pool.vaultA : pool.vaultB;
-  const outputVault = isAtoB ? pool.vaultB : pool.vaultA;
+  // Use Raydium SDK to build swap instruction with correct account order
+  // The SDK handles different program versions (devnet vs mainnet) automatically
+  const sdk = await import('@raydium-io/raydium-sdk-v2');
+  const { ClmmInstrument } = sdk;
   
-  // Build swap data
-  const data = Buffer.concat([
-    RAYDIUM_SWAP_DISCRIMINATOR,
-    new BN(amountIn.toString()).toArrayLike(Buffer, 'le', 8),
-    new BN(minAmountOut.toString()).toArrayLike(Buffer, 'le', 8),
-    Buffer.alloc(16), // sqrt_price_limit = 0
-    Buffer.from([1]), // is_base_input = true
-  ]);
+  const amountInBn = new BN(amountIn.toString());
+  const minOutBn = new BN(minAmountOut.toString());
   
-  // Use the token program from pool state (detected from vault accounts)
-  const tokenProgram = new PublicKey(pool.tokenProgram);
+  // Construct pool info for SDK
+  const mintAInfo = {
+    address: pool.mintA,
+    decimals: 9, // SOL decimals (will be ignored for swap calculation)
+    programId: pool.tokenProgram,
+  };
+  const mintBInfo = {
+    address: pool.mintB,
+    decimals: 6, // USDC decimals (will be ignored for swap calculation)
+    programId: pool.tokenProgram,
+  };
   
-  // token_program_2022 must be included right after token_program
-  // The on-chain program expects this account even when using standard token program
-  // When using standard token program, we still include TOKEN_2022_PROGRAM_ID
-  // The program validates the account exists but allows it for standard token pools
-  const tokenProgram2022 = TOKEN_2022_PROGRAM_ID;
+  const poolInfo = {
+    id: poolPubkey.toBase58(),
+    programId: pool.programId,
+    mintA: mintAInfo,
+    mintB: mintBInfo,
+    config: {
+      id: pool.ammConfig,
+      index: 0,
+      protocolFeeRate: 0,
+      tradeFeeRate: 0,
+      tickSpacing: pool.tickSpacing,
+      fundFeeRate: 0,
+      defaultRange: 0,
+      defaultRangePoint: [],
+    },
+  };
   
-  const accounts = [
-    { pubkey: payer, isSigner: true, isWritable: true },                    // 0: Payer
-    { pubkey: new PublicKey(pool.ammConfig), isSigner: false, isWritable: false }, // 1: AMM Config
-    { pubkey: poolPubkey, isSigner: false, isWritable: true },             // 2: Pool State
-    { pubkey: userInAta, isSigner: false, isWritable: true },              // 3: Input Token Account (user)
-    { pubkey: userOutAta, isSigner: false, isWritable: true },             // 4: Output Token Account (user)
-    { pubkey: new PublicKey(inputVault), isSigner: false, isWritable: true }, // 5: Input Vault
-    { pubkey: new PublicKey(outputVault), isSigner: false, isWritable: true }, // 6: Output Vault
-    { pubkey: new PublicKey(pool.observationId), isSigner: false, isWritable: true }, // 7: Observation State
-    { pubkey: tokenProgram, isSigner: false, isWritable: false },           // 8: Token Program
-    { pubkey: tokenProgram2022, isSigner: false, isWritable: false },       // 9: Token Program 2022 (required by on-chain Anchor IDL)
-    { pubkey: new PublicKey(pool.tickArrays.lower), isSigner: false, isWritable: true }, // 10: Tick Array Lower
-    { pubkey: new PublicKey(pool.tickArrays.center), isSigner: false, isWritable: true }, // 11: Tick Array Center
-    { pubkey: new PublicKey(pool.tickArrays.upper), isSigner: false, isWritable: true }, // 12: Tick Array Upper
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 13: Oracle (use System Program as placeholder)
-    { pubkey: inputMint, isSigner: false, isWritable: false },             // 14: Input Token Mint
-    { pubkey: outputMint, isSigner: false, isWritable: false },           // 15: Output Token Mint
-    { pubkey: MEMO_PROGRAM_ID, isSigner: false, isWritable: false },       // 16: Memo Program
+  const poolKeys = {
+    id: poolPubkey.toBase58(),
+    programId: pool.programId,
+    mintA: mintAInfo,
+    mintB: mintBInfo,
+    vault: {
+      A: pool.vaultA,
+      B: pool.vaultB,
+    },
+    observationId: pool.observationId,
+    config: poolInfo.config,
+    rewardInfos: [],
+  };
+  
+  const ownerInfo = {
+    wallet: payer,
+    tokenAccountA: isAtoB ? userInAta : userOutAta,
+    tokenAccountB: isAtoB ? userOutAta : userInAta,
+  };
+  
+  // Get tick array PDAs - center first (most likely needed)
+  const tickArrayKeys = [
+    new PublicKey(pool.tickArrays.center),
+    new PublicKey(pool.tickArrays.lower),
+    new PublicKey(pool.tickArrays.upper),
   ];
   
-  return new TransactionInstruction({
-    programId: new PublicKey(pool.programId),
-    keys: accounts,
-    data,
+  const observationId = new PublicKey(pool.observationId);
+  
+  // Use SDK to generate instructions with correct account order
+  // The SDK knows the correct structure for each program version
+  const res = (ClmmInstrument as any).makeSwapBaseInInstructions({
+    poolInfo,
+    poolKeys,
+    observationId,
+    ownerInfo,
+    inputMint,
+    amountIn: amountInBn,
+    amountOutMin: minOutBn,
+    sqrtPriceLimitX64: new BN(0),
+    remainingAccounts: tickArrayKeys,
   });
+  
+  const ixs = Array.isArray(res?.instructions) 
+    ? res.instructions 
+    : (res?.innerTransaction?.instructions || []);
+  
+  logger.info('router.test.sdk.instructions', { 
+    cat: 'router', 
+    poolId: poolPubkey.toBase58(),
+    instructionCount: ixs.length,
+    programId: pool.programId,
+  });
+  
+  return ixs;
 }
 
