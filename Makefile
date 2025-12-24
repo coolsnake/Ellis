@@ -85,15 +85,12 @@ check-solana-tools: ## Check/install Solana platform tools (Python-based, avoids
 			# Check if Solana CLI exists but platform tools are missing \
 			if command -v solana-install >/dev/null 2>&1; then \
 				echo "Found solana-install, attempting to install platform tools..."; \
-				if solana-install init 2.0.0 2>&1; then \
-					export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
-					if cargo build-sbf --version >/dev/null 2>&1; then \
-						echo "✓ Platform tools installed via solana-install"; \
-					else \
-						echo "⚠ solana-install completed but tools not accessible"; \
-					fi; \
+				solana-install init 2.0.0 2>&1 || echo "⚠ solana-install failed"; \
+				export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
+				if cargo build-sbf --version >/dev/null 2>&1; then \
+					echo "✓ Platform tools installed via solana-install"; \
 				else \
-					echo "⚠ solana-install failed, trying Python script..."; \
+					echo "⚠ solana-install completed but tools not accessible, trying Python script..."; \
 				fi; \
 			fi; \
 			\
