@@ -114,6 +114,80 @@ def download_with_requests(url, dest_path):
         print(f"✗ Download failed: {e}")
         return False
 
+def download_agave_direct(version="2.1.8"):
+    """Download Agave release tarball directly (bypasses installer TLS issues)"""
+    print(f"=== Downloading Agave {version} directly ===")
+    
+    import ssl
+    import urllib.request
+    
+    url = f"https://github.com/anza-xyz/agave/releases/download/v{version}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+    tarball_path = Path(tempfile.gettempdir()) / f"solana-release-{version}.tar.bz2"
+    extract_dir = Path(tempfile.gettempdir()) / "solana-release"
+    
+    try:
+        print(f"Downloading {url}...")
+        # Create unverified SSL context to bypass TLS issues
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        urllib.request.urlretrieve(url, str(tarball_path), context=ctx)
+        print(f"✓ Downloaded to {tarball_path}")
+        
+        # Extract tarball
+        print(f"Extracting to {extract_dir}...")
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        
+        subprocess.run(
+            ['tar', '-xjf', str(tarball_path), '-C', str(extract_dir.parent)],
+            check=True,
+            timeout=300
+        )
+        print(f"✓ Extracted to {extract_dir}")
+        
+        # Install to standard location
+        solana_home = Path.home() / ".local" / "share" / "solana" / "install"
+        solana_home.mkdir(parents=True, exist_ok=True)
+        active_release = solana_home / "active_release"
+        
+        # Remove old symlink/directory if exists
+        if active_release.exists() or active_release.is_symlink():
+            if active_release.is_symlink():
+                active_release.unlink()
+            else:
+                shutil.rmtree(active_release)
+        
+        # Create symlink to extracted release
+        active_release.symlink_to(extract_dir)
+        print(f"✓ Linked {active_release} -> {extract_dir}")
+        
+        # Update PATH
+        solana_bin = active_release / "bin"
+        os.environ['PATH'] = f"{solana_bin}:{os.environ.get('PATH', '')}"
+        
+        # Verify installation
+        solana_exe = solana_bin / "solana"
+        if solana_exe.exists():
+            result = subprocess.run(
+                [str(solana_exe), '--version'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                print(f"✓ Solana CLI installed: {result.stdout.strip()}")
+                return True
+        
+        print("⚠ Installation completed but verification failed")
+        return False
+        
+    except Exception as e:
+        print(f"✗ Direct download failed: {e}")
+        return False
+
 def install_solana_cli():
     """Install Solana CLI using Python"""
     print("=== Installing Solana CLI ===")
@@ -140,7 +214,7 @@ def install_solana_cli():
     
     # Try downloading with requests first
     if not download_with_requests(installer_url, installer_path):
-        print("⚠ Direct download failed, trying alternative methods...")
+        print("⚠ Installer script download failed, trying alternative methods...")
         
         # Try using curl if available
         curl_path = shutil.which('curl')
@@ -159,6 +233,10 @@ def install_solana_cli():
                 print("✓ Downloaded via curl")
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 print(f"✗ Curl download failed: {e}")
+                print("\n⚠ All installer methods failed, trying direct Agave download...")
+                # Fallback to direct Agave download
+                if download_agave_direct("2.1.8"):
+                    return True
                 print("\nERROR: All download methods failed")
                 print("\nManual installation options:")
                 print("1. Install requests library: pip3 install --user requests")
@@ -166,6 +244,10 @@ def install_solana_cli():
                 print("3. Download installer manually and place at:", installer_path)
                 return False
         else:
+            print("\n⚠ Curl not available, trying direct Agave download...")
+            # Fallback to direct Agave download
+            if download_agave_direct("2.1.8"):
+                return True
             print("\nERROR: All download methods failed")
             print("\nManual installation options:")
             print("1. Install requests library: pip3 install --user requests")
