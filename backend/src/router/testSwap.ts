@@ -322,11 +322,33 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           secondDexType
         );
 
+        // Verify token accounts are correct
+        const userIntermediateAta = getAssociatedTokenAddressSync(intermediateMint, wallet.publicKey);
+        const userFinalAta = getAssociatedTokenAddressSync(finalMint, wallet.publicKey);
+        
+        logger.info('router.test.multi_hop.accounts', {
+          cat: 'router',
+          firstStep: {
+            inputMint: inMint.toBase58(),
+            outputMint: intermediateMint.toBase58(),
+            inputAta: getAssociatedTokenAddressSync(inMint, wallet.publicKey).toBase58(),
+            outputAta: userIntermediateAta.toBase58(),
+            dexAccountAtIndex3: firstDexAccounts[3]?.toBase58(),
+          },
+          secondStep: {
+            inputMint: intermediateMint.toBase58(),
+            outputMint: finalMint.toBase58(),
+            inputAta: userIntermediateAta.toBase58(),
+            outputAta: userFinalAta.toBase58(),
+            dexAccountAtIndex3: secondDexAccounts[3]?.toBase58(),
+            expectedToMatch: userIntermediateAta.toBase58(),
+          },
+        });
+
         // Combine all DEX accounts - each step needs its own complete set including program ID
-        // The execute function expects: [step1_accounts (18), step2_accounts (18), ...]
         const allDexAccounts = [
-          ...firstDexAccounts,  // All 18 accounts for first hop (including program ID)
-          ...secondDexAccounts, // All 18 accounts for second hop (including program ID)
+          ...firstDexAccounts,  // All 18 accounts for first hop
+          ...secondDexAccounts, // All 18 accounts for second hop
         ];
 
         const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
@@ -389,6 +411,24 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey, false, inMintTokenProgram);
     const userOutAta = getAssociatedTokenAddressSync(outMint, wallet.publicKey, false, outMintTokenProgram);
     
+    // For multi-hop, also ensure intermediate token account exists
+    let intermediateAta: PublicKey | undefined;
+    if (hops === 2 && routerProgramId) {
+      const intermediateMint = outMint; // For round-trip, intermediate is the output of first hop
+      const intermediateMintInfo = await connection.getAccountInfo(intermediateMint);
+      const intermediateMintTokenProgram = intermediateMintInfo?.owner.equals(TOKEN_2022_PROGRAM_ID) 
+        ? TOKEN_2022_PROGRAM_ID 
+        : TOKEN_PROGRAM_ID;
+      intermediateAta = getAssociatedTokenAddressSync(intermediateMint, wallet.publicKey, false, intermediateMintTokenProgram);
+      
+      const intermediateAtaInfo = await connection.getAccountInfo(intermediateAta);
+      if (!intermediateAtaInfo) {
+        tx.add(createAssociatedTokenAccountInstruction(
+          wallet.publicKey, intermediateAta, wallet.publicKey, intermediateMint, intermediateMintTokenProgram
+        ));
+      }
+    }
+
     const [inAtaInfo, outAtaInfo] = await Promise.all([
       connection.getAccountInfo(userInAta),
       connection.getAccountInfo(userOutAta),
