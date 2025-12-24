@@ -132,7 +132,10 @@ def download_agave_direct(version="2.1.8"):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         
-        urllib.request.urlretrieve(url, str(tarball_path), context=ctx)
+        # Use urlopen instead of urlretrieve (urlretrieve doesn't support context in older Python)
+        with urllib.request.urlopen(url, context=ctx, timeout=300) as response:
+            with open(tarball_path, 'wb') as f:
+                shutil.copyfileobj(response, f)
         print(f"✓ Downloaded to {tarball_path}")
         
         # Extract tarball
