@@ -9,7 +9,7 @@ anchor_version = "0.32.1"
 arb_router = "BjHLNpBdhGU3EFqsdnhipv6t6RRiK518kM8kZNyyNzJQ"
 
 [programs.devnet]
-arb_router = "BjHLNpBdhGU3EFqsdnhipv6t6RRiK518kM8kZNyyNzJQ"
+arb_router = "2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw"
 
 [programs.mainnet]
 arb_router = "BjHLNpBdhGU3EFqsdnhipv6t6RRiK518kM8kZNyyNzJQ"

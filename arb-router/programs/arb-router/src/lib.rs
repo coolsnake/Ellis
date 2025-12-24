@@ -12,7 +12,7 @@ use constants::*;
 use error::*;
 use state::*;
 
-declare_id!("BjHLNpBdhGU3EFqsdnhipv6t6RRiK518kM8kZNyyNzJQ");
+declare_id!("2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw");
 
 #[program]
 pub mod arb_router {
