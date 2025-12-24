@@ -42,7 +42,7 @@ pub struct Swap2Params {
 /// 6. `[]` Token X Mint
 /// 7. `[]` Token Y Mint
 /// 8. `[writable]` Oracle
-/// 9. `[]` Host Fee In (use program ID as placeholder)
+/// 9. `[writable]` Host Fee In (user's input token account)
 /// 10. `[signer, writable]` User (authority)
 /// 11. `[]` Token X Program
 /// 12. `[]` Token Y Program
@@ -82,8 +82,8 @@ pub fn swap(
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 10; // User is signer
-            // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), user(10), binArrays(15,16)
-            let is_writable = matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 10 | 15 | 16);
+            // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), hostFeeIn(9), user(10), binArrays(15,16)
+            let is_writable = matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 9 | 10 | 15 | 16);
             if is_signer {
                 AccountMeta::new(*acc.key, true)
             } else if is_writable {

@@ -1031,7 +1031,7 @@ async function getRaydiumSdkAccountOrder(
  * 6. Token X Mint
  * 7. Token Y Mint
  * 8. Oracle
- * 9. Host Fee In (use program ID as placeholder)
+ * 9. Host Fee In (user's input token account)
  * 10. User (signer)
  * 11. Token X Program
  * 12. Token Y Program
@@ -1140,7 +1140,7 @@ async function buildMeteoraDexAccountsForRouter(
     new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
     new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
     toPkOrFallback(pool.oracle, poolPubkey),                       // 8: Oracle
-    METEORA_DLMM_PROGRAM,                                          // 9: Host Fee In (use program ID as placeholder)
+    userTokenIn,                                                   // 9: Host Fee In (user's input token account)
     payer,                                                         // 10: User (signer)
     new PublicKey(pool.tokenProgram),                              // 11: Token X Program
     new PublicKey(pool.tokenProgram),                              // 12: Token Y Program
