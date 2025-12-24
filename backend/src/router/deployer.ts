@@ -703,7 +703,12 @@ export async function getProgramStatus(
             
             if (programDataInfo.data.length >= MIN_LENGTH) {
               // Verify the discriminator is 3 (ProgramData)
-              const discriminator = programDataInfo.data.readUInt32LE(0);
+              // Read as little-endian u32
+              const discriminator = 
+                programDataInfo.data[0] |
+                (programDataInfo.data[1] << 8) |
+                (programDataInfo.data[2] << 16) |
+                (programDataInfo.data[3] << 24);
               
               logger.debug('router.status.program_data_discriminator', {
                 cat: 'router',
