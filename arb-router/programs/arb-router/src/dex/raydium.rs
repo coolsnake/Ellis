@@ -12,7 +12,7 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::error::ArbRouterError;
 
 /// Number of accounts needed for a Raydium CLMM swap
-pub const ACCOUNTS_NEEDED: usize = 18; // Updated from 17 to include Token-2022 Program
+pub const ACCOUNTS_NEEDED: usize = 17; // 17 accounts total (Raydium program ID is NOT in the list)
 
 /// Raydium CLMM Swap instruction discriminator
 /// swap instruction: [43, 4, 237, 11, 26, 201, 30, 98]
@@ -33,7 +33,7 @@ pub struct SwapParams {
 
 /// Execute a swap on Raydium CLMM
 ///
-/// Expected accounts (in order):
+/// Expected accounts (in order) - matching Raydium SDK order:
 /// 0. `[signer]` Payer
 /// 1. `[]` AMM Config
 /// 2. `[writable]` Pool State
@@ -41,22 +41,23 @@ pub struct SwapParams {
 /// 4. `[writable]` Output Token Account (user)
 /// 5. `[writable]` Input Vault
 /// 6. `[writable]` Output Vault
-/// 7. `[]` Observation State
+/// 7. `[writable]` Observation State
 /// 8. `[]` Token Program
-/// 9. `[]` Token-2022 Program (required by Raydium CLMM)
-/// 10. `[writable]` Tick Array Lower
-/// 11. `[writable]` Tick Array Current
-/// 12. `[writable]` Tick Array Upper
-/// 13. `[]` Oracle (optional, can be system program if not used)
-/// 14. `[writable]` Input Token Mint
-/// 15. `[writable]` Output Token Mint
-/// 16. `[]` Memo Program (optional)
-/// 17. `[]` Raydium CLMM Program
+/// 9. `[]` Token-2022 Program
+/// 10. `[]` Memo Program
+/// 11. `[]` Input Token Mint (NOT writable)
+/// 12. `[]` Output Token Mint (NOT writable)
+/// 13. `[writable]` Oracle/exBitmap (optional account)
+/// 14. `[writable]` Tick Array Center
+/// 15. `[writable]` Tick Array Lower
+/// 16. `[writable]` Tick Array Upper
+/// 
+/// Note: Raydium CLMM Program ID is passed separately as the instruction's program_id
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
-    a_to_b: bool,  // Add this parameter
+    a_to_b: bool,
 ) -> Result<()> {
     if accounts.len() < ACCOUNTS_NEEDED {
         msg!("Raydium: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
@@ -68,21 +69,22 @@ pub fn swap(
         amount: amount_in,
         other_amount_threshold: min_amount_out,
         sqrt_price_limit_x64: 0,
-        is_base_input: a_to_b,  // Set based on direction: true for A->B, false for B->A
+        is_base_input: a_to_b,
     };
 
     let mut data = Vec::with_capacity(8 + 8 + 8 + 16 + 1);
     data.extend_from_slice(&SWAP_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
-    // Build account metas
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
+    // Build account metas - all 17 accounts go to Raydium (no program ID in the list)
+    // Writable accounts based on SDK: 2, 3, 4, 5, 6, 7, 13, 14, 15, 16
+    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 0; // Only first account (payer) is signer
-            // Updated writable indices: 2, 3, 4, 5, 6, 10, 11, 12, 14, 15 (shifted by 1 due to Token-2022)
-            let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 10 | 11 | 12 | 14 | 15);
+            // Writable indices: 2, 3, 4, 5, 6, 7, 13, 14, 15, 16
+            let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 13 | 14 | 15 | 16);
             if is_signer {
                 AccountMeta::new(*acc.key, true)
             } else if is_writable {
@@ -93,9 +95,14 @@ pub fn swap(
         })
         .collect();
 
-    // Get the DEX program ID from the last account (index 16)
-    // This allows supporting both devnet and mainnet without hardcoding
-    let dex_program_id = *accounts[ACCOUNTS_NEEDED - 1].key;
+    // Get the DEX program ID from the router's context
+    // We need to get it from the remaining_accounts or pass it separately
+    // For now, we'll derive it from the account owner or use a constant
+    // Actually, we should get it from the pool account's owner
+    // But since we're doing CPI, we need to get it from somewhere
+    // Let's check if we can get it from the pool state account
+    let pool_state = &accounts[2]; // Pool state is at index 2
+    let dex_program_id = pool_state.owner;
     
     let ix = Instruction {
         program_id: dex_program_id,

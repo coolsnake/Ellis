@@ -573,7 +573,7 @@ async function getRaydiumSdkAccountOrder(
  * 7. Observation State
  * 8. Token Program
  * 9. Tick Array Lower
- * 10. Tick Array Current
+ * 10. Tick Array Center
  * 11. Tick Array Upper
  * 12. Oracle (System Program if not used)
  * 13. Input Token Mint
@@ -600,88 +600,11 @@ async function buildDexAccountsForRouter(
     poolPubkey,
     inputMint,
     outputMint,
-    BigInt(1000000), // Dummy amounts just to get account order
+    BigInt(1000000),
     BigInt(900000)
   );
   
-  // Map SDK accounts to our account addresses
-  const isAtoB = inputMint.toBase58() === pool.mintA;
-  const userInAta = getAssociatedTokenAddressSync(inputMint, payer);
-  const userOutAta = getAssociatedTokenAddressSync(outputMint, payer);
-  const inputVault = isAtoB ? pool.vaultA : pool.vaultB;
-  const outputVault = isAtoB ? pool.vaultB : pool.vaultA;
-  const tokenProgram = new PublicKey(pool.tokenProgram);
-  const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
-  const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
-  const dexProgramId = new PublicKey(pool.programId);
-  
-  // Create a map of known accounts
-  const accountMap = new Map<string, PublicKey>();
-  
-  // Map SDK accounts to our addresses by matching known accounts
-  const accounts: PublicKey[] = [];
-  for (const sdkAcc of sdkAccountOrder) {
-    const sdkAddr = sdkAcc.toBase58();
-    
-    // Try to match by known addresses
-    if (sdkAddr === payer.toBase58()) {
-      accounts.push(payer);
-    } else if (sdkAddr === pool.ammConfig) {
-      accounts.push(new PublicKey(pool.ammConfig));
-    } else if (sdkAddr === poolPubkey.toBase58()) {
-      accounts.push(poolPubkey);
-    } else if (sdkAddr === userInAta.toBase58()) {
-      accounts.push(userInAta);
-    } else if (sdkAddr === userOutAta.toBase58()) {
-      accounts.push(userOutAta);
-    } else if (sdkAddr === inputVault) {
-      accounts.push(new PublicKey(inputVault));
-    } else if (sdkAddr === outputVault) {
-      accounts.push(new PublicKey(outputVault));
-    } else if (sdkAddr === pool.observationId) {
-      accounts.push(new PublicKey(pool.observationId));
-    } else if (sdkAddr === tokenProgram.toBase58()) {
-      accounts.push(tokenProgram);
-    } else if (sdkAddr === TOKEN_2022_PROGRAM_ID.toBase58()) {
-      accounts.push(TOKEN_2022_PROGRAM_ID);
-    } else if (sdkAddr === pool.tickArrays.lower) {
-      accounts.push(new PublicKey(pool.tickArrays.lower));
-    } else if (sdkAddr === pool.tickArrays.center) {
-      accounts.push(new PublicKey(pool.tickArrays.center));
-    } else if (sdkAddr === pool.tickArrays.upper) {
-      accounts.push(new PublicKey(pool.tickArrays.upper));
-    } else if (sdkAddr === SystemProgram.programId.toBase58()) {
-      accounts.push(SystemProgram.programId);
-    } else if (sdkAddr === inputMint.toBase58()) {
-      accounts.push(inputMint);
-    } else if (sdkAddr === outputMint.toBase58()) {
-      accounts.push(outputMint);
-    } else if (sdkAddr === MEMO_PROGRAM_ID.toBase58()) {
-      accounts.push(MEMO_PROGRAM_ID);
-    } else if (sdkAddr === dexProgramId.toBase58()) {
-      accounts.push(dexProgramId);
-    } else {
-      // Unknown account - use as-is (might be oracle or other optional account)
-      accounts.push(sdkAcc);
-      logger.warn('router.test.unknown_account', {
-        cat: 'router',
-        address: sdkAddr,
-        index: accounts.length - 1,
-      });
-    }
-  }
-  
-  logger.info('router.test.dex_accounts', { 
-    cat: 'router', 
-    accountCount: accounts.length,
-    dexType: 'raydium_clmm',
-    isAtoB,
-    accounts: accounts.map((acc, idx) => ({
-      index: idx,
-      address: acc.toBase58(),
-    })),
-  });
-  
-  return accounts;
+  // Return the SDK account order directly (it already has 17 accounts, no program ID)
+  return sdkAccountOrder;
 }
 
