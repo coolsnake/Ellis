@@ -408,13 +408,9 @@ export function buildExecuteIx(
 
   // Serialize min_profit as signed i64 (two's complement for negative values)
   const minProfitBn = new BN(params.minProfit.toString());
-  const minProfitBuffer = Buffer.alloc(8);
-  if (minProfitBn.isNeg()) {
-    // Two's complement for negative numbers
-    minProfitBn.toTwos(64).toArrayLike(Buffer, 'le', 8).copy(minProfitBuffer);
-  } else {
-    minProfitBn.toArrayLike(Buffer, 'le', 8).copy(minProfitBuffer);
-  }
+  const minProfitBuffer = minProfitBn.isNeg()
+    ? Buffer.from(minProfitBn.toTwos(64).toArrayLike(Buffer, 'le', 8))
+    : Buffer.from(minProfitBn.toArrayLike(Buffer, 'le', 8));
 
   const data = Buffer.concat([
     DISCRIMINATORS.execute,
