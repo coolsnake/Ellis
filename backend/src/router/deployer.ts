@@ -651,32 +651,94 @@ export async function getProgramStatus(
       // Try to get upgrade authority from program data account
       try {
         // The program account data contains the address of the program data account
+        // For BPF Upgradeable Loader, first 4 bytes are discriminator, next 32 bytes are program data address
         if (accountInfo.data.length >= 36) {
           const programDataAddress = new PublicKey(accountInfo.data.subarray(4, 36));
-          const programDataInfo = await connection.getAccountInfo(programDataAddress);
           
-          if (programDataInfo && programDataInfo.data.length >= 45) {
-            // First 8 bytes are slot, next 1 byte is option, then 32 bytes upgrade authority
-            // Read slot as little-endian uint64
-            const slotBytes = programDataInfo.data.subarray(0, 8);
-            lastDeploySlot = Number(
-              BigInt(slotBytes[0]) |
-              (BigInt(slotBytes[1]) << 8n) |
-              (BigInt(slotBytes[2]) << 16n) |
-              (BigInt(slotBytes[3]) << 24n) |
-              (BigInt(slotBytes[4]) << 32n) |
-              (BigInt(slotBytes[5]) << 40n) |
-              (BigInt(slotBytes[6]) << 48n) |
-              (BigInt(slotBytes[7]) << 56n)
-            );
-            const hasUpgradeAuthority = programDataInfo.data[8] === 1;
-            if (hasUpgradeAuthority) {
-              upgradeAuthority = new PublicKey(programDataInfo.data.subarray(9, 41)).toBase58();
+          logger.debug('router.status.program_data_fetch', {
+            cat: 'router',
+            programDataAddress: programDataAddress.toBase58(),
+            programId,
+          });
+          
+          const programDataInfo = await connection.getAccountInfo(programDataAddress, 'confirmed');
+          
+          if (programDataInfo) {
+            logger.debug('router.status.program_data_info', {
+              cat: 'router',
+              dataLength: programDataInfo.data.length,
+              programDataAddress: programDataAddress.toBase58(),
+            });
+            
+            // Program data account structure for BPF Upgradeable Loader:
+            // Bytes 0-7: slot (u64, little-endian)
+            // Byte 8: upgrade authority option (0 = None, 1 = Some)
+            // Bytes 9-40: upgrade authority Pubkey (32 bytes) if option is Some
+            // Minimum length should be at least 9 bytes (slot + option), 41 bytes if upgrade authority exists
+            if (programDataInfo.data.length >= 9) {
+              // Read slot as little-endian uint64
+              const slotBytes = programDataInfo.data.subarray(0, 8);
+              lastDeploySlot = Number(
+                BigInt(slotBytes[0]) |
+                (BigInt(slotBytes[1]) << 8n) |
+                (BigInt(slotBytes[2]) << 16n) |
+                (BigInt(slotBytes[3]) << 24n) |
+                (BigInt(slotBytes[4]) << 32n) |
+                (BigInt(slotBytes[5]) << 40n) |
+                (BigInt(slotBytes[6]) << 48n) |
+                (BigInt(slotBytes[7]) << 56n)
+              );
+              
+              const hasUpgradeAuthority = programDataInfo.data[8] === 1;
+              
+              logger.debug('router.status.upgrade_auth_check', {
+                cat: 'router',
+                hasUpgradeAuthority,
+                dataLength: programDataInfo.data.length,
+                optionByte: programDataInfo.data[8],
+              });
+              
+              if (hasUpgradeAuthority && programDataInfo.data.length >= 41) {
+                upgradeAuthority = new PublicKey(programDataInfo.data.subarray(9, 41)).toBase58();
+                
+                logger.debug('router.status.upgrade_auth_found', {
+                  cat: 'router',
+                  upgradeAuthority,
+                });
+              } else if (!hasUpgradeAuthority) {
+                logger.debug('router.status.no_upgrade_auth', {
+                  cat: 'router',
+                  optionByte: programDataInfo.data[8],
+                });
+              }
+            } else {
+              logger.warn('router.status.invalid_program_data_length', {
+                cat: 'router',
+                dataLength: programDataInfo.data.length,
+                expectedMin: 9,
+              });
             }
+          } else {
+            logger.warn('router.status.program_data_not_found', {
+              cat: 'router',
+              programDataAddress: programDataAddress.toBase58(),
+            });
           }
+        } else {
+          logger.warn('router.status.program_account_too_small', {
+            cat: 'router',
+            dataLength: accountInfo.data.length,
+            expectedMin: 36,
+          });
         }
-      } catch {
-        // Ignore errors reading upgrade authority
+      } catch (err: any) {
+        // Log the error instead of silently ignoring it
+        logger.error('router.status.upgrade_auth_error', {
+          cat: 'router',
+          error: err.message,
+          stack: err.stack,
+          programId,
+        });
       }
     }
 
