@@ -504,10 +504,15 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
       ? new PublicKey(hop.userDestAta)
       : getAssociatedTokenAddressSync(outputMint, wallet, true, outputTokenProgram);
 
-    // Get pool's native mint ordering from cache for direction determination
+    // Get pool's CANONICAL mint ordering from cache for direction determination
+    // CRITICAL: Use canonical mint_a/account_a which are PAIRED correctly after canonicalization
+    // Do NOT use native_mint_a with native_account_a because they may come from different sources
+    // (native_mint_a might be sorted alphabetically while native_account_a is true on-chain order)
     const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
-    const poolMintA = stat?.native_mint_a || stat?.mint_a;
-    const poolMintB = stat?.native_mint_b || stat?.mint_b;
+    const poolMintA = stat?.mint_a;  // Canonical mint A
+    const poolMintB = stat?.mint_b;  // Canonical mint B
+    const poolAccountA = stat?.account_a;  // Canonical account A (paired with mint_a)
+    const poolAccountB = stat?.account_b;  // Canonical account B (paired with mint_b)
     const isAtoB = hop.inputMint === poolMintA;
 
     switch (dexType) {
@@ -539,6 +544,16 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           ? new PublicKey(hop.oracle) 
           : observationState;
         
+        // CRITICAL: Use CANONICAL account ordering (properly paired with canonical mints)
+        // hop.vaultA/B come from resolver's native_account_a/b which may NOT match native_mint_a/b
+        // poolAccountA/B are canonical and properly paired with poolMintA/poolMintB
+        const inputVault = isAtoB 
+          ? (poolAccountA || hop.vaultA || hop.poolId)
+          : (poolAccountB || hop.vaultB || hop.poolId);
+        const outputVault = isAtoB
+          ? (poolAccountB || hop.vaultB || hop.poolId)
+          : (poolAccountA || hop.vaultA || hop.poolId);
+        
         // Log the accounts being used for debugging
         logger.info('routerTx.raydium.accounts', {
           cat: 'tx',
@@ -548,12 +563,21 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           observation: observationState.toBase58(),
           observationSource: hop.observationId ? 'cache' : 'derived',
           oracle: oracleOrExBitmap.toBase58(),
-          vaultA: hop.vaultA || 'missing',
-          vaultB: hop.vaultB || 'missing',
+          // Show canonical vs hop vaults for debugging
+          canonicalAccountA: poolAccountA || 'missing',
+          canonicalAccountB: poolAccountB || 'missing',
+          hopVaultA: hop.vaultA || 'missing',
+          hopVaultB: hop.vaultB || 'missing',
+          selectedInputVault: inputVault,
+          selectedOutputVault: outputVault,
           tickArrayCenter: hop.tickArrayCenter || 'missing',
           tickArrayLower: hop.tickArrayLower || 'missing',
           tickArrayUpper: hop.tickArrayUpper || 'missing',
           isAtoB,
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
+          canonicalMintA: poolMintA || 'missing',
+          canonicalMintB: poolMintB || 'missing',
         });
         
         accounts.push(
@@ -562,8 +586,8 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           poolId,                                                              // 2: Pool State
           userSourceAta,                                                       // 3: Input Token Account (user)
           userDestAta,                                                         // 4: Output Token Account (user)
-          new PublicKey(isAtoB ? (hop.vaultA || hop.poolId) : (hop.vaultB || hop.poolId)), // 5: Input Vault
-          new PublicKey(isAtoB ? (hop.vaultB || hop.poolId) : (hop.vaultA || hop.poolId)), // 6: Output Vault
+          new PublicKey(inputVault),                                           // 5: Input Vault (from canonical pairing)
+          new PublicKey(outputVault),                                          // 6: Output Vault (from canonical pairing)
           observationState,                                                    // 7: Observation State (derived PDA)
           TOKEN_PROGRAM_ID,                                                    // 8: Token Program
           TOKEN_2022_PROGRAM_ID,                                               // 9: Token-2022 Program
@@ -590,13 +614,22 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         const tokenXProgram = tokenProgramLabelToKey((hop as any).tokenProgramA);
         const tokenYProgram = tokenProgramLabelToKey((hop as any).tokenProgramB);
         
+        // CRITICAL: Use CANONICAL account ordering (properly paired with canonical mints)
+        // Meteora expects reserves in X/Y order which corresponds to canonical A/B
+        const reserveX = hop.reserveX || poolAccountA || hop.vaultA || hop.poolId;
+        const reserveY = hop.reserveY || poolAccountB || hop.vaultB || hop.poolId;
+        
         // Log the accounts being used for debugging
         logger.info('routerTx.meteora.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
           bitmapExtension: hop.bitmapExtension || 'missing',
-          reserveX: hop.reserveX || hop.vaultA || 'missing',
-          reserveY: hop.reserveY || hop.vaultB || 'missing',
+          reserveX,
+          reserveY,
+          canonicalAccountA: poolAccountA || 'missing',
+          canonicalAccountB: poolAccountB || 'missing',
+          hopVaultA: hop.vaultA || 'missing',
+          hopVaultB: hop.vaultB || 'missing',
           oracle: hop.oracle || 'missing',
           binArrayLower: hop.binArrayLower || 'missing',
           binArrayUpper: hop.binArrayUpper || 'missing',
@@ -604,6 +637,10 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           tokenYProgram: tokenYProgram.toBase58(),
           eventAuthority: meteoraEventAuthority.toBase58(),
           isAtoB,
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
+          canonicalMintA: poolMintA || 'missing',
+          canonicalMintB: poolMintB || 'missing',
         });
         
         accounts.push(
@@ -611,12 +648,12 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           hop.bitmapExtension 
             ? new PublicKey(hop.bitmapExtension) 
             : programIdKey,                                                    // 1: Bitmap Extension (use program ID as placeholder)
-          hop.reserveX ? new PublicKey(hop.reserveX) : new PublicKey(hop.vaultA || hop.poolId), // 2: Reserve X
-          hop.reserveY ? new PublicKey(hop.reserveY) : new PublicKey(hop.vaultB || hop.poolId), // 3: Reserve Y
+          new PublicKey(reserveX),                                             // 2: Reserve X (canonical A)
+          new PublicKey(reserveY),                                             // 3: Reserve Y (canonical B)
           userSourceAta,                                                       // 4: User Token In
           userDestAta,                                                         // 5: User Token Out
-          poolMintA ? new PublicKey(poolMintA) : inputMint,                   // 6: Token X Mint
-          poolMintB ? new PublicKey(poolMintB) : outputMint,                  // 7: Token Y Mint
+          poolMintA ? new PublicKey(poolMintA) : inputMint,                   // 6: Token X Mint (canonical A)
+          poolMintB ? new PublicKey(poolMintB) : outputMint,                  // 7: Token Y Mint (canonical B)
           hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)
           programIdKey,                                                        // 9: Host Fee In (use program as placeholder)
           wallet,                                                              // 10: User (signer)
@@ -637,12 +674,21 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         const userTokenA = isAtoB ? userSourceAta : userDestAta;
         const userTokenB = isAtoB ? userDestAta : userSourceAta;
         
+        // CRITICAL: Use CANONICAL account ordering (properly paired with canonical mints)
+        // Orca expects vaults in A/B order which corresponds to canonical A/B
+        const orcaVaultA = poolAccountA || hop.vaultA || hop.poolId;
+        const orcaVaultB = poolAccountB || hop.vaultB || hop.poolId;
+        
         // Log the accounts being used for debugging
         logger.info('routerTx.orca.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
-          vaultA: hop.vaultA || 'missing',
-          vaultB: hop.vaultB || 'missing',
+          canonicalAccountA: poolAccountA || 'missing',
+          canonicalAccountB: poolAccountB || 'missing',
+          hopVaultA: hop.vaultA || 'missing',
+          hopVaultB: hop.vaultB || 'missing',
+          selectedVaultA: orcaVaultA,
+          selectedVaultB: orcaVaultB,
           tickArrayLower: hop.tickArrayLower || 'missing',
           tickArrayCenter: hop.tickArrayCenter || 'missing',
           tickArrayUpper: hop.tickArrayUpper || 'missing',
@@ -650,6 +696,10 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           userTokenA: userTokenA.toBase58(),
           userTokenB: userTokenB.toBase58(),
           isAtoB,
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
+          canonicalMintA: poolMintA || 'missing',
+          canonicalMintB: poolMintB || 'missing',
         });
         
         accounts.push(
@@ -657,9 +707,9 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           wallet,                                                              // 1: Token Authority (signer)
           poolId,                                                              // 2: Whirlpool
           userTokenA,                                                          // 3: Token Owner Account A
-          hop.vaultA ? new PublicKey(hop.vaultA) : poolId,                    // 4: Token Vault A
+          new PublicKey(orcaVaultA),                                           // 4: Token Vault A (canonical A)
           userTokenB,                                                          // 5: Token Owner Account B
-          hop.vaultB ? new PublicKey(hop.vaultB) : poolId,                    // 6: Token Vault B
+          new PublicKey(orcaVaultB),                                           // 6: Token Vault B (canonical B)
           hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 7: Tick Array 0 (lower)
           hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 8: Tick Array 1 (center)
           hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 9: Tick Array 2 (upper)
@@ -677,6 +727,9 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         const pumpMint = isBuying ? outputMint : inputMint; // The pump.fun token mint
         const associatedBC = derivePumpswapAssociatedBondingCurve(poolId, pumpMint);
         
+        // CRITICAL: Use CANONICAL account ordering for BC Token Account
+        const pumpVault = poolAccountA || hop.vaultA || hop.poolId;
+        
         // Log the accounts being used for debugging
         logger.info('routerTx.pumpswap.accounts', {
           cat: 'tx',
@@ -685,9 +738,13 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           protocolFeeRecipient: (hop as any).protocolFeeRecipient || 'missing',
           pumpMint: pumpMint.toBase58(),
           associatedBC: associatedBC.toBase58(),
-          vaultA: hop.vaultA || 'missing',
+          canonicalAccountA: poolAccountA || 'missing',
+          hopVaultA: hop.vaultA || 'missing',
+          selectedVault: pumpVault,
           isBuying,
           userTokenAccount: (isBuying ? userDestAta : userSourceAta).toBase58(),
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
         });
         
         accounts.push(
@@ -697,7 +754,7 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
             : programIdKey,                                                    // 1: Fee Recipient
           pumpMint,                                                            // 2: Mint (pump.fun token)
           poolId,                                                              // 3: Bonding Curve
-          hop.vaultA ? new PublicKey(hop.vaultA) : poolId,                    // 4: BC Token Account
+          new PublicKey(pumpVault),                                            // 4: BC Token Account (canonical A)
           associatedBC,                                                        // 5: Associated Bonding Curve
           isBuying ? userDestAta : userSourceAta,                             // 6: User Token Account
           wallet,                                                              // 7: User (signer)
