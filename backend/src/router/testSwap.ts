@@ -1444,6 +1444,19 @@ function buildOrcaDexAccountsForRouter(
   const userTokenA = getAssociatedTokenAddressSync(new PublicKey(pool.mintA), payer);
   const userTokenB = getAssociatedTokenAddressSync(new PublicKey(pool.mintB), payer);
   
+  // Tick arrays must be ordered based on swap direction
+  // A→B: price moves down (tick decreases), need arrays in descending order (center, lower, ...)
+  // B→A: price moves up (tick increases), need arrays in ascending order (center, upper, ...)
+  const tickArray0 = isAtoB 
+    ? new PublicKey(pool.tickArrays.center)  // Start with center for A→B
+    : new PublicKey(pool.tickArrays.center);  // Start with center for B→A
+  const tickArray1 = isAtoB
+    ? new PublicKey(pool.tickArrays.lower)   // Lower for A→B (descending)
+    : new PublicKey(pool.tickArrays.upper);  // Upper for B→A (ascending)
+  const tickArray2 = isAtoB
+    ? new PublicKey(pool.tickArrays.upper)    // Upper for A→B (may need more arrays)
+    : new PublicKey(pool.tickArrays.lower);  // Lower for B→A (may need more arrays)
+  
   const accounts: PublicKey[] = [
     TOKEN_PROGRAM_ID,                                              // 0: Token Program
     payer,                                                         // 1: Token Authority (signer)
@@ -1452,9 +1465,9 @@ function buildOrcaDexAccountsForRouter(
     new PublicKey(pool.vaultA),                                   // 4: Token Vault A
     userTokenB,                                                    // 5: Token Owner Account B
     new PublicKey(pool.vaultB),                                   // 6: Token Vault B
-    new PublicKey(pool.tickArrays.lower),                         // 7: Tick Array 0
-    new PublicKey(pool.tickArrays.center),                        // 8: Tick Array 1
-    new PublicKey(pool.tickArrays.upper),                         // 9: Tick Array 2
+    tickArray0,                                                    // 7: Tick Array 0 (center)
+    tickArray1,                                                    // 8: Tick Array 1 (direction-dependent)
+    tickArray2,                                                    // 9: Tick Array 2 (direction-dependent)
     new PublicKey(pool.oracle),                                   // 10: Oracle
     new PublicKey(pool.mintA),                                    // 11: Token Mint A
     new PublicKey(pool.mintB),                                    // 12: Token Mint B
@@ -1467,6 +1480,11 @@ function buildOrcaDexAccountsForRouter(
     accountCount: accounts.length,
     dexType: 'orca_whirlpool',
     isAtoB,
+    tickArrays: {
+      array0: tickArray0.toBase58(),
+      array1: tickArray1.toBase58(),
+      array2: tickArray2.toBase58(),
+    },
     accounts: accounts.map((acc, i) => ({ index: i, address: acc.toBase58() })),
   });
   
