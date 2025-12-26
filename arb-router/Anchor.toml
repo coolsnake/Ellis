@@ -11,7 +11,7 @@ arb_router = "BjHLNpBdhGU3EFqsdnhipv6t6RRiK518kM8kZNyyNzJQ"
 [programs.devnet]
 arb_router = "2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw"
 
-[programs.mainnet]
+[programs.mainnet-beta]
 arb_router = "BjHLNpBdhGU3EFqsdnhipv6t6RRiK518kM8kZNyyNzJQ"
 
 [registry]
