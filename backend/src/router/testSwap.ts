@@ -1477,40 +1477,92 @@ async function buildOrcaDexAccountsForRouter(
       tickArray1 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start1).publicKey;
       tickArray2 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start2).publicKey;
     } else {
-      // Fallback: use tick arrays from pool state (known to exist)
-      // Order based on swap direction, repeat last array if needed
+      // Fallback: derive tick arrays manually using static calculation
+      const TICK_ARRAY_SIZE = 88;
+      const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
+      // For negative ticks, use proper floor division
+      const currentStartIndex = Math.floor(currentTick / ticksInArray) * ticksInArray;
+      
+      const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+        const startTickBuffer = Buffer.alloc(4);
+        startTickBuffer.writeInt32LE(startTickIndex, 0);
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+          ORCA_WHIRLPOOL_PROGRAM
+        );
+        return pda;
+      };
+      
       if (isAtoB) {
-        // A→B: descending order (center, lower, lower again)
-        tickArray0 = new PublicKey(pool.tickArrays.center);
-        tickArray1 = new PublicKey(pool.tickArrays.lower);
-        tickArray2 = new PublicKey(pool.tickArrays.lower); // Repeat - don't derive non-existent
+        // A→B: descending order (current, -1, -2)
+        tickArray0 = deriveTickArrayPda(currentStartIndex);
+        tickArray1 = deriveTickArrayPda(currentStartIndex - ticksInArray);
+        tickArray2 = deriveTickArrayPda(currentStartIndex - 2 * ticksInArray);
       } else {
-        // B→A: ascending order (center, upper, upper again)
-        tickArray0 = new PublicKey(pool.tickArrays.center);
-        tickArray1 = new PublicKey(pool.tickArrays.upper);
-        tickArray2 = new PublicKey(pool.tickArrays.upper); // Repeat - don't derive non-existent
+        // B→A: ascending order (current, +1, +2)
+        tickArray0 = deriveTickArrayPda(currentStartIndex);
+        tickArray1 = deriveTickArrayPda(currentStartIndex + ticksInArray);
+        tickArray2 = deriveTickArrayPda(currentStartIndex + 2 * ticksInArray);
       }
+      
+      logger.info('router.test.orca.tickarray.fallback', {
+        cat: 'router',
+        currentTick,
+        tickSpacing,
+        currentStartIndex,
+        isAtoB,
+        tickArray0: tickArray0.toBase58(),
+        tickArray1: tickArray1.toBase58(),
+        tickArray2: tickArray2.toBase58(),
+      });
     }
   } catch (err: any) {
     logger.warn('router.test.orca.tickarray.calc.error', { 
       cat: 'router', 
       error: err.message,
-      fallback: 'using pool state tick arrays'
+      fallback: 'using static tick array derivation'
     });
     
-    // Fallback: use tick arrays from pool state (known to exist)
-    // Order based on swap direction, repeat last array if needed
+    // Fallback: derive tick arrays manually using static calculation
+    const tickSpacing = pool.tickSpacing;
+    const currentTick = pool.tickCurrentIndex;
+    const TICK_ARRAY_SIZE = 88;
+    const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
+    // For negative ticks, use proper floor division
+    const currentStartIndex = Math.floor(currentTick / ticksInArray) * ticksInArray;
+    
+    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+      const startTickBuffer = Buffer.alloc(4);
+      startTickBuffer.writeInt32LE(startTickIndex, 0);
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+        ORCA_WHIRLPOOL_PROGRAM
+      );
+      return pda;
+    };
+    
     if (isAtoB) {
-      // A→B: descending order (center, lower, lower again)
-      tickArray0 = new PublicKey(pool.tickArrays.center);
-      tickArray1 = new PublicKey(pool.tickArrays.lower);
-      tickArray2 = new PublicKey(pool.tickArrays.lower); // Repeat - don't derive non-existent
+      // A→B: descending order (current, -1, -2)
+      tickArray0 = deriveTickArrayPda(currentStartIndex);
+      tickArray1 = deriveTickArrayPda(currentStartIndex - ticksInArray);
+      tickArray2 = deriveTickArrayPda(currentStartIndex - 2 * ticksInArray);
     } else {
-      // B→A: ascending order (center, upper, upper again)
-      tickArray0 = new PublicKey(pool.tickArrays.center);
-      tickArray1 = new PublicKey(pool.tickArrays.upper);
-      tickArray2 = new PublicKey(pool.tickArrays.upper); // Repeat - don't derive non-existent
+      // B→A: ascending order (current, +1, +2)
+      tickArray0 = deriveTickArrayPda(currentStartIndex);
+      tickArray1 = deriveTickArrayPda(currentStartIndex + ticksInArray);
+      tickArray2 = deriveTickArrayPda(currentStartIndex + 2 * ticksInArray);
     }
+    
+    logger.info('router.test.orca.tickarray.fallback', {
+      cat: 'router',
+      currentTick,
+      tickSpacing,
+      currentStartIndex,
+      isAtoB,
+      tickArray0: tickArray0.toBase58(),
+      tickArray1: tickArray1.toBase58(),
+      tickArray2: tickArray2.toBase58(),
+    });
   }
   
   // swap_v2 account layout
