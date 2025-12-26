@@ -510,7 +510,8 @@ async function fetchOrcaWhirlpoolPool(
     // 8: feeGrowthGlobalB (u64)
     // ...
     
-    const data = accountInfo.data;
+    // Convert to Buffer to ensure we have Buffer methods
+    const data = Buffer.from(accountInfo.data);
     let offset = 8; // Skip discriminator
     
     // whirlpoolsConfig (32 bytes)
