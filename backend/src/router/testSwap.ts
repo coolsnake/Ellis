@@ -705,8 +705,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           new PublicKey(poolId),
           inMint,
           outMint,
-          dexType,
-          connection
+          dexType
         );
 
         const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
@@ -779,8 +778,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           new PublicKey(poolId),
           inMint,
           intermediateMint,
-          dexType,
-          connection
+          dexType
         );
 
         const secondDexAccounts = await buildDexAccountsForRouter(
@@ -789,8 +787,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           new PublicKey(secondPoolId),
           intermediateMint,
           finalMint,
-          secondDexType,
-          connection
+          secondDexType
         );
 
         // Verify token accounts are correct
@@ -1281,8 +1278,7 @@ async function buildDexAccountsForRouter(
   poolPubkey: PublicKey,
   inputMint: PublicKey,
   outputMint: PublicKey,
-  dexType: DexType,
-  connection?: Connection
+  dexType: DexType
 ): Promise<PublicKey[]> {
   if (dexType === DexType.Raydium && isRaydiumPool(pool)) {
     // Use SDK to get the correct account order
@@ -1315,7 +1311,7 @@ async function buildDexAccountsForRouter(
   }
   
   if (dexType === DexType.Orca && isOrcaWhirlpool(pool)) {
-    return buildOrcaDexAccountsForRouter(payer, pool, poolPubkey, inputMint, outputMint, connection);
+    return buildOrcaDexAccountsForRouter(payer, pool, poolPubkey, inputMint, outputMint);
   }
   
   throw new Error(`DEX type ${dexType} not supported for router test`);
@@ -1440,8 +1436,7 @@ async function buildOrcaDexAccountsForRouter(
   pool: OrcaWhirlpoolPoolState,
   poolPubkey: PublicKey,
   inputMint: PublicKey,
-  outputMint: PublicKey,
-  connection?: Connection
+  _outputMint: PublicKey
 ): Promise<PublicKey[]> {
   // Determine swap direction (A -> B or B -> A)
   const isAtoB = inputMint.toBase58() === pool.mintA;
@@ -1451,190 +1446,19 @@ async function buildOrcaDexAccountsForRouter(
   const userTokenA = getAssociatedTokenAddressSync(new PublicKey(pool.mintA), payer);
   const userTokenB = getAssociatedTokenAddressSync(new PublicKey(pool.mintB), payer);
   
-  // Calculate tick arrays using Orca SDK's tick utilities
-  // This ensures we get the correct contiguous sequence based on swap direction
-  let tickArray0: PublicKey;
-  let tickArray1: PublicKey;
-  let tickArray2: PublicKey;
+  // Use all 3 tick arrays from pool state - same as working local builder
+  // Order: lower, center, upper (regardless of swap direction)
+  // These are known to exist on-chain
+  const tickArray0 = new PublicKey(pool.tickArrays.lower);
+  const tickArray1 = new PublicKey(pool.tickArrays.center);
+  const tickArray2 = new PublicKey(pool.tickArrays.upper);
   
-  try {
-    const { PDAUtil } = await import('@orca-so/whirlpools-sdk');
-    const publicUtilsMod: any = await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null);
-    
-    const tickSpacing = pool.tickSpacing;
-    const currentTick = pool.tickCurrentIndex;
-    const tickUtil = publicUtilsMod?.TickUtil;
-    
-    if (tickUtil && typeof tickUtil.getStartTickIndex === 'function') {
-      // Use Orca SDK's tick utility to calculate correct start indices
-      // For A→B: price decreases, tick decreases (need arrays going down)
-      // For B→A: price increases, tick increases (need arrays going up)
-      const shift = isAtoB ? 0 : tickSpacing;
-      const offset0 = 0;
-      const offset1 = isAtoB ? -1 : 1;  // Next array in swap direction
-      const offset2 = isAtoB ? -2 : 2;  // Array after that
-      
-      const start0 = tickUtil.getStartTickIndex(currentTick + shift, tickSpacing, offset0);
-      const start1 = tickUtil.getStartTickIndex(currentTick + shift, tickSpacing, offset1);
-      const start2 = tickUtil.getStartTickIndex(currentTick + shift, tickSpacing, offset2);
-      
-      tickArray0 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start0).publicKey;
-      tickArray1 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start1).publicKey;
-      tickArray2 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start2).publicKey;
-    } else {
-      // Fallback: derive tick arrays manually using static calculation
-      const TICK_ARRAY_SIZE = 88;
-      const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
-      // For negative ticks, use proper floor division
-      const currentStartIndex = Math.floor(currentTick / ticksInArray) * ticksInArray;
-      
-      const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-        const startTickBuffer = Buffer.alloc(4);
-        startTickBuffer.writeInt32LE(startTickIndex, 0);
-        const [pda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
-          ORCA_WHIRLPOOL_PROGRAM
-        );
-        return pda;
-      };
-      
-      // Derive tick arrays based on direction
-      const array0Start = currentStartIndex;
-      const array1Start = isAtoB ? currentStartIndex - ticksInArray : currentStartIndex + ticksInArray;
-      const array2Start = isAtoB ? currentStartIndex - 2 * ticksInArray : currentStartIndex + 2 * ticksInArray;
-      
-      tickArray0 = deriveTickArrayPda(array0Start);
-      tickArray1 = deriveTickArrayPda(array1Start);
-      const potentialArray2 = deriveTickArrayPda(array2Start);
-      
-      // Check if tick array 2 exists on-chain; if not, use CENTER for all positions
-      // We can't use a "mixed" sequence (center, lower, lower) - Whirlpool requires either:
-      // 1. A valid contiguous sequence (center, lower, lower-1), or
-      // 2. The same array for all 3 positions
-      if (connection) {
-        try {
-          const array2Info = await connection.getAccountInfo(potentialArray2);
-          if (array2Info && array2Info.data.length > 0) {
-            tickArray2 = potentialArray2;
-            logger.info('router.test.orca.tickarray.verified', {
-              cat: 'router',
-              tickArray2: potentialArray2.toBase58(),
-              exists: true,
-            });
-          } else {
-            // Array 2 doesn't exist - can't form valid contiguous sequence
-            // Use the SAME array for all 3 positions (center contains current tick)
-            tickArray1 = tickArray0;
-            tickArray2 = tickArray0;
-            logger.warn('router.test.orca.tickarray.notexist', {
-              cat: 'router',
-              tickArray2Derived: potentialArray2.toBase58(),
-              fallback: 'using center for all positions',
-              tickArray0: tickArray0.toBase58(),
-            });
-          }
-        } catch {
-          // Error checking - use same array for all 3
-          tickArray1 = tickArray0;
-          tickArray2 = tickArray0;
-        }
-      } else {
-        // No connection available, assume it exists
-        tickArray2 = potentialArray2;
-      }
-      
-      logger.info('router.test.orca.tickarray.fallback', {
-        cat: 'router',
-        currentTick,
-        tickSpacing,
-        currentStartIndex,
-        isAtoB,
-        tickArray0: tickArray0.toBase58(),
-        tickArray1: tickArray1.toBase58(),
-        tickArray2: tickArray2.toBase58(),
-      });
-    }
-  } catch (err: any) {
-    logger.warn('router.test.orca.tickarray.calc.error', { 
-      cat: 'router', 
-      error: err.message,
-      fallback: 'using static tick array derivation'
-    });
-    
-    // Fallback: derive tick arrays manually using static calculation
-    const tickSpacing = pool.tickSpacing;
-    const currentTick = pool.tickCurrentIndex;
-    const TICK_ARRAY_SIZE = 88;
-    const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
-    // For negative ticks, use proper floor division
-    const currentStartIndex = Math.floor(currentTick / ticksInArray) * ticksInArray;
-    
-    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-      const startTickBuffer = Buffer.alloc(4);
-      startTickBuffer.writeInt32LE(startTickIndex, 0);
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
-        ORCA_WHIRLPOOL_PROGRAM
-      );
-      return pda;
-    };
-    
-    // Derive tick arrays based on direction
-    const array0Start = currentStartIndex;
-    const array1Start = isAtoB ? currentStartIndex - ticksInArray : currentStartIndex + ticksInArray;
-    const array2Start = isAtoB ? currentStartIndex - 2 * ticksInArray : currentStartIndex + 2 * ticksInArray;
-    
-    tickArray0 = deriveTickArrayPda(array0Start);
-    tickArray1 = deriveTickArrayPda(array1Start);
-    const potentialArray2 = deriveTickArrayPda(array2Start);
-    
-    // Check if tick array 2 exists on-chain; if not, use CENTER for all positions
-    // We can't use a "mixed" sequence (center, lower, lower) - Whirlpool requires either:
-    // 1. A valid contiguous sequence (center, lower, lower-1), or
-    // 2. The same array for all 3 positions
-    if (connection) {
-      try {
-        const array2Info = await connection.getAccountInfo(potentialArray2);
-        if (array2Info && array2Info.data.length > 0) {
-          tickArray2 = potentialArray2;
-          logger.info('router.test.orca.tickarray.verified', {
-            cat: 'router',
-            tickArray2: potentialArray2.toBase58(),
-            exists: true,
-          });
-        } else {
-          // Array 2 doesn't exist - can't form valid contiguous sequence
-          // Use the SAME array for all 3 positions (center contains current tick)
-          tickArray1 = tickArray0;
-          tickArray2 = tickArray0;
-          logger.warn('router.test.orca.tickarray.notexist', {
-            cat: 'router',
-            tickArray2Derived: potentialArray2.toBase58(),
-            fallback: 'using center for all positions',
-            tickArray0: tickArray0.toBase58(),
-          });
-        }
-      } catch {
-        // Error checking - use same array for all 3
-        tickArray1 = tickArray0;
-        tickArray2 = tickArray0;
-      }
-    } else {
-      // No connection available, assume it exists
-      tickArray2 = potentialArray2;
-    }
-    
-    logger.info('router.test.orca.tickarray.fallback', {
-      cat: 'router',
-      currentTick,
-      tickSpacing,
-      currentStartIndex,
-      isAtoB,
-      tickArray0: tickArray0.toBase58(),
-      tickArray1: tickArray1.toBase58(),
-      tickArray2: tickArray2.toBase58(),
-    });
-  }
+  logger.info('router.test.orca.tickarrays', {
+    cat: 'router',
+    tickArray0: tickArray0.toBase58(),
+    tickArray1: tickArray1.toBase58(),
+    tickArray2: tickArray2.toBase58(),
+  });
   
   // swap_v2 account layout
   const accounts: PublicKey[] = [
