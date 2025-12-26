@@ -705,7 +705,8 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           new PublicKey(poolId),
           inMint,
           outMint,
-          dexType
+          dexType,
+          connection
         );
 
         const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
@@ -778,7 +779,8 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           new PublicKey(poolId),
           inMint,
           intermediateMint,
-          dexType
+          dexType,
+          connection
         );
 
         const secondDexAccounts = await buildDexAccountsForRouter(
@@ -787,7 +789,8 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           new PublicKey(secondPoolId),
           intermediateMint,
           finalMint,
-          secondDexType
+          secondDexType,
+          connection
         );
 
         // Verify token accounts are correct
@@ -1278,7 +1281,8 @@ async function buildDexAccountsForRouter(
   poolPubkey: PublicKey,
   inputMint: PublicKey,
   outputMint: PublicKey,
-  dexType: DexType
+  dexType: DexType,
+  connection?: Connection
 ): Promise<PublicKey[]> {
   if (dexType === DexType.Raydium && isRaydiumPool(pool)) {
     // Use SDK to get the correct account order
@@ -1311,7 +1315,7 @@ async function buildDexAccountsForRouter(
   }
   
   if (dexType === DexType.Orca && isOrcaWhirlpool(pool)) {
-    return buildOrcaDexAccountsForRouter(payer, pool, poolPubkey, inputMint, outputMint);
+    return buildOrcaDexAccountsForRouter(payer, pool, poolPubkey, inputMint, outputMint, connection);
   }
   
   throw new Error(`DEX type ${dexType} not supported for router test`);
@@ -1436,7 +1440,8 @@ async function buildOrcaDexAccountsForRouter(
   pool: OrcaWhirlpoolPoolState,
   poolPubkey: PublicKey,
   inputMint: PublicKey,
-  outputMint: PublicKey
+  outputMint: PublicKey,
+  connection?: Connection
 ): Promise<PublicKey[]> {
   // Determine swap direction (A -> B or B -> A)
   const isAtoB = inputMint.toBase58() === pool.mintA;
@@ -1493,16 +1498,42 @@ async function buildOrcaDexAccountsForRouter(
         return pda;
       };
       
-      if (isAtoB) {
-        // A→B: descending order (current, -1, -2)
-        tickArray0 = deriveTickArrayPda(currentStartIndex);
-        tickArray1 = deriveTickArrayPda(currentStartIndex - ticksInArray);
-        tickArray2 = deriveTickArrayPda(currentStartIndex - 2 * ticksInArray);
+      // Derive tick arrays based on direction
+      const array0Start = currentStartIndex;
+      const array1Start = isAtoB ? currentStartIndex - ticksInArray : currentStartIndex + ticksInArray;
+      const array2Start = isAtoB ? currentStartIndex - 2 * ticksInArray : currentStartIndex + 2 * ticksInArray;
+      
+      tickArray0 = deriveTickArrayPda(array0Start);
+      tickArray1 = deriveTickArrayPda(array1Start);
+      const potentialArray2 = deriveTickArrayPda(array2Start);
+      
+      // Check if tick array 2 exists on-chain; if not, use tick array 1 again
+      if (connection) {
+        try {
+          const array2Info = await connection.getAccountInfo(potentialArray2);
+          if (array2Info && array2Info.data.length > 0) {
+            tickArray2 = potentialArray2;
+            logger.info('router.test.orca.tickarray.verified', {
+              cat: 'router',
+              tickArray2: potentialArray2.toBase58(),
+              exists: true,
+            });
+          } else {
+            // Array 2 doesn't exist, use same as array 1
+            tickArray2 = tickArray1;
+            logger.warn('router.test.orca.tickarray.notexist', {
+              cat: 'router',
+              tickArray2Derived: potentialArray2.toBase58(),
+              fallback: tickArray1.toBase58(),
+            });
+          }
+        } catch {
+          // Error checking, use same as array 1
+          tickArray2 = tickArray1;
+        }
       } else {
-        // B→A: ascending order (current, +1, +2)
-        tickArray0 = deriveTickArrayPda(currentStartIndex);
-        tickArray1 = deriveTickArrayPda(currentStartIndex + ticksInArray);
-        tickArray2 = deriveTickArrayPda(currentStartIndex + 2 * ticksInArray);
+        // No connection available, assume it exists
+        tickArray2 = potentialArray2;
       }
       
       logger.info('router.test.orca.tickarray.fallback', {
@@ -1541,16 +1572,42 @@ async function buildOrcaDexAccountsForRouter(
       return pda;
     };
     
-    if (isAtoB) {
-      // A→B: descending order (current, -1, -2)
-      tickArray0 = deriveTickArrayPda(currentStartIndex);
-      tickArray1 = deriveTickArrayPda(currentStartIndex - ticksInArray);
-      tickArray2 = deriveTickArrayPda(currentStartIndex - 2 * ticksInArray);
+    // Derive tick arrays based on direction
+    const array0Start = currentStartIndex;
+    const array1Start = isAtoB ? currentStartIndex - ticksInArray : currentStartIndex + ticksInArray;
+    const array2Start = isAtoB ? currentStartIndex - 2 * ticksInArray : currentStartIndex + 2 * ticksInArray;
+    
+    tickArray0 = deriveTickArrayPda(array0Start);
+    tickArray1 = deriveTickArrayPda(array1Start);
+    const potentialArray2 = deriveTickArrayPda(array2Start);
+    
+    // Check if tick array 2 exists on-chain; if not, use tick array 1 again
+    if (connection) {
+      try {
+        const array2Info = await connection.getAccountInfo(potentialArray2);
+        if (array2Info && array2Info.data.length > 0) {
+          tickArray2 = potentialArray2;
+          logger.info('router.test.orca.tickarray.verified', {
+            cat: 'router',
+            tickArray2: potentialArray2.toBase58(),
+            exists: true,
+          });
+        } else {
+          // Array 2 doesn't exist, use same as array 1
+          tickArray2 = tickArray1;
+          logger.warn('router.test.orca.tickarray.notexist', {
+            cat: 'router',
+            tickArray2Derived: potentialArray2.toBase58(),
+            fallback: tickArray1.toBase58(),
+          });
+        }
+      } catch {
+        // Error checking, use same as array 1
+        tickArray2 = tickArray1;
+      }
     } else {
-      // B→A: ascending order (current, +1, +2)
-      tickArray0 = deriveTickArrayPda(currentStartIndex);
-      tickArray1 = deriveTickArrayPda(currentStartIndex + ticksInArray);
-      tickArray2 = deriveTickArrayPda(currentStartIndex + 2 * ticksInArray);
+      // No connection available, assume it exists
+      tickArray2 = potentialArray2;
     }
     
     logger.info('router.test.orca.tickarray.fallback', {
