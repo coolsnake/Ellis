@@ -1412,22 +1412,24 @@ async function buildMeteoraDexAccountsForRouter(
 /**
  * Build Orca Whirlpool accounts in the order expected by the on-chain router
  * 
+ * Uses swap_v2 layout for Token-2022 support and better resilience.
  * Based on arb-router/programs/arb-router/src/dex/orca.rs:
- * 0. Token Program
- * 1. Token Authority (signer)
- * 2. Whirlpool
- * 3. Token Owner Account A (user's token A account)
- * 4. Token Vault A
- * 5. Token Owner Account B (user's token B account)
- * 6. Token Vault B
- * 7. Tick Array 0
- * 8. Tick Array 1
- * 9. Tick Array 2
- * 10. Oracle
- * 11. Token Mint A
- * 12. Token Mint B
- * 13. Memo Program
- * 14. Whirlpool Program
+ * 0. Token Program A
+ * 1. Token Program B
+ * 2. Memo Program
+ * 3. Token Authority (signer)
+ * 4. Whirlpool
+ * 5. Token Mint A
+ * 6. Token Mint B
+ * 7. Token Owner Account A (user's token A account)
+ * 8. Token Vault A
+ * 9. Token Owner Account B (user's token B account)
+ * 10. Token Vault B
+ * 11. Tick Array 0
+ * 12. Tick Array 1
+ * 13. Tick Array 2
+ * 14. Oracle
+ * 15. Whirlpool Program (for CPI)
  */
 async function buildOrcaDexAccountsForRouter(
   payer: PublicKey,
@@ -1511,22 +1513,24 @@ async function buildOrcaDexAccountsForRouter(
     }
   }
   
+  // swap_v2 account layout
   const accounts: PublicKey[] = [
-    TOKEN_PROGRAM_ID,                                              // 0: Token Program
-    payer,                                                         // 1: Token Authority (signer)
-    poolPubkey,                                                    // 2: Whirlpool
-    userTokenA,                                                    // 3: Token Owner Account A
-    new PublicKey(pool.vaultA),                                   // 4: Token Vault A
-    userTokenB,                                                    // 5: Token Owner Account B
-    new PublicKey(pool.vaultB),                                   // 6: Token Vault B
-    tickArray0,                                                    // 7: Tick Array 0
-    tickArray1,                                                    // 8: Tick Array 1
-    tickArray2,                                                    // 9: Tick Array 2
-    new PublicKey(pool.oracle),                                   // 10: Oracle
-    new PublicKey(pool.mintA),                                    // 11: Token Mint A
-    new PublicKey(pool.mintB),                                    // 12: Token Mint B
-    MEMO_PROGRAM_ID,                                               // 13: Memo Program
-    ORCA_WHIRLPOOL_PROGRAM,                                        // 14: Whirlpool Program
+    new PublicKey(pool.tokenProgram),                              // 0: Token Program A
+    new PublicKey(pool.tokenProgram),                              // 1: Token Program B (same for non-Token2022)
+    MEMO_PROGRAM_ID,                                               // 2: Memo Program
+    payer,                                                         // 3: Token Authority (signer)
+    poolPubkey,                                                    // 4: Whirlpool
+    new PublicKey(pool.mintA),                                    // 5: Token Mint A
+    new PublicKey(pool.mintB),                                    // 6: Token Mint B
+    userTokenA,                                                    // 7: Token Owner Account A
+    new PublicKey(pool.vaultA),                                   // 8: Token Vault A
+    userTokenB,                                                    // 9: Token Owner Account B
+    new PublicKey(pool.vaultB),                                   // 10: Token Vault B
+    tickArray0,                                                    // 11: Tick Array 0
+    tickArray1,                                                    // 12: Tick Array 1
+    tickArray2,                                                    // 13: Tick Array 2
+    new PublicKey(pool.oracle),                                   // 14: Oracle
+    ORCA_WHIRLPOOL_PROGRAM,                                        // 15: Whirlpool Program (for CPI)
   ];
   
   logger.info('router.test.dex_accounts', { 
