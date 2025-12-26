@@ -59,12 +59,12 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [actionLogs, setActionLogs] = useState<string[]>([]);
 
   const [hops, setHops] = useState<number>(1);
-  const [testDex, setTestDex] = useState<'raydium' | 'meteora'>('raydium');
-  const [testVariant, setTestVariant] = useState<'clmm' | 'dlmm'>('clmm');
+  const [testDex, setTestDex] = useState<'raydium' | 'meteora' | 'orca'>('raydium');
+  const [testVariant, setTestVariant] = useState<'clmm' | 'dlmm' | 'whirlpool'>('clmm');
   const [testPoolId, setTestPoolId] = useState('');
   const [testSecondPoolId, setTestSecondPoolId] = useState('');
-  const [testSecondDex, setTestSecondDex] = useState<'raydium' | 'meteora'>('raydium');
-  const [testSecondVariant, setTestSecondVariant] = useState<'clmm' | 'dlmm'>('clmm');
+  const [testSecondDex, setTestSecondDex] = useState<'raydium' | 'meteora' | 'orca'>('raydium');
+  const [testSecondVariant, setTestSecondVariant] = useState<'clmm' | 'dlmm' | 'whirlpool'>('clmm');
   const [testInputMint, setTestInputMint] = useState('So11111111111111111111111111111111111111112');
   const [testOutputMint, setTestOutputMint] = useState('USDCoctVLVnvTXBEuP9s8hntucdJokbo17RwHuNXemT');
   const [testAmountIn, setTestAmountIn] = useState('10000000');
@@ -74,14 +74,18 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [testSwapResult, setTestSwapResult] = useState<{success: boolean; signature?: string; error?: string} | null>(null);
 
   // Update variant when DEX changes
-  const handleDexChange = (dex: 'raydium' | 'meteora') => {
+  const handleDexChange = (dex: 'raydium' | 'meteora' | 'orca') => {
     setTestDex(dex);
-    setTestVariant(dex === 'raydium' ? 'clmm' : 'dlmm');
+    if (dex === 'raydium') setTestVariant('clmm');
+    else if (dex === 'meteora') setTestVariant('dlmm');
+    else if (dex === 'orca') setTestVariant('whirlpool');
   };
   
-  const handleSecondDexChange = (dex: 'raydium' | 'meteora') => {
+  const handleSecondDexChange = (dex: 'raydium' | 'meteora' | 'orca') => {
     setTestSecondDex(dex);
-    setTestSecondVariant(dex === 'raydium' ? 'clmm' : 'dlmm');
+    if (dex === 'raydium') setTestSecondVariant('clmm');
+    else if (dex === 'meteora') setTestSecondVariant('dlmm');
+    else if (dex === 'orca') setTestSecondVariant('whirlpool');
   };
 
   const fetchStatus = useCallback(async () => {
@@ -570,11 +574,12 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                   <label className="block text-gray-400 text-sm mb-1">DEX {hops === 2 ? '(Hop 1)' : ''}</label>
                   <select
                     value={testDex}
-                    onChange={(e) => handleDexChange(e.target.value as 'raydium' | 'meteora')}
+                    onChange={(e) => handleDexChange(e.target.value as 'raydium' | 'meteora' | 'orca')}
                     className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm"
                   >
                     <option value="raydium">Raydium CLMM</option>
                     <option value="meteora">Meteora DLMM</option>
+                    <option value="orca">Orca Whirlpool</option>
                   </select>
                 </div>
                 <div>
@@ -585,7 +590,9 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                     onChange={(e) => setTestPoolId(e.target.value)}
                     placeholder={testDex === 'raydium' 
                       ? "FXAXqgjNK6JVzVV2frumKTEuxC8hTEUhVTJTRhMMwLmM" 
-                      : "24fA4td938Lt9PcZXBWQeST5KCNucHw9GimbKSVKFutq"}
+                      : testDex === 'meteora'
+                      ? "24fA4td938Lt9PcZXBWQeST5KCNucHw9GimbKSVKFutq"
+                      : "7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJnm"}
                     className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
                   />
                 </div>
@@ -598,11 +605,12 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                     <label className="block text-gray-400 text-sm mb-1">DEX (Hop 2)</label>
                     <select
                       value={testSecondDex}
-                      onChange={(e) => handleSecondDexChange(e.target.value as 'raydium' | 'meteora')}
+                      onChange={(e) => handleSecondDexChange(e.target.value as 'raydium' | 'meteora' | 'orca')}
                       className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm"
                     >
                       <option value="raydium">Raydium CLMM</option>
                       <option value="meteora">Meteora DLMM</option>
+                      <option value="orca">Orca Whirlpool</option>
                     </select>
                   </div>
                   <div>

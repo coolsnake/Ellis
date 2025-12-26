@@ -100,8 +100,25 @@ export interface MeteoraDlmmPoolState {
   bitmapExtension?: string; // Optional - use program ID if not present
 }
 
+export interface OrcaWhirlpoolPoolState {
+  programId: string;
+  mintA: string;
+  mintB: string;
+  vaultA: string;
+  vaultB: string;
+  oracle: string;
+  tickCurrentIndex: number;
+  tickSpacing: number;
+  tokenProgram: string;
+  tickArrays: {
+    lower: string;
+    center: string;
+    upper: string;
+  };
+}
+
 // Union type for pool states
-export type PoolState = RaydiumClmmPoolState | MeteoraDlmmPoolState;
+export type PoolState = RaydiumClmmPoolState | MeteoraDlmmPoolState | OrcaWhirlpoolPoolState;
 
 // Type guard to check if pool is Raydium
 function isRaydiumPool(pool: PoolState): pool is RaydiumClmmPoolState {
@@ -111,6 +128,11 @@ function isRaydiumPool(pool: PoolState): pool is RaydiumClmmPoolState {
 // Type guard to check if pool is Meteora
 function isMeteoraDlmmPool(pool: PoolState): pool is MeteoraDlmmPoolState {
   return 'tokenXMint' in pool && 'binArrays' in pool && Array.isArray((pool as any).binArrays);
+}
+
+// Type guard to check if pool is Orca Whirlpool
+function isOrcaWhirlpool(pool: PoolState): pool is OrcaWhirlpoolPoolState {
+  return 'mintA' in pool && 'mintB' in pool && 'tickArrays' in pool && !('ammConfig' in pool) && !('tokenXMint' in pool);
 }
 
 // ============================================================================
@@ -134,6 +156,10 @@ export async function fetchPoolAccounts(params: {
     
     if (dex === 'meteora' && variant === 'dlmm') {
       return await fetchMeteoraDlmmPool(connection, poolPubkey);
+    }
+    
+    if (dex === 'orca' && (variant === 'whirlpool' || !variant)) {
+      return await fetchOrcaWhirlpoolPool(connection, poolPubkey);
     }
     
     return { success: false, error: `Unsupported DEX: ${dex}/${variant}` };
@@ -450,6 +476,168 @@ async function fetchMeteoraDlmmPool(
   }
 }
 
+const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+
+async function fetchOrcaWhirlpoolPool(
+  connection: Connection, 
+  poolPubkey: PublicKey
+): Promise<{ success: boolean; pool?: OrcaWhirlpoolPoolState; error?: string }> {
+  const accountInfo = await connection.getAccountInfo(poolPubkey);
+  
+  if (!accountInfo || !accountInfo.data) {
+    return { success: false, error: 'Pool account not found' };
+  }
+
+  try {
+    // Whirlpool account layout (simplified):
+    // 8: discriminator
+    // 32: whirlpoolsConfig
+    // 1: whirlpoolBump[0]
+    // 2: tickSpacing (u16)
+    // 2: tickSpacingSeed[0..2]
+    // 2: feeRate (u16)
+    // 2: protocolFeeRate (u16)
+    // 16: liquidity (u128)
+    // 16: sqrtPrice (u128)
+    // 4: tickCurrentIndex (i32)
+    // 8: protocolFeeOwedA (u64)
+    // 8: protocolFeeOwedB (u64)
+    // 32: tokenMintA
+    // 32: tokenVaultA
+    // 8: feeGrowthGlobalA (u64)
+    // 32: tokenMintB
+    // 32: tokenVaultB
+    // 8: feeGrowthGlobalB (u64)
+    // ...
+    
+    const data = accountInfo.data;
+    let offset = 8; // Skip discriminator
+    
+    // whirlpoolsConfig (32 bytes)
+    offset += 32;
+    
+    // whirlpoolBump (1 byte)
+    offset += 1;
+    
+    // tickSpacing (2 bytes, u16 LE)
+    const tickSpacing = data.readUInt16LE(offset);
+    offset += 2;
+    
+    // tickSpacingSeed (2 bytes)
+    offset += 2;
+    
+    // feeRate (2 bytes)
+    offset += 2;
+    
+    // protocolFeeRate (2 bytes)
+    offset += 2;
+    
+    // liquidity (16 bytes, u128)
+    offset += 16;
+    
+    // sqrtPrice (16 bytes, u128)
+    offset += 16;
+    
+    // tickCurrentIndex (4 bytes, i32 LE)
+    const tickCurrentIndex = data.readInt32LE(offset);
+    offset += 4;
+    
+    // protocolFeeOwedA (8 bytes)
+    offset += 8;
+    
+    // protocolFeeOwedB (8 bytes)
+    offset += 8;
+    
+    // tokenMintA (32 bytes)
+    const mintA = new PublicKey(data.subarray(offset, offset + 32));
+    offset += 32;
+    
+    // tokenVaultA (32 bytes)
+    const vaultA = new PublicKey(data.subarray(offset, offset + 32));
+    offset += 32;
+    
+    // feeGrowthGlobalA (8 bytes)
+    offset += 8;
+    
+    // tokenMintB (32 bytes)
+    const mintB = new PublicKey(data.subarray(offset, offset + 32));
+    offset += 32;
+    
+    // tokenVaultB (32 bytes)
+    const vaultB = new PublicKey(data.subarray(offset, offset + 32));
+    offset += 32;
+    
+    // Derive oracle PDA: ["oracle", whirlpool.key()]
+    const [oraclePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('oracle'), poolPubkey.toBuffer()],
+      ORCA_WHIRLPOOL_PROGRAM
+    );
+    
+    // Derive tick array PDAs
+    // TickArray size in Orca Whirlpools is TICK_ARRAY_SIZE = 88
+    const TICK_ARRAY_SIZE = 88;
+    const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
+    
+    // Calculate the start tick index for the current tick array
+    const currentStartIndex = Math.floor(tickCurrentIndex / ticksInArray) * ticksInArray;
+    
+    // Derive tick arrays: current, lower, upper
+    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+      const startTickBuffer = Buffer.alloc(4);
+      startTickBuffer.writeInt32LE(startTickIndex, 0);
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+        ORCA_WHIRLPOOL_PROGRAM
+      );
+      return pda;
+    };
+    
+    const tickArrayLower = deriveTickArrayPda(currentStartIndex - ticksInArray);
+    const tickArrayCenter = deriveTickArrayPda(currentStartIndex);
+    const tickArrayUpper = deriveTickArrayPda(currentStartIndex + ticksInArray);
+    
+    // Determine token program by checking vault account
+    let tokenProgramId = TOKEN_PROGRAM_ID;
+    try {
+      const vaultInfo = await connection.getAccountInfo(vaultA);
+      if (vaultInfo?.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+        tokenProgramId = TOKEN_2022_PROGRAM_ID;
+      }
+    } catch {}
+
+    const pool: OrcaWhirlpoolPoolState = {
+      programId: accountInfo.owner.toBase58(),
+      mintA: mintA.toBase58(),
+      mintB: mintB.toBase58(),
+      vaultA: vaultA.toBase58(),
+      vaultB: vaultB.toBase58(),
+      oracle: oraclePda.toBase58(),
+      tickCurrentIndex,
+      tickSpacing,
+      tokenProgram: tokenProgramId.toBase58(),
+      tickArrays: {
+        lower: tickArrayLower.toBase58(),
+        center: tickArrayCenter.toBase58(),
+        upper: tickArrayUpper.toBase58(),
+      },
+    };
+
+    logger.info('router.test.pool.decoded', { 
+      cat: 'router', 
+      poolId: poolPubkey.toBase58(), 
+      pool, 
+      dex: 'orca_whirlpool',
+      tickCurrentIndex,
+      tickSpacing,
+    });
+
+    return { success: true, pool };
+  } catch (err: any) {
+    logger.error('router.test.orca.pool.decode.error', { cat: 'router', error: err.message, stack: err.stack });
+    return { success: false, error: `Failed to decode Orca pool: ${err.message}` };
+  }
+}
+
 // ============================================================================
 // Swap Testing
 // ============================================================================
@@ -481,7 +669,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     }
     const pool = poolResult.pool;
 
-    // Determine mints for first hop (handle both Raydium and Meteora)
+    // Determine mints for first hop (handle Raydium, Meteora, and Orca)
     let poolMintA: string;
     let poolMintB: string;
     
@@ -491,6 +679,9 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     } else if (isMeteoraDlmmPool(pool)) {
       poolMintA = pool.tokenXMint;
       poolMintB = pool.tokenYMint;
+    } else if (isOrcaWhirlpool(pool)) {
+      poolMintA = pool.mintA;
+      poolMintB = pool.mintB;
     } else {
       return { success: false, simulated: false, error: 'Unknown pool type' };
     }
@@ -550,6 +741,8 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           secondPoolMintA = secondPool.mintA;
         } else if (isMeteoraDlmmPool(secondPool)) {
           secondPoolMintA = secondPool.tokenXMint;
+        } else if (isOrcaWhirlpool(secondPool)) {
+          secondPoolMintA = secondPool.mintA;
         } else {
           return { success: false, simulated: false, error: 'Unknown second pool type' };
         }
@@ -774,6 +967,21 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           binStep: String(pool.binStep),
           binArrays: JSON.stringify(pool.binArrays),
         };
+      } else if (isOrcaWhirlpool(pool)) {
+        poolAccounts = {
+          pool: poolId,
+          dex: 'orca_whirlpool',
+          mintA: pool.mintA,
+          mintB: pool.mintB,
+          vaultA: pool.vaultA,
+          vaultB: pool.vaultB,
+          oracle: pool.oracle,
+          tickCurrentIndex: String(pool.tickCurrentIndex),
+          tickSpacing: String(pool.tickSpacing),
+          tickArrayLower: pool.tickArrays.lower,
+          tickArrayCenter: pool.tickArrays.center,
+          tickArrayUpper: pool.tickArrays.upper,
+        };
       } else {
         poolAccounts = { pool: poolId };
       }
@@ -811,6 +1019,14 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           dex: 'meteora_dlmm',
           reserveX: pool.reserveX,
           reserveY: pool.reserveY,
+        };
+      } else if (isOrcaWhirlpool(pool)) {
+        poolAccounts = {
+          pool: poolId,
+          dex: 'orca_whirlpool',
+          vaultA: pool.vaultA,
+          vaultB: pool.vaultB,
+          oracle: pool.oracle,
         };
       } else {
         poolAccounts = { pool: poolId };
@@ -1037,6 +1253,23 @@ async function getRaydiumSdkAccountOrder(
  * 14. Meteora DLMM Program (for CPI invoke)
  * 15. Bin Array Lower (remaining account)
  * 16. Bin Array Upper (remaining account)
+ * 
+ * For Orca Whirlpool, the router expects 15 accounts:
+ * 0. Token Program
+ * 1. Token Authority (signer)
+ * 2. Whirlpool
+ * 3. Token Owner Account A
+ * 4. Token Vault A
+ * 5. Token Owner Account B
+ * 6. Token Vault B
+ * 7. Tick Array 0
+ * 8. Tick Array 1
+ * 9. Tick Array 2
+ * 10. Oracle
+ * 11. Token Mint A
+ * 12. Token Mint B
+ * 13. Memo Program
+ * 14. Whirlpool Program
  */
 async function buildDexAccountsForRouter(
   payer: PublicKey,
@@ -1074,6 +1307,10 @@ async function buildDexAccountsForRouter(
   
   if (dexType === DexType.Meteora && isMeteoraDlmmPool(pool)) {
     return buildMeteoraDexAccountsForRouter(payer, pool, poolPubkey, inputMint, outputMint);
+  }
+  
+  if (dexType === DexType.Orca && isOrcaWhirlpool(pool)) {
+    return buildOrcaDexAccountsForRouter(payer, pool, poolPubkey, inputMint, outputMint);
   }
   
   throw new Error(`DEX type ${dexType} not supported for router test`);
@@ -1165,6 +1402,70 @@ async function buildMeteoraDexAccountsForRouter(
     binArrayCount: binArrayAccounts.length,
     dexType: 'meteora_dlmm',
     isXtoY,
+    accounts: accounts.map((acc, i) => ({ index: i, address: acc.toBase58() })),
+  });
+  
+  return accounts;
+}
+
+/**
+ * Build Orca Whirlpool accounts in the order expected by the on-chain router
+ * 
+ * Based on arb-router/programs/arb-router/src/dex/orca.rs:
+ * 0. Token Program
+ * 1. Token Authority (signer)
+ * 2. Whirlpool
+ * 3. Token Owner Account A (user's token A account)
+ * 4. Token Vault A
+ * 5. Token Owner Account B (user's token B account)
+ * 6. Token Vault B
+ * 7. Tick Array 0
+ * 8. Tick Array 1
+ * 9. Tick Array 2
+ * 10. Oracle
+ * 11. Token Mint A
+ * 12. Token Mint B
+ * 13. Memo Program
+ * 14. Whirlpool Program
+ */
+function buildOrcaDexAccountsForRouter(
+  payer: PublicKey,
+  pool: OrcaWhirlpoolPoolState,
+  poolPubkey: PublicKey,
+  inputMint: PublicKey,
+  outputMint: PublicKey
+): PublicKey[] {
+  // Determine swap direction (A -> B or B -> A)
+  const isAtoB = inputMint.toBase58() === pool.mintA;
+  
+  // Get user token accounts
+  // For Orca Whirlpool, accounts must be ordered as Token A, Token B (not source, dest)
+  const userTokenA = getAssociatedTokenAddressSync(new PublicKey(pool.mintA), payer);
+  const userTokenB = getAssociatedTokenAddressSync(new PublicKey(pool.mintB), payer);
+  
+  const accounts: PublicKey[] = [
+    TOKEN_PROGRAM_ID,                                              // 0: Token Program
+    payer,                                                         // 1: Token Authority (signer)
+    poolPubkey,                                                    // 2: Whirlpool
+    userTokenA,                                                    // 3: Token Owner Account A
+    new PublicKey(pool.vaultA),                                   // 4: Token Vault A
+    userTokenB,                                                    // 5: Token Owner Account B
+    new PublicKey(pool.vaultB),                                   // 6: Token Vault B
+    new PublicKey(pool.tickArrays.lower),                         // 7: Tick Array 0
+    new PublicKey(pool.tickArrays.center),                        // 8: Tick Array 1
+    new PublicKey(pool.tickArrays.upper),                         // 9: Tick Array 2
+    new PublicKey(pool.oracle),                                   // 10: Oracle
+    new PublicKey(pool.mintA),                                    // 11: Token Mint A
+    new PublicKey(pool.mintB),                                    // 12: Token Mint B
+    MEMO_PROGRAM_ID,                                               // 13: Memo Program
+    ORCA_WHIRLPOOL_PROGRAM,                                        // 14: Whirlpool Program
+  ];
+  
+  logger.info('router.test.dex_accounts', { 
+    cat: 'router', 
+    accountCount: accounts.length,
+    dexType: 'orca_whirlpool',
+    isAtoB,
     accounts: accounts.map((acc, i) => ({ index: i, address: acc.toBase58() })),
   });
   
