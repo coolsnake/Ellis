@@ -1203,17 +1203,21 @@ export function createRouterRouter(io: SocketIOServer): Router {
         });
       }
 
-      // Set initial input amounts
-      executionPlan.inputRaw = BigInt(amountIn);
+      // Track input/output for logging - use local variables since ExecutionPlan doesn't have these fields
+      const inputRaw = BigInt(amountIn);
       if (executionPlan.hops.length > 0) {
-        executionPlan.hops[0].amountInRaw = BigInt(amountIn);
+        executionPlan.hops[0].amountInRaw = inputRaw;
       }
+      
+      // Calculate expected output from the last hop
+      const lastHop = executionPlan.hops[executionPlan.hops.length - 1];
+      const expectedOutputRaw = lastHop?.minAmountOut || lastHop?.amountInRaw || BigInt(0);
 
       logger.info('router.test-execute.plan_resolved', {
         cat: 'router',
         hopsResolved: executionPlan.hops.length,
-        inputRaw: executionPlan.inputRaw.toString(),
-        expectedOutput: executionPlan.expectedOutputRaw?.toString(),
+        inputRaw: inputRaw.toString(),
+        expectedOutput: expectedOutputRaw.toString(),
       });
 
       // Build the router transaction (returns instructions, not a full transaction)
@@ -1246,11 +1250,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
       tx.feePayer = wallet.publicKey;
 
       if (simulate) {
-        // Simulate the transaction
-        const simResult = await connection.simulateTransaction(tx, {
-          sigVerify: false,
-          commitment: 'confirmed',
-        });
+        // Simulate the transaction (use empty signers array for legacy Transaction)
+        const simResult = await connection.simulateTransaction(tx, []);
 
         const success = !simResult.value.err;
         
@@ -1276,8 +1277,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
           unitsConsumed: simResult.value.unitsConsumed,
           plan: {
             hops: executionPlan.hops.length,
-            inputRaw: executionPlan.inputRaw.toString(),
-            expectedOutputRaw: executionPlan.expectedOutputRaw?.toString() || '0',
+            inputRaw: inputRaw.toString(),
+            expectedOutputRaw: expectedOutputRaw.toString(),
           },
         });
       } else {
@@ -1326,8 +1327,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
             error: confirmation.value.err ? JSON.stringify(confirmation.value.err) : null,
             plan: {
               hops: executionPlan.hops.length,
-              inputRaw: executionPlan.inputRaw.toString(),
-              expectedOutputRaw: executionPlan.expectedOutputRaw?.toString() || '0',
+              inputRaw: inputRaw.toString(),
+              expectedOutputRaw: expectedOutputRaw.toString(),
             },
           });
         } catch (sendErr: any) {
