@@ -96,11 +96,8 @@ export interface MeteoraDlmmPoolState {
   activeId: number;
   binStep: number;
   tokenProgram: string;
-  binArrays: {
-    lower: string;
-    upper: string;
-  };
-  bitmapExtension?: string; // Optional - use SystemProgram if not present
+  binArrays: string[];  // Array of bin array PDAs (typically 3: lower, current, upper)
+  bitmapExtension?: string; // Optional - use program ID if not present
 }
 
 // Union type for pool states
@@ -113,7 +110,7 @@ function isRaydiumPool(pool: PoolState): pool is RaydiumClmmPoolState {
 
 // Type guard to check if pool is Meteora
 function isMeteoraDlmmPool(pool: PoolState): pool is MeteoraDlmmPoolState {
-  return 'tokenXMint' in pool && 'binArrays' in pool;
+  return 'tokenXMint' in pool && 'binArrays' in pool && Array.isArray((pool as any).binArrays);
 }
 
 // ============================================================================
@@ -349,48 +346,45 @@ async function fetchMeteoraDlmmPool(
       }
     }
     
-    // Derive bin arrays using direct PDA derivation (like pools.derivation.ts)
-    let binArrayLower = '';
-    let binArrayUpper = '';
+    // Derive bin arrays using direct PDA derivation
+    // Meteora DLMM uses BIN_ARRAY_SIZE = 70
+    // binArrayIndex = floor(binId / 70)
+    const BIN_ARRAY_SIZE = 70;
+    let binArrays: string[] = [];
     
     try {
-      // Import bin helpers
-      const { getMeteoraBinHelpers } = await import('../server/pools.derivation.js');
-      const helpers = await getMeteoraBinHelpers();
+      // Calculate the bin array index for the active bin
+      // For negative numbers, we need floor division (towards negative infinity)
+      const currentBinArrayIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
       
-      if (helpers.getBounds && helpers.binIdToBinArrayIndex) {
-        const activeBn = new BN(String(activeId));
-        const [lowerBin, upperBin] = helpers.getBounds(activeBn) || [];
-        
-        const toInt = (val: any): number | undefined => {
-          if (val == null) return undefined;
-          if (typeof val === 'number') return val;
-          try { return Number(val.toString()); } catch { return undefined; }
-        };
-        
-        const lowerIdxBn = lowerBin ? helpers.binIdToBinArrayIndex(lowerBin) : undefined;
-        const upperIdxBn = upperBin ? helpers.binIdToBinArrayIndex(upperBin) : undefined;
-        const lowerIdx = toInt(lowerIdxBn);
-        const upperIdx = toInt(upperIdxBn);
-        
-        // Derive bin array PDAs directly
-        const deriveBinArrayPda = (idx: number | undefined): string => {
-          if (idx == null) return '';
-          const idxBn = new BN(idx);
-          const seed = idxBn.isNeg()
-            ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
-            : idxBn.toArrayLike(Buffer, 'le', 8);
-          const [pda] = PublicKey.findProgramAddressSync(
-            [Buffer.from('bin_array'), poolPubkey.toBuffer(), Buffer.from(seed)],
-            programId
-          );
-          return pda.toBase58();
-        };
-        
-        binArrayLower = deriveBinArrayPda(lowerIdx);
-        binArrayUpper = deriveBinArrayPda(upperIdx);
-        logger.debug('router.test.meteora.binarrays.derived', { cat: 'router', binArrayLower, binArrayUpper });
-      }
+      // Derive bin array PDAs for current and adjacent indices
+      const deriveBinArrayPda = (idx: number): string => {
+        const idxBn = new BN(idx);
+        const seed = idxBn.isNeg()
+          ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
+          : idxBn.toArrayLike(Buffer, 'le', 8);
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('bin_array'), poolPubkey.toBuffer(), Buffer.from(seed)],
+          programId
+        );
+        return pda.toBase58();
+      };
+      
+      // For swaps, we need the current bin array and potentially adjacent ones
+      // The direction determines which adjacent bin arrays we need
+      // For now, derive current + one on each side (3 total)
+      binArrays = [
+        deriveBinArrayPda(currentBinArrayIndex - 1),  // Lower adjacent
+        deriveBinArrayPda(currentBinArrayIndex),       // Current
+        deriveBinArrayPda(currentBinArrayIndex + 1),   // Upper adjacent
+      ];
+      
+      logger.debug('router.test.meteora.binarrays.derived', { 
+        cat: 'router', 
+        activeId, 
+        currentBinArrayIndex,
+        binArrays 
+      });
     } catch (err: any) {
       logger.warn('router.test.meteora.binarray.derive.error', { cat: 'router', error: err.message });
     }
@@ -435,10 +429,7 @@ async function fetchMeteoraDlmmPool(
       activeId,
       binStep,
       tokenProgram: tokenProgramId.toBase58(),
-      binArrays: {
-        lower: binArrayLower,
-        upper: binArrayUpper,
-      },
+      binArrays,  // Array of bin array PDAs
       bitmapExtension,
     };
 
@@ -773,8 +764,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           oracle: pool.oracle,
           activeId: String(pool.activeId),
           binStep: String(pool.binStep),
-          binArrayLower: pool.binArrays.lower,
-          binArrayUpper: pool.binArrays.upper,
+          binArrays: JSON.stringify(pool.binArrays),
         };
       } else {
         poolAccounts = { pool: poolId };
@@ -1031,7 +1021,7 @@ async function getRaydiumSdkAccountOrder(
  * 6. Token X Mint
  * 7. Token Y Mint
  * 8. Oracle
- * 9. Host Fee In (user's input token account)
+ * 9. Host Fee In (program ID as placeholder)
  * 10. User (signer)
  * 11. Token X Program
  * 12. Token Y Program
@@ -1096,6 +1086,11 @@ function deriveMeteoraDlmmEventAuthority(): PublicKey {
 
 /**
  * Build Meteora DLMM accounts in the order expected by the on-chain router
+ * 
+ * Based on successful swap transaction analysis:
+ * #1-15: Fixed accounts (0-14 in our 0-indexed array)
+ * #16: Meteora Program (included for CPI invoke)
+ * #17+: Bin arrays (remaining accounts)
  */
 async function buildMeteoraDexAccountsForRouter(
   payer: PublicKey,
@@ -1123,12 +1118,10 @@ async function buildMeteoraDexAccountsForRouter(
     }
   };
   
-  // Build accounts in the order expected by Meteora DLMM swap
-  // Based on successful swap transaction analysis:
-  // Accounts 0-14: fixed accounts, 15-16: bin arrays, 17: program (for CPI)
   const MEMO_PROGRAM = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
   
-  const accounts: PublicKey[] = [
+  // Fixed accounts (indices 0-14)
+  const fixedAccounts: PublicKey[] = [
     poolPubkey,                                                    // 0: LB Pair
     pool.bitmapExtension 
       ? new PublicKey(pool.bitmapExtension) 
@@ -1140,22 +1133,32 @@ async function buildMeteoraDexAccountsForRouter(
     new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
     new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
     toPkOrFallback(pool.oracle, poolPubkey),                       // 8: Oracle
-    userTokenIn,                                                   // 9: Host Fee In (user's input token account)
+    METEORA_DLMM_PROGRAM,                                          // 9: Host Fee In (program ID as placeholder)
     payer,                                                         // 10: User (signer)
     new PublicKey(pool.tokenProgram),                              // 11: Token X Program
     new PublicKey(pool.tokenProgram),                              // 12: Token Y Program
     MEMO_PROGRAM,                                                  // 13: Memo Program
     deriveMeteoraDlmmEventAuthority(),                             // 14: Event Authority (PDA)
-    // Remaining accounts: bin arrays
-    toPkOrFallback(pool.binArrays.lower, poolPubkey),              // 15: Bin Array Lower
-    toPkOrFallback(pool.binArrays.upper, poolPubkey),              // 16: Bin Array Upper
-    // Program for CPI (must be last)
-    METEORA_DLMM_PROGRAM,                                          // 17: Meteora DLMM Program (for CPI invoke)
+  ];
+  
+  // Bin arrays (remaining accounts) - use all available bin arrays
+  const binArrayAccounts: PublicKey[] = pool.binArrays
+    .filter((ba: string) => ba && ba !== '')
+    .map((ba: string) => new PublicKey(ba));
+  
+  // Structure: [fixed accounts (15), program (1), bin arrays (N)]
+  // Program is included for CPI invoke
+  const accounts: PublicKey[] = [
+    ...fixedAccounts,                                              // 0-14: Fixed accounts
+    METEORA_DLMM_PROGRAM,                                          // 15: Meteora DLMM Program
+    ...binArrayAccounts,                                           // 16+: Bin arrays
   ];
   
   logger.info('router.test.dex_accounts', { 
     cat: 'router', 
     accountCount: accounts.length,
+    fixedCount: fixedAccounts.length,
+    binArrayCount: binArrayAccounts.length,
     dexType: 'meteora_dlmm',
     isXtoY,
     accounts: accounts.map((acc, i) => ({ index: i, address: acc.toBase58() })),

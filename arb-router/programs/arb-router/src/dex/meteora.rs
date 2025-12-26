@@ -11,9 +11,9 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::constants::dex_programs::METEORA_DLMM;
 use crate::error::ArbRouterError;
 
-/// Number of accounts needed for a Meteora DLMM swap
-/// 16 fixed accounts + 2 bin arrays = 18 total
-pub const ACCOUNTS_NEEDED: usize = 18;
+/// Minimum number of accounts needed for a Meteora DLMM swap
+/// 15 fixed accounts + 1 program + at least 1 bin array = 17 minimum
+pub const MIN_ACCOUNTS_NEEDED: usize = 17;
 
 /// Meteora DLMM swap2 instruction discriminator
 /// swap2 is preferred over swap - handles bitmap extension edge cases better
@@ -42,22 +42,21 @@ pub struct Swap2Params {
 /// 6. `[]` Token X Mint
 /// 7. `[]` Token Y Mint
 /// 8. `[writable]` Oracle
-/// 9. `[writable]` Host Fee In (user's input token account)
+/// 9. `[]` Host Fee In (program ID as placeholder)
 /// 10. `[signer, writable]` User (authority)
 /// 11. `[]` Token X Program
 /// 12. `[]` Token Y Program
 /// 13. `[]` Memo Program
 /// 14. `[]` Event Authority
-/// 15. `[writable]` Bin Array Lower (remaining account)
-/// 16. `[writable]` Bin Array Upper (remaining account)
-/// 17. `[]` Meteora DLMM Program (for CPI invoke, must be last)
+/// 15. `[]` Meteora DLMM Program (for CPI invoke)
+/// 16+. `[writable]` Bin Arrays (remaining accounts, variable count)
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
 ) -> Result<()> {
-    if accounts.len() < ACCOUNTS_NEEDED {
-        msg!("Meteora: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
+    if accounts.len() < MIN_ACCOUNTS_NEEDED {
+        msg!("Meteora: Insufficient accounts. Expected at least {}, got {}", MIN_ACCOUNTS_NEEDED, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
@@ -74,25 +73,35 @@ pub fn swap(
     params.serialize(&mut data)?;
     data.extend_from_slice(&[0u8; 4]); // Empty slices Vec (length = 0)
 
-    // Build account metas for Meteora swap instruction
-    // Accounts 0-14 are fixed, 15-16 are bin arrays, 17 is the program for CPI
-    // Take accounts 0-16 (17 accounts) for the instruction, account 17 is for CPI invoke
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
-        .iter()
-        .enumerate()
-        .map(|(i, acc)| {
-            let is_signer = i == 10; // User is signer
-            // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), hostFeeIn(9), user(10), binArrays(15,16)
-            let is_writable = matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 9 | 10 | 15 | 16);
-            if is_signer {
-                AccountMeta::new(*acc.key, true)
-            } else if is_writable {
-                AccountMeta::new(*acc.key, false)
-            } else {
-                AccountMeta::new_readonly(*acc.key, false)
-            }
-        })
-        .collect();
+    // Account structure:
+    // 0-14: Fixed accounts (15 accounts)
+    // 15: Meteora DLMM Program (for CPI)
+    // 16+: Bin arrays (remaining accounts, writable)
+    
+    // For the instruction, we need: fixed accounts (0-14) + bin arrays (16+)
+    // The program at index 15 is used as program_id, not in account_metas
+    
+    let mut account_metas: Vec<AccountMeta> = Vec::new();
+    
+    // Add fixed accounts (0-14)
+    for (i, acc) in accounts[..15].iter().enumerate() {
+        let is_signer = i == 10; // User is signer
+        // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), user(10)
+        // Note: hostFeeIn(9) is NOT writable when using program ID as placeholder
+        let is_writable = matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 10);
+        if is_signer {
+            account_metas.push(AccountMeta::new(*acc.key, true));
+        } else if is_writable {
+            account_metas.push(AccountMeta::new(*acc.key, false));
+        } else {
+            account_metas.push(AccountMeta::new_readonly(*acc.key, false));
+        }
+    }
+    
+    // Add bin arrays (16+) - all are writable
+    for acc in accounts[16..].iter() {
+        account_metas.push(AccountMeta::new(*acc.key, false));
+    }
 
     let ix = Instruction {
         program_id: METEORA_DLMM,
@@ -100,11 +109,11 @@ pub fn swap(
         data,
     };
 
-    // Invoke the swap
-    let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
-    invoke(&ix, &account_infos)?;
+    // Invoke the swap - include all accounts for the CPI
+    invoke(&ix, accounts)?;
 
-    msg!("Meteora DLMM swap2 executed: {} in, min {} out", amount_in, min_amount_out);
+    msg!("Meteora DLMM swap2 executed: {} in, min {} out, {} bin arrays", 
+         amount_in, min_amount_out, accounts.len() - 16);
     Ok(())
 }
 
