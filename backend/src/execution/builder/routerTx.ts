@@ -480,8 +480,17 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
     const programIdKey = new PublicKey(hop.programId);
     const inputMint = new PublicKey(hop.inputMint);
     const outputMint = new PublicKey(hop.outputMint);
-    const userSourceAta = new PublicKey(hop.userSourceAta);
-    const userDestAta = new PublicKey(hop.userDestAta);
+    
+    // Derive ATAs if not set (resolver doesn't have wallet access)
+    const inputTokenProgram = hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    const outputTokenProgram = hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    
+    const userSourceAta = hop.userSourceAta 
+      ? new PublicKey(hop.userSourceAta)
+      : getAssociatedTokenAddressSync(inputMint, wallet, true, inputTokenProgram);
+    const userDestAta = hop.userDestAta
+      ? new PublicKey(hop.userDestAta)
+      : getAssociatedTokenAddressSync(outputMint, wallet, true, outputTokenProgram);
 
     // Get pool's native mint ordering from cache for direction determination
     const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
