@@ -6,7 +6,7 @@
  */
 
 import { PublicKey, TransactionInstruction, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import BN from 'bn.js';
 import type { ExecutionPlan, DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
@@ -38,6 +38,14 @@ const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfc
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 const PUMPSWAP_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+
+/**
+ * Convert token program label to PublicKey
+ * Meteora pools may use spl-token or token-2022 for each side
+ */
+function tokenProgramLabelToKey(label: 'spl-token' | 'token-2022' | undefined): PublicKey {
+  return label === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+}
 
 // ============================================================================
 // Types
@@ -437,15 +445,22 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         break;
 
       case DexType.Meteora:
-        // Meteora DLMM: 16 accounts
+        // Meteora DLMM: 17+ accounts (15 fixed + 1 program + bin arrays)
+        // Must match arb-router/programs/arb-router/src/dex/meteora.rs expected order:
         // 0: LBPair, 1: BitmapExt, 2-3: Reserves, 4-5: UserTokens, 6-7: Mints,
-        // 8: Oracle, 9: HostFee, 10: User, 11: TokenProgram, 12: EventAuth, 13: Program, 14-15: BinArrays
+        // 8: Oracle, 9: HostFee, 10: User, 11: TokenXProgram, 12: TokenYProgram,
+        // 13: Memo, 14: EventAuth, 15: Program, 16+: BinArrays
         const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
+        
+        // Get token programs from hop (set by resolver from pool cache)
+        const tokenXProgram = tokenProgramLabelToKey((hop as any).tokenProgramA);
+        const tokenYProgram = tokenProgramLabelToKey((hop as any).tokenProgramB);
+        
         accounts.push(
           poolId,                                                              // 0: LB Pair
           hop.bitmapExtension 
             ? new PublicKey(hop.bitmapExtension) 
-            : SystemProgram.programId,                                         // 1: Bitmap Extension
+            : programIdKey,                                                    // 1: Bitmap Extension (use program ID as placeholder)
           hop.reserveX ? new PublicKey(hop.reserveX) : new PublicKey(hop.vaultA || hop.poolId), // 2: Reserve X
           hop.reserveY ? new PublicKey(hop.reserveY) : new PublicKey(hop.vaultB || hop.poolId), // 3: Reserve Y
           userSourceAta,                                                       // 4: User Token In
@@ -455,11 +470,13 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)
           programIdKey,                                                        // 9: Host Fee In (use program as placeholder)
           wallet,                                                              // 10: User (signer)
-          TOKEN_PROGRAM_ID,                                                    // 11: Token Program
-          meteoraEventAuthority,                                               // 12: Event Authority (PDA)
-          programIdKey,                                                        // 13: Meteora DLMM Program
-          hop.binArrayLower ? new PublicKey(hop.binArrayLower) : poolId,      // 14: Bin Array Lower
-          hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : poolId,      // 15: Bin Array Upper
+          tokenXProgram,                                                       // 11: Token X Program
+          tokenYProgram,                                                       // 12: Token Y Program
+          MEMO_PROGRAM_ID,                                                     // 13: Memo Program
+          meteoraEventAuthority,                                               // 14: Event Authority (PDA)
+          programIdKey,                                                        // 15: Meteora DLMM Program
+          hop.binArrayLower ? new PublicKey(hop.binArrayLower) : poolId,      // 16: Bin Array Lower (remaining account)
+          hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : poolId,      // 17: Bin Array Upper (remaining account)
         );
         break;
 
