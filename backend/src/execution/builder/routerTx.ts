@@ -539,6 +539,23 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           ? new PublicKey(hop.oracle) 
           : observationState;
         
+        // Log the accounts being used for debugging
+        logger.info('routerTx.raydium.accounts', {
+          cat: 'tx',
+          poolId: hop.poolId,
+          ammConfig: ammConfig.toBase58(),
+          ammConfigSource: ammConfigAddr ? 'cache' : 'fallback',
+          observation: observationState.toBase58(),
+          observationSource: hop.observationId ? 'cache' : 'derived',
+          oracle: oracleOrExBitmap.toBase58(),
+          vaultA: hop.vaultA || 'missing',
+          vaultB: hop.vaultB || 'missing',
+          tickArrayCenter: hop.tickArrayCenter || 'missing',
+          tickArrayLower: hop.tickArrayLower || 'missing',
+          tickArrayUpper: hop.tickArrayUpper || 'missing',
+          isAtoB,
+        });
+        
         accounts.push(
           wallet,                                                              // 0: Payer (signer)
           ammConfig,                                                           // 1: AMM Config (from cache or placeholder)
@@ -573,6 +590,22 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         const tokenXProgram = tokenProgramLabelToKey((hop as any).tokenProgramA);
         const tokenYProgram = tokenProgramLabelToKey((hop as any).tokenProgramB);
         
+        // Log the accounts being used for debugging
+        logger.info('routerTx.meteora.accounts', {
+          cat: 'tx',
+          poolId: hop.poolId,
+          bitmapExtension: hop.bitmapExtension || 'missing',
+          reserveX: hop.reserveX || hop.vaultA || 'missing',
+          reserveY: hop.reserveY || hop.vaultB || 'missing',
+          oracle: hop.oracle || 'missing',
+          binArrayLower: hop.binArrayLower || 'missing',
+          binArrayUpper: hop.binArrayUpper || 'missing',
+          tokenXProgram: tokenXProgram.toBase58(),
+          tokenYProgram: tokenYProgram.toBase58(),
+          eventAuthority: meteoraEventAuthority.toBase58(),
+          isAtoB,
+        });
+        
         accounts.push(
           poolId,                                                              // 0: LB Pair
           hop.bitmapExtension 
@@ -603,6 +636,22 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         // 4: TokenVaultA, 5: TokenOwnerAccountB, 6: TokenVaultB, 7-9: TickArrays, 10: Oracle, 11: Program
         const userTokenA = isAtoB ? userSourceAta : userDestAta;
         const userTokenB = isAtoB ? userDestAta : userSourceAta;
+        
+        // Log the accounts being used for debugging
+        logger.info('routerTx.orca.accounts', {
+          cat: 'tx',
+          poolId: hop.poolId,
+          vaultA: hop.vaultA || 'missing',
+          vaultB: hop.vaultB || 'missing',
+          tickArrayLower: hop.tickArrayLower || 'missing',
+          tickArrayCenter: hop.tickArrayCenter || 'missing',
+          tickArrayUpper: hop.tickArrayUpper || 'missing',
+          oracle: hop.oracle || 'missing',
+          userTokenA: userTokenA.toBase58(),
+          userTokenB: userTokenB.toBase58(),
+          isAtoB,
+        });
+        
         accounts.push(
           TOKEN_PROGRAM_ID,                                                    // 0: Token Program
           wallet,                                                              // 1: Token Authority (signer)
@@ -627,6 +676,20 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         const isBuying = hop.inputMint === SOL_MINT; // SOL -> Token = buy
         const pumpMint = isBuying ? outputMint : inputMint; // The pump.fun token mint
         const associatedBC = derivePumpswapAssociatedBondingCurve(poolId, pumpMint);
+        
+        // Log the accounts being used for debugging
+        logger.info('routerTx.pumpswap.accounts', {
+          cat: 'tx',
+          poolId: hop.poolId,
+          globalConfig: globalConfig.toBase58(),
+          protocolFeeRecipient: (hop as any).protocolFeeRecipient || 'missing',
+          pumpMint: pumpMint.toBase58(),
+          associatedBC: associatedBC.toBase58(),
+          vaultA: hop.vaultA || 'missing',
+          isBuying,
+          userTokenAccount: (isBuying ? userDestAta : userSourceAta).toBase58(),
+        });
+        
         accounts.push(
           globalConfig,                                                        // 0: Global Config
           (hop as any).protocolFeeRecipient 
