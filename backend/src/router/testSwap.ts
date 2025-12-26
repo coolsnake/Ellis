@@ -400,20 +400,34 @@ async function fetchMeteoraDlmmPool(
         return pda.toBase58();
       };
       
-      // For swaps, we need the current bin array and potentially adjacent ones
-      // The direction determines which adjacent bin arrays we need
-      // For now, derive current + one on each side (3 total)
-      binArrays = [
-        deriveBinArrayPda(currentBinArrayIndex - 1),  // Lower adjacent
-        deriveBinArrayPda(currentBinArrayIndex),       // Current
-        deriveBinArrayPda(currentBinArrayIndex + 1),   // Upper adjacent
+      // Derive current + adjacent bin arrays (3 total)
+      const derivedBinArrays = [
+        { index: currentBinArrayIndex - 1, address: deriveBinArrayPda(currentBinArrayIndex - 1) },  // Lower adjacent
+        { index: currentBinArrayIndex, address: deriveBinArrayPda(currentBinArrayIndex) },       // Current
+        { index: currentBinArrayIndex + 1, address: deriveBinArrayPda(currentBinArrayIndex + 1) },   // Upper adjacent
       ];
+      
+      // Check which bin arrays actually exist on-chain
+      // Only include initialized bin arrays to avoid errors
+      const binArrayPubkeys = derivedBinArrays.map(ba => new PublicKey(ba.address));
+      const binArrayInfos = await connection.getMultipleAccountsInfo(binArrayPubkeys);
+      
+      const existingBinArrays: string[] = [];
+      binArrayInfos.forEach((info, idx) => {
+        if (info && info.owner.equals(programId)) {
+          existingBinArrays.push(derivedBinArrays[idx].address);
+        }
+      });
+      
+      binArrays = existingBinArrays;
       
       logger.debug('router.test.meteora.binarrays.derived', { 
         cat: 'router', 
         activeId, 
         currentBinArrayIndex,
-        binArrays 
+        derived: derivedBinArrays.map(ba => ba.address),
+        existing: binArrays,
+        existingCount: binArrays.length
       });
     } catch (err: any) {
       logger.warn('router.test.meteora.binarray.derive.error', { cat: 'router', error: err.message });
