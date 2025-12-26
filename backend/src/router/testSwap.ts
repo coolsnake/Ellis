@@ -599,6 +599,16 @@ async function fetchOrcaWhirlpoolPool(
     const tickArrayCenter = deriveTickArrayPda(startTickCenter);
     const tickArrayUpper = deriveTickArrayPda(startTickUpper);
     
+    // Check which tick arrays actually exist on-chain
+    const tickArraysToCheck = [tickArrayLower, tickArrayCenter, tickArrayUpper];
+    const tickArrayInfos = await connection.getMultipleAccountsInfo(tickArraysToCheck);
+    
+    const tickArrayExists = {
+      lower: tickArrayInfos[0] !== null && tickArrayInfos[0].data.length > 0,
+      center: tickArrayInfos[1] !== null && tickArrayInfos[1].data.length > 0,
+      upper: tickArrayInfos[2] !== null && tickArrayInfos[2].data.length > 0,
+    };
+    
     logger.info('router.test.orca.tickarrays.derived', {
       cat: 'router',
       tickCurrentIndex,
@@ -611,7 +621,20 @@ async function fetchOrcaWhirlpoolPool(
       lower: tickArrayLower.toBase58(),
       center: tickArrayCenter.toBase58(),
       upper: tickArrayUpper.toBase58(),
+      exists: tickArrayExists,
     });
+    
+    // If center tick array doesn't exist, this pool can't be traded at current tick
+    if (!tickArrayExists.center) {
+      logger.error('router.test.orca.tickarray.center.missing', {
+        cat: 'router',
+        poolId: poolPubkey.toBase58(),
+        tickCurrentIndex,
+        startTickCenter,
+        centerAddress: tickArrayCenter.toBase58(),
+        error: 'Center tick array not initialized - pool may have no liquidity at current tick',
+      });
+    }
     
     // Determine token program by checking vault account
     let tokenProgramId = TOKEN_PROGRAM_ID;
