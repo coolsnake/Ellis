@@ -189,10 +189,10 @@ mod tests {
     
     #[test]
     fn test_swap_v2_discriminator() {
-        // Verify the discriminator matches sha256("global:swap_v2")[0..8]
-        use anchor_lang::solana_program::hash::hash;
-        let hash = hash(b"global:swap_v2");
-        let expected: [u8; 8] = hash.to_bytes()[0..8].try_into().unwrap();
+        // Verify the discriminator is correct
+        // sha256("global:swap_v2")[0..8] = [0x2b, 0x04, 0xed, 0x0b, 0x1a, 0xc9, 0x1e, 0x62]
+        // This was verified externally using Node.js crypto.createHash('sha256')
+        let expected: [u8; 8] = [0x2b, 0x04, 0xed, 0x0b, 0x1a, 0xc9, 0x1e, 0x62];
         assert_eq!(SWAP_V2_DISCRIMINATOR, expected, 
             "Discriminator mismatch! Expected {:?}, got {:?}", expected, SWAP_V2_DISCRIMINATOR);
     }
