@@ -193,28 +193,45 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
 
   // Handler for execute hop changes
   const updateExecuteHop = (index: number, field: keyof ExecuteHop, value: string) => {
-    const newHops = [...executeHops];
-    newHops[index] = { ...newHops[index], [field]: value };
-    
-    // Auto-populate mints when pool is selected
-    if (field === 'poolId' && value && poolsByDex) {
-      const dex = newHops[index].dex;
-      const pools = dex === 'raydium' 
-        ? [...(poolsByDex.raydium?.clmm || []), ...(poolsByDex.raydium?.amm || [])]
-        : dex === 'orca' 
-        ? (poolsByDex.orca?.clmm || [])
-        : dex === 'meteora'
-        ? (poolsByDex.meteora?.dlmm || [])
-        : (poolsByDex.pumpswap?.amm || []);
+    setExecuteHops(prevHops => {
+      const newHops = [...prevHops];
+      newHops[index] = { ...newHops[index], [field]: value };
       
-      const pool = pools.find(p => p.id === value);
-      if (pool) {
-        newHops[index].inputMint = pool.mintA || pool.nativeMintA || '';
-        newHops[index].outputMint = pool.mintB || pool.nativeMintB || '';
+      // Auto-populate mints when pool is selected
+      if (field === 'poolId' && value && poolsByDex) {
+        const dex = newHops[index].dex;
+        const pools = dex === 'raydium' 
+          ? [...(poolsByDex.raydium?.clmm || []), ...(poolsByDex.raydium?.amm || [])]
+          : dex === 'orca' 
+          ? (poolsByDex.orca?.clmm || [])
+          : dex === 'meteora'
+          ? (poolsByDex.meteora?.dlmm || [])
+          : (poolsByDex.pumpswap?.amm || []);
+        
+        const pool = pools.find(p => p.id === value);
+        if (pool) {
+          newHops[index].inputMint = pool.mintA || pool.nativeMintA || '';
+          newHops[index].outputMint = pool.mintB || pool.nativeMintB || '';
+        }
       }
-    }
-    
-    setExecuteHops(newHops);
+      
+      return newHops;
+    });
+  };
+  
+  // Handler for DEX changes in execute hops - clears pool and mints when DEX changes
+  const handleExecuteDexChange = (index: number, newDex: string) => {
+    setExecuteHops(prevHops => {
+      const newHops = [...prevHops];
+      newHops[index] = {
+        ...newHops[index],
+        dex: newDex as ExecuteHop['dex'],
+        poolId: '',
+        inputMint: '',
+        outputMint: '',
+      };
+      return newHops;
+    });
   };
 
   const addExecuteHop = () => {
@@ -929,10 +946,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                       <label className="block text-gray-400 text-xs mb-1">DEX</label>
                       <select
                         value={hop.dex}
-                        onChange={(e) => {
-                          updateExecuteHop(index, 'dex', e.target.value);
-                          updateExecuteHop(index, 'poolId', ''); // Clear pool when DEX changes
-                        }}
+                        onChange={(e) => handleExecuteDexChange(index, e.target.value)}
                         className="w-full bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 text-sm"
                       >
                         <option value="raydium">Raydium CLMM</option>
