@@ -47,7 +47,7 @@ pub struct SwapParams {
 /// 10. `[]` Memo Program
 /// 11. `[]` Input Token Mint (NOT writable)
 /// 12. `[]` Output Token Mint (NOT writable)
-/// 13. `[writable]` Oracle/exBitmap (optional account)
+/// 13. `[writable]` Tick Array Bitmap Extension (exBitmap PDA: ["exaccount", pool_id])
 /// 14. `[writable]` Tick Array Center
 /// 15. `[writable]` Tick Array Lower
 /// 16. `[writable]` Tick Array Upper

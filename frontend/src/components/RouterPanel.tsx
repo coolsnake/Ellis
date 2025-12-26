@@ -947,6 +947,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                       <label className="block text-gray-400 text-xs mb-1">Pool</label>
                       {poolsByDex ? (
                         <select
+                          key={`pool-select-${hop.dex}-${index}`}
                           value={hop.poolId}
                           onChange={(e) => updateExecuteHop(index, 'poolId', e.target.value)}
                           className="w-full bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 text-sm font-mono"

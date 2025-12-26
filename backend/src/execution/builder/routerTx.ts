@@ -58,6 +58,19 @@ function deriveRaydiumObservationPda(poolId: PublicKey, programId: PublicKey = R
 }
 
 /**
+ * Derive Raydium CLMM tick array bitmap extension PDA (exBitmap)
+ * This is required for pools with large tick ranges to track initialized tick arrays.
+ * Seeds: ["exaccount", pool_id] (NOT "tick_array_bitmap_extension")
+ */
+function deriveRaydiumExBitmapPda(poolId: PublicKey, programId: PublicKey = RAYDIUM_CLMM_PROGRAM): PublicKey {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('exaccount'), poolId.toBuffer()],
+    programId
+  );
+  return pda;
+}
+
+/**
  * Convert token program label to PublicKey
  * Meteora pools may use spl-token or token-2022 for each side
  */
@@ -539,10 +552,12 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           ? new PublicKey(hop.observationId)
           : deriveRaydiumObservationPda(poolId, programIdKey);
         
-        // For oracle/exBitmap, use observation as fallback (they're often the same or related)
-        const oracleOrExBitmap = hop.oracle 
-          ? new PublicKey(hop.oracle) 
-          : observationState;
+        // Derive exBitmap (tick array bitmap extension) PDA - REQUIRED for pools with wide tick ranges
+        // Get from cache first (stat.ex_bitmap), otherwise derive
+        const exBitmapAddr = (hop as any).exBitmap || stat?.ex_bitmap;
+        const exBitmapPda = exBitmapAddr 
+          ? new PublicKey(exBitmapAddr)
+          : deriveRaydiumExBitmapPda(poolId, programIdKey);
         
         // CRITICAL: Use CANONICAL account ordering (properly paired with canonical mints)
         // hop.vaultA/B come from resolver's native_account_a/b which may NOT match native_mint_a/b
@@ -562,7 +577,8 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           ammConfigSource: ammConfigAddr ? 'cache' : 'fallback',
           observation: observationState.toBase58(),
           observationSource: hop.observationId ? 'cache' : 'derived',
-          oracle: oracleOrExBitmap.toBase58(),
+          exBitmap: exBitmapPda.toBase58(),
+          exBitmapSource: exBitmapAddr ? 'cache' : 'derived',
           // Show canonical vs hop vaults for debugging
           canonicalAccountA: poolAccountA || 'missing',
           canonicalAccountB: poolAccountB || 'missing',
@@ -594,7 +610,7 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           MEMO_PROGRAM_ID,                                                     // 10: Memo Program
           inputMint,                                                           // 11: Input Token Mint
           outputMint,                                                          // 12: Output Token Mint
-          oracleOrExBitmap,                                                    // 13: Oracle/exBitmap (use observation as fallback)
+          exBitmapPda,                                                         // 13: Tick Array Bitmap Extension (exBitmap)
           hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 14: Tick Array Center
           hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 15: Tick Array Lower
           hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 16: Tick Array Upper
