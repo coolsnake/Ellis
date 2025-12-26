@@ -1475,64 +1475,39 @@ async function buildOrcaDexAccountsForRouter(
       tickArray1 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start1).publicKey;
       tickArray2 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start2).publicKey;
     } else {
-      // Fallback to static derivation if SDK utilities not available
-      const TICK_ARRAY_SIZE = 88;
-      const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
-      const currentStartIndex = Math.floor(currentTick / ticksInArray) * ticksInArray;
-      
-      const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-        const startTickBuffer = Buffer.alloc(4);
-        startTickBuffer.writeInt32LE(startTickIndex, 0);
-        const [pda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
-          ORCA_WHIRLPOOL_PROGRAM
-        );
-        return pda;
-      };
-      
-      // Order based on swap direction
+      // Fallback: use tick arrays from pool state (known to exist)
+      // Order based on swap direction, repeat last array if needed
       if (isAtoB) {
-        // A→B: descending order (center, lower, lower-1)
-        tickArray0 = deriveTickArrayPda(currentStartIndex);
-        tickArray1 = deriveTickArrayPda(currentStartIndex - ticksInArray);
-        tickArray2 = deriveTickArrayPda(currentStartIndex - (2 * ticksInArray));
+        // A→B: descending order (center, lower, lower again)
+        tickArray0 = new PublicKey(pool.tickArrays.center);
+        tickArray1 = new PublicKey(pool.tickArrays.lower);
+        tickArray2 = new PublicKey(pool.tickArrays.lower); // Repeat - don't derive non-existent
       } else {
-        // B→A: ascending order (center, upper, upper+1)
-        tickArray0 = deriveTickArrayPda(currentStartIndex);
-        tickArray1 = deriveTickArrayPda(currentStartIndex + ticksInArray);
-        tickArray2 = deriveTickArrayPda(currentStartIndex + (2 * ticksInArray));
+        // B→A: ascending order (center, upper, upper again)
+        tickArray0 = new PublicKey(pool.tickArrays.center);
+        tickArray1 = new PublicKey(pool.tickArrays.upper);
+        tickArray2 = new PublicKey(pool.tickArrays.upper); // Repeat - don't derive non-existent
       }
     }
   } catch (err: any) {
     logger.warn('router.test.orca.tickarray.calc.error', { 
       cat: 'router', 
       error: err.message,
-      fallback: 'using static derivation'
+      fallback: 'using pool state tick arrays'
     });
     
-    // Fallback to static derivation
-    const TICK_ARRAY_SIZE = 88;
-    const ticksInArray = TICK_ARRAY_SIZE * pool.tickSpacing;
-    const currentStartIndex = Math.floor(pool.tickCurrentIndex / ticksInArray) * ticksInArray;
-    
-    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-      const startTickBuffer = Buffer.alloc(4);
-      startTickBuffer.writeInt32LE(startTickIndex, 0);
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
-        ORCA_WHIRLPOOL_PROGRAM
-      );
-      return pda;
-    };
-    
+    // Fallback: use tick arrays from pool state (known to exist)
+    // Order based on swap direction, repeat last array if needed
     if (isAtoB) {
-      tickArray0 = deriveTickArrayPda(currentStartIndex);
-      tickArray1 = deriveTickArrayPda(currentStartIndex - ticksInArray);
-      tickArray2 = deriveTickArrayPda(currentStartIndex - (2 * ticksInArray));
+      // A→B: descending order (center, lower, lower again)
+      tickArray0 = new PublicKey(pool.tickArrays.center);
+      tickArray1 = new PublicKey(pool.tickArrays.lower);
+      tickArray2 = new PublicKey(pool.tickArrays.lower); // Repeat - don't derive non-existent
     } else {
-      tickArray0 = deriveTickArrayPda(currentStartIndex);
-      tickArray1 = deriveTickArrayPda(currentStartIndex + ticksInArray);
-      tickArray2 = deriveTickArrayPda(currentStartIndex + (2 * ticksInArray));
+      // B→A: ascending order (center, upper, upper again)
+      tickArray0 = new PublicKey(pool.tickArrays.center);
+      tickArray1 = new PublicKey(pool.tickArrays.upper);
+      tickArray2 = new PublicKey(pool.tickArrays.upper); // Repeat - don't derive non-existent
     }
   }
   
