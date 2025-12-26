@@ -1250,8 +1250,10 @@ export function createRouterRouter(io: SocketIOServer): Router {
       tx.feePayer = wallet.publicKey;
 
       if (simulate) {
-        // Simulate the transaction (use empty signers array for legacy Transaction)
-        const simResult = await connection.simulateTransaction(tx, []);
+        // Simulate the transaction - sign it first for proper simulation
+        const keypair = Keypair.fromSecretKey(wallet.secretKey);
+        tx.sign(keypair);
+        const simResult = await connection.simulateTransaction(tx);
 
         const success = !simResult.value.err;
         
