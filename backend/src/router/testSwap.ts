@@ -86,6 +86,11 @@ export interface RaydiumClmmPoolState {
   };
 }
 
+export interface BinArrayInfo {
+  index: number;  // The bin array index (e.g., -95, -94)
+  address: string;
+}
+
 export interface MeteoraDlmmPoolState {
   programId: string;
   tokenXMint: string;
@@ -96,7 +101,7 @@ export interface MeteoraDlmmPoolState {
   activeId: number;
   binStep: number;
   tokenProgram: string;
-  binArrays: string[];  // Array of bin array PDAs (typically 3: lower, current, upper)
+  binArrays: BinArrayInfo[];  // Array of bin array PDAs with their indices
   bitmapExtension?: string; // Optional - use program ID if not present
 }
 
@@ -380,7 +385,7 @@ async function fetchMeteoraDlmmPool(
     // Meteora DLMM uses BIN_ARRAY_SIZE = 70
     // binArrayIndex = floor(binId / 70)
     const BIN_ARRAY_SIZE = 70;
-    let binArrays: string[] = [];
+    let binArrays: BinArrayInfo[] = [];
     
     try {
       // Calculate the bin array index for the active bin
@@ -412,10 +417,10 @@ async function fetchMeteoraDlmmPool(
       const binArrayPubkeys = derivedBinArrays.map(ba => new PublicKey(ba.address));
       const binArrayInfos = await connection.getMultipleAccountsInfo(binArrayPubkeys);
       
-      const existingBinArrays: string[] = [];
+      const existingBinArrays: BinArrayInfo[] = [];
       binArrayInfos.forEach((info, idx) => {
         if (info && info.owner.equals(programId)) {
-          existingBinArrays.push(derivedBinArrays[idx].address);
+          existingBinArrays.push(derivedBinArrays[idx]);
         }
       });
       
@@ -425,8 +430,8 @@ async function fetchMeteoraDlmmPool(
         cat: 'router', 
         activeId, 
         currentBinArrayIndex,
-        derived: derivedBinArrays.map(ba => ba.address),
-        existing: binArrays,
+        derived: derivedBinArrays.map(ba => ({ index: ba.index, address: ba.address })),
+        existing: binArrays.map(ba => ({ index: ba.index, address: ba.address })),
         existingCount: binArrays.length
       });
     } catch (err: any) {
@@ -1435,10 +1440,15 @@ async function buildMeteoraDexAccountsForRouter(
     deriveMeteoraDlmmEventAuthority(),                             // 14: Event Authority (PDA)
   ];
   
-  // Bin arrays (remaining accounts) - use all available bin arrays
-  const binArrayAccounts: PublicKey[] = pool.binArrays
-    .filter((ba: string) => ba && ba !== '')
-    .map((ba: string) => new PublicKey(ba));
+  // Bin arrays (remaining accounts) - order based on swap direction
+  // For X -> Y swaps (selling X): order by increasing bin array index
+  // For Y -> X swaps (buying X): order by decreasing bin array index
+  const sortedBinArrays = [...pool.binArrays]
+    .filter((ba: BinArrayInfo) => ba && ba.address !== '')
+    .sort((a, b) => isXtoY ? a.index - b.index : b.index - a.index);
+  
+  const binArrayAccounts: PublicKey[] = sortedBinArrays
+    .map((ba: BinArrayInfo) => new PublicKey(ba.address));
   
   // Structure: [fixed accounts (15), program (1), bin arrays (N)]
   // Program is included for CPI invoke
@@ -1455,6 +1465,7 @@ async function buildMeteoraDexAccountsForRouter(
     binArrayCount: binArrayAccounts.length,
     dexType: 'meteora_dlmm',
     isXtoY,
+    binArrayOrder: sortedBinArrays.map(ba => ({ index: ba.index, address: ba.address.slice(0, 8) })),
     accounts: accounts.map((acc, i) => ({ index: i, address: acc.toBase58() })),
   });
   
