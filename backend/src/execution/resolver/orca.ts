@@ -1,8 +1,52 @@
+import { PublicKey } from '@solana/web3.js';
 import type { DirectHop } from '../../execution/types.js';
 import { executionCache } from '../cache.js';
 import { peekOrcaPools } from '../../server/pools.js';
 import { logger } from '../../utils/logger.js';
 import { logCatchError } from '../../utils/errorHandler.js';
+
+// Constants for tick array derivation
+const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+const ORCA_TICK_ARRAY_SIZE = 88;
+
+/**
+ * Derive Orca tick array PDAs from current tick and tick spacing
+ */
+function deriveOrcaTickArrays(
+  poolId: PublicKey,
+  currentTickIndex: number,
+  tickSpacing: number
+): { lower: string; center: string; upper: string } {
+  const ticksInArray = ORCA_TICK_ARRAY_SIZE * tickSpacing;
+  const realIndex = Math.floor(currentTickIndex / ticksInArray);
+  
+  const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+    const startTickBuffer = Buffer.alloc(4);
+    startTickBuffer.writeInt32LE(startTickIndex, 0);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('tick_array'), poolId.toBuffer(), startTickBuffer],
+      ORCA_WHIRLPOOL_PROGRAM
+    );
+    return pda;
+  };
+  
+  return {
+    lower: deriveTickArrayPda((realIndex - 1) * ticksInArray).toBase58(),
+    center: deriveTickArrayPda(realIndex * ticksInArray).toBase58(),
+    upper: deriveTickArrayPda((realIndex + 1) * ticksInArray).toBase58(),
+  };
+}
+
+/**
+ * Derive Orca oracle PDA
+ */
+function deriveOrcaOracle(poolId: PublicKey): string {
+  const [oracle] = PublicKey.findProgramAddressSync(
+    [Buffer.from('oracle'), poolId.toBuffer()],
+    ORCA_WHIRLPOOL_PROGRAM
+  );
+  return oracle.toBase58();
+}
 
 export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
@@ -84,6 +128,86 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
       }
     }
   } catch (e) { logCatchError('resolver.orca', e); }
+  
+  // FALLBACK: If tick arrays are still missing, derive them from current tick and tick spacing
+  if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
+    const currentTick = hot?.currentTickIndex;
+    const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
+    
+    if (currentTick !== undefined && tickSpacing && tickSpacing > 0) {
+      try {
+        const poolId = hop.poolId.replace(/[#-]rev$/, '');
+        const poolPk = new PublicKey(poolId);
+        const derived = deriveOrcaTickArrays(poolPk, currentTick, tickSpacing);
+        
+        if (!hop.tickArrayLower) hop.tickArrayLower = derived.lower;
+        if (!hop.tickArrayCenter) hop.tickArrayCenter = derived.center;
+        if (!hop.tickArrayUpper) hop.tickArrayUpper = derived.upper;
+        
+        // Also update hot cache for future use
+        const existingHot = executionCache.getHot(poolId) || {};
+        executionCache.setHot(poolId, {
+          ...existingHot,
+          tickArrays: {
+            lower: hop.tickArrayLower,
+            center: hop.tickArrayCenter,
+            upper: hop.tickArrayUpper,
+          },
+        });
+        
+        try {
+          logger.info('orca.resolver.tick_arrays_derived', {
+            cat: 'tx',
+            traceId,
+            ctx: {
+              pool: hop.poolId,
+              currentTick,
+              tickSpacing,
+              lower: hop.tickArrayLower?.slice(0, 8) + '…',
+              center: hop.tickArrayCenter?.slice(0, 8) + '…',
+              upper: hop.tickArrayUpper?.slice(0, 8) + '…',
+            }
+          });
+        } catch (e) { logCatchError('resolver.orca', e); }
+      } catch (e) {
+        logCatchError('resolver.orca.deriveTickArrays', e);
+      }
+    } else {
+      try {
+        logger.warn('orca.resolver.tick_arrays_missing', {
+          cat: 'tx',
+          traceId,
+          ctx: {
+            pool: hop.poolId,
+            hasCurrentTick: currentTick !== undefined,
+            hasTickSpacing: !!tickSpacing,
+          }
+        });
+      } catch (e) { logCatchError('resolver.orca', e); }
+    }
+  }
+  
+  // FALLBACK: Derive oracle if still missing
+  if (!hop.oracle) {
+    try {
+      const poolId = hop.poolId.replace(/[#-]rev$/, '');
+      hop.oracle = deriveOrcaOracle(new PublicKey(poolId));
+      
+      try {
+        logger.info('orca.resolver.oracle_derived', {
+          cat: 'tx',
+          traceId,
+          ctx: {
+            pool: hop.poolId,
+            oracle: hop.oracle?.slice(0, 8) + '…',
+          }
+        });
+      } catch (e) { logCatchError('resolver.orca', e); }
+    } catch (e) {
+      logCatchError('resolver.orca.deriveOracle', e);
+    }
+  }
+  
   return hop;
 }
 

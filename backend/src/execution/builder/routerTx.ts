@@ -38,6 +38,12 @@ const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfc
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 const PUMPSWAP_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+
+// Tick array derivation constants
+const ORCA_TICK_ARRAY_SIZE = 88;
+const RAYDIUM_TICK_ARRAY_SIZE = 60;
 
 /**
  * Convert token program label to PublicKey
@@ -211,6 +217,39 @@ async function buildFlashLoanArbTx(
   const instructions: TransactionInstruction[] = [];
   
   try {
+    // Validate and populate missing accounts for each hop BEFORE building
+    for (let i = 0; i < plan.hops.length; i++) {
+      const hop = plan.hops[i];
+      const dexType = dexNameToType(hop.dex, hop.variant);
+      const validation = await validateAndPopulateHopAccounts(hop, dexType);
+      
+      if (!validation.valid) {
+        logger.warn('routerTx.flashLoan.validation.failed', {
+          cat: 'tx',
+          hopIndex: i,
+          pool: hop.poolId,
+          dex: hop.dex,
+          missingAccounts: validation.missingAccounts,
+        });
+        
+        return {
+          usedRouter: false,
+          instructions: [],
+          usedFlashLoan: false,
+          error: `Hop ${i} (${hop.dex}/${hop.poolId.slice(0, 8)}...): missing accounts: ${validation.missingAccounts.join(', ')}`,
+        };
+      }
+      
+      if (Object.keys(validation.derivedAccounts).length > 0) {
+        logger.info('routerTx.flashLoan.accounts.derived', {
+          cat: 'tx',
+          hopIndex: i,
+          pool: hop.poolId,
+          derived: Object.keys(validation.derivedAccounts),
+        });
+      }
+    }
+    
     const vaultOwner = new PublicKey(vaultOwnerStr);
     const inputMint = new PublicKey(plan.hops[0].inputMint);
     const borrowAmount = BigInt(plan.hops[0].amountInRaw.toString());
@@ -230,7 +269,7 @@ async function buildFlashLoanArbTx(
       )
     );
 
-    // 2. Execute swaps (using execute instruction for multi-hop)
+    // 2. Execute swaps (using execute instruction for multi-hop, now with validated accounts)
     const { steps, dexAccounts } = buildRouteSteps(plan.hops, wallet.publicKey);
     
     instructions.push(
@@ -296,10 +335,43 @@ async function buildDirectRouterTx(
   const instructions: TransactionInstruction[] = [];
 
   try {
+    // Validate and populate missing accounts for each hop BEFORE building
+    for (let i = 0; i < plan.hops.length; i++) {
+      const hop = plan.hops[i];
+      const dexType = dexNameToType(hop.dex, hop.variant);
+      const validation = await validateAndPopulateHopAccounts(hop, dexType);
+      
+      if (!validation.valid) {
+        logger.warn('routerTx.direct.validation.failed', {
+          cat: 'tx',
+          hopIndex: i,
+          pool: hop.poolId,
+          dex: hop.dex,
+          missingAccounts: validation.missingAccounts,
+        });
+        
+        return {
+          usedRouter: false,
+          instructions: [],
+          usedFlashLoan: false,
+          error: `Hop ${i} (${hop.dex}/${hop.poolId.slice(0, 8)}...): missing accounts: ${validation.missingAccounts.join(', ')}`,
+        };
+      }
+      
+      if (Object.keys(validation.derivedAccounts).length > 0) {
+        logger.info('routerTx.direct.accounts.derived', {
+          cat: 'tx',
+          hopIndex: i,
+          pool: hop.poolId,
+          derived: Object.keys(validation.derivedAccounts),
+        });
+      }
+    }
+    
     const inputMint = new PublicKey(plan.hops[0].inputMint);
     const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
 
-    // Build route steps and execute
+    // Build route steps and execute (now with validated/populated accounts)
     const { steps, dexAccounts } = buildRouteSteps(plan.hops, wallet.publicKey);
 
     instructions.push(
@@ -585,6 +657,321 @@ function derivePumpswapAssociatedBondingCurve(bondingCurve: PublicKey, mint: Pub
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   return assocBC;
+}
+
+// ============================================================================
+// Tick/Bin Array Derivation Helpers
+// ============================================================================
+
+/**
+ * Derive Orca Whirlpool tick array PDAs from current tick and tick spacing
+ */
+function deriveOrcaTickArrays(
+  poolId: PublicKey,
+  currentTickIndex: number,
+  tickSpacing: number
+): { lower: PublicKey; center: PublicKey; upper: PublicKey } {
+  const ticksInArray = ORCA_TICK_ARRAY_SIZE * tickSpacing;
+  const realIndex = Math.floor(currentTickIndex / ticksInArray);
+  
+  const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+    const startTickBuffer = Buffer.alloc(4);
+    startTickBuffer.writeInt32LE(startTickIndex, 0);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('tick_array'), poolId.toBuffer(), startTickBuffer],
+      ORCA_WHIRLPOOL_PROGRAM
+    );
+    return pda;
+  };
+  
+  return {
+    lower: deriveTickArrayPda((realIndex - 1) * ticksInArray),
+    center: deriveTickArrayPda(realIndex * ticksInArray),
+    upper: deriveTickArrayPda((realIndex + 1) * ticksInArray),
+  };
+}
+
+/**
+ * Derive Raydium CLMM tick array PDAs from current tick and tick spacing
+ */
+function deriveRaydiumTickArrays(
+  poolId: PublicKey,
+  currentTickIndex: number,
+  tickSpacing: number,
+  programId: PublicKey = RAYDIUM_CLMM_PROGRAM
+): { lower: PublicKey; center: PublicKey; upper: PublicKey } {
+  const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
+  const realIndex = Math.floor(currentTickIndex / ticksInArray);
+  
+  const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+    const startTickBuffer = Buffer.alloc(4);
+    startTickBuffer.writeInt32LE(startTickIndex, 0);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('tick_array'), poolId.toBuffer(), startTickBuffer],
+      programId
+    );
+    return pda;
+  };
+  
+  return {
+    lower: deriveTickArrayPda((realIndex - 1) * ticksInArray),
+    center: deriveTickArrayPda(realIndex * ticksInArray),
+    upper: deriveTickArrayPda((realIndex + 1) * ticksInArray),
+  };
+}
+
+/**
+ * Derive Meteora DLMM bin array PDAs from active bin ID and bin step
+ */
+function deriveMeteoraBinArrays(
+  poolId: PublicKey,
+  activeId: number,
+  binStep: number
+): { lower: PublicKey; upper: PublicKey } {
+  // Bin arrays contain bins for a range based on active ID
+  // Similar to tick arrays but for DLMM
+  const BIN_ARRAY_SIZE = 70; // Meteora uses 70 bins per array
+  const arrayIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
+  
+  const deriveBinArrayPda = (index: number): PublicKey => {
+    // Meteora bin array PDA seeds: ["bin_array", lb_pair.key(), bin_array_index]
+    const indexBuffer = Buffer.alloc(4);
+    indexBuffer.writeInt32LE(index, 0);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('bin_array'), poolId.toBuffer(), indexBuffer],
+      METEORA_DLMM_PROGRAM
+    );
+    return pda;
+  };
+  
+  return {
+    lower: deriveBinArrayPda(arrayIndex - 1),
+    upper: deriveBinArrayPda(arrayIndex + 1),
+  };
+}
+
+/**
+ * Derive Orca Whirlpool oracle PDA
+ */
+function deriveOrcaOracle(poolId: PublicKey): PublicKey {
+  const [oracle] = PublicKey.findProgramAddressSync(
+    [Buffer.from('oracle'), poolId.toBuffer()],
+    ORCA_WHIRLPOOL_PROGRAM
+  );
+  return oracle;
+}
+
+// ============================================================================
+// Hop Validation and Account Population
+// ============================================================================
+
+interface HopValidationResult {
+  valid: boolean;
+  missingAccounts: string[];
+  derivedAccounts: Record<string, string>;
+}
+
+/**
+ * Validate and populate missing accounts for a hop before building router transaction
+ * This ensures all required accounts are present, deriving them if possible
+ */
+async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType): Promise<HopValidationResult> {
+  const missingAccounts: string[] = [];
+  const derivedAccounts: Record<string, string> = {};
+  const poolId = hop.poolId.replace(/[#-]rev$/, '');
+  
+  // Get cached data
+  const stat = executionCache.getStatic(poolId);
+  const hot = executionCache.getHot(poolId);
+  
+  try {
+    const poolPk = new PublicKey(poolId);
+    
+    switch (dexType) {
+      case DexType.Raydium:
+        // Check and derive tick arrays
+        if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
+          const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
+          const currentTick = hot?.currentTickIndex;
+          
+          if (tickSpacing && currentTick !== undefined) {
+            const programId = hop.programId ? new PublicKey(hop.programId) : RAYDIUM_CLMM_PROGRAM;
+            const derived = deriveRaydiumTickArrays(poolPk, currentTick, tickSpacing, programId);
+            
+            if (!hop.tickArrayLower) {
+              hop.tickArrayLower = derived.lower.toBase58();
+              derivedAccounts.tickArrayLower = hop.tickArrayLower;
+            }
+            if (!hop.tickArrayCenter) {
+              hop.tickArrayCenter = derived.center.toBase58();
+              derivedAccounts.tickArrayCenter = hop.tickArrayCenter;
+            }
+            if (!hop.tickArrayUpper) {
+              hop.tickArrayUpper = derived.upper.toBase58();
+              derivedAccounts.tickArrayUpper = hop.tickArrayUpper;
+            }
+            
+            logger.debug('routerTx.raydium.tickArrays.derived', {
+              cat: 'tx',
+              pool: poolId,
+              currentTick,
+              tickSpacing,
+            });
+          } else {
+            if (!hop.tickArrayLower) missingAccounts.push('tickArrayLower');
+            if (!hop.tickArrayCenter) missingAccounts.push('tickArrayCenter');
+            if (!hop.tickArrayUpper) missingAccounts.push('tickArrayUpper');
+          }
+        }
+        
+        // Check AMM config
+        if (!hop.ammConfig) {
+          if (stat?.amm_config) {
+            hop.ammConfig = stat.amm_config;
+            derivedAccounts.ammConfig = hop.ammConfig;
+          } else {
+            missingAccounts.push('ammConfig');
+          }
+        }
+        
+        // Check observation state
+        if (!hop.observationId) {
+          if (stat?.observation_state) {
+            hop.observationId = stat.observation_state;
+            derivedAccounts.observationId = hop.observationId;
+          }
+          // observationId is optional, some pools may not have it
+        }
+        break;
+        
+      case DexType.Orca:
+        // Check and derive tick arrays
+        if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
+          const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
+          const currentTick = hot?.currentTickIndex;
+          
+          if (tickSpacing && currentTick !== undefined) {
+            const derived = deriveOrcaTickArrays(poolPk, currentTick, tickSpacing);
+            
+            if (!hop.tickArrayLower) {
+              hop.tickArrayLower = derived.lower.toBase58();
+              derivedAccounts.tickArrayLower = hop.tickArrayLower;
+            }
+            if (!hop.tickArrayCenter) {
+              hop.tickArrayCenter = derived.center.toBase58();
+              derivedAccounts.tickArrayCenter = hop.tickArrayCenter;
+            }
+            if (!hop.tickArrayUpper) {
+              hop.tickArrayUpper = derived.upper.toBase58();
+              derivedAccounts.tickArrayUpper = hop.tickArrayUpper;
+            }
+            
+            logger.debug('routerTx.orca.tickArrays.derived', {
+              cat: 'tx',
+              pool: poolId,
+              currentTick,
+              tickSpacing,
+            });
+          } else {
+            if (!hop.tickArrayLower) missingAccounts.push('tickArrayLower');
+            if (!hop.tickArrayCenter) missingAccounts.push('tickArrayCenter');
+            if (!hop.tickArrayUpper) missingAccounts.push('tickArrayUpper');
+          }
+        }
+        
+        // Derive oracle if missing
+        if (!hop.oracle) {
+          hop.oracle = deriveOrcaOracle(poolPk).toBase58();
+          derivedAccounts.oracle = hop.oracle;
+        }
+        break;
+        
+      case DexType.Meteora:
+        // Check and derive bin arrays
+        if (!hop.binArrayLower || !hop.binArrayUpper) {
+          const binStep = hop.binStep || stat?.binStep || stat?.bin_step;
+          const activeId = hop.activeId || hot?.activeId;
+          
+          if (binStep && activeId !== undefined) {
+            const derived = deriveMeteoraBinArrays(poolPk, activeId, binStep);
+            
+            if (!hop.binArrayLower) {
+              hop.binArrayLower = derived.lower.toBase58();
+              derivedAccounts.binArrayLower = hop.binArrayLower;
+            }
+            if (!hop.binArrayUpper) {
+              hop.binArrayUpper = derived.upper.toBase58();
+              derivedAccounts.binArrayUpper = hop.binArrayUpper;
+            }
+            
+            logger.debug('routerTx.meteora.binArrays.derived', {
+              cat: 'tx',
+              pool: poolId,
+              activeId,
+              binStep,
+            });
+          } else {
+            if (!hop.binArrayLower) missingAccounts.push('binArrayLower');
+            if (!hop.binArrayUpper) missingAccounts.push('binArrayUpper');
+          }
+        }
+        
+        // Ensure token programs are set (default to SPL Token)
+        if (!(hop as any).tokenProgramA) {
+          (hop as any).tokenProgramA = stat?.token_program_a || 'spl-token';
+        }
+        if (!(hop as any).tokenProgramB) {
+          (hop as any).tokenProgramB = stat?.token_program_b || 'spl-token';
+        }
+        break;
+        
+      case DexType.PumpSwap:
+        // Check protocol fee recipient
+        if (!(hop as any).protocolFeeRecipient) {
+          if (stat?.protocol_fee_recipient) {
+            (hop as any).protocolFeeRecipient = stat.protocol_fee_recipient;
+            derivedAccounts.protocolFeeRecipient = stat.protocol_fee_recipient;
+          }
+          // protocolFeeRecipient will fall back to program ID in extractDexAccounts
+        }
+        break;
+    }
+    
+    // Common: Check vaults
+    if (!hop.vaultA) {
+      const vaultA = stat?.native_account_a || stat?.account_a || stat?.vaults?.a || stat?.vault_a;
+      if (vaultA) {
+        hop.vaultA = vaultA;
+        derivedAccounts.vaultA = vaultA;
+      } else {
+        missingAccounts.push('vaultA');
+      }
+    }
+    if (!hop.vaultB) {
+      const vaultB = stat?.native_account_b || stat?.account_b || stat?.vaults?.b || stat?.vault_b;
+      if (vaultB) {
+        hop.vaultB = vaultB;
+        derivedAccounts.vaultB = vaultB;
+      } else {
+        missingAccounts.push('vaultB');
+      }
+    }
+    
+  } catch (err: any) {
+    logger.error('routerTx.validateHop.error', {
+      cat: 'tx',
+      pool: poolId,
+      dex: hop.dex,
+      error: err.message,
+    });
+    missingAccounts.push(`validation_error: ${err.message}`);
+  }
+  
+  return {
+    valid: missingAccounts.length === 0,
+    missingAccounts,
+    derivedAccounts,
+  };
 }
 
 /**
