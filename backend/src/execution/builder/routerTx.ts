@@ -889,7 +889,7 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
       case DexType.Meteora:
         // Check and derive bin arrays
         if (!hop.binArrayLower || !hop.binArrayUpper) {
-          const binStep = hop.binStep || stat?.binStep || stat?.bin_step;
+          const binStep = hop.binStep || stat?.binStep;
           const activeId = hop.activeId || hot?.activeId;
           
           if (binStep && activeId !== undefined) {

@@ -1211,7 +1211,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
       
       // Calculate expected output from the last hop
       const lastHop = executionPlan.hops[executionPlan.hops.length - 1];
-      const expectedOutputRaw = lastHop?.minAmountOut || lastHop?.amountInRaw || BigInt(0);
+      const expectedOutputRaw = lastHop?.minOutRaw || lastHop?.amountInRaw || BigInt(0);
 
       logger.info('router.test-execute.plan_resolved', {
         cat: 'router',
