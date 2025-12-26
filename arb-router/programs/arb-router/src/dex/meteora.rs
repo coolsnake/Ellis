@@ -11,9 +11,9 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::constants::dex_programs::METEORA_DLMM;
 use crate::error::ArbRouterError;
 
-/// Minimum number of accounts needed for a Meteora DLMM swap
-/// 15 fixed accounts + 1 program + at least 1 bin array = 17 minimum
-pub const MIN_ACCOUNTS_NEEDED: usize = 17;
+/// Number of accounts needed for a Meteora DLMM swap
+/// 15 fixed accounts + 1 program + 2 bin arrays = 18 accounts
+pub const ACCOUNTS_NEEDED: usize = 18;
 
 /// Meteora DLMM swap2 instruction discriminator
 /// swap2 is preferred over swap - handles bitmap extension edge cases better
@@ -55,8 +55,8 @@ pub fn swap(
     amount_in: u64,
     min_amount_out: u64,
 ) -> Result<()> {
-    if accounts.len() < MIN_ACCOUNTS_NEEDED {
-        msg!("Meteora: Insufficient accounts. Expected at least {}, got {}", MIN_ACCOUNTS_NEEDED, accounts.len());
+    if accounts.len() < ACCOUNTS_NEEDED {
+        msg!("Meteora: Insufficient accounts. Expected at least {}, got {}", ACCOUNTS_NEEDED, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
