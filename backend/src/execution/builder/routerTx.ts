@@ -46,6 +46,18 @@ const ORCA_TICK_ARRAY_SIZE = 88;
 const RAYDIUM_TICK_ARRAY_SIZE = 60;
 
 /**
+ * Derive Raydium CLMM observation state PDA
+ * Seeds: ["observation", pool_id]
+ */
+function deriveRaydiumObservationPda(poolId: PublicKey, programId: PublicKey = RAYDIUM_CLMM_PROGRAM): PublicKey {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('observation'), poolId.toBuffer()],
+    programId
+  );
+  return pda;
+}
+
+/**
  * Convert token program label to PublicKey
  * Meteora pools may use spl-token or token-2022 for each side
  */
@@ -505,21 +517,43 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         // 5: InputVault, 6: OutputVault, 7: Observation, 8: TokenProgram, 9: Token2022Program,
         // 10: MemoProgram, 11: InputMint, 12: OutputMint, 13: Oracle/exBitmap,
         // 14: TickArrayCenter, 15: TickArrayLower, 16: TickArrayUpper, 17: RaydiumProgram
+        
+        // Get ammConfig from hop or cache - CRITICAL: cannot be derived, must come from pool data
+        const ammConfigAddr = hop.ammConfig || stat?.amm_config;
+        if (!ammConfigAddr) {
+          logger.warn('routerTx.raydium.ammConfig_missing', {
+            cat: 'tx',
+            poolId: hop.poolId,
+            note: 'ammConfig not in cache - will use poolId as placeholder (may fail)',
+          });
+        }
+        const ammConfig = ammConfigAddr ? new PublicKey(ammConfigAddr) : poolId;
+        
+        // Derive observation state PDA if not cached
+        const observationState = hop.observationId 
+          ? new PublicKey(hop.observationId)
+          : deriveRaydiumObservationPda(poolId, programIdKey);
+        
+        // For oracle/exBitmap, use observation as fallback (they're often the same or related)
+        const oracleOrExBitmap = hop.oracle 
+          ? new PublicKey(hop.oracle) 
+          : observationState;
+        
         accounts.push(
           wallet,                                                              // 0: Payer (signer)
-          hop.ammConfig ? new PublicKey(hop.ammConfig) : poolId,              // 1: AMM Config
+          ammConfig,                                                           // 1: AMM Config (from cache or placeholder)
           poolId,                                                              // 2: Pool State
           userSourceAta,                                                       // 3: Input Token Account (user)
           userDestAta,                                                         // 4: Output Token Account (user)
           new PublicKey(isAtoB ? (hop.vaultA || hop.poolId) : (hop.vaultB || hop.poolId)), // 5: Input Vault
           new PublicKey(isAtoB ? (hop.vaultB || hop.poolId) : (hop.vaultA || hop.poolId)), // 6: Output Vault
-          hop.observationId ? new PublicKey(hop.observationId) : poolId,      // 7: Observation State
+          observationState,                                                    // 7: Observation State (derived PDA)
           TOKEN_PROGRAM_ID,                                                    // 8: Token Program
           TOKEN_2022_PROGRAM_ID,                                               // 9: Token-2022 Program
           MEMO_PROGRAM_ID,                                                     // 10: Memo Program
           inputMint,                                                           // 11: Input Token Mint
           outputMint,                                                          // 12: Output Token Mint
-          hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 13: Oracle/exBitmap
+          oracleOrExBitmap,                                                    // 13: Oracle/exBitmap (use observation as fallback)
           hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 14: Tick Array Center
           hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 15: Tick Array Lower
           hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 16: Tick Array Upper
