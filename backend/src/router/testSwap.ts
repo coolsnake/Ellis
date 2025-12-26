@@ -1429,13 +1429,13 @@ async function buildMeteoraDexAccountsForRouter(
  * 13. Memo Program
  * 14. Whirlpool Program
  */
-function buildOrcaDexAccountsForRouter(
+async function buildOrcaDexAccountsForRouter(
   payer: PublicKey,
   pool: OrcaWhirlpoolPoolState,
   poolPubkey: PublicKey,
   inputMint: PublicKey,
   outputMint: PublicKey
-): PublicKey[] {
+): Promise<PublicKey[]> {
   // Determine swap direction (A -> B or B -> A)
   const isAtoB = inputMint.toBase58() === pool.mintA;
   
@@ -1444,18 +1444,97 @@ function buildOrcaDexAccountsForRouter(
   const userTokenA = getAssociatedTokenAddressSync(new PublicKey(pool.mintA), payer);
   const userTokenB = getAssociatedTokenAddressSync(new PublicKey(pool.mintB), payer);
   
-  // Tick arrays must be ordered based on swap direction
-  // A→B: price moves down (tick decreases), need arrays in descending order (center, lower, ...)
-  // B→A: price moves up (tick increases), need arrays in ascending order (center, upper, ...)
-  const tickArray0 = isAtoB 
-    ? new PublicKey(pool.tickArrays.center)  // Start with center for A→B
-    : new PublicKey(pool.tickArrays.center);  // Start with center for B→A
-  const tickArray1 = isAtoB
-    ? new PublicKey(pool.tickArrays.lower)   // Lower for A→B (descending)
-    : new PublicKey(pool.tickArrays.upper);  // Upper for B→A (ascending)
-  const tickArray2 = isAtoB
-    ? new PublicKey(pool.tickArrays.upper)    // Upper for A→B (may need more arrays)
-    : new PublicKey(pool.tickArrays.lower);  // Lower for B→A (may need more arrays)
+  // Calculate tick arrays using Orca SDK's tick utilities
+  // This ensures we get the correct contiguous sequence based on swap direction
+  let tickArray0: PublicKey;
+  let tickArray1: PublicKey;
+  let tickArray2: PublicKey;
+  
+  try {
+    const { PDAUtil } = await import('@orca-so/whirlpools-sdk');
+    const publicUtilsMod: any = await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null);
+    
+    const tickSpacing = pool.tickSpacing;
+    const currentTick = pool.tickCurrentIndex;
+    const tickUtil = publicUtilsMod?.TickUtil;
+    
+    if (tickUtil && typeof tickUtil.getStartTickIndex === 'function') {
+      // Use Orca SDK's tick utility to calculate correct start indices
+      // For A→B: price decreases, tick decreases (need arrays going down)
+      // For B→A: price increases, tick increases (need arrays going up)
+      const shift = isAtoB ? 0 : tickSpacing;
+      const offset0 = 0;
+      const offset1 = isAtoB ? -1 : 1;  // Next array in swap direction
+      const offset2 = isAtoB ? -2 : 2;  // Array after that
+      
+      const start0 = tickUtil.getStartTickIndex(currentTick + shift, tickSpacing, offset0);
+      const start1 = tickUtil.getStartTickIndex(currentTick + shift, tickSpacing, offset1);
+      const start2 = tickUtil.getStartTickIndex(currentTick + shift, tickSpacing, offset2);
+      
+      tickArray0 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start0).publicKey;
+      tickArray1 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start1).publicKey;
+      tickArray2 = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, start2).publicKey;
+    } else {
+      // Fallback to static derivation if SDK utilities not available
+      const TICK_ARRAY_SIZE = 88;
+      const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
+      const currentStartIndex = Math.floor(currentTick / ticksInArray) * ticksInArray;
+      
+      const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+        const startTickBuffer = Buffer.alloc(4);
+        startTickBuffer.writeInt32LE(startTickIndex, 0);
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+          ORCA_WHIRLPOOL_PROGRAM
+        );
+        return pda;
+      };
+      
+      // Order based on swap direction
+      if (isAtoB) {
+        // A→B: descending order (center, lower, lower-1)
+        tickArray0 = deriveTickArrayPda(currentStartIndex);
+        tickArray1 = deriveTickArrayPda(currentStartIndex - ticksInArray);
+        tickArray2 = deriveTickArrayPda(currentStartIndex - (2 * ticksInArray));
+      } else {
+        // B→A: ascending order (center, upper, upper+1)
+        tickArray0 = deriveTickArrayPda(currentStartIndex);
+        tickArray1 = deriveTickArrayPda(currentStartIndex + ticksInArray);
+        tickArray2 = deriveTickArrayPda(currentStartIndex + (2 * ticksInArray));
+      }
+    }
+  } catch (err: any) {
+    logger.warn('router.test.orca.tickarray.calc.error', { 
+      cat: 'router', 
+      error: err.message,
+      fallback: 'using static derivation'
+    });
+    
+    // Fallback to static derivation
+    const TICK_ARRAY_SIZE = 88;
+    const ticksInArray = TICK_ARRAY_SIZE * pool.tickSpacing;
+    const currentStartIndex = Math.floor(pool.tickCurrentIndex / ticksInArray) * ticksInArray;
+    
+    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+      const startTickBuffer = Buffer.alloc(4);
+      startTickBuffer.writeInt32LE(startTickIndex, 0);
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+        ORCA_WHIRLPOOL_PROGRAM
+      );
+      return pda;
+    };
+    
+    if (isAtoB) {
+      tickArray0 = deriveTickArrayPda(currentStartIndex);
+      tickArray1 = deriveTickArrayPda(currentStartIndex - ticksInArray);
+      tickArray2 = deriveTickArrayPda(currentStartIndex - (2 * ticksInArray));
+    } else {
+      tickArray0 = deriveTickArrayPda(currentStartIndex);
+      tickArray1 = deriveTickArrayPda(currentStartIndex + ticksInArray);
+      tickArray2 = deriveTickArrayPda(currentStartIndex + (2 * ticksInArray));
+    }
+  }
   
   const accounts: PublicKey[] = [
     TOKEN_PROGRAM_ID,                                              // 0: Token Program
@@ -1465,9 +1544,9 @@ function buildOrcaDexAccountsForRouter(
     new PublicKey(pool.vaultA),                                   // 4: Token Vault A
     userTokenB,                                                    // 5: Token Owner Account B
     new PublicKey(pool.vaultB),                                   // 6: Token Vault B
-    tickArray0,                                                    // 7: Tick Array 0 (center)
-    tickArray1,                                                    // 8: Tick Array 1 (direction-dependent)
-    tickArray2,                                                    // 9: Tick Array 2 (direction-dependent)
+    tickArray0,                                                    // 7: Tick Array 0
+    tickArray1,                                                    // 8: Tick Array 1
+    tickArray2,                                                    // 9: Tick Array 2
     new PublicKey(pool.oracle),                                   // 10: Oracle
     new PublicKey(pool.mintA),                                    // 11: Token Mint A
     new PublicKey(pool.mintB),                                    // 12: Token Mint B
