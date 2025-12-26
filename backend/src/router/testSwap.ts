@@ -574,28 +574,70 @@ async function fetchOrcaWhirlpoolPool(
       ORCA_WHIRLPOOL_PROGRAM
     );
     
-    // Derive tick array PDAs
-    // TickArray size in Orca Whirlpools is TICK_ARRAY_SIZE = 88
-    const TICK_ARRAY_SIZE = 88;
-    const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
+    // Derive tick array PDAs using Orca SDK (same as production code)
+    let tickArrayLower: PublicKey;
+    let tickArrayCenter: PublicKey;
+    let tickArrayUpper: PublicKey;
     
-    // Calculate the start tick index for the current tick array
-    const currentStartIndex = Math.floor(tickCurrentIndex / ticksInArray) * ticksInArray;
-    
-    // Derive tick arrays: current, lower, upper
-    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-      const startTickBuffer = Buffer.alloc(4);
-      startTickBuffer.writeInt32LE(startTickIndex, 0);
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
-        ORCA_WHIRLPOOL_PROGRAM
-      );
-      return pda;
-    };
-    
-    const tickArrayLower = deriveTickArrayPda(currentStartIndex - ticksInArray);
-    const tickArrayCenter = deriveTickArrayPda(currentStartIndex);
-    const tickArrayUpper = deriveTickArrayPda(currentStartIndex + ticksInArray);
+    try {
+      // Use SDK for proper tick array derivation (handles negative ticks correctly)
+      const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+      const PDAUtil = sdkAny?.PDAUtil;
+      const TickUtil = sdkAny?.TickUtil || 
+        (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
+      
+      if (TickUtil && PDAUtil && typeof TickUtil.getStartTickIndex === 'function') {
+        // Derive tick arrays at offsets -1, 0, +1 like production code
+        const startTickLower = TickUtil.getStartTickIndex(tickCurrentIndex, tickSpacing, -1);
+        const startTickCenter = TickUtil.getStartTickIndex(tickCurrentIndex, tickSpacing, 0);
+        const startTickUpper = TickUtil.getStartTickIndex(tickCurrentIndex, tickSpacing, 1);
+        
+        tickArrayLower = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, startTickLower).publicKey;
+        tickArrayCenter = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, startTickCenter).publicKey;
+        tickArrayUpper = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, startTickUpper).publicKey;
+        
+        logger.info('router.test.orca.tickarrays.sdk', {
+          cat: 'router',
+          tickCurrentIndex,
+          tickSpacing,
+          startTickLower,
+          startTickCenter,
+          startTickUpper,
+          lower: tickArrayLower.toBase58(),
+          center: tickArrayCenter.toBase58(),
+          upper: tickArrayUpper.toBase58(),
+        });
+      } else {
+        throw new Error('SDK tick utils not available');
+      }
+    } catch (sdkErr: any) {
+      // Fallback to manual derivation if SDK fails
+      logger.warn('router.test.orca.tickarrays.sdk.failed', {
+        cat: 'router',
+        error: sdkErr?.message || String(sdkErr),
+        fallback: 'manual derivation',
+      });
+      
+      const TICK_ARRAY_SIZE = 88;
+      const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
+      
+      // Proper floor division for negative ticks
+      const currentStartIndex = Math.floor(tickCurrentIndex / ticksInArray) * ticksInArray;
+      
+      const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+        const startTickBuffer = Buffer.alloc(4);
+        startTickBuffer.writeInt32LE(startTickIndex, 0);
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+          ORCA_WHIRLPOOL_PROGRAM
+        );
+        return pda;
+      };
+      
+      tickArrayLower = deriveTickArrayPda(currentStartIndex - ticksInArray);
+      tickArrayCenter = deriveTickArrayPda(currentStartIndex);
+      tickArrayUpper = deriveTickArrayPda(currentStartIndex + ticksInArray);
+    }
     
     // Determine token program by checking vault account
     let tokenProgramId = TOKEN_PROGRAM_ID;
