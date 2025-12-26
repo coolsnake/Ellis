@@ -574,70 +574,44 @@ async function fetchOrcaWhirlpoolPool(
       ORCA_WHIRLPOOL_PROGRAM
     );
     
-    // Derive tick array PDAs using Orca SDK (same as production code)
-    let tickArrayLower: PublicKey;
-    let tickArrayCenter: PublicKey;
-    let tickArrayUpper: PublicKey;
+    // Derive tick array PDAs using same formula as Orca SDK
+    // getStartTickIndex formula: floor(tickIndex / ticksInArray) * ticksInArray + (offset * ticksInArray)
+    const TICK_ARRAY_SIZE = 88;
+    const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
     
-    try {
-      // Use SDK for proper tick array derivation (handles negative ticks correctly)
-      const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
-      const PDAUtil = sdkAny?.PDAUtil;
-      const TickUtil = sdkAny?.TickUtil || 
-        (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
-      
-      if (TickUtil && PDAUtil && typeof TickUtil.getStartTickIndex === 'function') {
-        // Derive tick arrays at offsets -1, 0, +1 like production code
-        const startTickLower = TickUtil.getStartTickIndex(tickCurrentIndex, tickSpacing, -1);
-        const startTickCenter = TickUtil.getStartTickIndex(tickCurrentIndex, tickSpacing, 0);
-        const startTickUpper = TickUtil.getStartTickIndex(tickCurrentIndex, tickSpacing, 1);
-        
-        tickArrayLower = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, startTickLower).publicKey;
-        tickArrayCenter = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, startTickCenter).publicKey;
-        tickArrayUpper = PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolPubkey, startTickUpper).publicKey;
-        
-        logger.info('router.test.orca.tickarrays.sdk', {
-          cat: 'router',
-          tickCurrentIndex,
-          tickSpacing,
-          startTickLower,
-          startTickCenter,
-          startTickUpper,
-          lower: tickArrayLower.toBase58(),
-          center: tickArrayCenter.toBase58(),
-          upper: tickArrayUpper.toBase58(),
-        });
-      } else {
-        throw new Error('SDK tick utils not available');
-      }
-    } catch (sdkErr: any) {
-      // Fallback to manual derivation if SDK fails
-      logger.warn('router.test.orca.tickarrays.sdk.failed', {
-        cat: 'router',
-        error: sdkErr?.message || String(sdkErr),
-        fallback: 'manual derivation',
-      });
-      
-      const TICK_ARRAY_SIZE = 88;
-      const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
-      
-      // Proper floor division for negative ticks
-      const currentStartIndex = Math.floor(tickCurrentIndex / ticksInArray) * ticksInArray;
-      
-      const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-        const startTickBuffer = Buffer.alloc(4);
-        startTickBuffer.writeInt32LE(startTickIndex, 0);
-        const [pda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
-          ORCA_WHIRLPOOL_PROGRAM
-        );
-        return pda;
-      };
-      
-      tickArrayLower = deriveTickArrayPda(currentStartIndex - ticksInArray);
-      tickArrayCenter = deriveTickArrayPda(currentStartIndex);
-      tickArrayUpper = deriveTickArrayPda(currentStartIndex + ticksInArray);
-    }
+    // Calculate start tick index for the current tick (offset 0)
+    const realIndex = Math.floor(tickCurrentIndex / ticksInArray);
+    const startTickLower = (realIndex - 1) * ticksInArray;   // offset -1
+    const startTickCenter = realIndex * ticksInArray;         // offset 0
+    const startTickUpper = (realIndex + 1) * ticksInArray;   // offset +1
+    
+    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+      const startTickBuffer = Buffer.alloc(4);
+      startTickBuffer.writeInt32LE(startTickIndex, 0);
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+        ORCA_WHIRLPOOL_PROGRAM
+      );
+      return pda;
+    };
+    
+    const tickArrayLower = deriveTickArrayPda(startTickLower);
+    const tickArrayCenter = deriveTickArrayPda(startTickCenter);
+    const tickArrayUpper = deriveTickArrayPda(startTickUpper);
+    
+    logger.info('router.test.orca.tickarrays.derived', {
+      cat: 'router',
+      tickCurrentIndex,
+      tickSpacing,
+      ticksInArray,
+      realIndex,
+      startTickLower,
+      startTickCenter,
+      startTickUpper,
+      lower: tickArrayLower.toBase58(),
+      center: tickArrayCenter.toBase58(),
+      upper: tickArrayUpper.toBase58(),
+    });
     
     // Determine token program by checking vault account
     let tokenProgramId = TOKEN_PROGRAM_ID;
@@ -1297,7 +1271,7 @@ async function getRaydiumSdkAccountOrder(
  * 15. Bin Array Lower (remaining account)
  * 16. Bin Array Upper (remaining account)
  * 
- * For Orca Whirlpool, the router expects 15 accounts:
+ * For Orca Whirlpool, the router expects 12 accounts:
  * 0. Token Program
  * 1. Token Authority (signer)
  * 2. Whirlpool
@@ -1305,14 +1279,11 @@ async function getRaydiumSdkAccountOrder(
  * 4. Token Vault A
  * 5. Token Owner Account B
  * 6. Token Vault B
- * 7. Tick Array 0
- * 8. Tick Array 1
- * 9. Tick Array 2
+ * 7. Tick Array 0 (lower)
+ * 8. Tick Array 1 (center)
+ * 9. Tick Array 2 (upper)
  * 10. Oracle
- * 11. Token Mint A
- * 12. Token Mint B
- * 13. Memo Program
- * 14. Whirlpool Program
+ * 11. Whirlpool Program (for CPI)
  */
 async function buildDexAccountsForRouter(
   payer: PublicKey,
@@ -1454,24 +1425,19 @@ async function buildMeteoraDexAccountsForRouter(
 /**
  * Build Orca Whirlpool accounts in the order expected by the on-chain router
  * 
- * Uses swap_v2 layout for Token-2022 support and better resilience.
- * Based on arb-router/programs/arb-router/src/dex/orca.rs:
- * 0. Token Program A
- * 1. Token Program B
- * 2. Memo Program
- * 3. Token Authority (signer)
- * 4. Whirlpool
- * 5. Token Mint A
- * 6. Token Mint B
- * 7. Token Owner Account A (user's token A account)
- * 8. Token Vault A
- * 9. Token Owner Account B (user's token B account)
- * 10. Token Vault B
- * 11. Tick Array 0
- * 12. Tick Array 1
- * 13. Tick Array 2
- * 14. Oracle
- * 15. Whirlpool Program (for CPI)
+ * Uses standard swap layout (matches working local builder - 12 accounts):
+ * 0. Token Program
+ * 1. Token Authority (signer)
+ * 2. Whirlpool
+ * 3. Token Owner Account A
+ * 4. Token Vault A
+ * 5. Token Owner Account B
+ * 6. Token Vault B
+ * 7. Tick Array 0 (lower)
+ * 8. Tick Array 1 (center)
+ * 9. Tick Array 2 (upper)
+ * 10. Oracle
+ * 11. Whirlpool Program (for CPI)
  */
 async function buildOrcaDexAccountsForRouter(
   payer: PublicKey,
@@ -1502,24 +1468,20 @@ async function buildOrcaDexAccountsForRouter(
     tickArray2: tickArray2.toBase58(),
   });
   
-  // swap_v2 account layout
+  // Standard swap account layout (matches working local builder - 12 accounts)
   const accounts: PublicKey[] = [
-    new PublicKey(pool.tokenProgram),                              // 0: Token Program A
-    new PublicKey(pool.tokenProgram),                              // 1: Token Program B (same for non-Token2022)
-    MEMO_PROGRAM_ID,                                               // 2: Memo Program
-    payer,                                                         // 3: Token Authority (signer)
-    poolPubkey,                                                    // 4: Whirlpool
-    new PublicKey(pool.mintA),                                    // 5: Token Mint A
-    new PublicKey(pool.mintB),                                    // 6: Token Mint B
-    userTokenA,                                                    // 7: Token Owner Account A
-    new PublicKey(pool.vaultA),                                   // 8: Token Vault A
-    userTokenB,                                                    // 9: Token Owner Account B
-    new PublicKey(pool.vaultB),                                   // 10: Token Vault B
-    tickArray0,                                                    // 11: Tick Array 0
-    tickArray1,                                                    // 12: Tick Array 1
-    tickArray2,                                                    // 13: Tick Array 2
-    new PublicKey(pool.oracle),                                   // 14: Oracle
-    ORCA_WHIRLPOOL_PROGRAM,                                        // 15: Whirlpool Program (for CPI)
+    new PublicKey(pool.tokenProgram),                              // 0: Token Program
+    payer,                                                         // 1: Token Authority (signer)
+    poolPubkey,                                                    // 2: Whirlpool
+    userTokenA,                                                    // 3: Token Owner Account A
+    new PublicKey(pool.vaultA),                                   // 4: Token Vault A
+    userTokenB,                                                    // 5: Token Owner Account B
+    new PublicKey(pool.vaultB),                                   // 6: Token Vault B
+    tickArray0,                                                    // 7: Tick Array 0 (lower)
+    tickArray1,                                                    // 8: Tick Array 1 (center)
+    tickArray2,                                                    // 9: Tick Array 2 (upper)
+    new PublicKey(pool.oracle),                                   // 10: Oracle
+    ORCA_WHIRLPOOL_PROGRAM,                                        // 11: Whirlpool Program (for CPI)
   ];
   
   logger.info('router.test.dex_accounts', { 
