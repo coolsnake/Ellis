@@ -504,10 +504,10 @@ async function fetchOrcaWhirlpoolPool(
     // 8: protocolFeeOwedB (u64)
     // 32: tokenMintA
     // 32: tokenVaultA
-    // 8: feeGrowthGlobalA (u64)
+    // 16: feeGrowthGlobalA (u128)
     // 32: tokenMintB
     // 32: tokenVaultB
-    // 8: feeGrowthGlobalB (u64)
+    // 16: feeGrowthGlobalB (u128)
     // ...
     
     // Convert to Buffer to ensure we have Buffer methods
@@ -557,8 +557,8 @@ async function fetchOrcaWhirlpoolPool(
     const vaultA = new PublicKey(data.subarray(offset, offset + 32));
     offset += 32;
     
-    // feeGrowthGlobalA (8 bytes)
-    offset += 8;
+    // feeGrowthGlobalA (16 bytes, u128)
+    offset += 16;
     
     // tokenMintB (32 bytes)
     const mintB = new PublicKey(data.subarray(offset, offset + 32));
