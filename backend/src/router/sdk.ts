@@ -466,7 +466,7 @@ export function getAccountsNeededForDex(dexType: DexType): number {
     case DexType.Raydium:
       return 17; // Raydium CLMM
     case DexType.Meteora:
-      return 18; // Meteora DLMM: 15 fixed + 1 program + 2 bin arrays
+      return 17; // Meteora DLMM: 14 fixed + 1 program + 2 bin arrays
     case DexType.Orca:
       return 15; // Orca Whirlpool
     case DexType.PumpSwap:

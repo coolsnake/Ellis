@@ -286,24 +286,28 @@ async function fetchMeteoraDlmmPool(
     
     const programId = accountInfo.owner;
     
-    // Try to extract reserves and oracle directly from decoded state first
+    // Try to extract reserves, oracle, and bitmap extension directly from decoded state first
     // The lbPair account stores these addresses directly
     const reserveXFromState = toPublicKeySafe(state.reserveX);
     const reserveYFromState = toPublicKeySafe(state.reserveY);
     const oracleFromState = toPublicKeySafe(state.oracle);
+    const bitmapExtFromState = toPublicKeySafe(state.binArrayBitmapExtension);
     
     let reserveX = reserveXFromState?.toBase58() || '';
     let reserveY = reserveYFromState?.toBase58() || '';
     let oracle = oracleFromState?.toBase58() || '';
+    let bitmapExtension: string | undefined = bitmapExtFromState?.toBase58();
     
     logger.info('router.test.meteora.state_fields', { 
       cat: 'router', 
       hasReserveX: !!reserveXFromState, 
       hasReserveY: !!reserveYFromState,
       hasOracle: !!oracleFromState,
+      hasBitmapExt: !!bitmapExtFromState,
       reserveX,
       reserveY,
-      oracle
+      oracle,
+      bitmapExtension: bitmapExtension || 'not_in_state'
     });
     
     // Fallback to PDA derivation only if not found in state
@@ -389,23 +393,27 @@ async function fetchMeteoraDlmmPool(
       logger.warn('router.test.meteora.binarray.derive.error', { cat: 'router', error: err.message });
     }
     
-    // Derive bitmap extension PDA and check if it exists
-    let bitmapExtension: string | undefined;
-    try {
-      const [bitmapExtPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('BitmapExtension'), poolPubkey.toBuffer()],
-        programId
-      );
-      // Check if the bitmap extension account exists on-chain
-      const bitmapExtInfo = await connection.getAccountInfo(bitmapExtPda);
-      if (bitmapExtInfo && bitmapExtInfo.owner.equals(programId)) {
-        bitmapExtension = bitmapExtPda.toBase58();
-        logger.info('router.test.meteora.bitmapExt.found', { cat: 'router', bitmapExtension });
-      } else {
-        logger.info('router.test.meteora.bitmapExt.not_found', { cat: 'router', pda: bitmapExtPda.toBase58() });
+    // Bitmap extension: prefer from pool state, fallback to PDA derivation
+    // Some pools require an actual bitmap extension for wide price ranges
+    if (!bitmapExtension) {
+      try {
+        const [bitmapExtPda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('BitmapExtension'), poolPubkey.toBuffer()],
+          programId
+        );
+        // Check if the bitmap extension account exists on-chain
+        const bitmapExtInfo = await connection.getAccountInfo(bitmapExtPda);
+        if (bitmapExtInfo && bitmapExtInfo.owner.equals(programId)) {
+          bitmapExtension = bitmapExtPda.toBase58();
+          logger.info('router.test.meteora.bitmapExt.derived_and_found', { cat: 'router', bitmapExtension });
+        } else {
+          logger.info('router.test.meteora.bitmapExt.not_found', { cat: 'router', pda: bitmapExtPda.toBase58() });
+        }
+      } catch (err: any) {
+        logger.debug('router.test.meteora.bitmapExt.derive.error', { cat: 'router', error: err.message });
       }
-    } catch (err: any) {
-      logger.debug('router.test.meteora.bitmapExt.derive.error', { cat: 'router', error: err.message });
+    } else {
+      logger.info('router.test.meteora.bitmapExt.from_state', { cat: 'router', bitmapExtension });
     }
     
     // Determine token program
@@ -1011,7 +1019,7 @@ async function getRaydiumSdkAccountOrder(
  * 16. Tick Array Upper
  * 17. Raydium CLMM Program
  * 
- * For Meteora DLMM, the router expects 18 accounts:
+ * For Meteora DLMM, the router expects 17 accounts:
  * 0. LB Pair
  * 1. Bitmap Extension (optional, use program ID as placeholder)
  * 2. Reserve X (token vault)
@@ -1025,11 +1033,10 @@ async function getRaydiumSdkAccountOrder(
  * 10. User (signer)
  * 11. Token X Program
  * 12. Token Y Program
- * 13. Memo Program
- * 14. Event Authority
+ * 13. Event Authority
+ * 14. Meteora DLMM Program (for CPI invoke)
  * 15. Bin Array Lower (remaining account)
  * 16. Bin Array Upper (remaining account)
- * 17. Meteora DLMM Program (for CPI invoke, must be last)
  */
 async function buildDexAccountsForRouter(
   payer: PublicKey,
@@ -1087,10 +1094,10 @@ function deriveMeteoraDlmmEventAuthority(): PublicKey {
 /**
  * Build Meteora DLMM accounts in the order expected by the on-chain router
  * 
- * Based on successful swap transaction analysis:
- * #1-15: Fixed accounts (0-14 in our 0-indexed array)
- * #16: Meteora Program (included for CPI invoke)
- * #17+: Bin arrays (remaining accounts)
+ * Based on Meteora CPI example (dlmm::cpi::accounts::Swap):
+ * #1-14: Fixed accounts (0-13 in our 0-indexed array)
+ * #15: Meteora Program (included for CPI invoke)
+ * #16+: Bin arrays (remaining accounts)
  */
 async function buildMeteoraDexAccountsForRouter(
   payer: PublicKey,
@@ -1118,9 +1125,7 @@ async function buildMeteoraDexAccountsForRouter(
     }
   };
   
-  const MEMO_PROGRAM = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
-  
-  // Fixed accounts (indices 0-14)
+  // Fixed accounts (indices 0-13) - matches Meteora CPI accounts::Swap order
   const fixedAccounts: PublicKey[] = [
     poolPubkey,                                                    // 0: LB Pair
     pool.bitmapExtension 
@@ -1137,8 +1142,7 @@ async function buildMeteoraDexAccountsForRouter(
     payer,                                                         // 10: User (signer)
     new PublicKey(pool.tokenProgram),                              // 11: Token X Program
     new PublicKey(pool.tokenProgram),                              // 12: Token Y Program
-    MEMO_PROGRAM,                                                  // 13: Memo Program
-    deriveMeteoraDlmmEventAuthority(),                             // 14: Event Authority (PDA)
+    deriveMeteoraDlmmEventAuthority(),                             // 13: Event Authority (PDA)
   ];
   
   // Bin arrays (remaining accounts) - use all available bin arrays
@@ -1146,12 +1150,12 @@ async function buildMeteoraDexAccountsForRouter(
     .filter((ba: string) => ba && ba !== '')
     .map((ba: string) => new PublicKey(ba));
   
-  // Structure: [fixed accounts (15), program (1), bin arrays (N)]
+  // Structure: [fixed accounts (14), program (1), bin arrays (N)]
   // Program is included for CPI invoke
   const accounts: PublicKey[] = [
-    ...fixedAccounts,                                              // 0-14: Fixed accounts
-    METEORA_DLMM_PROGRAM,                                          // 15: Meteora DLMM Program
-    ...binArrayAccounts,                                           // 16+: Bin arrays
+    ...fixedAccounts,                                              // 0-13: Fixed accounts
+    METEORA_DLMM_PROGRAM,                                          // 14: Meteora DLMM Program
+    ...binArrayAccounts,                                           // 15+: Bin arrays
   ];
   
   logger.info('router.test.dex_accounts', { 

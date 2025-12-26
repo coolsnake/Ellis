@@ -12,8 +12,8 @@ use crate::constants::dex_programs::METEORA_DLMM;
 use crate::error::ArbRouterError;
 
 /// Number of accounts needed for a Meteora DLMM swap
-/// 15 fixed accounts + 1 program + 2 bin arrays = 18 accounts
-pub const ACCOUNTS_NEEDED: usize = 18;
+/// 14 fixed accounts + 1 program + 2 bin arrays = 17 accounts
+pub const ACCOUNTS_NEEDED: usize = 17;
 
 /// Meteora DLMM swap2 instruction discriminator
 /// swap2 is preferred over swap - handles bitmap extension edge cases better
@@ -46,10 +46,9 @@ pub struct Swap2Params {
 /// 10. `[signer, writable]` User (authority)
 /// 11. `[]` Token X Program
 /// 12. `[]` Token Y Program
-/// 13. `[]` Memo Program
-/// 14. `[]` Event Authority
-/// 15. `[]` Meteora DLMM Program (for CPI invoke)
-/// 16+. `[writable]` Bin Arrays (remaining accounts, variable count)
+/// 13. `[]` Event Authority
+/// 14. `[]` Meteora DLMM Program (for CPI invoke)
+/// 15+. `[writable]` Bin Arrays (remaining accounts, variable count)
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
@@ -74,17 +73,17 @@ pub fn swap(
     data.extend_from_slice(&[0u8; 4]); // Empty slices Vec (length = 0)
 
     // Account structure:
-    // 0-14: Fixed accounts (15 accounts)
-    // 15: Meteora DLMM Program (for CPI)
-    // 16+: Bin arrays (remaining accounts, writable)
+    // 0-13: Fixed accounts (14 accounts)
+    // 14: Meteora DLMM Program (for CPI)
+    // 15+: Bin arrays (remaining accounts, writable)
     
-    // For the instruction, we need: fixed accounts (0-14) + bin arrays (16+)
-    // The program at index 15 is used as program_id, not in account_metas
+    // For the instruction, we need: fixed accounts (0-13) + bin arrays (15+)
+    // The program at index 14 is used as program_id, not in account_metas
     
     let mut account_metas: Vec<AccountMeta> = Vec::new();
     
-    // Add fixed accounts (0-14)
-    for (i, acc) in accounts[..15].iter().enumerate() {
+    // Add fixed accounts (0-13)
+    for (i, acc) in accounts[..14].iter().enumerate() {
         let is_signer = i == 10; // User is signer
         // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), user(10)
         // Note: hostFeeIn(9) is NOT writable when using program ID as placeholder
@@ -98,8 +97,8 @@ pub fn swap(
         }
     }
     
-    // Add bin arrays (16+) - all are writable
-    for acc in accounts[16..].iter() {
+    // Add bin arrays (15+) - all are writable
+    for acc in accounts[15..].iter() {
         account_metas.push(AccountMeta::new(*acc.key, false));
     }
 
@@ -113,7 +112,7 @@ pub fn swap(
     invoke(&ix, accounts)?;
 
     msg!("Meteora DLMM swap2 executed: {} in, min {} out, {} bin arrays", 
-         amount_in, min_amount_out, accounts.len() - 16);
+         amount_in, min_amount_out, accounts.len() - 15);
     Ok(())
 }
 
