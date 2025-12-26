@@ -405,12 +405,27 @@ async function fetchMeteoraDlmmPool(
         return pda.toBase58();
       };
       
-      // Derive current + adjacent bin arrays (3 total)
-      const derivedBinArrays = [
-        { index: currentBinArrayIndex - 1, address: deriveBinArrayPda(currentBinArrayIndex - 1) },  // Lower adjacent
-        { index: currentBinArrayIndex, address: deriveBinArrayPda(currentBinArrayIndex) },       // Current
-        { index: currentBinArrayIndex + 1, address: deriveBinArrayPda(currentBinArrayIndex + 1) },   // Upper adjacent
-      ];
+      // Derive a wider range of bin arrays around the active bin
+      // This ensures we have enough coverage for swaps in either direction:
+      // - X -> Y swaps (price moves down): need bin arrays with lower indices (more negative)
+      // - Y -> X swaps (price moves up): need bin arrays with higher indices (more positive)
+      // Using a range of ±3 gives us 7 bin arrays total, which should cover most swaps
+      const BIN_ARRAY_RANGE = 3; // Derive 3 bin arrays on each side of active (7 total)
+      const derivedBinArrays: Array<{ index: number; address: string }> = [];
+      
+      for (let i = currentBinArrayIndex - BIN_ARRAY_RANGE; i <= currentBinArrayIndex + BIN_ARRAY_RANGE; i++) {
+        try {
+          const address = deriveBinArrayPda(i);
+          derivedBinArrays.push({ index: i, address });
+        } catch (err: any) {
+          // Skip invalid derivations
+          logger.debug('router.test.meteora.binarray.derive.skip', { 
+            cat: 'router', 
+            index: i, 
+            error: err.message 
+          });
+        }
+      }
       
       // Check which bin arrays actually exist on-chain
       // Only include initialized bin arrays to avoid errors
