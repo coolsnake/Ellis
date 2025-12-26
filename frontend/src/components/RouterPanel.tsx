@@ -37,6 +37,50 @@ interface RouterStatusResponse {
   flashLoanAvailable: boolean;
 }
 
+// Types for pool data
+interface PoolSummary {
+  id: string;
+  mintA: string;
+  mintB: string;
+  nativeMintA?: string;
+  nativeMintB?: string;
+  feeBps?: number;
+  tickSpacing?: number;
+  binStep?: number;
+  liquidity?: number;
+  sqrtPriceX64?: number;
+  priceAPerB?: number;
+  liquidityBase?: number;
+}
+
+interface PoolsByDex {
+  raydium: { clmm: PoolSummary[]; amm: PoolSummary[]; clmmCount: number; ammCount: number };
+  orca: { clmm: PoolSummary[]; clmmCount: number };
+  meteora: { dlmm: PoolSummary[]; dlmmCount: number };
+  pumpswap: { amm: PoolSummary[]; ammCount: number };
+}
+
+interface ExecuteHop {
+  dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap';
+  poolId: string;
+  inputMint: string;
+  outputMint: string;
+}
+
+interface TestExecuteResult {
+  success: boolean;
+  simulated?: boolean;
+  signature?: string;
+  error?: string | null;
+  logs?: string[];
+  unitsConsumed?: number;
+  plan?: {
+    hops: number;
+    inputRaw: string;
+    expectedOutputRaw: string;
+  };
+}
+
 type RouterPanelProps = {
   apiBase: string;
   onClose: () => void;
@@ -72,6 +116,18 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [testSimulate, setTestSimulate] = useState(true);
   const [testingSwap, setTestingSwap] = useState(false);
   const [testSwapResult, setTestSwapResult] = useState<{success: boolean; signature?: string; error?: string} | null>(null);
+
+  // Multi-hop Execute Testing State
+  const [poolsByDex, setPoolsByDex] = useState<PoolsByDex | null>(null);
+  const [loadingPools, setLoadingPools] = useState(false);
+  const [executeHops, setExecuteHops] = useState<ExecuteHop[]>([
+    { dex: 'raydium', poolId: '', inputMint: '', outputMint: '' }
+  ]);
+  const [executeAmountIn, setExecuteAmountIn] = useState('10000000');
+  const [executeMinProfit, setExecuteMinProfit] = useState('-10000000'); // Allow loss for testing
+  const [executeSimulate, setExecuteSimulate] = useState(true);
+  const [testingExecute, setTestingExecute] = useState(false);
+  const [executeResult, setExecuteResult] = useState<TestExecuteResult | null>(null);
 
   // Update variant when DEX changes
   const handleDexChange = (dex: 'raydium' | 'meteora' | 'orca') => {
@@ -112,6 +168,116 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   useEffect(() => {
     fetchStatus();
   }, [fetchStatus]);
+
+  // Fetch pools for multi-hop execute testing
+  const fetchPools = useCallback(async () => {
+    try {
+      setLoadingPools(true);
+      const data = await apiGet<{ success: boolean; pools: PoolsByDex }>('/router/pools?limit=200');
+      if (data.success) {
+        setPoolsByDex(data.pools);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch pools:', err);
+    } finally {
+      setLoadingPools(false);
+    }
+  }, []);
+
+  // Fetch pools when panel opens if program is deployed
+  useEffect(() => {
+    if (status?.deployed && !poolsByDex) {
+      fetchPools();
+    }
+  }, [status?.deployed, poolsByDex, fetchPools]);
+
+  // Handler for execute hop changes
+  const updateExecuteHop = (index: number, field: keyof ExecuteHop, value: string) => {
+    const newHops = [...executeHops];
+    newHops[index] = { ...newHops[index], [field]: value };
+    
+    // Auto-populate mints when pool is selected
+    if (field === 'poolId' && value && poolsByDex) {
+      const dex = newHops[index].dex;
+      const pools = dex === 'raydium' 
+        ? [...(poolsByDex.raydium?.clmm || []), ...(poolsByDex.raydium?.amm || [])]
+        : dex === 'orca' 
+        ? (poolsByDex.orca?.clmm || [])
+        : dex === 'meteora'
+        ? (poolsByDex.meteora?.dlmm || [])
+        : (poolsByDex.pumpswap?.amm || []);
+      
+      const pool = pools.find(p => p.id === value);
+      if (pool) {
+        newHops[index].inputMint = pool.mintA || pool.nativeMintA || '';
+        newHops[index].outputMint = pool.mintB || pool.nativeMintB || '';
+      }
+    }
+    
+    setExecuteHops(newHops);
+  };
+
+  const addExecuteHop = () => {
+    const lastHop = executeHops[executeHops.length - 1];
+    setExecuteHops([...executeHops, {
+      dex: 'raydium',
+      poolId: '',
+      inputMint: lastHop?.outputMint || '', // Chain output to next input
+      outputMint: ''
+    }]);
+  };
+
+  const removeExecuteHop = (index: number) => {
+    if (executeHops.length > 1) {
+      setExecuteHops(executeHops.filter((_, i) => i !== index));
+    }
+  };
+
+  const handleTestExecute = async () => {
+    if (executeHops.some(h => !h.poolId || !h.inputMint || !h.outputMint)) {
+      setExecuteResult({ success: false, error: 'All hop fields required' });
+      return;
+    }
+
+    setTestingExecute(true);
+    setExecuteResult(null);
+
+    try {
+      const result = await apiPost<TestExecuteResult>('/router/test-execute', {
+        hops: executeHops.map(h => ({
+          poolId: h.poolId,
+          dex: h.dex,
+          inputMint: h.inputMint,
+          outputMint: h.outputMint,
+        })),
+        amountIn: executeAmountIn,
+        minProfit: executeMinProfit,
+        simulate: executeSimulate,
+      });
+      setExecuteResult(result);
+    } catch (err: any) {
+      setExecuteResult({ success: false, error: err.message });
+    } finally {
+      setTestingExecute(false);
+    }
+  };
+
+  // Get pools for a specific DEX
+  const getPoolsForDex = (dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap'): PoolSummary[] => {
+    if (!poolsByDex) return [];
+    switch (dex) {
+      case 'raydium':
+        return [...(poolsByDex.raydium?.clmm || []), ...(poolsByDex.raydium?.amm || [])];
+      case 'orca':
+        return poolsByDex.orca?.clmm || [];
+      case 'meteora':
+        return poolsByDex.meteora?.dlmm || [];
+      case 'pumpswap':
+        return poolsByDex.pumpswap?.amm || [];
+      default:
+        return [];
+    }
+  };
 
   const handleBuild = async () => {
     if (building) return;
@@ -710,6 +876,223 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Multi-Hop Execute Testing Section */}
+        {status?.deployed && (
+          <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold text-white">Multi-Hop Execute Test</h3>
+              <button
+                onClick={fetchPools}
+                disabled={loadingPools}
+                className="px-3 py-1 bg-gray-600 hover:bg-gray-500 text-gray-200 rounded text-sm"
+              >
+                {loadingPools ? 'Loading...' : 'Refresh Pools'}
+              </button>
+            </div>
+            
+            <div className="text-gray-400 text-xs mb-4">
+              Test the router's execute instruction with multi-hop, multi-DEX support using real cached pool data.
+            </div>
+
+            {/* Pool Stats */}
+            {poolsByDex && (
+              <div className="mb-4 p-2 bg-gray-800/50 rounded text-xs text-gray-400 flex gap-4">
+                <span>Raydium: {(poolsByDex.raydium?.clmmCount || 0) + (poolsByDex.raydium?.ammCount || 0)} pools</span>
+                <span>Orca: {poolsByDex.orca?.clmmCount || 0} pools</span>
+                <span>Meteora: {poolsByDex.meteora?.dlmmCount || 0} pools</span>
+                <span>PumpSwap: {poolsByDex.pumpswap?.ammCount || 0} pools</span>
+              </div>
+            )}
+
+            {/* Hops Builder */}
+            <div className="space-y-4">
+              {executeHops.map((hop, index) => (
+                <div key={index} className="p-3 bg-gray-800/50 rounded-lg border border-gray-600">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-white font-medium text-sm">Hop {index + 1}</span>
+                    {executeHops.length > 1 && (
+                      <button
+                        onClick={() => removeExecuteHop(index)}
+                        className="text-red-400 hover:text-red-300 text-sm"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-3 mb-2">
+                    {/* DEX Selector */}
+                    <div>
+                      <label className="block text-gray-400 text-xs mb-1">DEX</label>
+                      <select
+                        value={hop.dex}
+                        onChange={(e) => {
+                          updateExecuteHop(index, 'dex', e.target.value);
+                          updateExecuteHop(index, 'poolId', ''); // Clear pool when DEX changes
+                        }}
+                        className="w-full bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 text-sm"
+                      >
+                        <option value="raydium">Raydium CLMM</option>
+                        <option value="orca">Orca Whirlpool</option>
+                        <option value="meteora">Meteora DLMM</option>
+                        <option value="pumpswap">PumpSwap</option>
+                      </select>
+                    </div>
+                    
+                    {/* Pool Selector */}
+                    <div>
+                      <label className="block text-gray-400 text-xs mb-1">Pool</label>
+                      {poolsByDex ? (
+                        <select
+                          value={hop.poolId}
+                          onChange={(e) => updateExecuteHop(index, 'poolId', e.target.value)}
+                          className="w-full bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 text-sm font-mono"
+                        >
+                          <option value="">Select Pool...</option>
+                          {getPoolsForDex(hop.dex).slice(0, 100).map(p => (
+                            <option key={p.id} value={p.id}>
+                              {p.id.slice(0, 8)}... ({p.mintA?.slice(0, 4) || '?'}→{p.mintB?.slice(0, 4) || '?'})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={hop.poolId}
+                          onChange={(e) => updateExecuteHop(index, 'poolId', e.target.value)}
+                          placeholder="Pool ID"
+                          className="w-full bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 text-sm font-mono"
+                        />
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* Mints */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-gray-400 text-xs mb-1">Input Mint</label>
+                      <input
+                        type="text"
+                        value={hop.inputMint}
+                        onChange={(e) => updateExecuteHop(index, 'inputMint', e.target.value)}
+                        placeholder="Input token mint"
+                        className="w-full bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-400 text-xs mb-1">Output Mint</label>
+                      <input
+                        type="text"
+                        value={hop.outputMint}
+                        onChange={(e) => updateExecuteHop(index, 'outputMint', e.target.value)}
+                        placeholder="Output token mint"
+                        className="w-full bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+              
+              {/* Add Hop Button */}
+              <button
+                onClick={addExecuteHop}
+                className="w-full px-4 py-2 bg-gray-600 hover:bg-gray-500 text-gray-200 rounded text-sm border border-dashed border-gray-500"
+              >
+                + Add Hop
+              </button>
+            </div>
+
+            {/* Amount & Settings */}
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              <div>
+                <label className="block text-gray-400 text-sm mb-1">Amount In (raw)</label>
+                <input
+                  type="text"
+                  value={executeAmountIn}
+                  onChange={(e) => setExecuteAmountIn(e.target.value)}
+                  placeholder="10000000"
+                  className="w-full bg-gray-700 text-white px-3 py-2 rounded border border-gray-600 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-400 text-sm mb-1">Min Profit (raw, can be negative)</label>
+                <input
+                  type="text"
+                  value={executeMinProfit}
+                  onChange={(e) => setExecuteMinProfit(e.target.value)}
+                  placeholder="-10000000"
+                  className="w-full bg-gray-700 text-white px-3 py-2 rounded border border-gray-600 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 mt-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={executeSimulate}
+                  onChange={(e) => setExecuteSimulate(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <span className="text-gray-300 text-sm">Simulate Only</span>
+              </label>
+              
+              <button
+                onClick={handleTestExecute}
+                disabled={testingExecute}
+                className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded font-medium"
+              >
+                {testingExecute ? 'Testing Execute...' : `Execute ${executeHops.length}-Hop Route`}
+              </button>
+            </div>
+
+            {/* Execute Result */}
+            {executeResult && (
+              <div className={`mt-4 p-3 rounded text-sm ${
+                executeResult.success ? 'bg-green-900/30 text-green-300 border border-green-700' : 'bg-red-900/30 text-red-300 border border-red-700'
+              }`}>
+                {executeResult.success ? (
+                  <div>
+                    <div className="font-medium">✓ Execute {executeResult.simulated ? 'Simulation' : 'Transaction'} Successful</div>
+                    {executeResult.signature && (
+                      <div className="text-xs mt-1 font-mono break-all">{executeResult.signature}</div>
+                    )}
+                    {executeResult.plan && (
+                      <div className="text-xs mt-2 text-green-400">
+                        Hops: {executeResult.plan.hops} | 
+                        Input: {executeResult.plan.inputRaw} | 
+                        Expected Output: {executeResult.plan.expectedOutputRaw}
+                      </div>
+                    )}
+                    {executeResult.unitsConsumed && (
+                      <div className="text-xs mt-1 text-green-400">
+                        Compute Units: {executeResult.unitsConsumed.toLocaleString()}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <div className="font-medium">✗ Execute Failed</div>
+                    <div className="text-xs mt-1 break-all">{executeResult.error}</div>
+                  </div>
+                )}
+                
+                {/* Show logs if available */}
+                {executeResult.logs && executeResult.logs.length > 0 && (
+                  <div className="mt-2">
+                    <div className="text-xs text-gray-400 mb-1">Logs:</div>
+                    <div className="bg-gray-900/50 p-2 rounded text-xs font-mono max-h-32 overflow-y-auto">
+                      {executeResult.logs.slice(-15).map((log, i) => (
+                        <div key={i} className="text-gray-300 break-all">{log}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

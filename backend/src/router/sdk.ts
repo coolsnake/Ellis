@@ -464,11 +464,11 @@ export function calculateRepayAmount(borrowedAmount: bigint): bigint {
 export function getAccountsNeededForDex(dexType: DexType): number {
   switch (dexType) {
     case DexType.Raydium:
-      return 17; // Raydium CLMM
+      return 18; // Raydium CLMM: 17 SDK accounts + 1 program ID
     case DexType.Meteora:
       return 18; // Meteora DLMM: 15 fixed + 1 program + 2 bin arrays
     case DexType.Orca:
-      return 15; // Orca Whirlpool
+      return 12; // Orca Whirlpool: 11 swap accounts + 1 program
     case DexType.PumpSwap:
       return 12; // PumpSwap
     default:

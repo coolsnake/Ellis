@@ -24,6 +24,12 @@ import {
   getRouterConnection,
 } from '../routerConfigStore.js';
 import {
+  peekRaydiumPools,
+  peekOrcaPools,
+  peekMeteoraPools,
+  peekPumpswapPools,
+} from '../pools.cache.js';
+import {
   // SDK
   deriveVaultPda,
   fetchVault,
@@ -1008,6 +1014,346 @@ export function createRouterRouter(io: SocketIOServer): Router {
       res.json(result);
     } catch (err: any) {
       logger.error('router.test.pool.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // ============================================================================
+  // Pool Listing & Execute Testing Routes
+  // ============================================================================
+
+  /**
+   * GET /router/pools - List cached pools grouped by DEX
+   * Returns a subset of pools for each DEX with key fields for UI selection
+   */
+  api.get('/router/pools', async (req: Request, res: Response) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+      
+      const raydium = peekRaydiumPools();
+      const orca = peekOrcaPools();
+      const meteora = peekMeteoraPools();
+      const pumpswap = peekPumpswapPools();
+      
+      // Helper to map pool to summary format
+      const mapClmmPool = (p: any) => ({
+        id: p.id,
+        mintA: p.mint_a,
+        mintB: p.mint_b,
+        nativeMintA: p.native_mint_a,
+        nativeMintB: p.native_mint_b,
+        feeBps: p.fee_bps,
+        tickSpacing: p.tick_spacing,
+        binStep: p.bin_step,
+        liquidity: p.liquidity,
+        sqrtPriceX64: p.sqrt_price_x64,
+      });
+      
+      const mapAmmPool = (p: any) => ({
+        id: p.id,
+        mintA: p.mint_a,
+        mintB: p.mint_b,
+        nativeMintA: p.native_mint_a,
+        nativeMintB: p.native_mint_b,
+        feeBps: p.fee_bps,
+        priceAPerB: p.price_a_per_b,
+        liquidityBase: p.liquidity_base,
+      });
+      
+      res.json({
+        success: true,
+        pools: {
+          raydium: {
+            clmm: raydium.clmm.slice(0, limit).map(mapClmmPool),
+            amm: raydium.amm.slice(0, limit).map(mapAmmPool),
+            clmmCount: raydium.clmm.length,
+            ammCount: raydium.amm.length,
+          },
+          orca: {
+            clmm: orca.clmm.slice(0, limit).map(mapClmmPool),
+            clmmCount: orca.clmm.length,
+          },
+          meteora: {
+            dlmm: meteora.clmm.slice(0, limit).map(mapClmmPool),
+            dlmmCount: meteora.clmm.length,
+          },
+          pumpswap: {
+            amm: pumpswap.amm.slice(0, limit).map(mapAmmPool),
+            ammCount: pumpswap.amm.length,
+          },
+        },
+        totalPools: {
+          raydium: raydium.clmm.length + raydium.amm.length,
+          orca: orca.clmm.length,
+          meteora: meteora.clmm.length,
+          pumpswap: pumpswap.amm.length,
+        },
+      });
+    } catch (err: any) {
+      logger.error('router.pools.list.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /router/test-execute - Test the execute instruction with multi-hop support
+   * 
+   * Request body:
+   * - hops: Array of { poolId, dex, inputMint, outputMint }
+   * - amountIn: Raw amount in base units (string)
+   * - minProfit: Minimum profit in base units (can be negative for testing)
+   * - simulate: If true, simulate only; if false, send transaction
+   */
+  api.post('/router/test-execute', async (req: Request, res: Response) => {
+    try {
+      const {
+        hops,
+        amountIn,
+        minProfit = '0',
+        simulate = true,
+      }: {
+        hops: Array<{
+          poolId: string;
+          dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap';
+          inputMint: string;
+          outputMint: string;
+        }>;
+        amountIn: string;
+        minProfit: string;
+        simulate: boolean;
+      } = req.body;
+
+      if (!hops || !Array.isArray(hops) || hops.length === 0) {
+        return res.status(400).json({ success: false, error: 'hops array required' });
+      }
+      if (!amountIn) {
+        return res.status(400).json({ success: false, error: 'amountIn required' });
+      }
+
+      const routerConfig = await loadRouterConfig();
+      if (!routerConfig.programId) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Router not deployed. Deploy the router first.' 
+        });
+      }
+
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      const connection = getRouterConnection(routerConfig.cluster);
+
+      logger.info('router.test-execute.start', {
+        cat: 'router',
+        hops: hops.length,
+        amountIn,
+        minProfit,
+        simulate,
+        programId: routerConfig.programId,
+      });
+
+      emit('router:test-execute:start', { 
+        hops: hops.length, 
+        amountIn, 
+        simulate, 
+        timestamp: Date.now() 
+      });
+
+      // Import build functions
+      const { buildRouterTransaction } = await import('../../execution/builder/routerTx.js');
+      const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
+      const { ExecutionMode } = await import('../../router/types.js');
+
+      // Build path array for resolver (N+1 tokens for N hops)
+      const path: string[] = [hops[0].inputMint];
+      for (const hop of hops) {
+        path.push(hop.outputMint);
+      }
+
+      // Resolve the execution plan
+      const hopPoolIds = hops.map(h => h.poolId);
+      const dexes = hops.map(h => {
+        // Map dex name to variant for proper pool type identification
+        const dexLower = h.dex.toLowerCase();
+        if (dexLower === 'raydium') return 'raydium-clmm';
+        if (dexLower === 'meteora') return 'meteora-dlmm';
+        return dexLower;
+      });
+
+      // ExecConfig for resolver
+      const execConfig = {
+        mode: 'direct' as const,
+        slippageBpsDefault: 100, // 1% slippage for testing
+        computeUnitLimit: 400000,
+        computeUnitPriceMicroLamports: 1000,
+        createAtasInTx: true,
+        dynamicCompute: false,
+      };
+
+      const executionPlan = await resolveDirectPlan({
+        path,
+        hopPoolIds,
+        dexes,
+        slippageBps: 100,
+        minProfitBps: parseInt(minProfit) >= 0 ? parseInt(minProfit) : -10000,
+      }, execConfig);
+
+      if (!executionPlan || executionPlan.hops.length === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Failed to resolve execution plan' 
+        });
+      }
+
+      // Set initial input amounts
+      executionPlan.inputRaw = BigInt(amountIn);
+      if (executionPlan.hops.length > 0) {
+        executionPlan.hops[0].amountInRaw = BigInt(amountIn);
+      }
+
+      logger.info('router.test-execute.plan_resolved', {
+        cat: 'router',
+        hopsResolved: executionPlan.hops.length,
+        inputRaw: executionPlan.inputRaw.toString(),
+        expectedOutput: executionPlan.expectedOutputRaw?.toString(),
+      });
+
+      // Build the router transaction (returns instructions, not a full transaction)
+      const txResult = await buildRouterTransaction(
+        executionPlan,
+        { publicKey: wallet.publicKey, secretKey: wallet.secretKey },
+        { mode: ExecutionMode.Direct }
+      );
+
+      if (txResult.error || txResult.instructions.length === 0) {
+        logger.error('router.test-execute.build_failed', {
+          cat: 'router',
+          error: txResult.error,
+          usedRouter: txResult.usedRouter,
+        });
+        return res.status(400).json({
+          success: false,
+          error: txResult.error || 'Failed to build transaction - no instructions generated',
+        });
+      }
+
+      // Build a transaction from the instructions
+      const tx = new Transaction();
+      tx.add(...txResult.instructions);
+
+      // Add recent blockhash
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+      tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+      tx.feePayer = wallet.publicKey;
+
+      if (simulate) {
+        // Simulate the transaction
+        const simResult = await connection.simulateTransaction(tx, {
+          sigVerify: false,
+          commitment: 'confirmed',
+        });
+
+        const success = !simResult.value.err;
+        
+        logger.info('router.test-execute.simulated', {
+          cat: 'router',
+          success,
+          error: simResult.value.err,
+          logs: simResult.value.logs?.slice(-10),
+          unitsConsumed: simResult.value.unitsConsumed,
+        });
+
+        emit('router:test-execute:complete', { 
+          success, 
+          simulated: true,
+          unitsConsumed: simResult.value.unitsConsumed,
+        });
+
+        return res.json({
+          success,
+          simulated: true,
+          error: simResult.value.err ? JSON.stringify(simResult.value.err) : null,
+          logs: simResult.value.logs,
+          unitsConsumed: simResult.value.unitsConsumed,
+          plan: {
+            hops: executionPlan.hops.length,
+            inputRaw: executionPlan.inputRaw.toString(),
+            expectedOutputRaw: executionPlan.expectedOutputRaw?.toString() || '0',
+          },
+        });
+      } else {
+        // Send the transaction
+        try {
+          // Sign the transaction
+          const keypair = Keypair.fromSecretKey(wallet.secretKey);
+          tx.sign(keypair);
+
+          const signature = await connection.sendRawTransaction(tx.serialize(), {
+            skipPreflight: true,
+            preflightCommitment: 'confirmed',
+          });
+
+          logger.info('router.test-execute.sent', {
+            cat: 'router',
+            signature,
+          });
+
+          // Wait for confirmation
+          const confirmation = await connection.confirmTransaction({
+            signature,
+            blockhash,
+            lastValidBlockHeight,
+          }, 'confirmed');
+
+          const success = !confirmation.value.err;
+
+          logger.info('router.test-execute.confirmed', {
+            cat: 'router',
+            signature,
+            success,
+            error: confirmation.value.err,
+          });
+
+          emit('router:test-execute:complete', { 
+            success, 
+            simulated: false,
+            signature,
+          });
+
+          return res.json({
+            success,
+            simulated: false,
+            signature,
+            error: confirmation.value.err ? JSON.stringify(confirmation.value.err) : null,
+            plan: {
+              hops: executionPlan.hops.length,
+              inputRaw: executionPlan.inputRaw.toString(),
+              expectedOutputRaw: executionPlan.expectedOutputRaw?.toString() || '0',
+            },
+          });
+        } catch (sendErr: any) {
+          logger.error('router.test-execute.send_error', {
+            cat: 'router',
+            error: sendErr.message,
+          });
+
+          emit('router:test-execute:complete', { 
+            success: false, 
+            error: sendErr.message,
+          });
+
+          return res.status(500).json({
+            success: false,
+            error: sendErr.message,
+          });
+        }
+      }
+    } catch (err: any) {
+      logger.error('router.test-execute.error', { 
+        cat: 'router', 
+        error: err.message, 
+        stack: err.stack 
+      });
+      emit('router:test-execute:complete', { success: false, error: err.message });
       res.status(500).json({ success: false, error: err.message });
     }
   });

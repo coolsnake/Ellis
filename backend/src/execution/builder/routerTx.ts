@@ -419,10 +419,11 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
 
     switch (dexType) {
       case DexType.Raydium:
-        // Raydium CLMM: 17 accounts
+        // Raydium CLMM: 18 accounts (matches arb-router/src/dex/raydium.rs)
         // 0: Payer, 1: AmmConfig, 2: Pool, 3: UserInputToken, 4: UserOutputToken,
-        // 5: InputVault, 6: OutputVault, 7: Observation, 8: TokenProgram,
-        // 9-11: TickArrays, 12: Oracle, 13-14: Mints, 15: Memo, 16: Program
+        // 5: InputVault, 6: OutputVault, 7: Observation, 8: TokenProgram, 9: Token2022Program,
+        // 10: MemoProgram, 11: InputMint, 12: OutputMint, 13: Oracle/exBitmap,
+        // 14: TickArrayCenter, 15: TickArrayLower, 16: TickArrayUpper, 17: RaydiumProgram
         accounts.push(
           wallet,                                                              // 0: Payer (signer)
           hop.ammConfig ? new PublicKey(hop.ammConfig) : poolId,              // 1: AMM Config
@@ -433,14 +434,15 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           new PublicKey(isAtoB ? (hop.vaultB || hop.poolId) : (hop.vaultA || hop.poolId)), // 6: Output Vault
           hop.observationId ? new PublicKey(hop.observationId) : poolId,      // 7: Observation State
           TOKEN_PROGRAM_ID,                                                    // 8: Token Program
-          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 9: Tick Array Lower
-          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 10: Tick Array Current
-          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 11: Tick Array Upper
-          hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 12: Oracle
-          inputMint,                                                           // 13: Input Token Mint
-          outputMint,                                                          // 14: Output Token Mint
-          MEMO_PROGRAM_ID,                                                     // 15: Memo Program
-          programIdKey,                                                        // 16: Raydium CLMM Program
+          TOKEN_2022_PROGRAM_ID,                                               // 9: Token-2022 Program
+          MEMO_PROGRAM_ID,                                                     // 10: Memo Program
+          inputMint,                                                           // 11: Input Token Mint
+          outputMint,                                                          // 12: Output Token Mint
+          hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 13: Oracle/exBitmap
+          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 14: Tick Array Center
+          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 15: Tick Array Lower
+          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 16: Tick Array Upper
+          programIdKey,                                                        // 17: Raydium CLMM Program
         );
         break;
 
@@ -481,9 +483,9 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         break;
 
       case DexType.Orca:
-        // Orca Whirlpool: 15 accounts
-        // 0: TokenProgram, 1: User, 2: Whirlpool, 3: UserTokenA, 4: VaultA,
-        // 5: UserTokenB, 6: VaultB, 7-9: TickArrays, 10: Oracle, 11-12: Mints, 13: Memo, 14: Program
+        // Orca Whirlpool: 12 accounts (matches arb-router/src/dex/orca.rs)
+        // 0: TokenProgram, 1: TokenAuthority(signer), 2: Whirlpool, 3: TokenOwnerAccountA,
+        // 4: TokenVaultA, 5: TokenOwnerAccountB, 6: TokenVaultB, 7-9: TickArrays, 10: Oracle, 11: Program
         const userTokenA = isAtoB ? userSourceAta : userDestAta;
         const userTokenB = isAtoB ? userDestAta : userSourceAta;
         accounts.push(
@@ -494,14 +496,11 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           hop.vaultA ? new PublicKey(hop.vaultA) : poolId,                    // 4: Token Vault A
           userTokenB,                                                          // 5: Token Owner Account B
           hop.vaultB ? new PublicKey(hop.vaultB) : poolId,                    // 6: Token Vault B
-          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 7: Tick Array 0
-          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 8: Tick Array 1
-          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 9: Tick Array 2
+          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 7: Tick Array 0 (lower)
+          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 8: Tick Array 1 (center)
+          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 9: Tick Array 2 (upper)
           hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 10: Oracle
-          poolMintA ? new PublicKey(poolMintA) : inputMint,                   // 11: Token Mint A
-          poolMintB ? new PublicKey(poolMintB) : outputMint,                  // 12: Token Mint B
-          MEMO_PROGRAM_ID,                                                     // 13: Memo Program
-          programIdKey,                                                        // 14: Whirlpool Program
+          programIdKey,                                                        // 11: Whirlpool Program
         );
         break;
 
