@@ -1507,7 +1507,10 @@ async function buildOrcaDexAccountsForRouter(
       tickArray1 = deriveTickArrayPda(array1Start);
       const potentialArray2 = deriveTickArrayPda(array2Start);
       
-      // Check if tick array 2 exists on-chain; if not, use tick array 1 again
+      // Check if tick array 2 exists on-chain; if not, use CENTER for all positions
+      // We can't use a "mixed" sequence (center, lower, lower) - Whirlpool requires either:
+      // 1. A valid contiguous sequence (center, lower, lower-1), or
+      // 2. The same array for all 3 positions
       if (connection) {
         try {
           const array2Info = await connection.getAccountInfo(potentialArray2);
@@ -1519,17 +1522,21 @@ async function buildOrcaDexAccountsForRouter(
               exists: true,
             });
           } else {
-            // Array 2 doesn't exist, use same as array 1
-            tickArray2 = tickArray1;
+            // Array 2 doesn't exist - can't form valid contiguous sequence
+            // Use the SAME array for all 3 positions (center contains current tick)
+            tickArray1 = tickArray0;
+            tickArray2 = tickArray0;
             logger.warn('router.test.orca.tickarray.notexist', {
               cat: 'router',
               tickArray2Derived: potentialArray2.toBase58(),
-              fallback: tickArray1.toBase58(),
+              fallback: 'using center for all positions',
+              tickArray0: tickArray0.toBase58(),
             });
           }
         } catch {
-          // Error checking, use same as array 1
-          tickArray2 = tickArray1;
+          // Error checking - use same array for all 3
+          tickArray1 = tickArray0;
+          tickArray2 = tickArray0;
         }
       } else {
         // No connection available, assume it exists
@@ -1581,7 +1588,10 @@ async function buildOrcaDexAccountsForRouter(
     tickArray1 = deriveTickArrayPda(array1Start);
     const potentialArray2 = deriveTickArrayPda(array2Start);
     
-    // Check if tick array 2 exists on-chain; if not, use tick array 1 again
+    // Check if tick array 2 exists on-chain; if not, use CENTER for all positions
+    // We can't use a "mixed" sequence (center, lower, lower) - Whirlpool requires either:
+    // 1. A valid contiguous sequence (center, lower, lower-1), or
+    // 2. The same array for all 3 positions
     if (connection) {
       try {
         const array2Info = await connection.getAccountInfo(potentialArray2);
@@ -1593,17 +1603,21 @@ async function buildOrcaDexAccountsForRouter(
             exists: true,
           });
         } else {
-          // Array 2 doesn't exist, use same as array 1
-          tickArray2 = tickArray1;
+          // Array 2 doesn't exist - can't form valid contiguous sequence
+          // Use the SAME array for all 3 positions (center contains current tick)
+          tickArray1 = tickArray0;
+          tickArray2 = tickArray0;
           logger.warn('router.test.orca.tickarray.notexist', {
             cat: 'router',
             tickArray2Derived: potentialArray2.toBase58(),
-            fallback: tickArray1.toBase58(),
+            fallback: 'using center for all positions',
+            tickArray0: tickArray0.toBase58(),
           });
         }
       } catch {
-        // Error checking, use same as array 1
-        tickArray2 = tickArray1;
+        // Error checking - use same array for all 3
+        tickArray1 = tickArray0;
+        tickArray2 = tickArray0;
       }
     } else {
       // No connection available, assume it exists
