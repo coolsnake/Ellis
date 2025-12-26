@@ -445,11 +445,11 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         break;
 
       case DexType.Meteora:
-        // Meteora DLMM: 17 accounts (14 fixed + 1 program + 2 bin arrays)
+        // Meteora DLMM: 18 accounts (15 fixed + 1 program + 2 bin arrays)
         // Must match arb-router/programs/arb-router/src/dex/meteora.rs expected order:
         // 0: LBPair, 1: BitmapExt, 2-3: Reserves, 4-5: UserTokens, 6-7: Mints,
         // 8: Oracle, 9: HostFee, 10: User, 11: TokenXProgram, 12: TokenYProgram,
-        // 13: EventAuth, 14: Program, 15+: BinArrays
+        // 13: MemoProgram, 14: EventAuth, 15: Program, 16+: BinArrays
         const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
         
         // Get token programs from hop (set by resolver from pool cache)
@@ -472,10 +472,11 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           wallet,                                                              // 10: User (signer)
           tokenXProgram,                                                       // 11: Token X Program
           tokenYProgram,                                                       // 12: Token Y Program
-          meteoraEventAuthority,                                               // 13: Event Authority (PDA)
-          programIdKey,                                                        // 14: Meteora DLMM Program
-          hop.binArrayLower ? new PublicKey(hop.binArrayLower) : poolId,      // 15: Bin Array Lower (remaining account)
-          hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : poolId,      // 16: Bin Array Upper (remaining account)
+          MEMO_PROGRAM_ID,                                                     // 13: Memo Program
+          meteoraEventAuthority,                                               // 14: Event Authority (PDA)
+          programIdKey,                                                        // 15: Meteora DLMM Program
+          hop.binArrayLower ? new PublicKey(hop.binArrayLower) : poolId,      // 16: Bin Array Lower (remaining account)
+          hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : poolId,      // 17: Bin Array Upper (remaining account)
         );
         break;
 
