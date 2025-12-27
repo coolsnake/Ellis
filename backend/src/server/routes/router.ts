@@ -1241,6 +1241,56 @@ export function createRouterRouter(io: SocketIOServer): Router {
 
       // Build a transaction from the instructions
       const tx = new Transaction();
+      
+      // CRITICAL: Create user token accounts before execute instruction
+      // The router's execute instruction expects user_token_account to exist
+      const inputMint = new PublicKey(executionPlan.hops[0].inputMint);
+      const outputMint = new PublicKey(executionPlan.hops[executionPlan.hops.length - 1].outputMint);
+      
+      const userInputAta = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
+      const userOutputAta = getAssociatedTokenAddressSync(outputMint, wallet.publicKey);
+      
+      // Check if accounts exist and create if needed
+      const [inputAtaInfo, outputAtaInfo] = await Promise.all([
+        connection.getAccountInfo(userInputAta),
+        connection.getAccountInfo(userOutputAta),
+      ]);
+      
+      if (!inputAtaInfo) {
+        tx.add(createAssociatedTokenAccountInstruction(
+          wallet.publicKey, // payer
+          userInputAta,     // ata
+          wallet.publicKey, // owner
+          inputMint         // mint
+        ));
+      }
+      
+      if (!outputAtaInfo) {
+        tx.add(createAssociatedTokenAccountInstruction(
+          wallet.publicKey, // payer
+          userOutputAta,    // ata
+          wallet.publicKey, // owner
+          outputMint        // mint
+        ));
+      }
+      
+      // For multi-hop, also create intermediate token accounts
+      for (let i = 0; i < executionPlan.hops.length - 1; i++) {
+        const intermediateMint = new PublicKey(executionPlan.hops[i].outputMint);
+        const intermediateAta = getAssociatedTokenAddressSync(intermediateMint, wallet.publicKey);
+        const intermediateAtaInfo = await connection.getAccountInfo(intermediateAta);
+        
+        if (!intermediateAtaInfo) {
+          tx.add(createAssociatedTokenAccountInstruction(
+            wallet.publicKey,
+            intermediateAta,
+            wallet.publicKey,
+            intermediateMint
+          ));
+        }
+      }
+      
+      // Now add the router instructions
       tx.add(...txResult.instructions);
 
       // Add recent blockhash
