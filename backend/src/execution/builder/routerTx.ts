@@ -675,8 +675,8 @@ async function extractDexAccounts(
         const reserveY = hop.reserveY || poolAccountB || hop.vaultB || hop.poolId;
         
         // Get activeId from cache for directional bin array derivation
-        const poolIdStr = hop.poolId.replace(/[#-]rev$/, '');
-        const hotCache = executionCache.getHot(poolIdStr) as any;
+        const meteoraPoolIdStr = hop.poolId.replace(/[#-]rev$/, '');
+        const hotCache = executionCache.getHot(meteoraPoolIdStr) as any;
         const activeId = hop.activeId ?? hotCache?.activeId;
         
         // Derive 3 directional bin arrays based on swap direction
