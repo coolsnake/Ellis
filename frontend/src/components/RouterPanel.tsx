@@ -723,10 +723,16 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
           </div>
         </div>
 
-        {/* Test Swap Section */}
+        {/* Test Swap Section - Debug Mode (fetches on-chain) */}
         {status?.deployed && (
-          <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
-            <h3 className="text-lg font-semibold text-white mb-3">Test Swap</h3>
+          <div className="mb-6 p-4 bg-gray-700/50 rounded-lg border border-yellow-600/30">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-yellow-400 text-xs font-medium px-2 py-0.5 bg-yellow-900/40 rounded">DEBUG MODE</span>
+              <h3 className="text-lg font-semibold text-white">Pool Swap Test</h3>
+            </div>
+            <p className="text-gray-400 text-xs mb-3">
+              Fetches pool data fresh from on-chain. Use for debugging new pools or verifying account ordering.
+            </p>
             
             <div className="space-y-4">
               <div>
@@ -896,11 +902,14 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
           </div>
         )}
 
-        {/* Multi-Hop Execute Testing Section */}
+        {/* Multi-Hop Execute Testing Section - Production-like Mode (uses caches) */}
         {status?.deployed && (
-          <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-lg font-semibold text-white">Multi-Hop Execute Test</h3>
+          <div className="mb-6 p-4 bg-gray-700/50 rounded-lg border border-purple-600/30">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-purple-400 text-xs font-medium px-2 py-0.5 bg-purple-900/40 rounded">PRODUCTION MODE</span>
+                <h3 className="text-lg font-semibold text-white">Execute Pipeline Test</h3>
+              </div>
               <button
                 onClick={fetchPools}
                 disabled={loadingPools}
@@ -910,9 +919,9 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
               </button>
             </div>
             
-            <div className="text-gray-400 text-xs mb-4">
-              Test the router's execute instruction with multi-hop, multi-DEX support using real cached pool data.
-            </div>
+            <p className="text-gray-400 text-xs mb-4">
+              Tests the real execution pipeline using pool/execution caches. Supports N-hop multi-DEX routes.
+            </p>
 
             {/* Pool Stats */}
             {poolsByDex && (

@@ -869,14 +869,32 @@ export function createRouterRouter(io: SocketIOServer): Router {
   });
 
   // ============================================================================
-  // Test Routes - Devnet/Mainnet Integration Testing
+  // Test Routes - Router Integration Testing
+  // ============================================================================
+  //
+  // TWO testing approaches available:
+  //
+  // 1. /router/test/swap (DEBUG MODE)
+  //    - Fetches pool data fresh from on-chain
+  //    - Use when: debugging new pools, cache issues, or verifying account ordering
+  //    - Slower but always gets latest on-chain state
+  //
+  // 2. /router/test-execute (PRODUCTION-LIKE MODE)
+  //    - Uses pool/execution caches (same as real execution)
+  //    - Use when: testing the actual execution pipeline
+  //    - Faster, tests the real code path, supports N-hop routes
+  //
   // ============================================================================
 
   /**
-   * POST /router/test/swap - Test a swap through a specific pool
+   * POST /router/test/swap - DEBUG: Test swap with fresh on-chain pool data
+   * 
+   * Use this for debugging pool connectivity and account ordering.
+   * Fetches pool state directly from chain (slower but authoritative).
    * 
    * Options:
    * - useRouter: true = use on-chain router, false = direct DEX call (default: true if router deployed)
+   * - hops: 1 or 2 for multi-hop testing
    */
   api.post('/router/test/swap', async (req: Request, res: Response) => {
     try {
@@ -1096,7 +1114,10 @@ export function createRouterRouter(io: SocketIOServer): Router {
   });
 
   /**
-   * POST /router/test-execute - Test the execute instruction with multi-hop support
+   * POST /router/test-execute - PRODUCTION-LIKE: Test execution pipeline with caches
+   * 
+   * Use this to test the actual execution code path. Uses pool/execution caches
+   * just like real arbitrage execution. Supports N-hop routes.
    * 
    * Request body:
    * - hops: Array of { poolId, dex, inputMint, outputMint }

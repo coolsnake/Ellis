@@ -658,11 +658,11 @@ async function extractDexAccounts(
         break;
 
       case DexType.Meteora:
-        // Meteora DLMM: minimum accounts is fixed (15 fixed + 1 program) + N bin arrays.
+        // Meteora DLMM: 19 accounts total (15 fixed + 1 program + 3 directional bin arrays)
         // Must match arb-router/programs/arb-router/src/dex/meteora.rs expected order:
         // 0: LBPair, 1: BitmapExt, 2-3: Reserves, 4-5: UserTokens, 6-7: Mints,
         // 8: Oracle, 9: HostFee, 10: User, 11: TokenXProgram, 12: TokenYProgram,
-        // 13: MemoProgram, 14: EventAuth, 15: Program, 16+: BinArrays
+        // 13: MemoProgram, 14: EventAuth, 15: Program, 16-18: BinArrays (directional)
         const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
         
         // Get token programs from hop (set by resolver from pool cache)
@@ -673,6 +673,30 @@ async function extractDexAccounts(
         // Meteora expects reserves in X/Y order which corresponds to canonical A/B
         const reserveX = hop.reserveX || poolAccountA || hop.vaultA || hop.poolId;
         const reserveY = hop.reserveY || poolAccountB || hop.vaultB || hop.poolId;
+        
+        // Get activeId from cache for directional bin array derivation
+        const poolIdStr = hop.poolId.replace(/[#-]rev$/, '');
+        const hotCache = executionCache.getHot(poolIdStr) as any;
+        const activeId = hop.activeId ?? hotCache?.activeId;
+        
+        // Derive 3 directional bin arrays based on swap direction
+        // X→Y (isAtoB): active, active-1, active-2 (price goes DOWN → lower direction)
+        // Y→X (!isAtoB): active, active+1, active+2 (price goes UP → upper direction)
+        let directionalBinArrays: PublicKey[] = [];
+        if (typeof activeId === 'number' && Number.isFinite(activeId)) {
+          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isAtoB);
+          directionalBinArrays = derived.arrays;
+        } else {
+          // Fallback: use cached or hop bin arrays if activeId unavailable
+          const fallbackArrays: PublicKey[] = [];
+          if (hop.binArrayLower) fallbackArrays.push(new PublicKey(hop.binArrayLower));
+          if (hop.binArrayUpper) fallbackArrays.push(new PublicKey(hop.binArrayUpper));
+          // Pad if needed
+          while (fallbackArrays.length < 3) {
+            fallbackArrays.push(fallbackArrays.length > 0 ? fallbackArrays[fallbackArrays.length - 1] : poolId);
+          }
+          directionalBinArrays = fallbackArrays;
+        }
         
         // Log the accounts being used for debugging
         logger.info('routerTx.meteora.accounts', {
@@ -686,18 +710,19 @@ async function extractDexAccounts(
           hopVaultA: hop.vaultA || 'missing',
           hopVaultB: hop.vaultB || 'missing',
           oracle: hop.oracle || 'missing',
-          binArrayLower: hop.binArrayLower || 'missing',
-          binArrayUpper: hop.binArrayUpper || 'missing',
+          activeId: activeId ?? 'missing',
+          isAtoB,
+          directionalBinArrays: directionalBinArrays.map(pk => pk.toBase58().slice(0, 8)),
           tokenXProgram: tokenXProgram.toBase58(),
           tokenYProgram: tokenYProgram.toBase58(),
           eventAuthority: meteoraEventAuthority.toBase58(),
-          isAtoB,
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
           canonicalMintA: poolMintA || 'missing',
           canonicalMintB: poolMintB || 'missing',
         });
         
+        // Add fixed accounts (0-15)
         accounts.push(
           poolId,                                                              // 0: LB Pair
           hop.bitmapExtension 
@@ -717,62 +742,39 @@ async function extractDexAccounts(
           MEMO_PROGRAM_ID,                                                     // 13: Memo Program
           meteoraEventAuthority,                                               // 14: Event Authority (PDA)
           programIdKey,                                                        // 15: Meteora DLMM Program
-          hop.binArrayLower ? new PublicKey(hop.binArrayLower) : poolId,      // 16: Bin Array Lower (remaining account)
-          hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : poolId,      // 17: Bin Array Upper (remaining account)
         );
+        
+        // Add 3 directional bin arrays (16-18)
+        accounts.push(...directionalBinArrays);
+        
+        // For single-hop route_swap (allowVariableAccounts=true), optionally add more bin arrays
+        // from cache for extra coverage beyond the minimum 3
+        if (opts?.allowVariableAccounts) {
+          try {
+            const maxBinArrays = 16; // Allow up to 16 bin arrays for single-hop
+            const cachedArrays = hotCache?.binArrays?.arrays;
+            
+            if (Array.isArray(cachedArrays) && cachedArrays.length > 0) {
+              const already = new Set(accounts.map((a) => a.toBase58()));
+              const dirSorted = cachedArrays
+                .map((x: any) => ({ index: Number(x?.index), address: String(x?.address || '') }))
+                .filter((x: any) => Number.isFinite(x.index) && x.address)
+                .sort((a: any, b: any) => (isAtoB ? (a.index - b.index) : (b.index - a.index)));
 
-        // Meteora frequently needs MORE than 2 bin array accounts.
-        // For multi-hop `execute` we must include a fixed MIN amount per hop; for single-hop `route_swap`
-        // we can optionally include even more. We source candidates from hot cache (refresh/WS).
-        try {
-          const expectedForMeteora = getAccountsNeededForDex(DexType.Meteora);
-          const minBinArrays = Math.max(2, expectedForMeteora - 16);
-          const maxBinArrays = opts?.allowVariableAccounts ? Math.max(minBinArrays, 16) : minBinArrays;
-
-          const poolIdStr = hop.poolId.replace(/[#-]rev$/, '');
-          const hot = executionCache.getHot(poolIdStr) as any;
-          const arrays = hot?.binArrays?.arrays;
-
-          const already = new Set(accounts.map((a) => a.toBase58()));
-          const candidates: PublicKey[] = [];
-
-          if (Array.isArray(arrays) && arrays.length > 0) {
-            const dirSorted = arrays
-              .map((x: any) => ({ index: Number(x?.index), address: String(x?.address || '') }))
-              .filter((x: any) => Number.isFinite(x.index) && x.address)
-              .sort((a: any, b: any) => (isAtoB ? (a.index - b.index) : (b.index - a.index)));
-
-            for (const it of dirSorted) {
-              try {
-                const pk = new PublicKey(it.address);
-                const b58 = pk.toBase58();
-                if (already.has(b58)) continue;
-                candidates.push(pk);
-                already.add(b58);
-              } catch {}
+              for (const it of dirSorted) {
+                try {
+                  const pk = new PublicKey(it.address);
+                  const b58 = pk.toBase58();
+                  if (already.has(b58)) continue;
+                  accounts.push(pk);
+                  already.add(b58);
+                  const binCount = accounts.length - 16;
+                  if (binCount >= maxBinArrays) break;
+                } catch {}
+              }
             }
-          }
-
-          if (candidates.length > 0) {
-            // Validate existence + owner in one batch
-            const conn = getConnection();
-            const infos = await conn.getMultipleAccountsInfo(candidates);
-            for (let i = 0; i < candidates.length; i++) {
-              const info = infos?.[i];
-              if (!info || !info.owner.equals(METEORA_DLMM_PROGRAM)) continue;
-              accounts.push(candidates[i]);
-              const binCount = Math.max(0, accounts.length - 16);
-              if (binCount >= maxBinArrays) break;
-            }
-          }
-
-          // Pad with a valid bin array pubkey if we still don't have enough.
-          // This keeps account slicing stable for `execute` and avoids placeholder poolId keys.
-          while (Math.max(0, accounts.length - 16) < minBinArrays) {
-            const pad = accounts.length > 16 ? accounts[accounts.length - 1] : poolId;
-            accounts.push(pad);
-          }
-        } catch {}
+          } catch {}
+        }
         break;
 
       case DexType.Orca:
@@ -1066,13 +1068,16 @@ function deriveRaydiumTickArrays(
 }
 
 /**
- * Derive Meteora DLMM bin array PDAs from active bin ID and bin step
+ * Derive Meteora DLMM bin array PDAs from active bin ID
+ * Returns 3 directional bin arrays based on swap direction:
+ * - X→Y (isAtoB=true): active, active-1, active-2 (lower direction, price goes down)
+ * - Y→X (isAtoB=false): active, active+1, active+2 (upper direction, price goes up)
  */
-function deriveMeteoraBinArrays(
+function deriveMeteoraBinArraysDirectional(
   poolId: PublicKey,
   activeId: number,
-  binStep: number
-): { lower: PublicKey; upper: PublicKey; active: PublicKey; activeIndex: number } {
+  isAtoB: boolean
+): { arrays: PublicKey[]; activeIndex: number } {
   // Derive bin array PDAs from active bin ID.
   // IMPORTANT: we must match the DLMM SDK PDA derivation for negative indexes.
   // This implementation uses a signed 64-bit two's complement seed (8 bytes LE),
@@ -1082,6 +1087,48 @@ function deriveMeteoraBinArrays(
 
   const deriveBinArrayPda = (index: number): PublicKey => {
     // Seed is an i64 LE (two's complement for negative values)
+    const idxBn = new BN(index);
+    const seed = idxBn.isNeg()
+      ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
+      : idxBn.toArrayLike(Buffer, 'le', 8);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('bin_array'), poolId.toBuffer(), Buffer.from(seed)],
+      METEORA_DLMM_PROGRAM
+    );
+    return pda;
+  };
+
+  // Directional selection: 3 consecutive bin arrays in swap direction
+  // X→Y: price goes DOWN → need lower bin arrays (lower indices)
+  // Y→X: price goes UP → need upper bin arrays (higher indices)
+  const arrays: PublicKey[] = [];
+  if (isAtoB) {
+    // X→Y: active, active-1, active-2
+    arrays.push(deriveBinArrayPda(activeIndex));
+    arrays.push(deriveBinArrayPda(activeIndex - 1));
+    arrays.push(deriveBinArrayPda(activeIndex - 2));
+  } else {
+    // Y→X: active, active+1, active+2
+    arrays.push(deriveBinArrayPda(activeIndex));
+    arrays.push(deriveBinArrayPda(activeIndex + 1));
+    arrays.push(deriveBinArrayPda(activeIndex + 2));
+  }
+
+  return { arrays, activeIndex };
+}
+
+/**
+ * Derive Meteora DLMM bin array PDAs from active bin ID and bin step (legacy bidirectional)
+ */
+function deriveMeteoraBinArrays(
+  poolId: PublicKey,
+  activeId: number,
+  binStep: number
+): { lower: PublicKey; upper: PublicKey; active: PublicKey; activeIndex: number } {
+  const BIN_ARRAY_SIZE = 70;
+  const activeIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
+
+  const deriveBinArrayPda = (index: number): PublicKey => {
     const idxBn = new BN(index);
     const seed = idxBn.isNeg()
       ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)

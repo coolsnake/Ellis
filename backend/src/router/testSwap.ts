@@ -1498,9 +1498,9 @@ async function buildMeteoraDexAccountsForRouter(
  * 4. Token Vault A
  * 5. Token Owner Account B
  * 6. Token Vault B
- * 7. Tick Array 0 (lower)
- * 8. Tick Array 1 (center)
- * 9. Tick Array 2 (upper)
+ * 7. Tick Array 0 (current tick)
+ * 8. Tick Array 1 (next in swap direction)
+ * 9. Tick Array 2 (next-next in swap direction)
  * 10. Oracle
  * 11. Whirlpool Program (for CPI)
  */
@@ -1516,18 +1516,47 @@ async function buildOrcaDexAccountsForRouter(
   
   // Get user token accounts
   // For Orca Whirlpool, accounts must be ordered as Token A, Token B (not source, dest)
-  const userTokenA = getAssociatedTokenAddressSync(new PublicKey(pool.mintA), payer);
-  const userTokenB = getAssociatedTokenAddressSync(new PublicKey(pool.mintB), payer);
+  // Use the pool's token program (may be Token-2022) for correct ATA derivation
+  const tokenProgram = new PublicKey(pool.tokenProgram);
+  const userTokenA = getAssociatedTokenAddressSync(new PublicKey(pool.mintA), payer, false, tokenProgram);
+  const userTokenB = getAssociatedTokenAddressSync(new PublicKey(pool.mintB), payer, false, tokenProgram);
   
-  // Use all 3 tick arrays from pool state - same as working local builder
-  // Order: lower, center, upper (regardless of swap direction)
-  // These are known to exist on-chain
-  const tickArray0 = new PublicKey(pool.tickArrays.lower);
-  const tickArray1 = new PublicKey(pool.tickArrays.center);
-  const tickArray2 = new PublicKey(pool.tickArrays.upper);
+  // CRITICAL: Derive tick arrays in direction-specific order
+  // Orca Whirlpool swap expects:
+  // - tick_array_0: Contains the current tick
+  // - tick_array_1: Next tick array in swap direction
+  // - tick_array_2: Next-next tick array in swap direction
+  // A->B: tick decreases, so offsets [0, -1, -2]
+  // B->A: tick increases, so offsets [0, +1, +2]
+  const TICK_ARRAY_SIZE = 88;
+  const ticksInArray = TICK_ARRAY_SIZE * pool.tickSpacing;
+  const realIndex = Math.floor(pool.tickCurrentIndex / ticksInArray);
+  
+  const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+    const startTickBuffer = Buffer.alloc(4);
+    startTickBuffer.writeInt32LE(startTickIndex, 0);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+      ORCA_WHIRLPOOL_PROGRAM
+    );
+    return pda;
+  };
+  
+  const idx0 = realIndex;
+  const idx1 = realIndex + (isAtoB ? -1 : 1);
+  const idx2 = realIndex + (isAtoB ? -2 : 2);
+  
+  const tickArray0 = deriveTickArrayPda(idx0 * ticksInArray);
+  const tickArray1 = deriveTickArrayPda(idx1 * ticksInArray);
+  const tickArray2 = deriveTickArrayPda(idx2 * ticksInArray);
   
   logger.info('router.test.orca.tickarrays', {
     cat: 'router',
+    isAtoB,
+    tickCurrentIndex: pool.tickCurrentIndex,
+    tickSpacing: pool.tickSpacing,
+    realIndex,
+    indices: [idx0, idx1, idx2],
     tickArray0: tickArray0.toBase58(),
     tickArray1: tickArray1.toBase58(),
     tickArray2: tickArray2.toBase58(),
@@ -1535,16 +1564,16 @@ async function buildOrcaDexAccountsForRouter(
   
   // Standard swap account layout (matches working local builder - 12 accounts)
   const accounts: PublicKey[] = [
-    new PublicKey(pool.tokenProgram),                              // 0: Token Program
+    tokenProgram,                                                  // 0: Token Program
     payer,                                                         // 1: Token Authority (signer)
     poolPubkey,                                                    // 2: Whirlpool
     userTokenA,                                                    // 3: Token Owner Account A
     new PublicKey(pool.vaultA),                                   // 4: Token Vault A
     userTokenB,                                                    // 5: Token Owner Account B
     new PublicKey(pool.vaultB),                                   // 6: Token Vault B
-    tickArray0,                                                    // 7: Tick Array 0 (lower)
-    tickArray1,                                                    // 8: Tick Array 1 (center)
-    tickArray2,                                                    // 9: Tick Array 2 (upper)
+    tickArray0,                                                    // 7: Tick Array 0 (current tick)
+    tickArray1,                                                    // 8: Tick Array 1 (next in swap direction)
+    tickArray2,                                                    // 9: Tick Array 2 (next-next in swap direction)
     new PublicKey(pool.oracle),                                   // 10: Oracle
     ORCA_WHIRLPOOL_PROGRAM,                                        // 11: Whirlpool Program (for CPI)
   ];
@@ -1554,6 +1583,7 @@ async function buildOrcaDexAccountsForRouter(
     accountCount: accounts.length,
     dexType: 'orca_whirlpool',
     isAtoB,
+    tokenProgram: pool.tokenProgram,
     tickArrays: {
       array0: tickArray0.toBase58(),
       array1: tickArray1.toBase58(),
