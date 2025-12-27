@@ -669,10 +669,28 @@ async function extractDexAccounts(
         const tokenXProgram = tokenProgramLabelToKey((hop as any).tokenProgramA);
         const tokenYProgram = tokenProgramLabelToKey((hop as any).tokenProgramB);
         
-        // CRITICAL: Use CANONICAL account ordering (properly paired with canonical mints)
-        // Meteora expects reserves in X/Y order which corresponds to canonical A/B
-        const reserveX = hop.reserveX || poolAccountA || hop.vaultA || hop.poolId;
-        const reserveY = hop.reserveY || poolAccountB || hop.vaultB || hop.poolId;
+        // CRITICAL: Meteora expects NATIVE reserves (reserveX/reserveY paired with tokenXMint/tokenYMint)
+        // NOT canonical ordering! The on-chain lbPair has_one constraint validates against native reserves.
+        // For Meteora DLMM, the pool cache has reserve_x/reserve_y which are the native reserves.
+        // native_account_a/native_account_b may not be set for Meteora, so use reserve_x/reserve_y directly.
+        const nativeReserveX = (stat as any)?.reserve_x;  // Native reserveX from lbPair
+        const nativeReserveY = (stat as any)?.reserve_y;  // Native reserveY from lbPair
+        const nativeAccountA = stat?.native_account_a || nativeReserveX;
+        const nativeAccountB = stat?.native_account_b || nativeReserveY;
+        const nativeMintA = stat?.native_mint_a;
+        const nativeMintB = stat?.native_mint_b;
+        
+        // reserveX pairs with tokenXMint (native ordering, not canonical)
+        const reserveX = hop.reserveX || nativeReserveX || nativeAccountA || hop.vaultA || hop.poolId;
+        const reserveY = hop.reserveY || nativeReserveY || nativeAccountB || hop.vaultB || hop.poolId;
+        
+        // Token X/Y mints must also be native ordering
+        const tokenXMint = nativeMintA || poolMintA;
+        const tokenYMint = nativeMintB || poolMintB;
+        
+        // Recalculate isAtoB using native mint ordering for Meteora
+        // X->Y means inputMint matches tokenXMint (native mint A)
+        const isXtoY = hop.inputMint === tokenXMint;
         
         // Get activeId from cache for directional bin array derivation
         const meteoraPoolIdStr = hop.poolId.replace(/[#-]rev$/, '');
@@ -680,11 +698,11 @@ async function extractDexAccounts(
         const activeId = hop.activeId ?? hotCache?.activeId;
         
         // Derive 3 directional bin arrays based on swap direction
-        // X→Y (isAtoB): active, active-1, active-2 (price goes DOWN → lower direction)
-        // Y→X (!isAtoB): active, active+1, active+2 (price goes UP → upper direction)
+        // X→Y (isXtoY): active, active-1, active-2 (price goes DOWN → lower direction)
+        // Y→X (!isXtoY): active, active+1, active+2 (price goes UP → upper direction)
         let directionalBinArrays: PublicKey[] = [];
         if (typeof activeId === 'number' && Number.isFinite(activeId)) {
-          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isAtoB);
+          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
           directionalBinArrays = derived.arrays;
         } else {
           // Fallback: use cached or hop bin arrays if activeId unavailable
@@ -698,28 +716,50 @@ async function extractDexAccounts(
           directionalBinArrays = fallbackArrays;
         }
         
-        // Log the accounts being used for debugging
+        // Log the accounts being used for debugging with verification
         logger.info('routerTx.meteora.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
+          // Native ordering (what Meteora expects)
+          native: {
+            reserveX,
+            reserveY,
+            tokenXMint: tokenXMint || 'missing',
+            tokenYMint: tokenYMint || 'missing',
+            // Cache fields used for resolution
+            cacheReserveX: nativeReserveX || 'missing',
+            cacheReserveY: nativeReserveY || 'missing',
+            mintA: nativeMintA || 'missing',
+            mintB: nativeMintB || 'missing',
+          },
+          // Canonical ordering (may be swapped)
+          canonical: {
+            accountA: poolAccountA || 'missing',
+            accountB: poolAccountB || 'missing',
+            mintA: poolMintA || 'missing',
+            mintB: poolMintB || 'missing',
+          },
+          // Check if canonical was swapped from native
+          wasSwapped: stat?.was_swapped ?? 'unknown',
+          // Hop fallback values
+          hop: {
+            vaultA: hop.vaultA || 'missing',
+            vaultB: hop.vaultB || 'missing',
+            reserveX: hop.reserveX || 'missing',
+            reserveY: hop.reserveY || 'missing',
+          },
+          // Other fields
           bitmapExtension: hop.bitmapExtension || 'missing',
-          reserveX,
-          reserveY,
-          canonicalAccountA: poolAccountA || 'missing',
-          canonicalAccountB: poolAccountB || 'missing',
-          hopVaultA: hop.vaultA || 'missing',
-          hopVaultB: hop.vaultB || 'missing',
           oracle: hop.oracle || 'missing',
           activeId: activeId ?? 'missing',
-          isAtoB,
+          isXtoY,
+          isAtoBCanonical: isAtoB, // For comparison - canonical direction
           directionalBinArrays: directionalBinArrays.map(pk => pk.toBase58().slice(0, 8)),
           tokenXProgram: tokenXProgram.toBase58(),
           tokenYProgram: tokenYProgram.toBase58(),
           eventAuthority: meteoraEventAuthority.toBase58(),
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
-          canonicalMintA: poolMintA || 'missing',
-          canonicalMintB: poolMintB || 'missing',
         });
         
         // Add fixed accounts (0-15)
@@ -728,12 +768,12 @@ async function extractDexAccounts(
           hop.bitmapExtension 
             ? new PublicKey(hop.bitmapExtension) 
             : programIdKey,                                                    // 1: Bitmap Extension (use program ID as placeholder)
-          new PublicKey(reserveX),                                             // 2: Reserve X (canonical A)
-          new PublicKey(reserveY),                                             // 3: Reserve Y (canonical B)
+          new PublicKey(reserveX),                                             // 2: Reserve X (native, paired with tokenXMint)
+          new PublicKey(reserveY),                                             // 3: Reserve Y (native, paired with tokenYMint)
           userSourceAta,                                                       // 4: User Token In
           userDestAta,                                                         // 5: User Token Out
-          poolMintA ? new PublicKey(poolMintA) : inputMint,                   // 6: Token X Mint (canonical A)
-          poolMintB ? new PublicKey(poolMintB) : outputMint,                  // 7: Token Y Mint (canonical B)
+          tokenXMint ? new PublicKey(tokenXMint) : inputMint,                 // 6: Token X Mint (native)
+          tokenYMint ? new PublicKey(tokenYMint) : outputMint,                // 7: Token Y Mint (native)
           hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)
           programIdKey,                                                        // 9: Host Fee In (use program as placeholder)
           wallet,                                                              // 10: User (signer)

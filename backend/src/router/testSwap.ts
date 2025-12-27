@@ -330,16 +330,39 @@ async function fetchMeteoraDlmmPool(
     let oracle = oracleFromState?.toBase58() || '';
     let bitmapExtension: string | undefined = bitmapExtFromState?.toBase58();
     
-    logger.info('router.test.meteora.state_fields', { 
-      cat: 'router', 
-      hasReserveX: !!reserveXFromState, 
-      hasReserveY: !!reserveYFromState,
-      hasOracle: !!oracleFromState,
-      hasBitmapExt: !!bitmapExtFromState,
-      reserveX,
-      reserveY,
-      oracle,
-      bitmapExtension: bitmapExtension || 'not_in_state'
+    logger.info('router.test.meteora.sdk_decode', { 
+      cat: 'router',
+      poolId: poolPubkey.toBase58(),
+      // Raw SDK field values (before extraction)
+      sdkFields: {
+        tokenXMint: state.tokenXMint?.toBase58?.() || String(state.tokenXMint || ''),
+        tokenYMint: state.tokenYMint?.toBase58?.() || String(state.tokenYMint || ''),
+        reserveX: state.reserveX?.toBase58?.() || String(state.reserveX || ''),
+        reserveY: state.reserveY?.toBase58?.() || String(state.reserveY || ''),
+      },
+      // What we extracted
+      extracted: {
+        tokenXMint,
+        tokenYMint,
+        reserveX,
+        reserveY,
+        oracle,
+        bitmapExtension: bitmapExtension || 'not_in_state',
+      },
+      // Field presence
+      hasFields: {
+        reserveX: !!reserveXFromState,
+        reserveY: !!reserveYFromState,
+        oracle: !!oracleFromState,
+        bitmapExt: !!bitmapExtFromState,
+      },
+      // Check for any mismatch between raw SDK and extraction
+      extractionValid: {
+        reserveXMatch: reserveX === (state.reserveX?.toBase58?.() || ''),
+        reserveYMatch: reserveY === (state.reserveY?.toBase58?.() || ''),
+        tokenXMintMatch: tokenXMint === (state.tokenXMint?.toBase58?.() || ''),
+        tokenYMintMatch: tokenYMint === (state.tokenYMint?.toBase58?.() || ''),
+      },
     });
     
     // Fallback to PDA derivation only if not found in state
@@ -1364,11 +1387,24 @@ async function buildDexAccountsForRouter(
     const dexProgramId = new PublicKey(pool.programId);
     const accounts = [...sdkAccountOrder, dexProgramId];
     
-    logger.info('router.test.dex_accounts', { 
-      cat: 'router', 
+    const isAtoB = inputMint.toBase58() === pool.mintA;
+    logger.info('router.test.dex_accounts.raydium', { 
+      cat: 'router',
+      poolId: poolPubkey.toBase58(),
+      poolState: {
+        mintA: pool.mintA,
+        mintB: pool.mintB,
+        vaultA: pool.vaultA,
+        vaultB: pool.vaultB,
+        ammConfig: pool.ammConfig,
+      },
+      swapInfo: {
+        inputMint: inputMint.toBase58(),
+        outputMint: outputMint.toBase58(),
+        isAtoB,
+      },
       accountCount: accounts.length,
-      dexType: 'raydium_clmm',
-      isAtoB: inputMint.toBase58() === pool.mintA,
+      tickArrays: pool.tickArrays,
     });
     
     return accounts;
@@ -1470,15 +1506,45 @@ async function buildMeteoraDexAccountsForRouter(
     ...binArrayAccounts,                                           // 16+: Bin arrays
   ];
   
-  logger.info('router.test.dex_accounts', { 
-    cat: 'router', 
-    accountCount: accounts.length,
-    fixedCount: fixedAccounts.length,
+  // Log with detailed account comparison for debugging
+  logger.info('router.test.dex_accounts.meteora', { 
+    cat: 'router',
+    poolId: poolPubkey.toBase58(),
+    // Pool state (from SDK decode)
+    poolState: {
+      tokenXMint: pool.tokenXMint,
+      tokenYMint: pool.tokenYMint,
+      reserveX: pool.reserveX,
+      reserveY: pool.reserveY,
+      oracle: pool.oracle,
+    },
+    // What we're actually sending
+    actualAccounts: {
+      idx0_LBPair: accounts[0].toBase58(),
+      idx1_BitmapExt: accounts[1].toBase58(),
+      idx2_ReserveX: accounts[2].toBase58(),
+      idx3_ReserveY: accounts[3].toBase58(),
+      idx4_UserTokenIn: accounts[4].toBase58(),
+      idx5_UserTokenOut: accounts[5].toBase58(),
+      idx6_TokenXMint: accounts[6].toBase58(),
+      idx7_TokenYMint: accounts[7].toBase58(),
+      idx8_Oracle: accounts[8].toBase58(),
+    },
+    // Swap direction info
+    swapInfo: {
+      inputMint: inputMint.toBase58(),
+      outputMint: outputMint.toBase58(),
+      isXtoY,
+    },
+    // Verify reserves match pool state (should all be true)
+    verification: {
+      reserveXMatches: accounts[2].toBase58() === pool.reserveX,
+      reserveYMatches: accounts[3].toBase58() === pool.reserveY,
+      tokenXMintMatches: accounts[6].toBase58() === pool.tokenXMint,
+      tokenYMintMatches: accounts[7].toBase58() === pool.tokenYMint,
+    },
     binArrayCount: binArrayAccounts.length,
-    dexType: 'meteora_dlmm',
-    isXtoY,
-    binArrayOrder: sortedBinArrays.map(ba => ({ index: ba.index, address: ba.address.slice(0, 8) })),
-    accounts: accounts.map((acc, i) => ({ index: i, address: acc.toBase58() })),
+    binArrays: sortedBinArrays.map(ba => ({ index: ba.index, address: ba.address.slice(0, 8) })),
   });
   
   return accounts;
@@ -1581,20 +1647,48 @@ async function buildOrcaDexAccountsForRouter(
     ORCA_WHIRLPOOL_PROGRAM,                                        // 11: Whirlpool Program (for CPI)
   ];
   
-  logger.info('router.test.dex_accounts', { 
-    cat: 'router', 
-    accountCount: accounts.length,
-    dexType: 'orca_whirlpool',
-    isAtoB,
-    tokenProgramA: metaA.program,
-    tokenProgramB: metaB.program,
-    poolTokenProgram: pool.tokenProgram,
-    tickArrays: {
-      array0: tickArray0.toBase58(),
-      array1: tickArray1.toBase58(),
-      array2: tickArray2.toBase58(),
+  logger.info('router.test.dex_accounts.orca', { 
+    cat: 'router',
+    poolId: poolPubkey.toBase58(),
+    poolState: {
+      mintA: pool.mintA,
+      mintB: pool.mintB,
+      vaultA: pool.vaultA,
+      vaultB: pool.vaultB,
+      oracle: pool.oracle,
+      tickCurrentIndex: pool.tickCurrentIndex,
+      tickSpacing: pool.tickSpacing,
     },
-    accounts: accounts.map((acc, i) => ({ index: i, address: acc.toBase58() })),
+    actualAccounts: {
+      idx0_TokenProgram: accounts[0].toBase58(),
+      idx1_TokenAuthority: accounts[1].toBase58(),
+      idx2_Whirlpool: accounts[2].toBase58(),
+      idx3_TokenOwnerA: accounts[3].toBase58(),
+      idx4_TokenVaultA: accounts[4].toBase58(),
+      idx5_TokenOwnerB: accounts[5].toBase58(),
+      idx6_TokenVaultB: accounts[6].toBase58(),
+      idx7_TickArray0: accounts[7].toBase58(),
+      idx8_TickArray1: accounts[8].toBase58(),
+      idx9_TickArray2: accounts[9].toBase58(),
+      idx10_Oracle: accounts[10].toBase58(),
+      idx11_WhirlpoolProgram: accounts[11].toBase58(),
+    },
+    swapInfo: {
+      inputMint: inputMint.toBase58(),
+      outputMint: _outputMint.toBase58(),
+      isAtoB,
+    },
+    verification: {
+      vaultAMatches: accounts[4].toBase58() === pool.vaultA,
+      vaultBMatches: accounts[6].toBase58() === pool.vaultB,
+      oracleMatches: accounts[10].toBase58() === pool.oracle,
+    },
+    tokenPrograms: {
+      mintA: metaA.program,
+      mintB: metaB.program,
+      poolVaults: pool.tokenProgram,
+    },
+    accountCount: accounts.length,
   });
   
   return accounts;
