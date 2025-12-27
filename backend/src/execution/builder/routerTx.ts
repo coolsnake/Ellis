@@ -673,20 +673,20 @@ async function extractDexAccounts(
         // NOT canonical ordering! The on-chain lbPair has_one constraint validates against native reserves.
         // For Meteora DLMM, the pool cache has reserve_x/reserve_y which are the native reserves.
         // native_account_a/native_account_b may not be set for Meteora, so use reserve_x/reserve_y directly.
-        const nativeReserveX = (stat as any)?.reserve_x;  // Native reserveX from lbPair
-        const nativeReserveY = (stat as any)?.reserve_y;  // Native reserveY from lbPair
-        const nativeAccountA = stat?.native_account_a || nativeReserveX;
-        const nativeAccountB = stat?.native_account_b || nativeReserveY;
-        const nativeMintA = stat?.native_mint_a;
-        const nativeMintB = stat?.native_mint_b;
+        const meteoraNativeReserveX = (stat as any)?.reserve_x;  // Native reserveX from lbPair
+        const meteoraNativeReserveY = (stat as any)?.reserve_y;  // Native reserveY from lbPair
+        const meteoraNativeAccountA = stat?.native_account_a || meteoraNativeReserveX;
+        const meteoraNativeAccountB = stat?.native_account_b || meteoraNativeReserveY;
+        const meteoraNativeMintA = stat?.native_mint_a;
+        const meteoraNativeMintB = stat?.native_mint_b;
         
         // reserveX pairs with tokenXMint (native ordering, not canonical)
-        const reserveX = hop.reserveX || nativeReserveX || nativeAccountA || hop.vaultA || hop.poolId;
-        const reserveY = hop.reserveY || nativeReserveY || nativeAccountB || hop.vaultB || hop.poolId;
+        const reserveX = hop.reserveX || meteoraNativeReserveX || meteoraNativeAccountA || hop.vaultA || hop.poolId;
+        const reserveY = hop.reserveY || meteoraNativeReserveY || meteoraNativeAccountB || hop.vaultB || hop.poolId;
         
         // Token X/Y mints must also be native ordering
-        const tokenXMint = nativeMintA || poolMintA;
-        const tokenYMint = nativeMintB || poolMintB;
+        const tokenXMint = meteoraNativeMintA || poolMintA;
+        const tokenYMint = meteoraNativeMintB || poolMintB;
         
         // Recalculate isAtoB using native mint ordering for Meteora
         // X->Y means inputMint matches tokenXMint (native mint A)
@@ -727,10 +727,10 @@ async function extractDexAccounts(
             tokenXMint: tokenXMint || 'missing',
             tokenYMint: tokenYMint || 'missing',
             // Cache fields used for resolution
-            cacheReserveX: nativeReserveX || 'missing',
-            cacheReserveY: nativeReserveY || 'missing',
-            mintA: nativeMintA || 'missing',
-            mintB: nativeMintB || 'missing',
+            cacheReserveX: meteoraNativeReserveX || 'missing',
+            cacheReserveY: meteoraNativeReserveY || 'missing',
+            mintA: meteoraNativeMintA || 'missing',
+            mintB: meteoraNativeMintB || 'missing',
           },
           // Canonical ordering (may be swapped)
           canonical: {
@@ -740,7 +740,7 @@ async function extractDexAccounts(
             mintB: poolMintB || 'missing',
           },
           // Check if canonical was swapped from native
-          wasSwapped: stat?.was_swapped ?? 'unknown',
+          wasSwapped: (stat as any)?.was_swapped ?? 'unknown',
           // Hop fallback values
           hop: {
             vaultA: hop.vaultA || 'missing',
