@@ -835,10 +835,17 @@ async function extractDexAccounts(
         
         // CRITICAL: Orca Whirlpool swap expects tick arrays in a direction-specific SEQUENCE:
         // tick_array_0 contains current tick, then two sequential arrays in swap direction.
+        // A->B (going down): [center, lower, even_lower] = [realIndex, realIndex-1, realIndex-2]
+        // B->A (going up): [center, upper, even_upper] = [realIndex, realIndex+1, realIndex+2]
         const poolIdStr = hop.poolId.replace(/[#-]rev$/, '');
-        let tickArray0 = hop.tickArrayLower || '';
-        let tickArray1 = hop.tickArrayCenter || '';
-        let tickArray2 = hop.tickArrayUpper || '';
+        
+        // Default fallback: use hop tick arrays in directional order
+        // Note: hop only has lower/center/upper, so for a_to_b we'd be missing even_lower!
+        // This fallback is incomplete but better than nothing - directional derivation below is preferred.
+        let tickArray0 = hop.tickArrayCenter || '';  // Always start with center (contains current tick)
+        let tickArray1 = isAtoBOrca ? (hop.tickArrayLower || '') : (hop.tickArrayUpper || '');
+        let tickArray2 = '';  // Fallback can't provide 3rd array without derivation
+        
         try {
           const hot = executionCache.getHot(poolIdStr);
           const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
@@ -851,12 +858,21 @@ async function extractDexAccounts(
           }
         } catch { /* ignore */ }
         
-        // Log the accounts being used for debugging
+        // Log the accounts being used for debugging with native mint verification
         logger.info('routerTx.orca.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
-          canonicalAccountA: poolAccountA || 'missing',
-          canonicalAccountB: poolAccountB || 'missing',
+          native: {
+            mintA: nativeMintA || 'missing',
+            mintB: stat?.native_mint_b || 'missing',
+            wasSwapped: (stat as any)?.was_swapped ?? 'unknown',
+          },
+          canonical: {
+            mintA: poolMintA || 'missing',
+            mintB: poolMintB || 'missing',
+            accountA: poolAccountA || 'missing',
+            accountB: poolAccountB || 'missing',
+          },
           hopVaultA: hop.vaultA || 'missing',
           hopVaultB: hop.vaultB || 'missing',
           selectedVaultA: orcaVaultA,
@@ -868,10 +884,9 @@ async function extractDexAccounts(
           userTokenA: userTokenA.toBase58(),
           userTokenB: userTokenB.toBase58(),
           isAtoB: isAtoBOrca,
+          isAtoBSource: nativeMintA ? 'native_mint_a' : 'canonical_fallback',
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
-          canonicalMintA: poolMintA || 'missing',
-          canonicalMintB: poolMintB || 'missing',
         });
         
         accounts.push(

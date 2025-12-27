@@ -62,6 +62,14 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
       hop.vaultA = accountA;
       hop.vaultB = accountB;
       
+      // CRITICAL: Set reserveX/reserveY from native reserve_x/reserve_y (not canonical accounts!)
+      // These are the on-chain lbPair.reserveX and lbPair.reserveY addresses
+      // The Meteora has_one constraint validates these directly against the lbPair
+      const nativeReserveX = String((p as any)?.reserve_x || '');
+      const nativeReserveY = String((p as any)?.reserve_y || '');
+      if (nativeReserveX) hop.reserveX = nativeReserveX;
+      if (nativeReserveY) hop.reserveY = nativeReserveY;
+      
       // Pass bitmap extension from pool cache (checked during pool normalization)
       const bitmapExt = String((p as any)?.bin_array_bitmap_extension || '');
       if (bitmapExt) {
@@ -107,17 +115,21 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
         });
       }
       
-      // Debug logging for vaults, bitmap extension, and oracle
+      // Debug logging for vaults, reserves, bitmap extension, and oracle
       try {
         const { logger } = await import('../../utils/logger.js');
         logger.info('meteora.resolver.accounts_set', {
           cat: 'tx',
           ctx: {
             poolId: hop.poolId,
+            // Canonical accounts (may be swapped)
             vaultA: accountA,
             vaultB: accountB,
-            hasVaultA: !!accountA,
-            hasVaultB: !!accountB,
+            // Native reserves (on-chain lbPair ordering - NOT swapped)
+            reserveX: nativeReserveX || 'not_cached',
+            reserveY: nativeReserveY || 'not_cached',
+            hasReserveX: !!nativeReserveX,
+            hasReserveY: !!nativeReserveY,
             bitmapExtension: bitmapExt || 'not_cached',
             hasBitmapExtension: !!bitmapExt,
             oracle: hop.oracle || 'not_cached',

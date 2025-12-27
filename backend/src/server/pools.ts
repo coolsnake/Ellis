@@ -2486,6 +2486,12 @@ export async function getOrcaPoolsNormalized(opts?: { skipUniverseFilter?: boole
       if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
       if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
       
+      // CRITICAL: Store native (on-chain) mint orientation for correct swap direction detection
+      // The routerTx builder needs native_mint_a to determine isAtoB for the on-chain CPI
+      if ((pool as any).native_mint_a) staticData.native_mint_a = (pool as any).native_mint_a;
+      if ((pool as any).native_mint_b) staticData.native_mint_b = (pool as any).native_mint_b;
+      if ((pool as any).was_swapped != null) staticData.was_swapped = (pool as any).was_swapped;
+      
       // Store execution-critical accounts (oracle, vaults)
       if (pool.oracle) staticData.oracle = pool.oracle;
       if (pool.token_vault_a) staticData.token_vault_a = pool.token_vault_a;
@@ -2579,6 +2585,13 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
         if (pool.mint_b) staticData.mint_b = pool.mint_b;
         if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
         if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+        
+        // CRITICAL: Store native (on-chain) mint orientation for correct swap direction detection
+        // The routerTx builder needs native_mint_a to determine isAtoB for the on-chain CPI
+        if ((pool as any).native_mint_a) staticData.native_mint_a = (pool as any).native_mint_a;
+        if ((pool as any).native_mint_b) staticData.native_mint_b = (pool as any).native_mint_b;
+        if ((pool as any).was_swapped != null) staticData.was_swapped = (pool as any).was_swapped;
+        
         if ((pool as any).oracle) staticData.oracle = (pool as any).oracle;
         if ((pool as any).token_vault_a) staticData.token_vault_a = (pool as any).token_vault_a;
         if ((pool as any).token_vault_b) staticData.token_vault_b = (pool as any).token_vault_b;
