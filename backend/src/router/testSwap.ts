@@ -24,6 +24,7 @@ import { logger } from '../utils/logger.js';
 import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/raydiumTickArrays.js';
 import { buildRouteSwapIx, dexNameToType, buildExecuteIx } from './sdk.js';
 import { DexType, RouteStep } from './types.js';
+import { getTokenMeta } from '../execution/resolver/tokenMeta.js';
 
 // ============================================================================
 // Constants
@@ -935,18 +936,14 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     // Build transaction with setup instructions
     const tx = new Transaction();
     
-    // Detect token programs for mints (needed for ATA creation)
-    const [inMintInfo, outMintInfo] = await Promise.all([
-      connection.getAccountInfo(inMint),
-      connection.getAccountInfo(outMint),
+    // Detect token programs for mints using cached token meta (handles Token-2022)
+    const [inMeta, outMeta] = await Promise.all([
+      getTokenMeta(inMint.toBase58()),
+      getTokenMeta(outMint.toBase58()),
     ]);
     
-    const inMintTokenProgram = inMintInfo?.owner.equals(TOKEN_2022_PROGRAM_ID) 
-      ? TOKEN_2022_PROGRAM_ID 
-      : TOKEN_PROGRAM_ID;
-    const outMintTokenProgram = outMintInfo?.owner.equals(TOKEN_2022_PROGRAM_ID)
-      ? TOKEN_2022_PROGRAM_ID
-      : TOKEN_PROGRAM_ID;
+    const inMintTokenProgram = inMeta.program === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    const outMintTokenProgram = outMeta.program === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
     
     // Ensure user has ATAs (use correct token program for each mint)
     const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey, false, inMintTokenProgram);
@@ -956,8 +953,8 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     let intermediateAta: PublicKey | undefined;
     if (hops === 2 && routerProgramId) {
       const intermediateMint = outMint; // For round-trip, intermediate is the output of first hop
-      const intermediateMintInfo = await connection.getAccountInfo(intermediateMint);
-      const intermediateMintTokenProgram = intermediateMintInfo?.owner.equals(TOKEN_2022_PROGRAM_ID) 
+      const intermediateMeta = await getTokenMeta(intermediateMint.toBase58());
+      const intermediateMintTokenProgram = intermediateMeta.program === 'token-2022' 
         ? TOKEN_2022_PROGRAM_ID 
         : TOKEN_PROGRAM_ID;
       intermediateAta = getAssociatedTokenAddressSync(intermediateMint, wallet.publicKey, false, intermediateMintTokenProgram);
@@ -1516,10 +1513,15 @@ async function buildOrcaDexAccountsForRouter(
   
   // Get user token accounts
   // For Orca Whirlpool, accounts must be ordered as Token A, Token B (not source, dest)
-  // Use the pool's token program (may be Token-2022) for correct ATA derivation
-  const tokenProgram = new PublicKey(pool.tokenProgram);
-  const userTokenA = getAssociatedTokenAddressSync(new PublicKey(pool.mintA), payer, false, tokenProgram);
-  const userTokenB = getAssociatedTokenAddressSync(new PublicKey(pool.mintB), payer, false, tokenProgram);
+  // Use per-mint token programs (Token A and Token B may use different programs)
+  const [metaA, metaB] = await Promise.all([
+    getTokenMeta(pool.mintA),
+    getTokenMeta(pool.mintB),
+  ]);
+  const tokenProgramA = metaA.program === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const tokenProgramB = metaB.program === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const userTokenA = getAssociatedTokenAddressSync(new PublicKey(pool.mintA), payer, false, tokenProgramA);
+  const userTokenB = getAssociatedTokenAddressSync(new PublicKey(pool.mintB), payer, false, tokenProgramB);
   
   // CRITICAL: Derive tick arrays in direction-specific order
   // Orca Whirlpool swap expects:
@@ -1563,8 +1565,9 @@ async function buildOrcaDexAccountsForRouter(
   });
   
   // Standard swap account layout (matches working local builder - 12 accounts)
+  // Note: Position 0 is the token program used by the pool's vaults
   const accounts: PublicKey[] = [
-    tokenProgram,                                                  // 0: Token Program
+    new PublicKey(pool.tokenProgram),                             // 0: Token Program (pool's vault program)
     payer,                                                         // 1: Token Authority (signer)
     poolPubkey,                                                    // 2: Whirlpool
     userTokenA,                                                    // 3: Token Owner Account A
@@ -1583,7 +1586,9 @@ async function buildOrcaDexAccountsForRouter(
     accountCount: accounts.length,
     dexType: 'orca_whirlpool',
     isAtoB,
-    tokenProgram: pool.tokenProgram,
+    tokenProgramA: metaA.program,
+    tokenProgramB: metaB.program,
+    poolTokenProgram: pool.tokenProgram,
     tickArrays: {
       array0: tickArray0.toBase58(),
       array1: tickArray1.toBase58(),
