@@ -700,15 +700,45 @@ async function extractDexAccounts(
         // Derive 3 directional bin arrays based on swap direction
         // X→Y (isXtoY): active, active-1, active-2 (price goes DOWN → lower direction)
         // Y→X (!isXtoY): active, active+1, active+2 (price goes UP → upper direction)
+        //
+        // CRITICAL: Derived bin arrays may NOT exist on-chain for thin liquidity pools!
+        // The pool cache only guarantees binArrayLower and binArrayUpper exist.
+        // Use known-good arrays from cache, falling back to derived only when necessary.
+        
+        // Collect known-good bin arrays from the cache (these are confirmed to exist)
+        const knownBinArrayLower = hop.binArrayLower ? new PublicKey(hop.binArrayLower) : null;
+        const knownBinArrayUpper = hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : null;
+        
         let directionalBinArrays: PublicKey[] = [];
-        if (typeof activeId === 'number' && Number.isFinite(activeId)) {
+        
+        if (knownBinArrayLower && knownBinArrayUpper) {
+          // SAFE PATH: Use only known-good bin arrays in directional order
+          // For X→Y (going down): prefer lower arrays
+          // For Y→X (going up): prefer upper arrays
+          if (isXtoY) {
+            // X→Y: lower direction - use lower, then upper as fallback, pad with lower
+            directionalBinArrays = [knownBinArrayLower, knownBinArrayUpper, knownBinArrayLower];
+          } else {
+            // Y→X: upper direction - use upper, then lower as fallback, pad with upper
+            directionalBinArrays = [knownBinArrayUpper, knownBinArrayLower, knownBinArrayUpper];
+          }
+        } else if (typeof activeId === 'number' && Number.isFinite(activeId)) {
+          // FALLBACK: Derive bin arrays (may not all exist on-chain)
           const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
           directionalBinArrays = derived.arrays;
+          
+          // If we have at least one known-good array, use it to replace potentially missing derived ones
+          const safeArray = knownBinArrayLower || knownBinArrayUpper;
+          if (safeArray) {
+            // Replace any derived arrays beyond the first with the known-good one
+            // The first derived array (containing activeId) should always exist
+            directionalBinArrays = [directionalBinArrays[0], safeArray, safeArray];
+          }
         } else {
-          // Fallback: use cached or hop bin arrays if activeId unavailable
+          // LAST RESORT: use whatever we have
           const fallbackArrays: PublicKey[] = [];
-          if (hop.binArrayLower) fallbackArrays.push(new PublicKey(hop.binArrayLower));
-          if (hop.binArrayUpper) fallbackArrays.push(new PublicKey(hop.binArrayUpper));
+          if (knownBinArrayLower) fallbackArrays.push(knownBinArrayLower);
+          if (knownBinArrayUpper) fallbackArrays.push(knownBinArrayUpper);
           // Pad if needed
           while (fallbackArrays.length < 3) {
             fallbackArrays.push(fallbackArrays.length > 0 ? fallbackArrays[fallbackArrays.length - 1] : poolId);
@@ -748,13 +778,19 @@ async function extractDexAccounts(
             reserveX: hop.reserveX || 'missing',
             reserveY: hop.reserveY || 'missing',
           },
+          // Bin array source tracking
+          binArrays: {
+            knownLower: hop.binArrayLower?.slice(0, 8) || 'missing',
+            knownUpper: hop.binArrayUpper?.slice(0, 8) || 'missing',
+            usedKnownGood: !!(knownBinArrayLower && knownBinArrayUpper),
+            directional: directionalBinArrays.map(pk => pk.toBase58().slice(0, 8)),
+          },
           // Other fields
           bitmapExtension: hop.bitmapExtension || 'missing',
           oracle: hop.oracle || 'missing',
           activeId: activeId ?? 'missing',
           isXtoY,
           isAtoBCanonical: isAtoB, // For comparison - canonical direction
-          directionalBinArrays: directionalBinArrays.map(pk => pk.toBase58().slice(0, 8)),
           tokenXProgram: tokenXProgram.toBase58(),
           tokenYProgram: tokenYProgram.toBase58(),
           eventAuthority: meteoraEventAuthority.toBase58(),
@@ -837,15 +873,27 @@ async function extractDexAccounts(
         // tick_array_0 contains current tick, then two sequential arrays in swap direction.
         // A->B (going down): [center, lower, even_lower] = [realIndex, realIndex-1, realIndex-2]
         // B->A (going up): [center, upper, even_upper] = [realIndex, realIndex+1, realIndex+2]
+        //
+        // CRITICAL: Derived tick arrays may NOT exist on-chain for thin liquidity pools!
+        // The resolver only stores lower/center/upper from the pool cache (known to exist).
+        // The third array (even_lower or even_upper) is derived and may not be initialized.
+        // Use known-good arrays and duplicate the second one for safety.
         const poolIdStr = hop.poolId.replace(/[#-]rev$/, '');
         
-        // Default fallback: use hop tick arrays in directional order
-        // Note: hop only has lower/center/upper, so for a_to_b we'd be missing even_lower!
-        // This fallback is incomplete but better than nothing - directional derivation below is preferred.
-        let tickArray0 = hop.tickArrayCenter || '';  // Always start with center (contains current tick)
-        let tickArray1 = isAtoBOrca ? (hop.tickArrayLower || '') : (hop.tickArrayUpper || '');
-        let tickArray2 = '';  // Fallback can't provide 3rd array without derivation
+        // Known-good tick arrays from resolver (confirmed to exist via pool cache)
+        const knownCenter = hop.tickArrayCenter || '';
+        const knownLower = hop.tickArrayLower || '';
+        const knownUpper = hop.tickArrayUpper || '';
         
+        // Default: use known-good arrays in directional order
+        // tickArray0 = center (contains current tick)
+        // tickArray1 = next in direction (lower for A→B, upper for B→A)
+        // tickArray2 = duplicate of tickArray1 (safe fallback - third array may not exist)
+        let tickArray0 = knownCenter;
+        let tickArray1 = isAtoBOrca ? knownLower : knownUpper;
+        let tickArray2 = tickArray1;  // Safe: duplicate the second array
+        
+        // Try to derive proper tick arrays, but validate and fallback
         try {
           const hot = executionCache.getHot(poolIdStr);
           const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
@@ -854,7 +902,14 @@ async function extractDexAccounts(
             const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
             tickArray0 = derived.tickArray0.toBase58();
             tickArray1 = derived.tickArray1.toBase58();
-            tickArray2 = derived.tickArray2.toBase58();
+            // For tickArray2: only use derived if it matches a known-good array
+            // Otherwise, duplicate tickArray1 to avoid using an uninitialized array
+            const derivedArray2 = derived.tickArray2.toBase58();
+            if (derivedArray2 === knownCenter || derivedArray2 === knownLower || derivedArray2 === knownUpper) {
+              tickArray2 = derivedArray2;  // Derived matches a known-good array
+            } else {
+              tickArray2 = tickArray1;  // Safe fallback: duplicate tickArray1
+            }
           }
         } catch { /* ignore */ }
         
@@ -877,9 +932,19 @@ async function extractDexAccounts(
           hopVaultB: hop.vaultB || 'missing',
           selectedVaultA: orcaVaultA,
           selectedVaultB: orcaVaultB,
-          tickArray0: tickArray0 || 'missing',
-          tickArray1: tickArray1 || 'missing',
-          tickArray2: tickArray2 || 'missing',
+          tickArrays: {
+            known: {
+              center: knownCenter?.slice(0, 8) || 'missing',
+              lower: knownLower?.slice(0, 8) || 'missing',
+              upper: knownUpper?.slice(0, 8) || 'missing',
+            },
+            used: [
+              tickArray0?.slice(0, 8) || 'missing',
+              tickArray1?.slice(0, 8) || 'missing',
+              tickArray2?.slice(0, 8) || 'missing',
+            ],
+            array2IsDuplicate: tickArray2 === tickArray1,
+          },
           oracle: hop.oracle || 'missing',
           userTokenA: userTokenA.toBase58(),
           userTokenB: userTokenB.toBase58(),
