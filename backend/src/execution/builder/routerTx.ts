@@ -1068,30 +1068,47 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
       case DexType.Meteora:
         // Check and derive bin arrays
         if (!hop.binArrayLower || !hop.binArrayUpper) {
-          const binStep = hop.binStep || stat?.binStep;
-          const activeId = hop.activeId || hot?.activeId;
+          // CRITICAL: Check cache first - cached bin arrays are validated during pool refresh
+          const cachedBinArrays = hot?.binArrays;
           
-          if (binStep && activeId !== undefined) {
-            const derived = deriveMeteoraBinArrays(poolPk, activeId, binStep);
+          if (cachedBinArrays?.lower && !hop.binArrayLower) {
+            hop.binArrayLower = cachedBinArrays.lower;
+            derivedAccounts.binArrayLower = hop.binArrayLower;
+          }
+          
+          if (cachedBinArrays?.upper && !hop.binArrayUpper) {
+            hop.binArrayUpper = cachedBinArrays.upper;
+            derivedAccounts.binArrayUpper = hop.binArrayUpper;
+          }
+          
+          // Only derive if still missing from cache
+          if (!hop.binArrayLower || !hop.binArrayUpper) {
+            const binStep = hop.binStep || stat?.binStep;
+            const activeId = hop.activeId || hot?.activeId;
             
-            if (!hop.binArrayLower) {
-              hop.binArrayLower = derived.lower.toBase58();
-              derivedAccounts.binArrayLower = hop.binArrayLower;
+            if (binStep && activeId !== undefined) {
+              const derived = deriveMeteoraBinArrays(poolPk, activeId, binStep);
+              
+              if (!hop.binArrayLower) {
+                hop.binArrayLower = derived.lower.toBase58();
+                derivedAccounts.binArrayLower = hop.binArrayLower;
+              }
+              if (!hop.binArrayUpper) {
+                hop.binArrayUpper = derived.upper.toBase58();
+                derivedAccounts.binArrayUpper = hop.binArrayUpper;
+              }
+              
+              logger.warn('routerTx.meteora.binArrays.derived_not_cached', {
+                cat: 'tx',
+                pool: poolId,
+                activeId,
+                binStep,
+                note: 'Bin arrays derived but not in cache - may not exist on-chain. Consider refreshing pool cache.',
+              });
+            } else {
+              if (!hop.binArrayLower) missingAccounts.push('binArrayLower');
+              if (!hop.binArrayUpper) missingAccounts.push('binArrayUpper');
             }
-            if (!hop.binArrayUpper) {
-              hop.binArrayUpper = derived.upper.toBase58();
-              derivedAccounts.binArrayUpper = hop.binArrayUpper;
-            }
-            
-            logger.debug('routerTx.meteora.binArrays.derived', {
-              cat: 'tx',
-              pool: poolId,
-              activeId,
-              binStep,
-            });
-          } else {
-            if (!hop.binArrayLower) missingAccounts.push('binArrayLower');
-            if (!hop.binArrayUpper) missingAccounts.push('binArrayUpper');
           }
         }
         
