@@ -124,9 +124,10 @@ export class ExecutionCache {
 
   constructor(opts?: { ttlStaticMs?: number; ttlHotMs?: number; ttlTokenMs?: number; snapshotName?: string }) {
     this.ttlStaticMs = Math.max(5 * 60_000, Number(opts?.ttlStaticMs ?? 30 * 60_000));
-    // Increased from 1000ms to 10000ms (10 seconds) to prevent premature expiry
-    // between WebSocket updates. Pool cache fallback now handles true misses.
-    this.ttlHotMs = Math.max(200, Number(opts?.ttlHotMs ?? 10_000));
+    // Hot cache stores frequently-changing fields (tick/current price/liquidity/etc).
+    // Default to a longer TTL to avoid execution-time misses when WS updates are sparse,
+    // while still allowing fresher data to overwrite via WS/refresh.
+    this.ttlHotMs = Math.max(200, Number(opts?.ttlHotMs ?? 60_000));
     this.ttlTokenMs = Math.max(60_000, Number(opts?.ttlTokenMs ?? 3_600_000));
     const name = opts?.snapshotName || 'dex-accounts.json';
     this.snapshotFile = joinPath(CONFIG.cacheDir, name);

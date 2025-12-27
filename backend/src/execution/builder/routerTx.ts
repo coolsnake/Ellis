@@ -906,27 +906,32 @@ function deriveMeteoraBinArrays(
   poolId: PublicKey,
   activeId: number,
   binStep: number
-): { lower: PublicKey; upper: PublicKey } {
-  // Bin arrays contain bins for a range based on active ID
-  // Similar to tick arrays but for DLMM
-  const BIN_ARRAY_SIZE = 70; // Meteora uses 70 bins per array
-  const arrayIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
-  
+): { lower: PublicKey; upper: PublicKey; active: PublicKey; activeIndex: number } {
+  // Derive bin array PDAs from active bin ID.
+  // IMPORTANT: we must match the DLMM SDK PDA derivation for negative indexes.
+  // This implementation uses a signed 64-bit two's complement seed (8 bytes LE),
+  // consistent with other codepaths in this repo (pool derivation + testSwap).
+  const BIN_ARRAY_SIZE = 70;
+  const activeIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
+
   const deriveBinArrayPda = (index: number): PublicKey => {
-    // Meteora bin array PDA seeds: ["bin_array", lb_pair.key(), bin_array_index]
-    const indexBuffer = Buffer.alloc(4);
-    indexBuffer.writeInt32LE(index, 0);
+    // Seed is an i64 LE (two's complement for negative values)
+    const idxBn = new BN(index);
+    const seed = idxBn.isNeg()
+      ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
+      : idxBn.toArrayLike(Buffer, 'le', 8);
     const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('bin_array'), poolId.toBuffer(), indexBuffer],
+      [Buffer.from('bin_array'), poolId.toBuffer(), Buffer.from(seed)],
       METEORA_DLMM_PROGRAM
     );
     return pda;
   };
-  
-  return {
-    lower: deriveBinArrayPda(arrayIndex - 1),
-    upper: deriveBinArrayPda(arrayIndex + 1),
-  };
+
+  const active = deriveBinArrayPda(activeIndex);
+  const lower = deriveBinArrayPda(activeIndex - 1);
+  const upper = deriveBinArrayPda(activeIndex + 1);
+
+  return { lower, upper, active, activeIndex };
 }
 
 /**
@@ -1067,48 +1072,95 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
         
       case DexType.Meteora:
         // Check and derive bin arrays
-        if (!hop.binArrayLower || !hop.binArrayUpper) {
-          // CRITICAL: Check cache first - cached bin arrays are validated during pool refresh
-          const cachedBinArrays = hot?.binArrays;
-          
-          if (cachedBinArrays?.lower && !hop.binArrayLower) {
-            hop.binArrayLower = cachedBinArrays.lower;
+        {
+          // Always prefer hot-cache bin arrays (populated during refresh / WS) when available.
+          // Then, if we still don't have enough, derive a safe pair and validate existence.
+          const cachedBinArrays: any = hot?.binArrays as any;
+
+          // Determine direction using native (tokenX/tokenY) mints when available.
+          const nativeMintX = stat?.native_mint_a;
+          const nativeMintY = stat?.native_mint_b;
+          const isXtoY = !!nativeMintX && !!nativeMintY && hop.inputMint === nativeMintX && hop.outputMint === nativeMintY;
+          const isYtoX = !!nativeMintX && !!nativeMintY && hop.inputMint === nativeMintY && hop.outputMint === nativeMintX;
+
+          // Choose which adjacent bin array is likely needed; if unknown, default to "up".
+          const delta = isXtoY ? -1 : 1;
+
+          const activeId = (hop.activeId ?? hot?.activeId);
+          const binStep = (hop.binStep ?? stat?.binStep);
+
+          // If cache provides an 'active' PDA, use it; else fall back.
+          const cachedActive = cachedBinArrays?.active || cachedBinArrays?.lower;
+          const cachedLower = cachedBinArrays?.lower;
+          const cachedUpper = cachedBinArrays?.upper;
+
+          // Start with cache values if present
+          // Note: These are just candidates; we will validate below when possible.
+          if (!hop.binArrayLower && cachedLower) {
+            hop.binArrayLower = String(cachedLower);
             derivedAccounts.binArrayLower = hop.binArrayLower;
           }
-          
-          if (cachedBinArrays?.upper && !hop.binArrayUpper) {
-            hop.binArrayUpper = cachedBinArrays.upper;
+          if (!hop.binArrayUpper && cachedUpper) {
+            hop.binArrayUpper = String(cachedUpper);
             derivedAccounts.binArrayUpper = hop.binArrayUpper;
           }
-          
-          // Only derive if still missing from cache
-          if (!hop.binArrayLower || !hop.binArrayUpper) {
-            const binStep = hop.binStep || stat?.binStep;
-            const activeId = hop.activeId || hot?.activeId;
-            
-            if (binStep && activeId !== undefined) {
-              const derived = deriveMeteoraBinArrays(poolPk, activeId, binStep);
-              
-              if (!hop.binArrayLower) {
-                hop.binArrayLower = derived.lower.toBase58();
-                derivedAccounts.binArrayLower = hop.binArrayLower;
-              }
-              if (!hop.binArrayUpper) {
-                hop.binArrayUpper = derived.upper.toBase58();
+
+          // If still missing, derive from activeId
+          if ((!hop.binArrayLower || !hop.binArrayUpper) && typeof activeId === 'number' && Number.isFinite(activeId)) {
+            const derived = deriveMeteoraBinArrays(poolPk, activeId, Number(binStep || 0));
+
+            // Candidate pair: active + neighbor in direction (ordered for remaining accounts)
+            const neighborIndex = derived.activeIndex + delta;
+            const neighbor = delta < 0 ? derived.lower : derived.upper;
+            const active = derived.active;
+
+            const ordered = delta < 0
+              ? [neighbor, active]   // X->Y: increasing index (lower then active)
+              : [neighbor, active];  // Y->X: decreasing would be neighbor (higher) then active; we still pass neighbor first
+
+            const [first, second] = ordered;
+            if (!hop.binArrayLower) {
+              hop.binArrayLower = first.toBase58();
+              derivedAccounts.binArrayLower = hop.binArrayLower;
+            }
+            if (!hop.binArrayUpper) {
+              hop.binArrayUpper = second.toBase58();
+              derivedAccounts.binArrayUpper = hop.binArrayUpper;
+            }
+
+            logger.warn('routerTx.meteora.binArrays.derived_not_cached', {
+              cat: 'tx',
+              pool: poolId,
+              activeId,
+              binStep,
+              neighborIndex,
+              note: 'Bin arrays derived because cache was missing/incomplete; will validate existence before build when possible.',
+            });
+          }
+
+          // Validate existence/owner for the chosen pair (cheap: 2 accounts).
+          // If the second one is missing, duplicate the first to avoid Anchor 3007 (System-owned PDA).
+          if (hop.binArrayLower && hop.binArrayUpper) {
+            try {
+              const conn = getConnection();
+              const pkA = new PublicKey(hop.binArrayLower);
+              const pkB = new PublicKey(hop.binArrayUpper);
+              const infos = await conn.getMultipleAccountsInfo([pkA, pkB]);
+              const okA = !!infos?.[0] && infos[0].owner.equals(METEORA_DLMM_PROGRAM);
+              const okB = !!infos?.[1] && infos[1].owner.equals(METEORA_DLMM_PROGRAM);
+              if (!okA) {
+                // Cannot proceed without at least one valid bin array
+                missingAccounts.push('binArrayLower');
+              } else if (!okB) {
+                hop.binArrayUpper = hop.binArrayLower;
                 derivedAccounts.binArrayUpper = hop.binArrayUpper;
               }
-              
-              logger.warn('routerTx.meteora.binArrays.derived_not_cached', {
-                cat: 'tx',
-                pool: poolId,
-                activeId,
-                binStep,
-                note: 'Bin arrays derived but not in cache - may not exist on-chain. Consider refreshing pool cache.',
-              });
-            } else {
-              if (!hop.binArrayLower) missingAccounts.push('binArrayLower');
-              if (!hop.binArrayUpper) missingAccounts.push('binArrayUpper');
+            } catch {
+              // If RPC fails, don't block; builder may still succeed if accounts exist.
             }
+          } else {
+            if (!hop.binArrayLower) missingAccounts.push('binArrayLower');
+            if (!hop.binArrayUpper) missingAccounts.push('binArrayUpper');
           }
         }
         

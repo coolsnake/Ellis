@@ -2646,13 +2646,22 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
             ? BigInt((pool as any).liquidity) 
             : undefined;
           
-          // tickCurrentIndex from GraphQL (may need adjustment if pool was swapped)
-          let tickIndex: number | undefined;
+          // tickCurrentIndex from GraphQL:
+          // - normalized pools often store tick_current_index in CANONICAL orientation
+          //   (negated when was_swapped=true to match canonicalized mint ordering).
+          // - HOWEVER tick array PDAs are derived from the NATIVE on-chain tick index.
+          // So we cache/derive using NATIVE tick (un-negate if was_swapped=true).
+          let tickIndexCanonical: number | undefined;
           if ((pool as any).tick_current_index != null) {
-            tickIndex = Number((pool as any).tick_current_index);
+            tickIndexCanonical = Number((pool as any).tick_current_index);
           } else if ((pool as any).tickCurrentIndex != null) {
-            tickIndex = Number((pool as any).tickCurrentIndex);
+            tickIndexCanonical = Number((pool as any).tickCurrentIndex);
           }
+          const wasSwapped = (pool as any).was_swapped === true;
+          const tickIndexNative =
+            tickIndexCanonical !== undefined && Number.isFinite(tickIndexCanonical)
+              ? (wasSwapped ? -tickIndexCanonical : tickIndexCanonical)
+              : undefined;
           
           // feeRate from GraphQL (already converted to bps in normalization)
           const feeRateBps = pool.fee_bps;
@@ -2660,14 +2669,14 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
           // Derive tick arrays for local builder (no RPC needed - pure PDA math)
           let tickArrays: { lower?: string; center?: string; upper?: string } | undefined;
           const tickSpacing = pool.tick_spacing;
-          if (tickIndex !== undefined && tickSpacing && PDAUtil && TickUtil) {
+          if (tickIndexNative !== undefined && tickSpacing && PDAUtil && TickUtil) {
             try {
               const tickArrayAddresses: { lower?: string; center?: string; upper?: string } = {};
               const poolPk = new PublicKey(pool.id);
               
               for (let offset = -1; offset <= 1; offset++) {
                 try {
-                  const startTick = TickUtil.getStartTickIndex(tickIndex, tickSpacing, offset);
+                  const startTick = TickUtil.getStartTickIndex(tickIndexNative, tickSpacing, offset);
                   const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, poolPk, startTick);
                   if (tickArrayPda?.publicKey) {
                     const address = tickArrayPda.publicKey.toBase58();
@@ -2680,7 +2689,7 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
                     logger.info('orca.graphql.tick_array.offset_failed', {
                       pool: pool.id?.slice(0, 8) + '…',
                       offset,
-                      tickIndex,
+                      tickIndex: tickIndexNative,
                       tickSpacing,
                       error: String((offsetErr as any)?.message || offsetErr),
                       cat: 'orca'
@@ -2698,7 +2707,7 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
                 try {
                   logger.info('orca.graphql.tick_array.incomplete', {
                     pool: pool.id?.slice(0, 8) + '…',
-                    tickIndex,
+                    tickIndex: tickIndexNative,
                     tickSpacing,
                     hasLower: !!tickArrayAddresses.lower,
                     hasCenter: !!tickArrayAddresses.center,
@@ -2712,7 +2721,7 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
               try {
                 logger.warn('orca.graphql.tick_array.derivation_failed', {
                   pool: pool.id?.slice(0, 8) + '…',
-                  tickIndex,
+                  tickIndex: tickIndexNative,
                   tickSpacing,
                   error: String((tickArrayErr as any)?.message || tickArrayErr),
                   cat: 'orca'
@@ -2725,29 +2734,35 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
             try {
               logger.info('orca.graphql.tick_array.skipped', {
                 pool: pool.id?.slice(0, 8) + '…',
-                hasTickIndex: tickIndex !== undefined,
+                hasTickIndex: tickIndexNative !== undefined,
                 hasTickSpacing: !!tickSpacing,
                 hasPDAUtil: !!PDAUtil,
                 hasTickUtil: !!TickUtil,
-                tickIndex,
+                tickIndex: tickIndexNative,
                 tickSpacing,
                 cat: 'orca'
               });
             } catch {}
           }
           
-          // Only cache if we have at least sqrtPrice and liquidity
-          // Include tickSpacing for boundary crossing detection in cache
-          if (sqrtPriceX64 && liquidity !== undefined) {
+          // Cache whatever "hot" fields we have. Even if sqrt/liquidity is missing,
+          // caching tickIndexNative + tickSpacing enables tick array PDA derivation for execution.
+          // Include tickSpacing for boundary crossing detection in cache.
+          if (
+            sqrtPriceX64 ||
+            liquidity !== undefined ||
+            tickIndexNative !== undefined ||
+            tickArrays
+          ) {
             const existing = executionCache.getHot(pool.id) || {};
             executionCache.setHot(pool.id, {
               ...existing,
-              sqrtPriceX64,
-              currentTickIndex: tickIndex,
-              tickSpacing,
-              liquidity,
-              feeRate: feeRateBps,
-              ...(tickArrays ? { tickArrays } : {})
+              ...(sqrtPriceX64 ? { sqrtPriceX64 } : {}),
+              ...(tickIndexNative !== undefined ? { currentTickIndex: tickIndexNative } : {}),
+              ...(tickSpacing ? { tickSpacing } : {}),
+              ...(liquidity !== undefined ? { liquidity } : {}),
+              ...(feeRateBps ? { feeRate: feeRateBps } : {}),
+              ...(tickArrays ? { tickArrays } : {}),
             });
             hotCached++;
           }

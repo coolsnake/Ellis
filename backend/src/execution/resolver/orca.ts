@@ -56,6 +56,9 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
   
   // Load from hot cache for tick arrays (like Raydium CLMM)
   const hot = executionCache.getHot(poolIdBase);
+  // If hot cache is missing/expired, we can still derive tick arrays using pool-cache tick_current_index
+  // (but pool-cache tick_current_index is often canonicalized/negated when was_swapped=true).
+  let poolTickIndexNative: number | undefined;
   if (hot?.tickArrays) {
     // Handle arrays for lower/upper (take first element), string for center
     hop.tickArrayLower = (Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower) || hop.tickArrayLower;
@@ -82,6 +85,23 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
     const p = (pools.clmm || []).find((x: any) => String(x?.id || '') === poolIdBase);
     if (p) {
       hop.tickSpacing = Number((p as any)?.tick_spacing || (p as any)?.tickSpacing || hop.tickSpacing || 0);
+      // Pool cache stores tick_current_index in canonical orientation (negated when was_swapped=true).
+      // For tick-array PDA derivation we need NATIVE tick index.
+      const tickCanonRaw = (p as any)?.tick_current_index ?? (p as any)?.tickCurrentIndex;
+      const tickCanon = Number(tickCanonRaw);
+      if (Number.isFinite(tickCanon)) {
+        const wasSwapped = (p as any)?.was_swapped === true;
+        poolTickIndexNative = wasSwapped ? -tickCanon : tickCanon;
+        // Seed hot cache to reduce downstream misses during build validation
+        if (hot?.currentTickIndex === undefined) {
+          const existingHot = executionCache.getHot(poolIdBase) || {};
+          executionCache.setHot(poolIdBase, {
+            ...existingHot,
+            currentTickIndex: poolTickIndexNative,
+            tickSpacing: hop.tickSpacing,
+          });
+        }
+      }
       const oracleFromPool = String((p as any)?.oracle || '');
       if (oracleFromPool) {
         hop.oracle = hop.oracle || oracleFromPool;
@@ -132,7 +152,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
   
   // FALLBACK: If tick arrays are still missing, derive them from current tick and tick spacing
   if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
-    const currentTick = hot?.currentTickIndex;
+    const currentTick = hot?.currentTickIndex ?? poolTickIndexNative;
     const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
     
     if (currentTick !== undefined && tickSpacing && tickSpacing > 0) {
@@ -148,6 +168,8 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
         const existingHot = executionCache.getHot(poolIdBase) || {};
         executionCache.setHot(poolIdBase, {
           ...existingHot,
+          ...(currentTick !== undefined ? { currentTickIndex: currentTick } : {}),
+          ...(tickSpacing ? { tickSpacing } : {}),
           tickArrays: {
             lower: hop.tickArrayLower,
             center: hop.tickArrayCenter,

@@ -1114,6 +1114,26 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       cat: 'meteora'
     });
   }
+
+  // Ensure pool cache objects have bin array PDAs after enrichment.
+  // These come from executionCache.hot populated by populateMeteoraActiveIds (anchor decode).
+  // Having them on the pool objects allows:
+  // - resolver (`peekMeteoraPools`) to set hop.binArrayLower/Upper without extra work
+  // - getMeteoraPoolsGraphQL() to persist them into executionCache.static
+  try {
+    for (const pool of clmm) {
+      try {
+        const hot = executionCache.getHot(pool.id);
+        const bins: any = hot?.binArrays as any;
+        if (!bins) continue;
+        // Prefer active bin array PDA when available; fall back to lower/upper.
+        const active = bins.active || bins.lower;
+        const upper = bins.upper || bins.lower;
+        if (active) (pool as any).bin_array_lower = String(active);
+        if (upper) (pool as any).bin_array_upper = String(upper);
+      } catch {}
+    }
+  } catch {}
   
   return { amm: [], clmm: clmm };
 }

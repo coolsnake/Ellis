@@ -613,17 +613,21 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                 
                 // CRITICAL: Also populate static cache for local quotes to work
                 // Local quote needs mint_a, mint_b to determine swap direction
+                const existingStatic = executionCache.getStatic(pool.id) || {} as any;
                 executionCache.setStatic(pool.id, {
-                  programId: programId.toBase58(),
-                  mint_a: (pool as any).mint_a,
-                  mint_b: (pool as any).mint_b,
-                  decimals_a: (pool as any).decimals_a,
-                  decimals_b: (pool as any).decimals_b,
-                  native_mint_a: (pool as any).native_mint_a,
-                  native_mint_b: (pool as any).native_mint_b,
-                  binStep: (pool as any).bin_step,
-                  dex: 'meteora',
-                  pool_kind: 'clmm',
+                  ...existingStatic,
+                  programId: existingStatic.programId || programId.toBase58(),
+                  dex: existingStatic.dex || 'meteora',
+                  pool_kind: existingStatic.pool_kind || 'clmm',
+                  mint_a: (pool as any).mint_a ?? existingStatic.mint_a,
+                  mint_b: (pool as any).mint_b ?? existingStatic.mint_b,
+                  decimals_a: (pool as any).decimals_a ?? existingStatic.decimals_a,
+                  decimals_b: (pool as any).decimals_b ?? existingStatic.decimals_b,
+                  native_mint_a: (pool as any).native_mint_a ?? existingStatic.native_mint_a,
+                  native_mint_b: (pool as any).native_mint_b ?? existingStatic.native_mint_b,
+                  binStep: (pool as any).bin_step ?? existingStatic.binStep,
+                  ...(binArrayAddresses?.lower ? { bin_array_lower: binArrayAddresses.lower } : {}),
+                  ...(binArrayAddresses?.upper ? { bin_array_upper: binArrayAddresses.upper } : {}),
                 });
                 
                 cached++;
@@ -718,18 +722,23 @@ async function deriveBinArrays(
   range?: { lower: number; upper: number };
 } | undefined> {
   try {
-    // Get BN from DLMM SDK or globalThis (ES modules don't support require())
-    const BN: any = (DLMM as any).BN || (globalThis as any).BN;
-    
+    // Get BN from DLMM SDK, globalThis, or bn.js fallback.
+    // NOTE: DLMM.BN can be missing depending on module/bundler interop.
+    let BN: any = (DLMM as any).BN || (globalThis as any).BN;
     if (!BN) {
-      // BN not available - return undefined, bins will be derived via SDK fallback during tx build
       try {
-        logger.debug('meteora.deriveBinArrays.no_bn', {
+        const bnjs = await import('bn.js').catch(() => null as any);
+        BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : bnjs;
+      } catch {}
+    }
+    if (!BN) {
+      try {
+        logger.warn('meteora.deriveBinArrays.no_bn', {
           cat: 'meteora',
-          ctx: { 
+          ctx: {
             pool: typeof poolPk?.toBase58 === 'function' ? poolPk.toBase58().slice(0, 8) + '...' : String(poolPk).slice(0, 8) + '...',
             activeId,
-            msg: 'BN not available in DLMM SDK, will use SDK fallback during transaction build'
+            msg: 'BN not available; cannot pre-derive bin arrays during refresh'
           }
         });
       } catch (e) { logCatchError('pools.meteora', e); }

@@ -506,14 +506,20 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
         const pool = pools.clmm.find((p: any) => p.id === poolId || p.id === hop.poolId);
         
         if (pool) {
+          const wasSwapped = (pool as any).was_swapped === true;
+          const tickCanonRaw = (pool as any).tick_current_index ?? (pool as any).tickCurrentIndex;
+          const tickCanon = Number(tickCanonRaw);
+          const tickNative = Number.isFinite(tickCanon) ? (wasSwapped ? -tickCanon : tickCanon) : undefined;
+
           // Derive sqrtPriceX64 from pool cache
-          if (!cached?.sqrtPriceX64 && (pool as any).sqrt_price_x64_raw) {
-            const sqrtFromPool = BigInt((pool as any).sqrt_price_x64_raw);
+          const sqrtRaw = (pool as any).sqrt_price_x64_raw ?? (pool as any).sqrt_price_x64;
+          if (!cached?.sqrtPriceX64 && sqrtRaw != null) {
+            const sqrtFromPool = BigInt(sqrtRaw);
             const feeFromPool = (pool as any).fee_bps || 30;
             cached = {
               sqrtPriceX64: sqrtFromPool,
               feeRate: feeFromPool,
-              currentTickIndex: (pool as any).tick_current_index,
+              currentTickIndex: tickNative,
               // Include tickSpacing for boundary crossing detection in cache
               tickSpacing: (pool as any).tick_spacing,
               liquidity: (pool as any).liquidity_raw ? BigInt((pool as any).liquidity_raw) : undefined,
