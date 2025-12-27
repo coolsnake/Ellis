@@ -49,11 +49,13 @@ function deriveOrcaOracle(poolId: PublicKey): string {
 }
 
 export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<DirectHop> {
-  const stat = executionCache.getStatic(hop.poolId);
+  // CRITICAL: Strip #rev suffix to match cache key format (pools are cached by base ID)
+  const poolIdBase = hop.poolId.replace(/[#-]rev$/, '');
+  const stat = executionCache.getStatic(poolIdBase);
   if (stat?.programId) hop.programId = stat.programId;
   
   // Load from hot cache for tick arrays (like Raydium CLMM)
-  const hot = executionCache.getHot(hop.poolId);
+  const hot = executionCache.getHot(poolIdBase);
   if (hot?.tickArrays) {
     // Handle arrays for lower/upper (take first element), string for center
     hop.tickArrayLower = (Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower) || hop.tickArrayLower;
@@ -77,8 +79,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
   
   try {
     const pools = peekOrcaPools();
-    const id = hop.poolId.replace(/[#-]rev$/, '');
-    const p = (pools.clmm || []).find((x: any) => String(x?.id || '') === id);
+    const p = (pools.clmm || []).find((x: any) => String(x?.id || '') === poolIdBase);
     if (p) {
       hop.tickSpacing = Number((p as any)?.tick_spacing || (p as any)?.tickSpacing || hop.tickSpacing || 0);
       const oracleFromPool = String((p as any)?.oracle || '');
@@ -95,7 +96,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
       
       // CRITICAL: Cache vault addresses, oracle, and mints in execution cache if we found them
       // This ensures the builder has all required data even if it wasn't in the initial cache population
-      const existing = executionCache.getStatic(hop.poolId) || {} as any;
+      const existing = executionCache.getStatic(poolIdBase) || {} as any;
       const updates: any = {};
       
       if (vaultA && vaultB) {
@@ -121,7 +122,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
       }
       
       if (Object.keys(updates).length > 0) {
-        executionCache.setStatic(hop.poolId, {
+        executionCache.setStatic(poolIdBase, {
           ...existing,
           ...updates
         });
@@ -136,8 +137,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
     
     if (currentTick !== undefined && tickSpacing && tickSpacing > 0) {
       try {
-        const poolId = hop.poolId.replace(/[#-]rev$/, '');
-        const poolPk = new PublicKey(poolId);
+        const poolPk = new PublicKey(poolIdBase);
         const derived = deriveOrcaTickArrays(poolPk, currentTick, tickSpacing);
         
         if (!hop.tickArrayLower) hop.tickArrayLower = derived.lower;
@@ -145,8 +145,8 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
         if (!hop.tickArrayUpper) hop.tickArrayUpper = derived.upper;
         
         // Also update hot cache for future use
-        const existingHot = executionCache.getHot(poolId) || {};
-        executionCache.setHot(poolId, {
+        const existingHot = executionCache.getHot(poolIdBase) || {};
+        executionCache.setHot(poolIdBase, {
           ...existingHot,
           tickArrays: {
             lower: hop.tickArrayLower,
@@ -190,8 +190,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
   // FALLBACK: Derive oracle if still missing
   if (!hop.oracle) {
     try {
-      const poolId = hop.poolId.replace(/[#-]rev$/, '');
-      hop.oracle = deriveOrcaOracle(new PublicKey(poolId));
+      hop.oracle = deriveOrcaOracle(new PublicKey(poolIdBase));
       
       try {
         logger.info('orca.resolver.oracle_derived', {
