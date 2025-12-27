@@ -2619,13 +2619,9 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
     try {
       const { executionCache } = await import('../execution/cache.js');
       
-      // Import Orca SDK utilities for tick array derivation
-      const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
-      const PDAUtil = sdkAny?.PDAUtil;
-      const TickUtil = sdkAny?.TickUtil || 
-        (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
       const { PublicKey } = await import('@solana/web3.js');
       const orcaProgramId = new PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+      const ORCA_TICK_ARRAY_SIZE = 88;
       
       let hotCached = 0;
       let tickArraysCached = 0;
@@ -2667,55 +2663,37 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
           const feeRateBps = pool.fee_bps;
           
           // Derive tick arrays for local builder (no RPC needed - pure PDA math)
-          let tickArrays: { lower?: string; center?: string; upper?: string } | undefined;
+          let tickArrays: any | undefined;
           const tickSpacing = pool.tick_spacing;
-          if (tickIndexNative !== undefined && tickSpacing && PDAUtil && TickUtil) {
+          if (tickIndexNative !== undefined && tickSpacing && tickSpacing > 0) {
             try {
-              const tickArrayAddresses: { lower?: string; center?: string; upper?: string } = {};
               const poolPk = new PublicKey(pool.id);
               
-              for (let offset = -1; offset <= 1; offset++) {
-                try {
-                  const startTick = TickUtil.getStartTickIndex(tickIndexNative, tickSpacing, offset);
-                  const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, poolPk, startTick);
-                  if (tickArrayPda?.publicKey) {
-                    const address = tickArrayPda.publicKey.toBase58();
-                    if (offset === -1) tickArrayAddresses.lower = address;
-                    else if (offset === 0) tickArrayAddresses.center = address;
-                    else if (offset === 1) tickArrayAddresses.upper = address;
-                  }
-                } catch (offsetErr) {
-                  try {
-                    logger.info('orca.graphql.tick_array.offset_failed', {
-                      pool: pool.id?.slice(0, 8) + '…',
-                      offset,
-                      tickIndex: tickIndexNative,
-                      tickSpacing,
-                      error: String((offsetErr as any)?.message || offsetErr),
-                      cat: 'orca'
-                    });
-                  } catch {}
-                }
-              }
+              const ticksInArray = ORCA_TICK_ARRAY_SIZE * Number(tickSpacing);
+              const realIndex = Math.floor(Number(tickIndexNative) / ticksInArray);
+              const deriveTickArrayPda = (startTickIndex: number): string => {
+                const startTickBuffer = Buffer.alloc(4);
+                startTickBuffer.writeInt32LE(startTickIndex, 0);
+                const [pda] = PublicKey.findProgramAddressSync(
+                  [Buffer.from('tick_array'), poolPk.toBuffer(), startTickBuffer],
+                  orcaProgramId
+                );
+                return pda.toBase58();
+              };
+
+              const center = deriveTickArrayPda(realIndex * ticksInArray);
+              const lower1 = deriveTickArrayPda((realIndex - 1) * ticksInArray);
+              const lower2 = deriveTickArrayPda((realIndex - 2) * ticksInArray);
+              const upper1 = deriveTickArrayPda((realIndex + 1) * ticksInArray);
+              const upper2 = deriveTickArrayPda((realIndex + 2) * ticksInArray);
               
-              if (tickArrayAddresses.lower && tickArrayAddresses.center && tickArrayAddresses.upper) {
-                tickArrays = tickArrayAddresses;
-                tickArraysCached++;
-              } else {
-                tickArraysIncomplete++;
-                // Log when we couldn't derive all three tick arrays
-                try {
-                  logger.info('orca.graphql.tick_array.incomplete', {
-                    pool: pool.id?.slice(0, 8) + '…',
-                    tickIndex: tickIndexNative,
-                    tickSpacing,
-                    hasLower: !!tickArrayAddresses.lower,
-                    hasCenter: !!tickArrayAddresses.center,
-                    hasUpper: !!tickArrayAddresses.upper,
-                    cat: 'orca'
-                  });
-                } catch {}
-              }
+              // Store both "nearby" arrays on each side. Execution can pick the direction-specific sequence.
+              tickArrays = {
+                center,
+                lower: [lower1, lower2],
+                upper: [upper1, upper2],
+              };
+              tickArraysCached++;
             } catch (tickArrayErr) {
               tickArraysFailed++;
               try {
@@ -2736,8 +2714,6 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
                 pool: pool.id?.slice(0, 8) + '…',
                 hasTickIndex: tickIndexNative !== undefined,
                 hasTickSpacing: !!tickSpacing,
-                hasPDAUtil: !!PDAUtil,
-                hasTickUtil: !!TickUtil,
                 tickIndex: tickIndexNative,
                 tickSpacing,
                 cat: 'orca'

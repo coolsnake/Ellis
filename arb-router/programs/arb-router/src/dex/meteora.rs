@@ -11,9 +11,14 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::constants::dex_programs::METEORA_DLMM;
 use crate::error::ArbRouterError;
 
+/// Minimum number of bin arrays to provide to Meteora DLMM `swap2`.
+/// Meteora may traverse multiple bin arrays even for modest swaps, so for `execute`
+/// (which slices accounts per step) we must reserve enough bin arrays per hop.
+pub const MIN_BIN_ARRAYS: usize = 11; // active ±5 derived by our off-chain cache
+
 /// Number of accounts needed for a Meteora DLMM swap
-/// 15 fixed accounts + 1 program + 2 bin arrays = 18 accounts
-pub const ACCOUNTS_NEEDED: usize = 18;
+/// 15 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays
+pub const ACCOUNTS_NEEDED: usize = 16 + MIN_BIN_ARRAYS;
 
 /// Meteora DLMM swap2 instruction discriminator
 /// swap2 is preferred over swap - handles bitmap extension edge cases better

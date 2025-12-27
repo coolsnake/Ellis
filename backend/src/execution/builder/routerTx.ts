@@ -295,7 +295,7 @@ async function buildFlashLoanArbTx(
     );
 
     // 2. Execute swaps (using execute instruction for multi-hop, now with validated accounts)
-    const { steps, dexAccounts } = buildRouteSteps(plan.hops, wallet.publicKey);
+    const { steps, dexAccounts } = await buildRouteSteps(plan.hops, wallet.publicKey);
     
     instructions.push(
       buildExecuteIx(
@@ -396,25 +396,59 @@ async function buildDirectRouterTx(
     const inputMint = new PublicKey(plan.hops[0].inputMint);
     const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
 
-    // Build route steps and execute (now with validated/populated accounts)
-    const { steps, dexAccounts } = buildRouteSteps(plan.hops, wallet.publicKey);
-
-    instructions.push(
-      buildExecuteIx(
-        wallet.publicKey,
-        userTokenAccount,
-        { steps, minProfit },
-        dexAccounts,
-        programId
-      )
-    );
+    // Single-hop optimization: use route_swap so Meteora can include variable bin arrays.
+    // (execute slices fixed account counts per step, which can under-provide bin arrays)
+    if (plan.hops.length === 1) {
+      const hop = plan.hops[0];
+      const dexType = dexNameToType(hop.dex, hop.variant);
+      const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
+      const poolMintA = stat?.mint_a;
+      const aToB = hop.inputMint === poolMintA;
+      const amountIn = BigInt(hop.amountInRaw.toString());
+      const minAmountOut = BigInt(hop.minOutRaw.toString());
+      const dexAccounts = await extractDexAccounts(hop, dexType, wallet.publicKey, { allowVariableAccounts: true });
+      try {
+        logger.info('routerTx.direct.route_swap.prepared', {
+          cat: 'tx',
+          ctx: {
+            dexType,
+            pool: hop.poolId,
+            dexAccounts: dexAccounts.length,
+            // For Meteora, bin arrays are the "remaining accounts" after index 15 (program) => start at 16
+            meteoraBinArrays: dexType === DexType.Meteora ? Math.max(0, dexAccounts.length - 16) : undefined,
+            aToB,
+          }
+        });
+      } catch {}
+      instructions.push(
+        buildRouteSwapIx(
+          wallet.publicKey,
+          userTokenAccount,
+          { dexType, amountIn, minAmountOut, aToB },
+          dexAccounts,
+          programId
+        )
+      );
+    } else {
+      // Multi-hop: execute supports dynamic amount propagation across steps
+      const { steps, dexAccounts } = await buildRouteSteps(plan.hops, wallet.publicKey);
+      instructions.push(
+        buildExecuteIx(
+          wallet.publicKey,
+          userTokenAccount,
+          { steps, minProfit },
+          dexAccounts,
+          programId
+        )
+      );
+    }
 
     logger.info('routerTx.direct.built', {
       cat: 'tx',
       code: LogCode.TX_BUILD_OK,
       ctx: {
         hops: plan.hops.length,
-        steps: steps.length,
+        steps: plan.hops.length,
       },
     });
 
@@ -442,10 +476,10 @@ async function buildDirectRouterTx(
  * - Subsequent hops use amountIn=0, which tells the on-chain router to
  *   read the actual balance from the input token account (output of previous swap)
  */
-function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): {
+async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
   steps: RouteStep[];
   dexAccounts: PublicKey[];
-} {
+}> {
   const steps: RouteStep[] = [];
   const dexAccounts: PublicKey[] = [];
 
@@ -474,7 +508,7 @@ function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): {
     });
 
     // Collect DEX accounts for this hop - pass wallet for signer account positions
-    const hopAccounts = extractDexAccounts(hop, dexType, wallet);
+    const hopAccounts = await extractDexAccounts(hop, dexType, wallet);
     dexAccounts.push(...hopAccounts);
 
     logger.debug('routerTx.buildStep', {
@@ -497,7 +531,12 @@ function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): {
 /**
  * Extract DEX-specific accounts from a hop in the exact order expected by the router
  */
-function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey): PublicKey[] {
+async function extractDexAccounts(
+  hop: DirectHop,
+  dexType: DexType,
+  wallet: PublicKey,
+  opts?: { allowVariableAccounts?: boolean }
+): Promise<PublicKey[]> {
   const accounts: PublicKey[] = [];
 
   try {
@@ -619,7 +658,7 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
         break;
 
       case DexType.Meteora:
-        // Meteora DLMM: 18 accounts (15 fixed + 1 program + 2 bin arrays)
+        // Meteora DLMM: minimum accounts is fixed (15 fixed + 1 program) + N bin arrays.
         // Must match arb-router/programs/arb-router/src/dex/meteora.rs expected order:
         // 0: LBPair, 1: BitmapExt, 2-3: Reserves, 4-5: UserTokens, 6-7: Mints,
         // 8: Oracle, 9: HostFee, 10: User, 11: TokenXProgram, 12: TokenYProgram,
@@ -681,19 +720,94 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           hop.binArrayLower ? new PublicKey(hop.binArrayLower) : poolId,      // 16: Bin Array Lower (remaining account)
           hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : poolId,      // 17: Bin Array Upper (remaining account)
         );
+
+        // Meteora frequently needs MORE than 2 bin array accounts.
+        // For multi-hop `execute` we must include a fixed MIN amount per hop; for single-hop `route_swap`
+        // we can optionally include even more. We source candidates from hot cache (refresh/WS).
+        try {
+          const expectedForMeteora = getAccountsNeededForDex(DexType.Meteora);
+          const minBinArrays = Math.max(2, expectedForMeteora - 16);
+          const maxBinArrays = opts?.allowVariableAccounts ? Math.max(minBinArrays, 16) : minBinArrays;
+
+          const poolIdStr = hop.poolId.replace(/[#-]rev$/, '');
+          const hot = executionCache.getHot(poolIdStr) as any;
+          const arrays = hot?.binArrays?.arrays;
+
+          const already = new Set(accounts.map((a) => a.toBase58()));
+          const candidates: PublicKey[] = [];
+
+          if (Array.isArray(arrays) && arrays.length > 0) {
+            const dirSorted = arrays
+              .map((x: any) => ({ index: Number(x?.index), address: String(x?.address || '') }))
+              .filter((x: any) => Number.isFinite(x.index) && x.address)
+              .sort((a: any, b: any) => (isAtoB ? (a.index - b.index) : (b.index - a.index)));
+
+            for (const it of dirSorted) {
+              try {
+                const pk = new PublicKey(it.address);
+                const b58 = pk.toBase58();
+                if (already.has(b58)) continue;
+                candidates.push(pk);
+                already.add(b58);
+              } catch {}
+            }
+          }
+
+          if (candidates.length > 0) {
+            // Validate existence + owner in one batch
+            const conn = getConnection();
+            const infos = await conn.getMultipleAccountsInfo(candidates);
+            for (let i = 0; i < candidates.length; i++) {
+              const info = infos?.[i];
+              if (!info || !info.owner.equals(METEORA_DLMM_PROGRAM)) continue;
+              accounts.push(candidates[i]);
+              const binCount = Math.max(0, accounts.length - 16);
+              if (binCount >= maxBinArrays) break;
+            }
+          }
+
+          // Pad with a valid bin array pubkey if we still don't have enough.
+          // This keeps account slicing stable for `execute` and avoids placeholder poolId keys.
+          while (Math.max(0, accounts.length - 16) < minBinArrays) {
+            const pad = accounts.length > 16 ? accounts[accounts.length - 1] : poolId;
+            accounts.push(pad);
+          }
+        } catch {}
         break;
 
       case DexType.Orca:
         // Orca Whirlpool: 12 accounts (matches arb-router/src/dex/orca.rs)
         // 0: TokenProgram, 1: TokenAuthority(signer), 2: Whirlpool, 3: TokenOwnerAccountA,
         // 4: TokenVaultA, 5: TokenOwnerAccountB, 6: TokenVaultB, 7-9: TickArrays, 10: Oracle, 11: Program
-        const userTokenA = isAtoB ? userSourceAta : userDestAta;
-        const userTokenB = isAtoB ? userDestAta : userSourceAta;
+        // Orca swap direction MUST be based on the pool's NATIVE mint ordering (tokenMintA/tokenMintB),
+        // matching the `aToB` bit passed in the on-chain execute step.
+        const nativeMintA = stat?.native_mint_a || stat?.mint_a;
+        const isAtoBOrca = nativeMintA ? (hop.inputMint === nativeMintA) : isAtoB;
+        const userTokenA = isAtoBOrca ? userSourceAta : userDestAta;
+        const userTokenB = isAtoBOrca ? userDestAta : userSourceAta;
         
         // CRITICAL: Use CANONICAL account ordering (properly paired with canonical mints)
         // Orca expects vaults in A/B order which corresponds to canonical A/B
         const orcaVaultA = poolAccountA || hop.vaultA || hop.poolId;
         const orcaVaultB = poolAccountB || hop.vaultB || hop.poolId;
+        
+        // CRITICAL: Orca Whirlpool swap expects tick arrays in a direction-specific SEQUENCE:
+        // tick_array_0 contains current tick, then two sequential arrays in swap direction.
+        const poolIdStr = hop.poolId.replace(/[#-]rev$/, '');
+        let tickArray0 = hop.tickArrayLower || '';
+        let tickArray1 = hop.tickArrayCenter || '';
+        let tickArray2 = hop.tickArrayUpper || '';
+        try {
+          const hot = executionCache.getHot(poolIdStr);
+          const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
+          const currentTick = (hot as any)?.currentTickIndex;
+          if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
+            const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
+            tickArray0 = derived.tickArray0.toBase58();
+            tickArray1 = derived.tickArray1.toBase58();
+            tickArray2 = derived.tickArray2.toBase58();
+          }
+        } catch { /* ignore */ }
         
         // Log the accounts being used for debugging
         logger.info('routerTx.orca.accounts', {
@@ -705,13 +819,13 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           hopVaultB: hop.vaultB || 'missing',
           selectedVaultA: orcaVaultA,
           selectedVaultB: orcaVaultB,
-          tickArrayLower: hop.tickArrayLower || 'missing',
-          tickArrayCenter: hop.tickArrayCenter || 'missing',
-          tickArrayUpper: hop.tickArrayUpper || 'missing',
+          tickArray0: tickArray0 || 'missing',
+          tickArray1: tickArray1 || 'missing',
+          tickArray2: tickArray2 || 'missing',
           oracle: hop.oracle || 'missing',
           userTokenA: userTokenA.toBase58(),
           userTokenB: userTokenB.toBase58(),
-          isAtoB,
+          isAtoB: isAtoBOrca,
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
           canonicalMintA: poolMintA || 'missing',
@@ -726,9 +840,9 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
           new PublicKey(orcaVaultA),                                           // 4: Token Vault A (canonical A)
           userTokenB,                                                          // 5: Token Owner Account B
           new PublicKey(orcaVaultB),                                           // 6: Token Vault B (canonical B)
-          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 7: Tick Array 0 (lower)
-          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 8: Tick Array 1 (center)
-          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 9: Tick Array 2 (upper)
+          tickArray0 ? new PublicKey(tickArray0) : poolId,                    // 7: Tick Array 0
+          tickArray1 ? new PublicKey(tickArray1) : poolId,                    // 8: Tick Array 1
+          tickArray2 ? new PublicKey(tickArray2) : poolId,                    // 9: Tick Array 2
           hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 10: Oracle
           programIdKey,                                                        // 11: Whirlpool Program
         );
@@ -790,8 +904,19 @@ function extractDexAccounts(hop: DirectHop, dexType: DexType, wallet: PublicKey)
     });
   }
 
-  // Ensure we have the expected number of accounts
+  // Ensure we have the expected number of accounts for fixed-size DEXes.
+  // NOTE: Meteora DLMM can be variable-length (bin arrays), which is supported by `route_swap`.
+  // In that mode, we only enforce MIN size (pad) but do not truncate.
   const expected = getAccountsNeededForDex(dexType);
+  if (dexType === DexType.Meteora && opts?.allowVariableAccounts) {
+    while (accounts.length < expected) {
+      // Prefer padding with a valid bin array if we have one, otherwise fall back to pool ID.
+      const pad = accounts.length > 16 ? accounts[accounts.length - 1] : new PublicKey(hop.poolId.replace(/[#-]rev$/, ''));
+      accounts.push(pad);
+    }
+    return accounts;
+  }
+
   while (accounts.length < expected) {
     // Pad with pool ID as placeholder
     accounts.push(new PublicKey(hop.poolId.replace(/[#-]rev$/, '')));
@@ -867,6 +992,47 @@ function deriveOrcaTickArrays(
     lower: deriveTickArrayPda((realIndex - 1) * ticksInArray),
     center: deriveTickArrayPda(realIndex * ticksInArray),
     upper: deriveTickArrayPda((realIndex + 1) * ticksInArray),
+  };
+}
+
+/**
+ * Derive Orca Whirlpool tick arrays in the EXACT order expected by the Whirlpool swap instruction.
+ *
+ * Whirlpool swap expects:
+ * - tick_array_0: the array containing the current tick
+ * - tick_array_1: the next array in the swap direction
+ * - tick_array_2: the next-next array in the swap direction
+ *
+ * A->B traverses ticks downward: offsets [0, -1, -2]
+ * B->A traverses ticks upward:   offsets [0, +1, +2]
+ */
+function deriveOrcaTickArraysForSwap(
+  poolId: PublicKey,
+  currentTickIndex: number,
+  tickSpacing: number,
+  aToB: boolean
+): { tickArray0: PublicKey; tickArray1: PublicKey; tickArray2: PublicKey } {
+  const ticksInArray = ORCA_TICK_ARRAY_SIZE * tickSpacing;
+  const realIndex = Math.floor(currentTickIndex / ticksInArray);
+
+  const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+    const startTickBuffer = Buffer.alloc(4);
+    startTickBuffer.writeInt32LE(startTickIndex, 0);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('tick_array'), poolId.toBuffer(), startTickBuffer],
+      ORCA_WHIRLPOOL_PROGRAM
+    );
+    return pda;
+  };
+
+  const idx0 = realIndex;
+  const idx1 = realIndex + (aToB ? -1 : 1);
+  const idx2 = realIndex + (aToB ? -2 : 2);
+
+  return {
+    tickArray0: deriveTickArrayPda(idx0 * ticksInArray),
+    tickArray1: deriveTickArrayPda(idx1 * ticksInArray),
+    tickArray2: deriveTickArrayPda(idx2 * ticksInArray),
   };
 }
 
@@ -1030,31 +1196,34 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
         
       case DexType.Orca:
         // Check and derive tick arrays
-        if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
+        {
           const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
           const currentTick = hot?.currentTickIndex;
-          
+
+          // IMPORTANT: Orca Whirlpool swap validates tick array sequence. We derive the
+          // direction-specific sequence [0, dir1, dir2] and OVERWRITE any pre-filled values.
           if (tickSpacing && currentTick !== undefined) {
-            const derived = deriveOrcaTickArrays(poolPk, currentTick, tickSpacing);
-            
-            if (!hop.tickArrayLower) {
-              hop.tickArrayLower = derived.lower.toBase58();
-              derivedAccounts.tickArrayLower = hop.tickArrayLower;
-            }
-            if (!hop.tickArrayCenter) {
-              hop.tickArrayCenter = derived.center.toBase58();
-              derivedAccounts.tickArrayCenter = hop.tickArrayCenter;
-            }
-            if (!hop.tickArrayUpper) {
-              hop.tickArrayUpper = derived.upper.toBase58();
-              derivedAccounts.tickArrayUpper = hop.tickArrayUpper;
-            }
-            
+            // Direction must match Whirlpool native ordering (tokenMintA/tokenMintB)
+            const mintA = String((stat as any)?.native_mint_a || (stat as any)?.mint_a || '');
+            const mintB = String((stat as any)?.native_mint_b || (stat as any)?.mint_b || '');
+            const aToB = (mintA ? hop.inputMint === mintA : false) && (mintB ? hop.outputMint === mintB : true);
+            const bToA = (mintA ? hop.outputMint === mintA : false) && (mintB ? hop.inputMint === mintB : false);
+            const isAtoB = aToB || !bToA; // default A->B if uncertain
+
+            const derived = deriveOrcaTickArraysForSwap(poolPk, currentTick, tickSpacing, isAtoB);
+            hop.tickArrayLower = derived.tickArray0.toBase58();
+            hop.tickArrayCenter = derived.tickArray1.toBase58();
+            hop.tickArrayUpper = derived.tickArray2.toBase58();
+            derivedAccounts.tickArrayLower = hop.tickArrayLower;
+            derivedAccounts.tickArrayCenter = hop.tickArrayCenter;
+            derivedAccounts.tickArrayUpper = hop.tickArrayUpper;
+
             logger.debug('routerTx.orca.tickArrays.derived', {
               cat: 'tx',
               pool: poolId,
               currentTick,
               tickSpacing,
+              isAtoB,
             });
           } else {
             if (!hop.tickArrayLower) missingAccounts.push('tickArrayLower');

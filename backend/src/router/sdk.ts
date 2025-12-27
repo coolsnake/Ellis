@@ -466,7 +466,9 @@ export function getAccountsNeededForDex(dexType: DexType): number {
     case DexType.Raydium:
       return 18; // Raydium CLMM: 17 SDK accounts + 1 program ID
     case DexType.Meteora:
-      return 18; // Meteora DLMM: 15 fixed + 1 program + 2 bin arrays
+      // NOTE: Must match arb-router/programs/arb-router/src/dex/meteora.rs
+      // 15 fixed + 1 program + 11 bin arrays (active ±5)
+      return 27;
     case DexType.Orca:
       return 12; // Orca Whirlpool: 11 swap accounts + 1 program
     case DexType.PumpSwap:
