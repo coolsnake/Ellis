@@ -22,6 +22,7 @@ import {
   NATIVE_MINT,
   createSyncNativeInstruction,
 } from '@solana/spl-token';
+import { createHash } from 'crypto';
 import BN from 'bn.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -148,10 +149,8 @@ function buildEndFlashloanIx(
  * sha256("global:<instruction_name>")[0..8]
  */
 function computeDiscriminator(instructionName: string): Uint8Array {
-  // In Node.js, we can use the crypto module
-  const crypto = require('crypto');
   const preimage = `global:${instructionName}`;
-  const hash = crypto.createHash('sha256').update(preimage).digest();
+  const hash = createHash('sha256').update(preimage).digest();
   return new Uint8Array(hash.subarray(0, 8));
 }
 
