@@ -1446,7 +1446,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
       
       const routerConfig = await loadRouterConfig();
       const connection = getRouterConnection(routerConfig.cluster);
-      const wallet = await ensureWallet();
+      const wallet = await ensureWallet(CONFIG.walletPath);
       
       const { checkFlashloanPrerequisites, getRecommendedTestAmount } = await import('../../marginfi/testFlashloan.js');
       
@@ -1482,7 +1482,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
       
       const routerConfig = await loadRouterConfig();
       const connection = getRouterConnection(routerConfig.cluster);
-      const wallet = await ensureWallet();
+      const wallet = await ensureWallet(CONFIG.walletPath);
       
       const { runFlashloanTest, getRecommendedTestAmount, formatTestAmount } = await import('../../marginfi/testFlashloan.js');
       

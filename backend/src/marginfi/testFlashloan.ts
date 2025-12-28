@@ -104,8 +104,8 @@ function buildStartFlashloanIx(
   const discriminator = computeDiscriminator('lending_account_start_flashloan');
   
   const data = Buffer.alloc(8 + 8);
-  discriminator.copy(data, 0);
-  new BN(endIndex).toArrayLike(Buffer, 'le', 8).copy(data, 8);
+  data.set(discriminator, 0);
+  data.set(new BN(endIndex).toArrayLike(Buffer, 'le', 8), 8);
   
   return new TransactionInstruction({
     programId: MARGINFI_PROGRAM_ID,
@@ -147,12 +147,12 @@ function buildEndFlashloanIx(
  * Compute Anchor instruction discriminator
  * sha256("global:<instruction_name>")[0..8]
  */
-function computeDiscriminator(instructionName: string): Buffer {
+function computeDiscriminator(instructionName: string): Uint8Array {
   // In Node.js, we can use the crypto module
   const crypto = require('crypto');
   const preimage = `global:${instructionName}`;
   const hash = crypto.createHash('sha256').update(preimage).digest();
-  return Buffer.from(hash.subarray(0, 8));
+  return new Uint8Array(hash.subarray(0, 8));
 }
 
 /**
@@ -172,8 +172,8 @@ function buildBorrowIx(
   const discriminator = computeDiscriminator('lending_account_borrow');
   
   const data = Buffer.alloc(8 + 8);
-  discriminator.copy(data, 0);
-  new BN(amount.toString()).toArrayLike(Buffer, 'le', 8).copy(data, 8);
+  data.set(discriminator, 0);
+  data.set(new BN(amount.toString()).toArrayLike(Buffer, 'le', 8), 8);
   
   return new TransactionInstruction({
     programId: MARGINFI_PROGRAM_ID,
@@ -209,8 +209,8 @@ function buildRepayIx(
   
   // Data: discriminator (8) + amount (8) + repay_all (1)
   const data = Buffer.alloc(8 + 8 + 1);
-  discriminator.copy(data, 0);
-  new BN(amount.toString()).toArrayLike(Buffer, 'le', 8).copy(data, 8);
+  data.set(discriminator, 0);
+  data.set(new BN(amount.toString()).toArrayLike(Buffer, 'le', 8), 8);
   data.writeUInt8(repayAll ? 1 : 0, 16);
   
   return new TransactionInstruction({
