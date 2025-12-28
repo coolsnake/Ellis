@@ -44,7 +44,7 @@ export async function revalidateDex(
   try {
     const { validatePoolCacheBatch, refreshInvalidPools } = 
       await import('../execution/cacheValidator.js');
-    const { getConnection } = await import('../execution/connection.js');
+    const { getConnection } = await import('../wallet/wallet.js');
     
     const connection = getConnection();
     
@@ -100,7 +100,7 @@ export async function revalidateAllPools(
   try {
     const { getCacheHealthSummary, refreshInvalidPools } = 
       await import('../execution/cacheValidator.js');
-    const { getConnection } = await import('../execution/connection.js');
+    const { getConnection } = await import('../wallet/wallet.js');
     
     const connection = getConnection();
     

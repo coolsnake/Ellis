@@ -285,8 +285,8 @@ export async function initializeFromSnapshot(): Promise<boolean> {
   // Trigger initial graph build with loaded pools
   try {
     const { rebuildGraphNow } = await import('./graph.js');
-    await rebuildGraphNow(undefined, { source: 'persistence_load' });
-    logger.info('pools.persistence.graph_built', { poolCount: counts.total, cat: 'pools' });
+    await rebuildGraphNow(undefined, { pushToArb: false });
+    logger.info('pools.persistence.graph_built', { poolCount: counts.total, source: 'persistence_load', cat: 'pools' });
     
     try {
       emit('log', {
