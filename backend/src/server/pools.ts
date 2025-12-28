@@ -427,10 +427,18 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     // Fetch summaries in sequence (to respect rate limits)
     if (shouldFetch.raydium && useRaydiumGraphQL) {
       try {
-        raySummary = await fetchRaydiumSummaryOnly(mints);
-        logger.debug('pools.refresh.phase.1A.raydium.amm', { count: raySummary.length, cat: 'pools' });
+        // Check AMM/CLMM enabled status BEFORE fetching to avoid wasted work
+        const isAmmEnabled = (() => {
+          if (typeof options.sources?.raydium === 'object') {
+            return options.sources.raydium.amm !== false;
+          }
+          const configRaydium = configSources.raydium;
+          if (typeof configRaydium === 'object') {
+            return configRaydium.amm !== false;
+          }
+          return true;
+        })();
         
-        // Check if CLMM is enabled
         const isClmmEnabled = (() => {
           if (typeof options.sources?.raydium === 'object') {
             return options.sources.raydium.clmm !== false;
@@ -442,14 +450,33 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
           return true;
         })();
         
+        logger.debug('pools.refresh.phase.1A.raydium.config', { 
+          isAmmEnabled, 
+          isClmmEnabled, 
+          cat: 'pools' 
+        });
+        
+        // Only fetch AMM if enabled
+        if (isAmmEnabled) {
+          raySummary = await fetchRaydiumSummaryOnly(mints);
+          logger.debug('pools.refresh.phase.1A.raydium.amm', { count: raySummary.length, cat: 'pools' });
+        } else {
+          logger.debug('pools.refresh.phase.1A.raydium.amm.skipped', { reason: 'disabled', cat: 'pools' });
+        }
+        
+        // Only fetch CLMM if enabled
         if (isClmmEnabled) {
-          // Add delay before CLMM fetch
-          const clmmPageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
-          const interPhaseMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
-          await new Promise(resolve => setTimeout(resolve, clmmPageDelayMs * interPhaseMultiplier));
+          // Only add delay if AMM was also fetched
+          if (isAmmEnabled) {
+            const clmmPageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
+            const interPhaseMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
+            await new Promise(resolve => setTimeout(resolve, clmmPageDelayMs * interPhaseMultiplier));
+          }
           
           rayClmmSummary = await fetchRaydiumClmmSummaryOnly(mints);
           logger.debug('pools.refresh.phase.1A.raydium.clmm', { count: rayClmmSummary.length, cat: 'pools' });
+        } else {
+          logger.debug('pools.refresh.phase.1A.raydium.clmm.skipped', { reason: 'disabled', cat: 'pools' });
         }
       } catch (e: any) {
         logger.warn('pools.refresh.phase.1A.raydium.failed', { error: String(e?.message || e), cat: 'pools' });
@@ -758,9 +785,18 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       try {
         const useGraphQL = (CONFIG as any)?.raydium?.useGraphQL;
         
-        r = useGraphQL
-          ? await getRaydiumPoolsGraphQL(!!options.force, { mints: sharedMints }) 
-          : await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
+        // Check AMM/CLMM enabled status BEFORE fetching to avoid wasted work
+        const isAmmEnabled = (() => {
+          if (typeof options.sources?.raydium === 'object') {
+            return options.sources.raydium.amm !== false;
+          }
+          if (options.sources?.raydium === false) return false;
+          const configRaydium = configSources.raydium;
+          if (typeof configRaydium === 'object') {
+            return configRaydium.amm !== false;
+          }
+          return configRaydium !== false;
+        })();
         
         const isClmmEnabled = (() => {
           if (typeof options.sources?.raydium === 'object') {
@@ -774,13 +810,33 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
           return configRaydium !== false;
         })();
         
+        logger.info('pools.refresh.phase.fetch.raydium.config', { 
+          useGraphQL, 
+          isAmmEnabled, 
+          isClmmEnabled, 
+          cat: 'pools' 
+        });
+        
+        // Only fetch AMM if enabled
+        if (isAmmEnabled) {
+          r = useGraphQL
+            ? await getRaydiumPoolsGraphQL(!!options.force, { mints: sharedMints }) 
+            : await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
+        } else {
+          logger.info('pools.refresh.phase.fetch.raydium.amm.skipped', { reason: 'disabled', cat: 'pools' });
+        }
+        
+        // Only fetch CLMM if enabled (can run even if AMM is disabled)
         if (useGraphQL && isClmmEnabled) {
           try {
-            const clmmPageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
-            const interPhaseMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
-            const interPhaseDelayMs = clmmPageDelayMs * interPhaseMultiplier;
-            if (interPhaseDelayMs > 0) {
-              await new Promise(resolve => setTimeout(resolve, interPhaseDelayMs));
+            // Only add delay if AMM was also fetched (to respect rate limits)
+            if (isAmmEnabled) {
+              const clmmPageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
+              const interPhaseMultiplier = Number((CONFIG as any)?.raydiumClmm?.initialDelayMultiplier || 10);
+              const interPhaseDelayMs = clmmPageDelayMs * interPhaseMultiplier;
+              if (interPhaseDelayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, interPhaseDelayMs));
+              }
             }
             
             const clmmResult = await getRaydiumClmmPoolsGraphQL(!!options.force, { mints: sharedMints });
@@ -791,12 +847,8 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
               cat: 'pools' 
             });
           }
-        }
-        
-        if (typeof options.sources?.raydium === 'object') {
-          const poolTypes = options.sources.raydium;
-          if (poolTypes.amm === false) r.amm = [];
-          if (poolTypes.clmm === false) r.clmm = [];
+        } else if (!isClmmEnabled) {
+          logger.info('pools.refresh.phase.fetch.raydium.clmm.skipped', { reason: 'disabled', cat: 'pools' });
         }
       } catch (err) {
         logger.warn('pools.refresh.phase.fetch.raydium.failed', { error: String((err as any)?.message || err), cat: 'pools' });

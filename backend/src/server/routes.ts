@@ -486,6 +486,19 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }, 2000); // Update every 2 seconds
   } catch {}
 
+  // Background: poll and emit GraphQL metrics for UI monitoring
+  try {
+    setInterval(async () => {
+      try {
+        const { getGraphQLMetrics } = await import('./pools/shyftHelpers.js');
+        const metrics = getGraphQLMetrics();
+        emit('graphql-metrics', metrics);
+      } catch (e: any) {
+        // Silent failure - don't spam logs
+      }
+    }, 1000); // Update every 1 second (more responsive for activity indicator)
+  } catch {}
+
   
   api.post('/bot/start', async (_req, res) => {
     try {

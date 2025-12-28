@@ -68,7 +68,28 @@ interface RpcMetrics {
   uptimeMs: number;
 }
 
-type ViewMode = 'overview' | 'modules' | 'methods' | 'errors';
+type SupportedDex = 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'pumpswap';
+
+interface GraphQLMetrics {
+  inFlight: Record<SupportedDex, number>;
+  totalInFlight: number;
+  byDex: Record<SupportedDex, {
+    inFlight: number;
+    total: number;
+    success: number;
+    errors: number;
+    avgLatencyMs: number;
+    lastRequestMs: number;
+  }>;
+  rateLimiter: {
+    inCooldown: boolean;
+    cooldownRemainingMs: number;
+    recentRateLimitCount: number;
+  };
+  timestamp: number;
+}
+
+type ViewMode = 'overview' | 'modules' | 'methods' | 'errors' | 'graphql';
 
 const formatMs = (ms: number): string => {
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -99,6 +120,7 @@ const StatusIndicator: React.FC<{ status: 'good' | 'warning' | 'error' }> = ({ s
 
 const RpcMonitorInner: React.FC = () => {
   const [metrics, setMetrics] = useState<RpcMetrics | null>(null);
+  const [graphqlMetrics, setGraphqlMetrics] = useState<GraphQLMetrics | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('overview');
   const { socket } = useSocket();
 
@@ -115,10 +137,22 @@ const RpcMonitorInner: React.FC = () => {
       }
     };
 
+    const handleGraphQLMetrics = (data: GraphQLMetrics) => {
+      try {
+        if (data) {
+          setGraphqlMetrics(data);
+        }
+      } catch (error) {
+        console.error('Error handling GraphQL metrics:', error);
+      }
+    };
+
     socket.on('rpc-metrics', handleMetrics);
+    socket.on('graphql-metrics', handleGraphQLMetrics);
 
     return () => {
       socket.off('rpc-metrics', handleMetrics);
+      socket.off('graphql-metrics', handleGraphQLMetrics);
     };
   }, [socket]);
 
@@ -156,7 +190,30 @@ const RpcMonitorInner: React.FC = () => {
       storageKey="rpc-monitor:collapsed" 
       className="mt-4"
       rightActions={
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* GraphQL Activity Indicator */}
+          {graphqlMetrics && (graphqlMetrics.totalInFlight > 0 || graphqlMetrics.rateLimiter?.inCooldown) && (
+            <div className="flex items-center gap-1.5">
+              {graphqlMetrics.totalInFlight > 0 ? (
+                <>
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+                  </span>
+                  <span className="text-xs text-purple-400">
+                    GQL: {graphqlMetrics.totalInFlight}
+                  </span>
+                </>
+              ) : graphqlMetrics.rateLimiter?.inCooldown && (
+                <>
+                  <span className="inline-block w-2 h-2 rounded-full bg-yellow-500"></span>
+                  <span className="text-xs text-yellow-400">
+                    GQL CD: {Math.ceil((graphqlMetrics.rateLimiter.cooldownRemainingMs || 0) / 1000)}s
+                  </span>
+                </>
+              )}
+            </div>
+          )}
           <StatusIndicator status={getHealthStatus()} />
           <span className="text-xs text-gray-400">
             {(metrics.overall?.rps?.avg1s || 0).toFixed(1)} req/s
@@ -210,7 +267,7 @@ const RpcMonitorInner: React.FC = () => {
 
         {/* View Mode Tabs */}
         <div className="flex gap-2 border-b border-gray-700">
-          {(['overview', 'modules', 'methods', 'errors'] as ViewMode[]).map(mode => (
+          {(['overview', 'modules', 'methods', 'errors', 'graphql'] as ViewMode[]).map(mode => (
             <button
               key={mode}
               onClick={() => setViewMode(mode)}
@@ -220,10 +277,15 @@ const RpcMonitorInner: React.FC = () => {
                   : 'text-gray-400 hover:text-gray-300'
               }`}
             >
-              {mode}
+              {mode === 'graphql' ? 'GraphQL' : mode}
               {mode === 'errors' && (metrics.recentErrors?.length || 0) > 0 && (
                 <span className="ml-1 text-xs bg-red-900/50 text-red-400 px-1.5 py-0.5 rounded">
                   {metrics.recentErrors?.length || 0}
+                </span>
+              )}
+              {mode === 'graphql' && graphqlMetrics?.totalInFlight && graphqlMetrics.totalInFlight > 0 && (
+                <span className="ml-1 text-xs bg-purple-900/50 text-purple-400 px-1.5 py-0.5 rounded">
+                  {graphqlMetrics.totalInFlight}
                 </span>
               )}
             </button>
@@ -331,6 +393,96 @@ const RpcMonitorInner: React.FC = () => {
                     </div>
                   </div>
                 ))
+              )}
+            </div>
+          )}
+
+          {viewMode === 'graphql' && (
+            <div className="space-y-4">
+              {!graphqlMetrics ? (
+                <div className="text-sm text-gray-500 py-4 text-center">Waiting for GraphQL metrics...</div>
+              ) : (
+                <>
+                  {/* Rate Limiter Status */}
+                  <div className="bg-gray-900/50 p-3 rounded">
+                    <div className="text-xs text-gray-500 uppercase mb-2">Shyft Rate Limiter</div>
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-block w-2 h-2 rounded-full ${
+                          graphqlMetrics.rateLimiter?.inCooldown ? 'bg-yellow-500' : 'bg-green-500'
+                        }`}></span>
+                        <span className={`text-sm ${
+                          graphqlMetrics.rateLimiter?.inCooldown ? 'text-yellow-400' : 'text-green-400'
+                        }`}>
+                          {graphqlMetrics.rateLimiter?.inCooldown 
+                            ? `Cooldown: ${Math.ceil((graphqlMetrics.rateLimiter.cooldownRemainingMs || 0) / 1000)}s` 
+                            : 'Ready'}
+                        </span>
+                      </div>
+                      {graphqlMetrics.rateLimiter?.recentRateLimitCount > 0 && (
+                        <span className="text-xs text-red-400">
+                          429s: {graphqlMetrics.rateLimiter.recentRateLimitCount}
+                        </span>
+                      )}
+                      <span className="text-xs text-gray-400">
+                        Active: {graphqlMetrics.totalInFlight || 0} requests
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* DEX Breakdown Table */}
+                  <table className="w-full text-sm">
+                    <thead className="text-xs text-gray-500 uppercase border-b border-gray-700">
+                      <tr>
+                        <th className="text-left py-2">DEX</th>
+                        <th className="text-right py-2">In-Flight</th>
+                        <th className="text-right py-2">Total</th>
+                        <th className="text-right py-2">Success</th>
+                        <th className="text-right py-2">Errors</th>
+                        <th className="text-right py-2">Avg Latency</th>
+                        <th className="text-right py-2">Last Request</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-800">
+                      {graphqlMetrics.byDex && Object.entries(graphqlMetrics.byDex)
+                        .filter(([, stats]) => stats.total > 0)
+                        .sort((a, b) => b[1].total - a[1].total)
+                        .map(([dex, stats]) => (
+                          <tr key={dex} className="hover:bg-gray-900/30">
+                            <td className="py-2 text-purple-300 flex items-center gap-2">
+                              {stats.inFlight > 0 && (
+                                <span className="relative flex h-2 w-2">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+                                </span>
+                              )}
+                              {dex}
+                            </td>
+                            <td className={`text-right ${stats.inFlight > 0 ? 'text-purple-400' : 'text-gray-500'}`}>
+                              {stats.inFlight}
+                            </td>
+                            <td className="text-right text-gray-300">{stats.total}</td>
+                            <td className="text-right text-green-400">{stats.success}</td>
+                            <td className={`text-right ${stats.errors > 0 ? 'text-red-400' : 'text-gray-500'}`}>
+                              {stats.errors}
+                            </td>
+                            <td className="text-right text-gray-400">
+                              {stats.avgLatencyMs > 0 ? formatMs(stats.avgLatencyMs) : '-'}
+                            </td>
+                            <td className="text-right text-gray-500 text-xs">
+                              {stats.lastRequestMs > 0 
+                                ? formatTimeAgo(Date.now() - stats.lastRequestMs) 
+                                : '-'}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                  
+                  {graphqlMetrics.byDex && Object.values(graphqlMetrics.byDex).every(s => s.total === 0) && (
+                    <div className="text-sm text-gray-500 py-4 text-center">No GraphQL requests yet</div>
+                  )}
+                </>
               )}
             </div>
           )}
