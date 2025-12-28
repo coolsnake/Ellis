@@ -112,8 +112,8 @@ function buildStartFlashloanIx(
   endIndex: number,
 ): TransactionInstruction {
   const data = Buffer.alloc(8 + 8);
-  IDL_DISCRIMINATORS.lending_account_start_flashloan.copy(data, 0);
-  new BN(endIndex).toArrayLike(Buffer, 'le', 8).copy(data, 8);
+  data.set(IDL_DISCRIMINATORS.lending_account_start_flashloan, 0);
+  data.set(new BN(endIndex).toArrayLike(Buffer, 'le', 8), 8);
   
   return new TransactionInstruction({
     programId: MARGINFI_PROGRAM_ID,
@@ -164,8 +164,8 @@ function buildBorrowIx(
   const [liquidityVaultAuthority] = deriveLiquidityVaultAuthority(bank);
   
   const data = Buffer.alloc(8 + 8);
-  IDL_DISCRIMINATORS.lending_account_borrow.copy(data, 0);
-  new BN(amount.toString()).toArrayLike(Buffer, 'le', 8).copy(data, 8);
+  data.set(IDL_DISCRIMINATORS.lending_account_borrow, 0);
+  data.set(new BN(amount.toString()).toArrayLike(Buffer, 'le', 8), 8);
   
   return new TransactionInstruction({
     programId: MARGINFI_PROGRAM_ID,
@@ -199,8 +199,8 @@ function buildRepayIx(
   
   // Data: discriminator (8) + amount (8) + repay_all (1)
   const data = Buffer.alloc(8 + 8 + 1);
-  IDL_DISCRIMINATORS.lending_account_repay.copy(data, 0);
-  new BN(amount.toString()).toArrayLike(Buffer, 'le', 8).copy(data, 8);
+  data.set(IDL_DISCRIMINATORS.lending_account_repay, 0);
+  data.set(new BN(amount.toString()).toArrayLike(Buffer, 'le', 8), 8);
   data.writeUInt8(repayAll ? 1 : 0, 16);
   
   return new TransactionInstruction({
