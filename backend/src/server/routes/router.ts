@@ -6,7 +6,7 @@
 import { Router, type Request, type Response } from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
 import { PublicKey, Keypair, Transaction, sendAndConfirmTransaction } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import BN from 'bn.js';
 import { logger } from '../../utils/logger.js';
 import { ensureWallet } from '../../wallet/wallet.js';
@@ -1268,8 +1268,16 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const inputMint = new PublicKey(executionPlan.hops[0].inputMint);
       const outputMint = new PublicKey(executionPlan.hops[executionPlan.hops.length - 1].outputMint);
       
-      const userInputAta = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
-      const userOutputAta = getAssociatedTokenAddressSync(outputMint, wallet.publicKey);
+      // Use the token program from the hop metadata (supports Token-2022)
+      const inputTokenProgram = executionPlan.hops[0].inputTokenProgram === 'token-2022' 
+        ? TOKEN_2022_PROGRAM_ID 
+        : TOKEN_PROGRAM_ID;
+      const outputTokenProgram = executionPlan.hops[executionPlan.hops.length - 1].outputTokenProgram === 'token-2022' 
+        ? TOKEN_2022_PROGRAM_ID 
+        : TOKEN_PROGRAM_ID;
+      
+      const userInputAta = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
+      const userOutputAta = getAssociatedTokenAddressSync(outputMint, wallet.publicKey, false, outputTokenProgram);
       
       // Check if accounts exist and create if needed
       const [inputAtaInfo, outputAtaInfo] = await Promise.all([
@@ -1282,7 +1290,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
           wallet.publicKey, // payer
           userInputAta,     // ata
           wallet.publicKey, // owner
-          inputMint         // mint
+          inputMint,        // mint
+          inputTokenProgram // token program
         ));
       }
       
@@ -1291,14 +1300,25 @@ export function createRouterRouter(io: SocketIOServer): Router {
           wallet.publicKey, // payer
           userOutputAta,    // ata
           wallet.publicKey, // owner
-          outputMint        // mint
+          outputMint,       // mint
+          outputTokenProgram // token program
         ));
       }
       
       // For multi-hop, also create intermediate token accounts
       for (let i = 0; i < executionPlan.hops.length - 1; i++) {
-        const intermediateMint = new PublicKey(executionPlan.hops[i].outputMint);
-        const intermediateAta = getAssociatedTokenAddressSync(intermediateMint, wallet.publicKey);
+        const hop = executionPlan.hops[i];
+        const intermediateMint = new PublicKey(hop.outputMint);
+        const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022' 
+          ? TOKEN_2022_PROGRAM_ID 
+          : TOKEN_PROGRAM_ID;
+        
+        const intermediateAta = getAssociatedTokenAddressSync(
+          intermediateMint, 
+          wallet.publicKey, 
+          false, 
+          intermediateTokenProgram
+        );
         const intermediateAtaInfo = await connection.getAccountInfo(intermediateAta);
         
         if (!intermediateAtaInfo) {
@@ -1306,7 +1326,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
             wallet.publicKey,
             intermediateAta,
             wallet.publicKey,
-            intermediateMint
+            intermediateMint,
+            intermediateTokenProgram
           ));
         }
       }

@@ -279,8 +279,9 @@ async function buildFlashLoanArbTx(
     const inputMint = new PublicKey(plan.hops[0].inputMint);
     const borrowAmount = BigInt(plan.hops[0].amountInRaw.toString());
     
-    // Get user's token account
-    const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
+    // Get user's token account (use correct token program for Token-2022 mints)
+    const inputTokenProgram = plan.hops[0].inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
 
     // 1. Flash borrow
     instructions.push(
@@ -394,7 +395,8 @@ async function buildDirectRouterTx(
     }
     
     const inputMint = new PublicKey(plan.hops[0].inputMint);
-    const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
+    const inputTokenProgram = plan.hops[0].inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
 
     // Single-hop optimization: use route_swap so Meteora can include variable bin arrays.
     // (execute slices fixed account counts per step, which can under-provide bin arrays)
