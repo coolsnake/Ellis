@@ -1780,51 +1780,123 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     let clmmCached = 0;
     let clmmWithObservation = 0;
     let clmmWithTickArrays = 0;
+    let clmmWithValidatedTickArrays = 0;
     
     const programIdStr = (CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
     const programPk = new PublicKey(programIdStr);
     
-    for (const pool of clmm) {
-      try {
-        const existing = executionCache.getStatic(pool.id) || {};
-        const rawData = rawDataMap.get(pool.id);
-        
-        // Derive tick arrays from tickCurrent and tick_spacing (GraphQL-provided)
-        // This enables zero-RPC transaction building by pre-caching tick array PDAs
-        let tickArrayLower: string | undefined;
-        let tickArrayCenter: string | undefined;
-        let tickArrayUpper: string | undefined;
-        
-        const tickCurrent = (pool as any).tick_current;
-        const tickSpacing = pool.tick_spacing;
-        
-        if (Number.isFinite(tickCurrent) && Number.isFinite(tickSpacing) && tickSpacing > 0) {
-          try {
-            const poolPk = new PublicKey(pool.id);
-            const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
-            const delta = 60 * Math.max(1, tickSpacing);
-            
-            // Derive center, lower, and upper tick array PDAs in parallel
-            const [lowerPk, centerPk, upperPk] = await Promise.all([
-              deriveTickArrayPda(programPk, poolPk, centerStart - delta).catch(() => null),
-              deriveTickArrayPda(programPk, poolPk, centerStart).catch(() => null),
-              deriveTickArrayPda(programPk, poolPk, centerStart + delta).catch(() => null),
-            ]);
-            
-            if (lowerPk) tickArrayLower = lowerPk.toBase58();
-            if (centerPk) tickArrayCenter = centerPk.toBase58();
-            if (upperPk) tickArrayUpper = upperPk.toBase58();
-            
-            if (tickArrayLower && tickArrayCenter && tickArrayUpper) {
-              clmmWithTickArrays++;
-            }
-          } catch (e) {
-            logger.debug('raydium.clmm.graphql.tick_array_derivation.failed', {
-              pool: pool.id.slice(0, 8) + '…',
-              error: String((e as any)?.message || e),
-              cat: 'raydium'
-            });
+    // Get connection for tick array validation
+    const { getConnection } = await import('../../wallet/wallet.js');
+    const connection = getConnection();
+    
+    // First pass: derive tick arrays and collect PDAs for validation
+    type TickArrayDerived = {
+      pool: typeof clmm[0];
+      rawData: any;
+      existing: any;
+      lowerPk: PublicKey | null;
+      centerPk: PublicKey | null;
+      upperPk: PublicKey | null;
+    };
+    
+    const derivedData: TickArrayDerived[] = [];
+    const allPdas: PublicKey[] = [];
+    const pdaToPoolIdx: Map<string, { poolIdx: number; type: 'lower' | 'center' | 'upper' }> = new Map();
+    
+    for (let i = 0; i < clmm.length; i++) {
+      const pool = clmm[i];
+      const existing = executionCache.getStatic(pool.id) || {};
+      const rawData = rawDataMap.get(pool.id);
+      
+      let lowerPk: PublicKey | null = null;
+      let centerPk: PublicKey | null = null;
+      let upperPk: PublicKey | null = null;
+      
+      const tickCurrent = (pool as any).tick_current;
+      const tickSpacing = pool.tick_spacing;
+      
+      if (Number.isFinite(tickCurrent) && Number.isFinite(tickSpacing) && tickSpacing > 0) {
+        try {
+          const poolPk = new PublicKey(pool.id);
+          const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
+          const delta = 60 * Math.max(1, tickSpacing);
+          
+          // Derive center, lower, and upper tick array PDAs in parallel
+          const [lower, center, upper] = await Promise.all([
+            deriveTickArrayPda(programPk, poolPk, centerStart - delta).catch(() => null),
+            deriveTickArrayPda(programPk, poolPk, centerStart).catch(() => null),
+            deriveTickArrayPda(programPk, poolPk, centerStart + delta).catch(() => null),
+          ]);
+          
+          lowerPk = lower;
+          centerPk = center;
+          upperPk = upper;
+          
+          // Track PDAs for batch validation
+          if (lower) {
+            allPdas.push(lower);
+            pdaToPoolIdx.set(lower.toBase58(), { poolIdx: i, type: 'lower' });
           }
+          if (center) {
+            allPdas.push(center);
+            pdaToPoolIdx.set(center.toBase58(), { poolIdx: i, type: 'center' });
+          }
+          if (upper) {
+            allPdas.push(upper);
+            pdaToPoolIdx.set(upper.toBase58(), { poolIdx: i, type: 'upper' });
+          }
+          
+          if (lowerPk && centerPk && upperPk) {
+            clmmWithTickArrays++;
+          }
+        } catch (e) {
+          logger.debug('raydium.clmm.graphql.tick_array_derivation.failed', {
+            pool: pool.id.slice(0, 8) + '…',
+            error: String((e as any)?.message || e),
+            cat: 'raydium'
+          });
+        }
+      }
+      
+      derivedData.push({ pool, rawData, existing, lowerPk, centerPk, upperPk });
+    }
+    
+    // Second pass: batch validate tick arrays exist on-chain
+    const validatedPdas = new Set<string>();
+    const VALIDATION_BATCH_SIZE = 100;
+    
+    for (let i = 0; i < allPdas.length; i += VALIDATION_BATCH_SIZE) {
+      const batch = allPdas.slice(i, i + VALIDATION_BATCH_SIZE);
+      try {
+        const infos = await connection.getMultipleAccountsInfo(batch);
+        for (let j = 0; j < batch.length; j++) {
+          const info = infos[j];
+          if (info && info.owner.equals(programPk) && info.data.length > 0) {
+            validatedPdas.add(batch[j].toBase58());
+          }
+        }
+      } catch (e) {
+        logger.debug('raydium.clmm.tick_array_validation.batch_failed', {
+          batchStart: i,
+          batchSize: batch.length,
+          error: String((e as any)?.message || e),
+          cat: 'raydium'
+        });
+      }
+    }
+    
+    // Third pass: cache pool data with validated tick arrays only
+    for (let i = 0; i < derivedData.length; i++) {
+      const { pool, rawData, existing, lowerPk, centerPk, upperPk } = derivedData[i];
+      
+      try {
+        // Only use tick arrays that were validated to exist on-chain
+        const tickArrayLower = lowerPk && validatedPdas.has(lowerPk.toBase58()) ? lowerPk.toBase58() : undefined;
+        const tickArrayCenter = centerPk && validatedPdas.has(centerPk.toBase58()) ? centerPk.toBase58() : undefined;
+        const tickArrayUpper = upperPk && validatedPdas.has(upperPk.toBase58()) ? upperPk.toBase58() : undefined;
+        
+        if (tickArrayCenter) {
+          clmmWithValidatedTickArrays++;
         }
         
         executionCache.setStatic(pool.id, {
@@ -1850,7 +1922,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           amm_config: rawData?.ammConfig || (pool as any).amm_config || (pool as any).ammConfig,
           observation_state: rawData?.observationState,
           oracle: rawData?.oracle,
-          // Store derived tick arrays in static cache for zero-RPC builds
+          // Store VALIDATED tick arrays in static cache for zero-RPC builds
           tickArrayLower,
           tickArrayCenter,
           tickArrayUpper,
@@ -1863,7 +1935,8 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     logger.info('raydium.clmm.execution_cache.populated', {
       clmmCached,
       clmmWithObservation,
-      clmmWithTickArrays,
+      clmmWithTickArraysDerived: clmmWithTickArrays,
+      clmmWithTickArraysValidated: clmmWithValidatedTickArrays,
       total: clmm.length,
       cat: 'raydium'
     });

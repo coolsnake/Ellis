@@ -574,13 +574,74 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               feeRateBps = Math.round(feeRateRaw / 100);
             }
             
+            // Derive and validate tick arrays
+            const tickSpacing = (pool as any).tick_spacing;
+            let validatedTickArrays: { center?: string; lower?: string[]; upper?: string[] } | undefined;
+            
+            if (tickIndex !== undefined && tickSpacing && tickSpacing > 0) {
+              try {
+                const TICK_ARRAY_SIZE = 88;
+                const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
+                const centerIdx = Math.floor(tickIndex / ticksInArray);
+                const RANGE = 3; // Check ±3 tick arrays
+                
+                // Derive tick array PDAs
+                const tickArrayPdas: Array<{ offset: number; pda: InstanceType<typeof PublicKey>; startTick: number }> = [];
+                for (let offset = -RANGE; offset <= RANGE; offset++) {
+                  const startTick = (centerIdx + offset) * ticksInArray;
+                  const startTickBuffer = Buffer.alloc(4);
+                  startTickBuffer.writeInt32LE(startTick, 0);
+                  const [pda] = PublicKey.findProgramAddressSync(
+                    [Buffer.from('tick_array'), poolPk.toBuffer(), startTickBuffer],
+                    WHIRLPOOL_PROGRAM_ID
+                  );
+                  tickArrayPdas.push({ offset, pda, startTick });
+                }
+                
+                // Batch check existence
+                const pdaKeys = tickArrayPdas.map(p => p.pda);
+                const tickArrayInfos = await withRpcLimit(() => connection.getMultipleAccountsInfo(pdaKeys));
+                
+                const lower: string[] = [];
+                let center: string | undefined;
+                const upper: string[] = [];
+                
+                for (let k = 0; k < tickArrayPdas.length; k++) {
+                  const info = tickArrayInfos[k];
+                  if (info && info.owner.equals(WHIRLPOOL_PROGRAM_ID) && info.data.length > 0) {
+                    const { offset, pda } = tickArrayPdas[k];
+                    const addr = pda.toBase58();
+                    if (offset === 0) {
+                      center = addr;
+                    } else if (offset < 0) {
+                      lower.push(addr);
+                    } else {
+                      upper.push(addr);
+                    }
+                  }
+                }
+                
+                if (center) {
+                  validatedTickArrays = { center, lower, upper };
+                }
+              } catch (e) {
+                logCatchError('pools.orca.tickArrayValidation', e);
+              }
+            }
+            
             // Include tickSpacing for boundary crossing detection in cache
             executionCache.setHot(pool.id, {
               sqrtPriceX64,
               currentTickIndex: tickIndex,
-              tickSpacing: (pool as any).tick_spacing,
+              tickSpacing,
               liquidity,
-              feeRate: feeRateBps
+              feeRate: feeRateBps,
+              // Store validated tick arrays
+              tickArrays: validatedTickArrays ? {
+                center: validatedTickArrays.center,
+                lower: validatedTickArrays.lower,
+                upper: validatedTickArrays.upper,
+              } : undefined
             });
             
             // CRITICAL: Also populate static cache for local quotes to work
@@ -697,7 +758,12 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   liquidity: liquidity?.toString(),
                   feeRate: feeRateBps,
                   price: derivedPrice,
-                  price_source: hasExistingPrice ? 'preserved_from_normalization' : 'recalculated_from_onchain'
+                  price_source: hasExistingPrice ? 'preserved_from_normalization' : 'recalculated_from_onchain',
+                  tickArrays: validatedTickArrays ? {
+                    hasCenter: !!validatedTickArrays.center,
+                    lowerCount: validatedTickArrays.lower?.length || 0,
+                    upperCount: validatedTickArrays.upper?.length || 0
+                  } : 'none'
                 }
               });
             } catch (e) { logCatchError('pools.orca', e); }

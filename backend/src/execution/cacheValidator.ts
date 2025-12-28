@@ -415,3 +415,118 @@ export async function getCacheHealthSummary(
   };
 }
 
+/**
+ * Refresh invalid pools by fetching validated tick/bin arrays via SDK
+ * Returns count of pools successfully refreshed
+ */
+export async function refreshInvalidPools(
+  connection: Connection,
+  invalidPools: PoolValidationResult[],
+  options?: { concurrency?: number }
+): Promise<{ refreshed: number; failed: number; errors: string[] }> {
+  const { 
+    fetchOrcaPoolViaSdk, 
+    fetchRaydiumPoolViaSdk, 
+    fetchMeteoraPoolViaSdk 
+  } = await import('./sdkPoolFetcher.js');
+  
+  const concurrency = options?.concurrency ?? 5;
+  let refreshed = 0;
+  let failed = 0;
+  const errors: string[] = [];
+  
+  // Process in batches
+  for (let i = 0; i < invalidPools.length; i += concurrency) {
+    const batch = invalidPools.slice(i, i + concurrency);
+    
+    const results = await Promise.all(
+      batch.map(async (pool) => {
+        try {
+          let validatedState = null;
+          
+          switch (pool.dex) {
+            case 'orca':
+              validatedState = await fetchOrcaPoolViaSdk(connection, pool.poolId);
+              break;
+            case 'raydium':
+              validatedState = await fetchRaydiumPoolViaSdk(connection, pool.poolId);
+              break;
+            case 'meteora':
+              validatedState = await fetchMeteoraPoolViaSdk(connection, pool.poolId);
+              break;
+          }
+          
+          if (validatedState) {
+            // Update cache with validated arrays
+            if (validatedState.tickArrays) {
+              const existing = executionCache.getHot(pool.poolId) || {};
+              executionCache.setHot(pool.poolId, {
+                ...existing,
+                currentTickIndex: validatedState.currentTick,
+                tickSpacing: validatedState.tickSpacing,
+                tickArrays: {
+                  center: validatedState.tickArrays.center,
+                  lower: validatedState.tickArrays.lower,
+                  upper: validatedState.tickArrays.upper,
+                },
+              });
+              return { success: true, poolId: pool.poolId };
+            }
+            
+            if (validatedState.binArrays) {
+              const existing = executionCache.getHot(pool.poolId) || {};
+              const BIN_ARRAY_SIZE = 70;
+              const activeBinArrayIdx = Math.floor((validatedState.activeId || 0) / BIN_ARRAY_SIZE);
+              
+              // Find lower/upper/active from arrays
+              const arrays = validatedState.binArrays.arrays || [];
+              const active = arrays.find(a => a.index === activeBinArrayIdx)?.address;
+              const lower = arrays.find(a => a.index === activeBinArrayIdx - 1)?.address;
+              const upper = arrays.find(a => a.index === activeBinArrayIdx + 1)?.address;
+              
+              executionCache.setHot(pool.poolId, {
+                ...existing,
+                activeId: validatedState.activeId,
+                binStep: validatedState.binStep,
+                binArrays: {
+                  lower,
+                  upper,
+                  active,
+                  arrays: validatedState.binArrays.arrays,
+                  range: { 
+                    lower: arrays.length > 0 ? Math.min(...arrays.map(a => a.index)) : 0,
+                    upper: arrays.length > 0 ? Math.max(...arrays.map(a => a.index)) : 0,
+                  },
+                },
+              });
+              return { success: true, poolId: pool.poolId };
+            }
+          }
+          
+          return { success: false, poolId: pool.poolId, error: 'No validated arrays found' };
+        } catch (err: any) {
+          return { success: false, poolId: pool.poolId, error: err.message };
+        }
+      })
+    );
+    
+    for (const result of results) {
+      if (result.success) {
+        refreshed++;
+      } else {
+        failed++;
+        if (result.error) {
+          errors.push(`${result.poolId}: ${result.error}`);
+        }
+      }
+    }
+  }
+  
+  logger.info('cache.refresh.complete', {
+    cat: 'cache',
+    ctx: { refreshed, failed, total: invalidPools.length }
+  });
+  
+  return { refreshed, failed, errors };
+}
+

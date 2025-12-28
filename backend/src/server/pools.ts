@@ -398,14 +398,19 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   let mb: PoolsPayload = { amm: [], clmm: [] };
   let pump: PoolsPayload = { amm: [], clmm: [] };
   
+  // Shared mints for consistent universe across all DEX fetchers
+  // Computed once and passed to all GraphQL fetchers to avoid timing inconsistencies
+  let sharedMints: string[] | undefined;
+  
   if (useEarlyFilterPath) {
     // === OPTIMIZED PATH: Early filter before detail fetch ===
     logger.info('pools.refresh.phase.fetch.early_filter_path', { cat: 'pools' });
     
-    // Get token universe for summary queries
+    // Get token universe for summary queries - compute once and share with all fetchers
     const { computeTokenUniverse } = await import('./universe.js');
     const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
     const mints = Array.from(universe);
+    sharedMints = mints; // Store for potential use outside early filter path
     
     // === PHASE 1A: SUMMARY FETCH (lightweight) ===
     logger.info('pools.refresh.phase.1A.summary_fetch', { mintCount: mints.length, cat: 'pools' });
@@ -471,9 +476,10 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     
     if (shouldFetch.pumpswap) {
       try {
-        pumpSummary = await fetchPumpswapSummaryOnly();
+        // Pass shared mints to Pumpswap for consistent universe
+        pumpSummary = await fetchPumpswapSummaryOnly(mints);
         // Also fetch raw pools for later enrichment (Pumpswap doesn't have separate detail fetch)
-        pumpRawPools = await fetchPumpswapGraphQLImpl();
+        pumpRawPools = await fetchPumpswapGraphQLImpl(mints);
         logger.debug('pools.refresh.phase.1A.pumpswap', { count: pumpSummary.length, cat: 'pools' });
       } catch (e: any) {
         logger.warn('pools.refresh.phase.1A.pumpswap.failed', { error: String(e?.message || e), cat: 'pools' });
@@ -721,12 +727,39 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     // === LEGACY PATH: Existing behavior (summary + detail + normalize, then filter) ===
     logger.info('pools.refresh.phase.fetch.legacy_path', { cat: 'pools' });
     
+    // OPTIMIZATION: Compute token universe ONCE and pass to all GraphQL fetchers
+    // This ensures consistent mint sets across all DEXes and avoids race conditions
+    const anyUseGraphQL = 
+      ((CONFIG as any)?.raydium?.useGraphQL && shouldFetch.raydium) ||
+      ((CONFIG as any)?.orca?.useGraphQL && shouldFetch.orca) ||
+      ((CONFIG as any)?.meteora?.useGraphQL && shouldFetch.meteora) ||
+      shouldFetch.pumpswap;
+    
+    if (anyUseGraphQL) {
+      try {
+        const { computeTokenUniverse } = await import('./universe.js');
+        const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+        sharedMints = Array.from(universe);
+        logger.info('pools.refresh.phase.fetch.shared_universe', { 
+          mintCount: sharedMints.length, 
+          mode: (CONFIG.system as any)?.tokenUniverseMode || 'union',
+          cat: 'pools' 
+        });
+      } catch (err) {
+        logger.warn('pools.refresh.phase.fetch.shared_universe.failed', { 
+          error: String((err as any)?.message || err), 
+          cat: 'pools' 
+        });
+        // Fetchers will fall back to computing their own universe
+      }
+    }
+    
     if (shouldFetch.raydium) {
       try {
         const useGraphQL = (CONFIG as any)?.raydium?.useGraphQL;
         
         r = useGraphQL
-          ? await getRaydiumPoolsGraphQL(!!options.force) 
+          ? await getRaydiumPoolsGraphQL(!!options.force, { mints: sharedMints }) 
           : await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
         
         const isClmmEnabled = (() => {
@@ -750,7 +783,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
               await new Promise(resolve => setTimeout(resolve, interPhaseDelayMs));
             }
             
-            const clmmResult = await getRaydiumClmmPoolsGraphQL(!!options.force);
+            const clmmResult = await getRaydiumClmmPoolsGraphQL(!!options.force, { mints: sharedMints });
             r.clmm = [...(r.clmm || []), ...(clmmResult.clmm || [])];
           } catch (err) {
             logger.warn('pools.refresh.phase.fetch.raydium.clmm.failed', { 
@@ -776,7 +809,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     if (shouldFetch.orca) {
       try {
         o = (CONFIG as any)?.orca?.useGraphQL 
-          ? await getOrcaPoolsGraphQL(!!options.force) 
+          ? await getOrcaPoolsGraphQL(!!options.force, { mints: sharedMints }) 
           : await getOrcaPoolsCached(!!options.force, { skipUniverseFilter: true });
         if (typeof options.sources?.orca === 'object') {
           const poolTypes = options.sources.orca;
@@ -794,7 +827,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     if (shouldFetch.meteora) {
       try {
         m = (CONFIG as any)?.meteora?.useGraphQL 
-          ? await getMeteoraPoolsGraphQL(!!options.force) 
+          ? await getMeteoraPoolsGraphQL(!!options.force, { mints: sharedMints }) 
           : await getMeteoraPoolsCached(!!options.force, { skipUniverseFilter: true });
       } catch (err) {
         logger.warn('pools.refresh.phase.fetch.meteora.failed', { error: String((err as any)?.message || err), cat: 'pools' });
@@ -820,7 +853,8 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   // Pumpswap in legacy path
   if (!useEarlyFilterPath && shouldFetch.pumpswap) {
     try {
-      pump = await getPumpswapPoolsCached(!!options.force);
+      // Pass shared mints if available (from shared universe computed in legacy path)
+      pump = await getPumpswapPoolsCached(!!options.force, { mints: sharedMints });
     } catch (err) {
       logger.warn('pools.refresh.phase.fetch.pumpswap.failed', { error: String((err as any)?.message || err), cat: 'pools' });
       pump = { amm: [], clmm: [] };
@@ -1643,7 +1677,7 @@ export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skip
   return metbalCache.inflight;
 }
 
-export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayload> {
+export async function getPumpswapPoolsCached(force = false, opts?: { mints?: string[] }): Promise<PoolsPayload> {
   const ttlMs = Number((CONFIG as any)?.pumpswap?.cacheTtlMs || 60_000);
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
   (getPumpswapPoolsCached as any).__lastForceAt = (getPumpswapPoolsCached as any).__lastForceAt || 0;
@@ -1661,10 +1695,11 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
   pumpswapCache.inflight = (async () => {
     try {
       const mode = 'graphql';
-      try { logger.info('pumpswap.fetch start', { mode, ttlMs, cat: 'pumpswap' }); } catch {}
+      try { logger.info('pumpswap.fetch start', { mode, ttlMs, shared: !!opts?.mints, cat: 'pumpswap' }); } catch {}
       try { emit('log', { level: 'info', message: `arb:pools pumpswap.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       const t0 = Date.now();
-      const raw = await fetchPumpswapGraphQLImpl();
+      // Pass shared mints if provided (from shared universe)
+      const raw = await fetchPumpswapGraphQLImpl(opts?.mints);
       
       // Enrich pools with RPC data (token account balances)
       const enrichResult = await enrichPumpswapPoolsWithRpcImpl(raw);
@@ -2141,14 +2176,19 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
   return raydiumCache.inflight;
 }
 
-export async function getRaydiumPoolsGraphQL(force = false): Promise<PoolsPayload> {
+export async function getRaydiumPoolsGraphQL(force = false, opts?: { mints?: string[] }): Promise<PoolsPayload> {
   try {
-    const { computeTokenUniverse } = await import('./universe.js');
-    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    // Include all tokens from universe (including anchors) in GraphQL queries
-    const mints = Array.from(universe);
+    // Use provided mints if available (from shared universe), otherwise compute
+    let mints: string[];
+    if (opts?.mints && opts.mints.length > 0) {
+      mints = opts.mints;
+    } else {
+      const { computeTokenUniverse } = await import('./universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+    }
     
-    logger.info('raydium.graphql.fetch.start', { mintCount: mints.length, cat: 'raydium' });
+    logger.info('raydium.graphql.fetch.start', { mintCount: mints.length, shared: !!opts?.mints, cat: 'raydium' });
     
     const { fetchRaydiumGraphQL, normalizeRaydiumGraphQL } = await import('./pools/raydiumGraphQL.js');
     const raw = await fetchRaydiumGraphQL(mints);
@@ -2263,14 +2303,19 @@ export async function getRaydiumPoolsGraphQL(force = false): Promise<PoolsPayloa
   }
 }
 
-export async function getRaydiumClmmPoolsGraphQL(force = false): Promise<PoolsPayload> {
+export async function getRaydiumClmmPoolsGraphQL(force = false, opts?: { mints?: string[] }): Promise<PoolsPayload> {
   try {
-    const { computeTokenUniverse } = await import('./universe.js');
-    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    // Include all tokens from universe (including anchors) in GraphQL queries
-    const mints = Array.from(universe);
+    // Use provided mints if available (from shared universe), otherwise compute
+    let mints: string[];
+    if (opts?.mints && opts.mints.length > 0) {
+      mints = opts.mints;
+    } else {
+      const { computeTokenUniverse } = await import('./universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+    }
     
-    logger.info('raydium.clmm.graphql.fetch.start', { mintCount: mints.length, cat: 'raydium-clmm' });
+    logger.info('raydium.clmm.graphql.fetch.start', { mintCount: mints.length, shared: !!opts?.mints, cat: 'raydium-clmm' });
     
     const { fetchRaydiumClmmGraphQL, normalizeRaydiumGraphQL } = await import('./pools/raydiumGraphQL.js');
     const raw = await fetchRaydiumClmmGraphQL(mints);
@@ -2546,14 +2591,19 @@ export async function getOrcaPoolsNormalized(opts?: { skipUniverseFilter?: boole
   }
 }
 
-export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> {
+export async function getOrcaPoolsGraphQL(force = false, opts?: { mints?: string[] }): Promise<PoolsPayload> {
   try {
-    const { computeTokenUniverse } = await import('./universe.js');
-    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    // Include all tokens from universe (including anchors) in GraphQL queries
-    const mints = Array.from(universe);
+    // Use provided mints if available (from shared universe), otherwise compute
+    let mints: string[];
+    if (opts?.mints && opts.mints.length > 0) {
+      mints = opts.mints;
+    } else {
+      const { computeTokenUniverse } = await import('./universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+    }
     
-    logger.info('orca.graphql.fetch.start', { mintCount: mints.length, cat: 'orca' });
+    logger.info('orca.graphql.fetch.start', { mintCount: mints.length, shared: !!opts?.mints, cat: 'orca' });
     
     const { fetchOrcaGraphQL, normalizeOrcaGraphQL } = await import('./pools/orcaGraphQL.js');
     const raw = await fetchOrcaGraphQL(mints);
@@ -2951,14 +3001,19 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
   return meteoraCache.inflight;
 }
 
-export async function getMeteoraPoolsGraphQL(force = false): Promise<PoolsPayload> {
+export async function getMeteoraPoolsGraphQL(force = false, opts?: { mints?: string[] }): Promise<PoolsPayload> {
   try {
-    const { computeTokenUniverse } = await import('./universe.js');
-    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    // Include all tokens from universe (including anchors) in GraphQL queries
-    const mints = Array.from(universe);
+    // Use provided mints if available (from shared universe), otherwise compute
+    let mints: string[];
+    if (opts?.mints && opts.mints.length > 0) {
+      mints = opts.mints;
+    } else {
+      const { computeTokenUniverse } = await import('./universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+    }
     
-    logger.info('meteora.graphql.fetch.start', { mintCount: mints.length, cat: 'meteora' });
+    logger.info('meteora.graphql.fetch.start', { mintCount: mints.length, shared: !!opts?.mints, cat: 'meteora' });
     
     const { fetchMeteoraGraphQL, normalizeMeteoraGraphQL } = await import('./pools/meteoraGraphQL.js');
     const raw = await fetchMeteoraGraphQL(mints);

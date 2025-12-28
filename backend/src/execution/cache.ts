@@ -105,6 +105,11 @@ type PoolHot = {
   binArrays?: { 
     lower?: string; 
     upper?: string;
+    active?: string;
+    // Full array list for more comprehensive coverage
+    arrays?: Array<{ index: number; address: string }>;
+    // Range covered by cached arrays
+    range?: { lower: number; upper: number };
     // OPTIMIZATION: Store actual bin array account data for direct use
     lowerData?: Buffer;
     upperData?: Buffer;

@@ -35,6 +35,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [cacheValidation, setCacheValidation] = React.useState<any | null>(null);
   const [validationLoading, setValidationLoading] = React.useState<boolean>(false);
   const [validationExpanded, setValidationExpanded] = React.useState<boolean>(false);
+  const [refreshLoading, setRefreshLoading] = React.useState<boolean>(false);
+  const [refreshResult, setRefreshResult] = React.useState<any | null>(null);
   
   // DEX fetcher states
   const [fetcherStates, setFetcherStates] = React.useState<Record<string, FetcherState>>({
@@ -103,6 +105,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     if (validationLoading) return;
     setValidationLoading(true);
     setCacheValidation(null);
+    setRefreshResult(null);
     try {
       const headers: Record<string, string> = {};
       try {
@@ -124,6 +127,39 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
       console.error('Cache validation failed:', e);
     } finally {
       setValidationLoading(false);
+    }
+  };
+
+  const refreshInvalidPools = async () => {
+    if (refreshLoading) return;
+    setRefreshLoading(true);
+    setRefreshResult(null);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const r = await fetch(`${apiBase}${ROUTES.pools.refreshInvalid}`, { 
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ dex: 'all', limit: 50 }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        setRefreshResult(j);
+        // Re-run validation after refresh
+        if (j.refreshed > 0) {
+          await runCacheValidation(20);
+        }
+      }
+    } catch (e) {
+      console.error('Cache refresh failed:', e);
+    } finally {
+      setRefreshLoading(false);
     }
   };
 
@@ -573,9 +609,9 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => runCacheValidation(20)}
-                    disabled={validationLoading}
+                    disabled={validationLoading || refreshLoading}
                     className={`px-2 py-1 text-xs border rounded ${
-                      validationLoading 
+                      validationLoading || refreshLoading
                         ? 'bg-gray-700 opacity-50 cursor-not-allowed border-gray-600' 
                         : 'bg-orange-700 hover:bg-orange-600 border-orange-600'
                     }`}
@@ -583,6 +619,20 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                   >
                     {validationLoading ? '⏳ Validating...' : '🔍 Validate Cache'}
                   </button>
+                  {cacheValidation && (cacheValidation.summary?.overallHealthPercent < 100 || cacheValidation.invalidPools?.length > 0) ? (
+                    <button
+                      onClick={refreshInvalidPools}
+                      disabled={refreshLoading || validationLoading}
+                      className={`px-2 py-1 text-xs border rounded ${
+                        refreshLoading || validationLoading
+                          ? 'bg-gray-700 opacity-50 cursor-not-allowed border-gray-600' 
+                          : 'bg-green-700 hover:bg-green-600 border-green-600'
+                      }`}
+                      title="Refresh invalid pools via SDK"
+                    >
+                      {refreshLoading ? '⏳ Refreshing...' : '🔄 Refresh Invalid'}
+                    </button>
+                  ) : null}
                   {cacheValidation ? (
                     <button
                       onClick={() => setValidationExpanded(v => !v)}
@@ -649,6 +699,28 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                       );
                     })}
                   </div>
+                  
+                  {/* Refresh Result */}
+                  {refreshResult ? (
+                    <div className={`mt-2 p-2 rounded border ${
+                      refreshResult.refreshed > 0 
+                        ? 'bg-green-900/30 border-green-700' 
+                        : 'bg-yellow-900/30 border-yellow-700'
+                    }`}>
+                      <div className="text-xs">
+                        <span className="font-semibold">
+                          {refreshResult.refreshed > 0 
+                            ? `✓ Refreshed ${refreshResult.refreshed} pools via SDK` 
+                            : refreshResult.message || 'No pools refreshed'}
+                        </span>
+                        {refreshResult.failed > 0 ? (
+                          <span className="ml-2 text-yellow-400">
+                            ({refreshResult.failed} failed)
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
                   
                   {/* Invalid Pools Details */}
                   {cacheValidation.invalidPools?.length > 0 ? (

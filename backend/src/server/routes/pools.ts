@@ -412,6 +412,62 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
     }
   });
 
+  /**
+   * POST /arb/pools/refresh-invalid
+   * Refresh invalid pools by fetching validated tick/bin arrays via SDK
+   * Body: { dex?: 'orca' | 'raydium' | 'meteora' | 'all', limit?: number }
+   */
+  api.post('/arb/pools/refresh-invalid', async (req, res) => {
+    try {
+      const { validatePoolCacheBatch, getCacheHealthSummary, refreshInvalidPools } = await import('../../execution/cacheValidator.js');
+      const { getConnection } = await import('../../wallet/wallet.js');
+      const connection = getConnection();
+      
+      const dex = (req.body?.dex || 'all').toLowerCase();
+      const limit = Math.min(Math.max(1, Number(req.body?.limit || 50)), 100);
+      
+      // First, find invalid pools
+      let invalidPools: any[] = [];
+      
+      if (dex === 'all') {
+        const summary = await getCacheHealthSummary(connection, { poolsPerDex: limit });
+        invalidPools = [
+          ...summary.orca.results.filter(r => !r.valid),
+          ...summary.raydium.results.filter(r => !r.valid),
+          ...summary.meteora.results.filter(r => !r.valid),
+        ];
+      } else if (['orca', 'raydium', 'meteora'].includes(dex)) {
+        const result = await validatePoolCacheBatch(connection, dex as 'orca' | 'raydium' | 'meteora', { limit });
+        invalidPools = result.results.filter(r => !r.valid);
+      } else {
+        return res.status(400).json({ error: 'Invalid dex. Must be: orca, raydium, meteora, or all' });
+      }
+      
+      if (invalidPools.length === 0) {
+        return res.json({ 
+          success: true, 
+          message: 'No invalid pools to refresh',
+          refreshed: 0,
+          failed: 0,
+        });
+      }
+      
+      // Refresh invalid pools
+      const refreshResult = await refreshInvalidPools(connection, invalidPools);
+      
+      return res.json({
+        success: true,
+        message: `Refreshed ${refreshResult.refreshed} of ${invalidPools.length} invalid pools`,
+        refreshed: refreshResult.refreshed,
+        failed: refreshResult.failed,
+        errors: refreshResult.errors.slice(0, 10), // Limit error messages
+      });
+    } catch (e: any) {
+      logger.error('cache refresh failed', { error: String(e?.message || e) });
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

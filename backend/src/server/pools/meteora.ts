@@ -603,12 +603,62 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   DLMM
                 );
                 
-                // Cache active bin ID AND bin array addresses
+                // Validate bin arrays exist on-chain
+                let validatedBinArrays: typeof binArrayAddresses = undefined;
+                
+                if (binArrayAddresses?.arrays && binArrayAddresses.arrays.length > 0) {
+                  try {
+                    const pdaKeys = binArrayAddresses.arrays.map(a => new PublicKey(a.address));
+                    const binArrayInfos = await connection.getMultipleAccountsInfo(pdaKeys);
+                    
+                    const validArrays: Array<{ index: number; address: string }> = [];
+                    let validLower: string | undefined;
+                    let validUpper: string | undefined;
+                    let validActive: string | undefined;
+                    
+                    const BIN_ARRAY_SIZE = 70;
+                    const activeBinArrayIdx = Math.floor(activeId / BIN_ARRAY_SIZE);
+                    
+                    for (let k = 0; k < binArrayAddresses.arrays.length; k++) {
+                      const info = binArrayInfos[k];
+                      const arr = binArrayAddresses.arrays[k];
+                      
+                      if (info && info.owner.equals(programId) && info.data.length > 0) {
+                        validArrays.push(arr);
+                        
+                        // Track special positions
+                        if (arr.index === activeBinArrayIdx) {
+                          validActive = arr.address;
+                        }
+                        if (arr.index === activeBinArrayIdx - 1) {
+                          validLower = arr.address;
+                        }
+                        if (arr.index === activeBinArrayIdx + 1) {
+                          validUpper = arr.address;
+                        }
+                      }
+                    }
+                    
+                    if (validArrays.length > 0) {
+                      validatedBinArrays = {
+                        lower: validLower,
+                        upper: validUpper,
+                        active: validActive,
+                        arrays: validArrays,
+                        range: binArrayAddresses.range
+                      };
+                    }
+                  } catch (e) {
+                    logCatchError('pools.meteora.binArrayValidation', e);
+                  }
+                }
+                
+                // Cache active bin ID AND validated bin array addresses
                 // Include binStep for boundary crossing detection in cache
                 executionCache.setHot(pool.id, {
                   activeId: activeId,
                   binStep: (pool as any).bin_step,
-                  binArrays: binArrayAddresses,
+                  binArrays: validatedBinArrays,
                 });
                 
                 // CRITICAL: Also populate static cache for local quotes to work
@@ -626,23 +676,26 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   native_mint_a: (pool as any).native_mint_a ?? existingStatic.native_mint_a,
                   native_mint_b: (pool as any).native_mint_b ?? existingStatic.native_mint_b,
                   binStep: (pool as any).bin_step ?? existingStatic.binStep,
-                  ...(binArrayAddresses?.lower ? { bin_array_lower: binArrayAddresses.lower } : {}),
-                  ...(binArrayAddresses?.upper ? { bin_array_upper: binArrayAddresses.upper } : {}),
+                  // Use validated bin arrays
+                  ...(validatedBinArrays?.lower ? { bin_array_lower: validatedBinArrays.lower } : {}),
+                  ...(validatedBinArrays?.upper ? { bin_array_upper: validatedBinArrays.upper } : {}),
                 });
                 
                 cached++;
                 
                 try {
-                  const arrayCount = binArrayAddresses?.arrays?.length || 
-                                   (binArrayAddresses ? Object.keys(binArrayAddresses).filter(k => binArrayAddresses[k as keyof typeof binArrayAddresses] && k !== 'arrays' && k !== 'range').length : 0);
+                  const derivedCount = binArrayAddresses?.arrays?.length || 0;
+                  const validatedCount = validatedBinArrays?.arrays?.length || 0;
                   logger.debug('meteora.activeId.cached', {
                     cat: 'meteora',
                     ctx: {
                       pool: pool.id.slice(0, 8) + '...',
                       activeId: activeId,
                       method: 'anchor_decode',
-                      binArrayCount: arrayCount,
-                      cachedRange: binArrayAddresses?.range ? `${binArrayAddresses.range.lower}..${binArrayAddresses.range.upper}` : 'legacy'
+                      binArraysDerived: derivedCount,
+                      binArraysValidated: validatedCount,
+                      hasActive: !!validatedBinArrays?.active,
+                      cachedRange: validatedBinArrays?.range ? `${validatedBinArrays.range.lower}..${validatedBinArrays.range.upper}` : 'none'
                     }
                   });
                 } catch (e) { logCatchError('pools.meteora', e); }

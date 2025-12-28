@@ -34,7 +34,7 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
  * Fetch Pumpswap pool summaries only (no RPC enrichment).
  * Used for early filtering before expensive RPC enrichment phase.
  */
-export async function fetchPumpswapSummaryOnly(): Promise<SummaryPool[]> {
+export async function fetchPumpswapSummaryOnly(providedMints?: string[]): Promise<SummaryPool[]> {
   const apiKey = (CONFIG as any)?.pumpswap?.shyftApiKey || '';
   if (!apiKey) {
     logger.warn('pumpswap.graphql.summary_only.apiKey_missing', { cat: 'pumpswap' });
@@ -48,16 +48,21 @@ export async function fetchPumpswapSummaryOnly(): Promise<SummaryPool[]> {
   const pageDelayMs = Number((CONFIG as any)?.pumpswap?.pageDelayMs || 200);
   const mintBatchSize = Number((CONFIG as any)?.pumpswap?.mintBatchSize || 10);
 
-  // Get token universe
+  // Use provided mints if available (from shared universe), otherwise compute
   let mints: string[] = [];
-  try {
-    const { computeTokenUniverse } = await import('../universe.js');
-    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    mints = Array.from(universe);
-    logger.info('pumpswap.graphql.summary_only.universe', { mintCount: mints.length, cat: 'pumpswap' });
-  } catch (e: any) {
-    logger.warn('pumpswap.graphql.summary_only.universe.failed', { error: String(e?.message || e), cat: 'pumpswap' });
-    mints = [SOL_MINT, USDC_MINT];
+  if (providedMints && providedMints.length > 0) {
+    mints = providedMints;
+    logger.info('pumpswap.graphql.summary_only.universe', { mintCount: mints.length, shared: true, cat: 'pumpswap' });
+  } else {
+    try {
+      const { computeTokenUniverse } = await import('../universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+      logger.info('pumpswap.graphql.summary_only.universe', { mintCount: mints.length, shared: false, cat: 'pumpswap' });
+    } catch (e: any) {
+      logger.warn('pumpswap.graphql.summary_only.universe.failed', { error: String(e?.message || e), cat: 'pumpswap' });
+      mints = [SOL_MINT, USDC_MINT];
+    }
   }
 
   const poolsMap = new Map<string, SummaryPool>();
@@ -118,7 +123,7 @@ export async function fetchPumpswapSummaryOnly(): Promise<SummaryPool[]> {
   return result;
 }
 
-export async function fetchPumpswapGraphQL(): Promise<PumpswapPoolApiResponse[]> {
+export async function fetchPumpswapGraphQL(providedMints?: string[]): Promise<PumpswapPoolApiResponse[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'pumpswap-raw-sample.json');
   const apiKey = (CONFIG as any)?.pumpswap?.shyftApiKey || '';
   if (!apiKey) {
@@ -135,17 +140,22 @@ export async function fetchPumpswapGraphQL(): Promise<PumpswapPoolApiResponse[]>
   // Batch optimization: query multiple mints at once using _in clause
   const mintBatchSize = Number((CONFIG as any)?.pumpswap?.mintBatchSize || 10);
   
-  // NEW: Get token universe instead of hardcoded SOL/USDC
+  // Use provided mints if available (from shared universe), otherwise compute
   let mints: string[] = [];
-  try {
-    const { computeTokenUniverse } = await import('../universe.js');
-    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    mints = Array.from(universe);
-    logger.info('pumpswap.graphql.universe', { mintCount: mints.length, cat: 'pumpswap' });
-  } catch (e: any) {
-    logger.warn('pumpswap.graphql.universe.failed', { error: String(e?.message || e), cat: 'pumpswap' });
-    // Fallback to SOL/USDC if universe fetch fails
-    mints = [SOL_MINT, USDC_MINT];
+  if (providedMints && providedMints.length > 0) {
+    mints = providedMints;
+    logger.info('pumpswap.graphql.universe', { mintCount: mints.length, shared: true, cat: 'pumpswap' });
+  } else {
+    try {
+      const { computeTokenUniverse } = await import('../universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+      logger.info('pumpswap.graphql.universe', { mintCount: mints.length, shared: false, cat: 'pumpswap' });
+    } catch (e: any) {
+      logger.warn('pumpswap.graphql.universe.failed', { error: String(e?.message || e), cat: 'pumpswap' });
+      // Fallback to SOL/USDC if universe fetch fails
+      mints = [SOL_MINT, USDC_MINT];
+    }
   }
   
   const pools = new Map<string, any>(); // Dedupe by pubkey
