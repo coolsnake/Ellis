@@ -1442,7 +1442,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
   api.get('/router/flashloan/prerequisites', async (req: Request, res: Response) => {
     try {
       const token = (req.query.token as string || 'SOL').toUpperCase() as 'SOL' | 'USDC';
-      const amount = req.query.amount ? BigInt(req.query.amount as string) : undefined;
+      const amount = req.query.amount ? parseFloat(req.query.amount as string) : undefined;
       
       const routerConfig = await loadRouterConfig();
       const connection = getRouterConnection(routerConfig.cluster);
@@ -1486,12 +1486,13 @@ export function createRouterRouter(io: SocketIOServer): Router {
       
       const { runFlashloanTest, getRecommendedTestAmount, formatTestAmount } = await import('../../marginfi/testFlashloan.js');
       
-      const testAmount = amount ? BigInt(amount) : getRecommendedTestAmount(tokenUpper);
+      // Amount is now in token units (e.g., 0.001 SOL), not raw lamports
+      const testAmount = amount ? parseFloat(amount) : getRecommendedTestAmount(tokenUpper);
       
       logger.info('router.flashloan.test.request', {
         cat: 'router',
         token: tokenUpper,
-        amount: testAmount.toString(),
+        amount: testAmount,
         formatted: formatTestAmount(tokenUpper, testAmount),
         simulate,
         cluster: routerConfig.cluster,

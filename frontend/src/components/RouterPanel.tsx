@@ -131,7 +131,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
 
   // MarginFi Flashloan Testing State
   const [flashloanToken, setFlashloanToken] = useState<'SOL' | 'USDC'>('SOL');
-  const [flashloanAmount, setFlashloanAmount] = useState('1000000'); // 0.001 SOL default
+  const [flashloanAmount, setFlashloanAmount] = useState('0.001'); // In token units (e.g., 0.001 SOL)
   const [flashloanSimulate, setFlashloanSimulate] = useState(true);
   const [testingFlashloan, setTestingFlashloan] = useState(false);
   const [flashloanResult, setFlashloanResult] = useState<{
@@ -1241,12 +1241,12 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
               </select>
             </div>
             <div>
-              <label className="block text-gray-400 text-sm mb-1">Amount (raw units)</label>
+              <label className="block text-gray-400 text-sm mb-1">Amount ({flashloanToken})</label>
               <input
                 type="text"
                 value={flashloanAmount}
                 onChange={(e) => setFlashloanAmount(e.target.value)}
-                placeholder={flashloanToken === 'SOL' ? '1000000 (0.001 SOL)' : '1000 (0.001 USDC)'}
+                placeholder={flashloanToken === 'SOL' ? '0.001' : '0.001'}
                 className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
               />
             </div>

@@ -1,56 +1,17 @@
 /**
  * MarginFi Flashloan Testing Module
  * 
- * Provides functionality to test MarginFi flashloans on mainnet with small amounts.
- * This is a simple borrow-repay cycle without any intermediate operations.
+ * Uses the official MarginFi SDK for reliable flashloan execution.
+ * Based on: https://docs.marginfi.com/ts-sdk
  */
 
 import {
   Connection,
   Keypair,
-  PublicKey,
-  Transaction,
-  TransactionInstruction,
-  SystemProgram,
-  sendAndConfirmTransaction,
-  ComputeBudgetProgram,
 } from '@solana/web3.js';
-import {
-  TOKEN_PROGRAM_ID,
-  getAssociatedTokenAddressSync,
-  createAssociatedTokenAccountInstruction,
-  NATIVE_MINT,
-  createSyncNativeInstruction,
-} from '@solana/spl-token';
-import BN from 'bn.js';
+import { MarginfiClient, MarginfiAccountWrapper, getConfig } from '@mrgnlabs/marginfi-client-v2';
+import { Wallet } from '@coral-xyz/anchor';
 import { logger } from '../utils/logger.js';
-import {
-  MARGINFI_PROGRAM_ID,
-  MARGINFI_GROUP_ID,
-  MARGINFI_BANKS,
-  BANK_LIQUIDITY_VAULT_AUTHORITIES,
-  SYSVAR_INSTRUCTIONS_PUBKEY,
-  deriveMarginfiAccountPda,
-  deriveLiquidityVault,
-  deriveLiquidityVaultAuthority,
-  getMarginfiAccount,
-  buildInitializeAccountPdaInstruction,
-} from './flashloan.js';
-
-// ============================================================================
-// Instruction Discriminators (from MarginFi IDL)
-// ============================================================================
-
-/**
- * These discriminators are taken directly from the MarginFi IDL.
- * Using computed values can cause mismatches - always use IDL values.
- */
-const IDL_DISCRIMINATORS = {
-  lending_account_start_flashloan: Buffer.from([14, 131, 33, 220, 81, 186, 180, 107]),
-  lending_account_end_flashloan: Buffer.from([105, 124, 201, 106, 153, 2, 8, 156]),
-  lending_account_borrow: Buffer.from([4, 126, 116, 53, 48, 5, 212, 31]),
-  lending_account_repay: Buffer.from([79, 209, 172, 177, 222, 51, 173, 151]),
-} as const;
 
 // ============================================================================
 // Types
@@ -60,8 +21,8 @@ export interface FlashloanTestParams {
   connection: Connection;
   wallet: Keypair;
   token: 'SOL' | 'USDC';
-  /** Amount in raw units (lamports for SOL, smallest unit for USDC) */
-  amount: bigint;
+  /** Amount in token units (e.g., 0.001 for 0.001 SOL) */
+  amount: number;
   /** If true, only simulate the transaction */
   simulateOnly: boolean;
 }
@@ -79,159 +40,17 @@ export interface FlashloanTestResult {
 }
 
 // ============================================================================
-// Token Configuration
-// ============================================================================
-
-const TOKEN_CONFIG = {
-  SOL: {
-    mint: NATIVE_MINT,
-    decimals: 9,
-    bank: MARGINFI_BANKS.SOL,
-  },
-  USDC: {
-    mint: new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'),
-    decimals: 6,
-    bank: MARGINFI_BANKS.USDC,
-  },
-} as const;
-
-// ============================================================================
-// Instruction Builders (Direct IDL-based)
-// ============================================================================
-
-/**
- * Build lending_account_start_flashloan instruction
- * 
- * Based on MarginFi IDL:
- * - Accounts: marginfi_account (writable), signer, ixs_sysvar
- * - Args: end_index (u64) - index of end_flashloan instruction in the transaction
- */
-function buildStartFlashloanIx(
-  marginfiAccount: PublicKey,
-  signer: PublicKey,
-  endIndex: number,
-): TransactionInstruction {
-  const data = Buffer.alloc(8 + 8);
-  data.set(IDL_DISCRIMINATORS.lending_account_start_flashloan, 0);
-  data.set(new BN(endIndex).toArrayLike(Buffer, 'le', 8), 8);
-  
-  return new TransactionInstruction({
-    programId: MARGINFI_PROGRAM_ID,
-    keys: [
-      { pubkey: marginfiAccount, isSigner: false, isWritable: true },
-      { pubkey: signer, isSigner: true, isWritable: false },
-      { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
-    ],
-    data,
-  });
-}
-
-/**
- * Build lending_account_end_flashloan instruction
- * 
- * Based on MarginFi IDL:
- * - Accounts: marginfi_account (writable), signer, remaining accounts (banks)
- * - Args: none
- */
-function buildEndFlashloanIx(
-  marginfiAccount: PublicKey,
-  signer: PublicKey,
-  banks: PublicKey[],
-): TransactionInstruction {
-  return new TransactionInstruction({
-    programId: MARGINFI_PROGRAM_ID,
-    keys: [
-      { pubkey: marginfiAccount, isSigner: false, isWritable: true },
-      { pubkey: signer, isSigner: true, isWritable: false },
-      ...banks.map(bank => ({ pubkey: bank, isSigner: false, isWritable: false })),
-    ],
-    data: IDL_DISCRIMINATORS.lending_account_end_flashloan,
-  });
-}
-
-/**
- * Build lending_account_borrow instruction
- */
-function buildBorrowIx(
-  marginfiGroup: PublicKey,
-  marginfiAccount: PublicKey,
-  signer: PublicKey,
-  bank: PublicKey,
-  destinationTokenAccount: PublicKey,
-  amount: bigint,
-): TransactionInstruction {
-  const [liquidityVault] = deriveLiquidityVault(bank);
-  const [liquidityVaultAuthority] = deriveLiquidityVaultAuthority(bank);
-  
-  const data = Buffer.alloc(8 + 8);
-  data.set(IDL_DISCRIMINATORS.lending_account_borrow, 0);
-  data.set(new BN(amount.toString()).toArrayLike(Buffer, 'le', 8), 8);
-  
-  return new TransactionInstruction({
-    programId: MARGINFI_PROGRAM_ID,
-    keys: [
-      { pubkey: marginfiGroup, isSigner: false, isWritable: false },
-      { pubkey: marginfiAccount, isSigner: false, isWritable: true },
-      { pubkey: signer, isSigner: true, isWritable: false },
-      { pubkey: bank, isSigner: false, isWritable: true },
-      { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: liquidityVaultAuthority, isSigner: false, isWritable: false },
-      { pubkey: liquidityVault, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    ],
-    data,
-  });
-}
-
-/**
- * Build lending_account_repay instruction
- */
-function buildRepayIx(
-  marginfiGroup: PublicKey,
-  marginfiAccount: PublicKey,
-  signer: PublicKey,
-  bank: PublicKey,
-  sourceTokenAccount: PublicKey,
-  amount: bigint,
-  repayAll: boolean,
-): TransactionInstruction {
-  const [liquidityVault] = deriveLiquidityVault(bank);
-  
-  // Data: discriminator (8) + amount (8) + repay_all (1)
-  const data = Buffer.alloc(8 + 8 + 1);
-  data.set(IDL_DISCRIMINATORS.lending_account_repay, 0);
-  data.set(new BN(amount.toString()).toArrayLike(Buffer, 'le', 8), 8);
-  data.writeUInt8(repayAll ? 1 : 0, 16);
-  
-  return new TransactionInstruction({
-    programId: MARGINFI_PROGRAM_ID,
-    keys: [
-      { pubkey: marginfiGroup, isSigner: false, isWritable: false },
-      { pubkey: marginfiAccount, isSigner: false, isWritable: true },
-      { pubkey: signer, isSigner: true, isWritable: false },
-      { pubkey: bank, isSigner: false, isWritable: true },
-      { pubkey: sourceTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: liquidityVault, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    ],
-    data,
-  });
-}
-
-// ============================================================================
 // Main Test Function
 // ============================================================================
 
 /**
- * Run a simple flashloan test: borrow -> immediately repay
+ * Run a simple flashloan test using the MarginFi SDK
  * 
- * Transaction structure:
- * 1. ComputeBudget instructions
- * 2. Create ATA if needed
- * 3. lending_account_start_flashloan
- * 4. lending_account_borrow
- * 5. lending_account_repay
- * 6. lending_account_end_flashloan
+ * Transaction structure (handled by SDK):
+ * 1. lending_account_start_flashloan
+ * 2. lending_account_borrow
+ * 3. lending_account_repay
+ * 4. lending_account_end_flashloan
  */
 export async function runFlashloanTest(
   params: FlashloanTestParams,
@@ -242,174 +61,95 @@ export async function runFlashloanTest(
     logger.info('marginfi.flashloan.test.start', {
       cat: 'marginfi',
       token,
-      amount: amount.toString(),
+      amount,
       simulateOnly,
       wallet: wallet.publicKey.toBase58(),
     });
     
-    const config = TOKEN_CONFIG[token];
-    const bank = config.bank;
+    // Create an Anchor-compatible wallet
+    const anchorWallet = new Wallet(wallet);
     
-    // Check if user has a MarginFi account, create one if not
-    let marginfiAccount = await getMarginfiAccount(connection, wallet.publicKey);
-    let needsAccountCreation = false;
+    // Initialize the MarginFi client with production config for mainnet
+    const config = getConfig("production");
+    const client = await MarginfiClient.fetch(config, anchorWallet, connection);
     
-    if (!marginfiAccount) {
-      logger.info('marginfi.flashloan.account.not_found', {
+    logger.info('marginfi.flashloan.client.initialized', {
+      cat: 'marginfi',
+      environment: client.config.environment,
+    });
+    
+    // Get or create MarginFi account
+    let marginfiAccount: MarginfiAccountWrapper;
+    const existingAccounts = await client.getMarginfiAccountsForAuthority();
+    
+    if (existingAccounts.length === 0) {
+      logger.info('marginfi.flashloan.account.creating', { cat: 'marginfi' });
+      marginfiAccount = await client.createMarginfiAccount();
+      logger.info('marginfi.flashloan.account.created', {
         cat: 'marginfi',
-        message: 'No MarginFi account found, will create one',
+        address: marginfiAccount.address.toBase58(),
       });
-      
-      // Derive the PDA for the new account
-      const [accountPda] = deriveMarginfiAccountPda(
-        MARGINFI_GROUP_ID,
-        wallet.publicKey,
-        0, // accountIndex
-        0, // thirdPartyId
-      );
-      marginfiAccount = accountPda;
-      needsAccountCreation = true;
     } else {
+      marginfiAccount = existingAccounts[0];
       logger.info('marginfi.flashloan.account.found', {
         cat: 'marginfi',
-        marginfiAccount: marginfiAccount.toBase58(),
+        address: marginfiAccount.address.toBase58(),
       });
     }
     
-    // Get or create user's token account
-    const userTokenAccount = getAssociatedTokenAddressSync(
-      config.mint,
-      wallet.publicKey,
-      true, // allowOwnerOffCurve
-    );
-    
-    // Build transaction
-    const tx = new Transaction();
-    
-    // 1. Compute budget
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }));
-    
-    // 2. Check if ATA exists, create if needed
-    const ataInfo = await connection.getAccountInfo(userTokenAccount);
-    if (!ataInfo) {
-      tx.add(
-        createAssociatedTokenAccountInstruction(
-          wallet.publicKey, // payer
-          userTokenAccount,
-          wallet.publicKey, // owner
-          config.mint,
-        ),
-      );
+    // Get the bank
+    const bank = client.getBankByTokenSymbol(token);
+    if (!bank) {
+      throw new Error(`${token} bank not found`);
     }
     
-    // 3. Create MarginFi account if needed
-    if (needsAccountCreation) {
-      const { instruction: initAccountIx } = buildInitializeAccountPdaInstruction(
-        MARGINFI_GROUP_ID,
-        wallet.publicKey,
-        wallet.publicKey, // feePayer = wallet
-        0, // accountIndex
-        0, // thirdPartyId
-      );
-      tx.add(initAccountIx);
-      
-      logger.info('marginfi.flashloan.account.creating', {
-        cat: 'marginfi',
-        marginfiAccount: marginfiAccount.toBase58(),
-      });
-    }
-    
-    // For SOL, we need to handle wrapped SOL
-    if (token === 'SOL') {
-      // Transfer SOL to the wSOL account and sync
-      // This is needed because we need tokens to repay
-      // For a real flashloan, we'd earn profit from the operations
-      // For testing, we're just borrowing and repaying, so we need initial balance
-      const lamportsToWrap = amount + 10000n; // Extra for rent
-      
-      tx.add(
-        SystemProgram.transfer({
-          fromPubkey: wallet.publicKey,
-          toPubkey: userTokenAccount,
-          lamports: lamportsToWrap,
-        }),
-      );
-      tx.add(createSyncNativeInstruction(userTokenAccount));
-    }
-    
-    // Calculate instruction indices
-    // After compute budget (2) + optional ATA (1) + optional account init (1) + optional SOL wrap (2)
-    const baseIndex = 2 + (ataInfo ? 0 : 1) + (needsAccountCreation ? 1 : 0) + (token === 'SOL' ? 2 : 0);
-    const startFlashloanIndex = baseIndex;
-    const borrowIndex = baseIndex + 1;
-    const repayIndex = baseIndex + 2;
-    const endFlashloanIndex = baseIndex + 3;
-    
-    // 3. Start flashloan (points to end_flashloan index)
-    tx.add(buildStartFlashloanIx(marginfiAccount, wallet.publicKey, endFlashloanIndex));
-    
-    // 4. Borrow
-    tx.add(buildBorrowIx(
-      MARGINFI_GROUP_ID,
-      marginfiAccount,
-      wallet.publicKey,
-      bank,
-      userTokenAccount,
-      amount,
-    ));
-    
-    // 5. Repay (repay_all = true to handle any interest accrued)
-    tx.add(buildRepayIx(
-      MARGINFI_GROUP_ID,
-      marginfiAccount,
-      wallet.publicKey,
-      bank,
-      userTokenAccount,
-      amount,
-      true, // repay_all
-    ));
-    
-    // 6. End flashloan
-    tx.add(buildEndFlashloanIx(marginfiAccount, wallet.publicKey, [bank]));
-    
-    // Get recent blockhash
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
-    tx.recentBlockhash = blockhash;
-    tx.feePayer = wallet.publicKey;
-    
-    // Log all key accounts for debugging
-    const [liquidityVault] = deriveLiquidityVault(bank);
-    const [liquidityVaultAuthority] = deriveLiquidityVaultAuthority(bank);
-    
-    logger.info('marginfi.flashloan.accounts', {
+    logger.info('marginfi.flashloan.bank.found', {
       cat: 'marginfi',
-      marginfiGroup: MARGINFI_GROUP_ID.toBase58(),
-      marginfiAccount: marginfiAccount.toBase58(),
-      bank: bank.toBase58(),
-      liquidityVault: liquidityVault.toBase58(),
-      liquidityVaultAuthority: liquidityVaultAuthority.toBase58(),
-      userTokenAccount: userTokenAccount.toBase58(),
-      wallet: wallet.publicKey.toBase58(),
-      needsAccountCreation,
-      endFlashloanIndex,
-      txInstructionCount: tx.instructions.length,
+      bank: bank.address.toBase58(),
+      mint: bank.mint.toBase58(),
+    });
+    
+    // Build flashloan instructions using SDK
+    // The SDK handles all the account lookups (liquidity vault, vault authority, etc.)
+    const borrowIx = await marginfiAccount.makeBorrowIx(amount, bank.address);
+    const repayIx = await marginfiAccount.makeRepayIx(amount, bank.address, true);
+    
+    logger.info('marginfi.flashloan.instructions.built', {
+      cat: 'marginfi',
+      borrowIxCount: borrowIx.instructions.length,
+      repayIxCount: repayIx.instructions.length,
+    });
+    
+    // Build the flashloan transaction
+    // This wraps borrow/repay in start_flashloan and end_flashloan instructions
+    const flashLoanTx = await marginfiAccount.buildFlashLoanTx({
+      ixs: [...borrowIx.instructions, ...repayIx.instructions],
+      signers: [],
+    });
+    
+    logger.info('marginfi.flashloan.tx.built', {
+      cat: 'marginfi',
     });
     
     if (simulateOnly) {
-      // Simulate
       logger.info('marginfi.flashloan.simulating', { cat: 'marginfi' });
       
-      const simulation = await connection.simulateTransaction(tx, [wallet]);
+      const simulation = await connection.simulateTransaction(flashLoanTx);
       
       if (simulation.value.err) {
+        logger.error('marginfi.flashloan.simulation.failed', {
+          cat: 'marginfi',
+          error: JSON.stringify(simulation.value.err),
+          logs: simulation.value.logs,
+        });
+        
         return {
           success: false,
           simulated: true,
           error: `Simulation failed: ${JSON.stringify(simulation.value.err)}`,
           logs: simulation.value.logs || undefined,
-          marginfiAccount: marginfiAccount.toBase58(),
-          bank: bank.toBase58(),
+          marginfiAccount: marginfiAccount.address.toBase58(),
+          bank: bank.address.toBase58(),
           amount: amount.toString(),
         };
       }
@@ -424,20 +164,15 @@ export async function runFlashloanTest(
         simulated: true,
         logs: simulation.value.logs || undefined,
         unitsConsumed: simulation.value.unitsConsumed,
-        marginfiAccount: marginfiAccount.toBase58(),
-        bank: bank.toBase58(),
+        marginfiAccount: marginfiAccount.address.toBase58(),
+        bank: bank.address.toBase58(),
         amount: amount.toString(),
       };
     } else {
-      // Execute
       logger.info('marginfi.flashloan.executing', { cat: 'marginfi' });
       
-      tx.sign(wallet);
-      
-      const signature = await sendAndConfirmTransaction(connection, tx, [wallet], {
-        commitment: 'confirmed',
-        maxRetries: 3,
-      });
+      // Use the SDK's processTransaction for proper handling
+      const signature = await client.processTransaction(flashLoanTx);
       
       logger.info('marginfi.flashloan.success', {
         cat: 'marginfi',
@@ -448,8 +183,8 @@ export async function runFlashloanTest(
         success: true,
         simulated: false,
         signature,
-        marginfiAccount: marginfiAccount.toBase58(),
-        bank: bank.toBase58(),
+        marginfiAccount: marginfiAccount.address.toBase58(),
+        bank: bank.address.toBase58(),
         amount: amount.toString(),
       };
     }
@@ -473,31 +208,17 @@ export async function runFlashloanTest(
 // ============================================================================
 
 /**
- * Get the recommended test amount for a token
+ * Get the recommended test amount for a token (in token units)
  */
-export function getRecommendedTestAmount(token: 'SOL' | 'USDC'): bigint {
-  if (token === 'SOL') {
-    return 1_000_000n; // 0.001 SOL
-  } else {
-    return 1_000n; // 0.001 USDC
-  }
+export function getRecommendedTestAmount(token: 'SOL' | 'USDC'): number {
+  return token === 'SOL' ? 0.001 : 0.001;
 }
 
 /**
  * Format amount for display
  */
-export function formatTestAmount(token: 'SOL' | 'USDC', amount: bigint): string {
-  const decimals = TOKEN_CONFIG[token].decimals;
-  const divisor = BigInt(10 ** decimals);
-  const wholePart = amount / divisor;
-  const fractionalPart = amount % divisor;
-  
-  if (fractionalPart === 0n) {
-    return `${wholePart} ${token}`;
-  }
-  
-  const fractionalStr = fractionalPart.toString().padStart(decimals, '0').replace(/0+$/, '');
-  return `${wholePart}.${fractionalStr} ${token}`;
+export function formatTestAmount(token: 'SOL' | 'USDC', amount: number): string {
+  return `${amount} ${token}`;
 }
 
 /**
@@ -505,9 +226,9 @@ export function formatTestAmount(token: 'SOL' | 'USDC', amount: bigint): string 
  */
 export async function checkFlashloanPrerequisites(
   connection: Connection,
-  wallet: PublicKey,
+  walletPublicKey: any, // PublicKey
   token: 'SOL' | 'USDC',
-  amount: bigint,
+  amount: number,
 ): Promise<{
   ready: boolean;
   hasMarginfiAccount: boolean;
@@ -518,34 +239,26 @@ export async function checkFlashloanPrerequisites(
   error?: string;
 }> {
   try {
-    // Check MarginFi account
-    let marginfiAccount = await getMarginfiAccount(connection, wallet);
-    let willCreateAccount = false;
+    // For now, we'll do a simpler check since we can't fully initialize the SDK
+    // without a signing wallet. Just check balances.
     
-    if (!marginfiAccount) {
-      // We'll auto-create the account, derive the PDA to show it
-      const [accountPda] = deriveMarginfiAccountPda(
-        MARGINFI_GROUP_ID,
-        wallet,
-        0, // accountIndex
-        0, // thirdPartyId
-      );
-      marginfiAccount = accountPda;
-      willCreateAccount = true;
-    }
-    
-    // Check token balance
-    const config = TOKEN_CONFIG[token];
-    const userTokenAccount = getAssociatedTokenAddressSync(config.mint, wallet, true);
+    const decimals = token === 'SOL' ? 9 : 6;
+    const rawAmount = BigInt(Math.floor(amount * (10 ** decimals)));
     
     let tokenBalance = 0n;
     
     if (token === 'SOL') {
-      // For SOL, check native balance
-      const balance = await connection.getBalance(wallet);
+      // Check native SOL balance
+      const balance = await connection.getBalance(walletPublicKey);
       tokenBalance = BigInt(balance);
     } else {
-      // For other tokens, check token account
+      // For USDC, check token account
+      const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
+      const { PublicKey } = await import('@solana/web3.js');
+      
+      const usdcMint = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+      const userTokenAccount = getAssociatedTokenAddressSync(usdcMint, walletPublicKey, true);
+      
       try {
         const accountInfo = await connection.getTokenAccountBalance(userTokenAccount);
         tokenBalance = BigInt(accountInfo.value.amount);
@@ -554,15 +267,18 @@ export async function checkFlashloanPrerequisites(
       }
     }
     
-    const hasEnoughBalance = tokenBalance >= amount;
+    const hasEnoughBalance = tokenBalance >= rawAmount;
+    const balanceFormatted = Number(tokenBalance) / (10 ** decimals);
     
+    // Note: We can't easily check for MarginFi account without full SDK init
+    // The SDK will create one if needed during the flashloan test
     return {
       ready: hasEnoughBalance,
-      hasMarginfiAccount: !willCreateAccount,
-      willCreateAccount,
+      hasMarginfiAccount: false, // Will be checked/created during test
+      willCreateAccount: true, // SDK will create if needed
       hasTokenBalance: hasEnoughBalance,
-      marginfiAccount: marginfiAccount.toBase58(),
-      tokenBalance: formatTestAmount(token, tokenBalance),
+      marginfiAccount: undefined,
+      tokenBalance: `${balanceFormatted} ${token}`,
       error: hasEnoughBalance ? undefined : `Insufficient ${token} balance for repayment`,
     };
   } catch (err: any) {
@@ -575,4 +291,3 @@ export async function checkFlashloanPrerequisites(
     };
   }
 }
-
