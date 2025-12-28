@@ -305,6 +305,113 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
     }
   });
 
+  /**
+   * GET /arb/pools/validate-cache
+   * Validate tick/bin array cache entries against on-chain state
+   * 
+   * Query params:
+   * - dex: 'orca' | 'raydium' | 'meteora' | 'all' (default: 'all')
+   * - limit: number of pools per DEX to validate (default: 20, max: 100)
+   * - poolId: specific pool ID to validate (optional)
+   */
+  api.get('/arb/pools/validate-cache', async (req, res) => {
+    try {
+      const { getConnection } = await import('../../wallet/wallet.js');
+      const { 
+        validatePoolCache, 
+        validatePoolCacheBatch, 
+        getCacheHealthSummary 
+      } = await import('../../execution/cacheValidator.js');
+      
+      const connection = getConnection();
+      const dex = String(req.query.dex || 'all').toLowerCase();
+      const limit = Math.min(Math.max(1, parseInt(req.query.limit as string) || 20), 100);
+      const poolId = req.query.poolId as string | undefined;
+      
+      // Single pool validation
+      if (poolId) {
+        const poolDex = req.query.dex as 'orca' | 'raydium' | 'meteora';
+        if (!poolDex || !['orca', 'raydium', 'meteora'].includes(poolDex)) {
+          return res.status(400).json({ 
+            error: 'dex query param required (orca, raydium, or meteora) when validating single pool' 
+          });
+        }
+        const result = await validatePoolCache(connection, poolId, poolDex);
+        return res.json({ success: true, result });
+      }
+      
+      // Batch validation by DEX
+      if (dex === 'all') {
+        const summary = await getCacheHealthSummary(connection, { poolsPerDex: limit });
+        return res.json({ 
+          success: true, 
+          summary: {
+            overallHealthPercent: summary.overallHealthPercent,
+            timestamp: summary.timestamp,
+            orca: {
+              totalPools: summary.orca.totalPools,
+              validPools: summary.orca.validPools,
+              invalidPools: summary.orca.invalidPools,
+              poolsWithMissingCenter: summary.orca.poolsWithMissingCenter,
+              poolsWithMissingArrays: summary.orca.poolsWithMissingArrays,
+              poolsWithNoCacheEntry: summary.orca.poolsWithNoCacheEntry,
+              durationMs: summary.orca.durationMs,
+            },
+            raydium: {
+              totalPools: summary.raydium.totalPools,
+              validPools: summary.raydium.validPools,
+              invalidPools: summary.raydium.invalidPools,
+              poolsWithMissingCenter: summary.raydium.poolsWithMissingCenter,
+              poolsWithMissingArrays: summary.raydium.poolsWithMissingArrays,
+              poolsWithNoCacheEntry: summary.raydium.poolsWithNoCacheEntry,
+              durationMs: summary.raydium.durationMs,
+            },
+            meteora: {
+              totalPools: summary.meteora.totalPools,
+              validPools: summary.meteora.validPools,
+              invalidPools: summary.meteora.invalidPools,
+              poolsWithMissingCenter: summary.meteora.poolsWithMissingCenter,
+              poolsWithMissingArrays: summary.meteora.poolsWithMissingArrays,
+              poolsWithNoCacheEntry: summary.meteora.poolsWithNoCacheEntry,
+              durationMs: summary.meteora.durationMs,
+            },
+          },
+          // Include detailed results for invalid pools only to keep response size manageable
+          invalidPools: [
+            ...summary.orca.results.filter(r => !r.valid),
+            ...summary.raydium.results.filter(r => !r.valid),
+            ...summary.meteora.results.filter(r => !r.valid),
+          ],
+        });
+      }
+      
+      // Single DEX validation
+      if (!['orca', 'raydium', 'meteora'].includes(dex)) {
+        return res.status(400).json({ error: 'Invalid dex. Must be: orca, raydium, meteora, or all' });
+      }
+      
+      const result = await validatePoolCacheBatch(connection, dex as 'orca' | 'raydium' | 'meteora', { limit });
+      return res.json({ 
+        success: true, 
+        dex,
+        summary: {
+          totalPools: result.totalPools,
+          validPools: result.validPools,
+          invalidPools: result.invalidPools,
+          poolsWithMissingCenter: result.poolsWithMissingCenter,
+          poolsWithMissingArrays: result.poolsWithMissingArrays,
+          poolsWithNoCacheEntry: result.poolsWithNoCacheEntry,
+          durationMs: result.durationMs,
+          timestamp: result.timestamp,
+        },
+        results: result.results,
+      });
+    } catch (e: any) {
+      logger.error('cache validation failed', { error: String(e?.message || e) });
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

@@ -31,6 +31,7 @@ export const ROUTES = {
     unsubscribe: '/arb/pools/unsubscribe',
     subscriptions: '/arb/pools/subscriptions',
     retarget: '/arb/pools/retarget',
+    validateCache: '/arb/pools/validate-cache',
   },
   arb: {
     config: '/arb/config',

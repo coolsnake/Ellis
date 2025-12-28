@@ -31,6 +31,11 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [altStatus, setAltStatus] = React.useState<any | null>(null);
   const [altActionLoading, setAltActionLoading] = React.useState<string | null>(null);
   
+  // Cache validation state
+  const [cacheValidation, setCacheValidation] = React.useState<any | null>(null);
+  const [validationLoading, setValidationLoading] = React.useState<boolean>(false);
+  const [validationExpanded, setValidationExpanded] = React.useState<boolean>(false);
+  
   // DEX fetcher states
   const [fetcherStates, setFetcherStates] = React.useState<Record<string, FetcherState>>({
     raydium: 'idle',
@@ -92,6 +97,34 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     } catch {}
     fetchMetrics();
     try { window.dispatchEvent(new CustomEvent('graph-refresh')); } catch {}
+  };
+
+  const runCacheValidation = async (limit = 20) => {
+    if (validationLoading) return;
+    setValidationLoading(true);
+    setCacheValidation(null);
+    try {
+      const headers: Record<string, string> = {};
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const r = await fetch(`${apiBase}${ROUTES.pools.validateCache}?dex=all&limit=${limit}`, { headers });
+      if (r.ok) {
+        const j = await r.json();
+        if (j.success) {
+          setCacheValidation(j);
+          setValidationExpanded(true);
+        }
+      }
+    } catch (e) {
+      console.error('Cache validation failed:', e);
+    } finally {
+      setValidationLoading(false);
+    }
   };
 
   React.useEffect(() => {
@@ -518,6 +551,139 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                   ) : null}
                 </div>
               </div>
+            </div>
+            
+            {/* Cache Validation Toggle */}
+            <div className="mt-3 pt-3 border-t border-gray-700">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-400 text-xs">Tick/Bin Array Validation</span>
+                  {cacheValidation?.summary ? (
+                    <span className={`text-xs px-2 py-0.5 rounded border ${
+                      cacheValidation.summary.overallHealthPercent >= 90 
+                        ? 'bg-green-800/40 border-green-700 text-green-300'
+                        : cacheValidation.summary.overallHealthPercent >= 70 
+                          ? 'bg-yellow-800/50 border-yellow-700 text-yellow-300'
+                          : 'bg-red-800/50 border-red-700 text-red-300'
+                    }`}>
+                      {cacheValidation.summary.overallHealthPercent}% healthy
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => runCacheValidation(20)}
+                    disabled={validationLoading}
+                    className={`px-2 py-1 text-xs border rounded ${
+                      validationLoading 
+                        ? 'bg-gray-700 opacity-50 cursor-not-allowed border-gray-600' 
+                        : 'bg-orange-700 hover:bg-orange-600 border-orange-600'
+                    }`}
+                    title="Validate tick/bin arrays exist on-chain"
+                  >
+                    {validationLoading ? '⏳ Validating...' : '🔍 Validate Cache'}
+                  </button>
+                  {cacheValidation ? (
+                    <button
+                      onClick={() => setValidationExpanded(v => !v)}
+                      className="px-2 py-1 text-xs border rounded bg-gray-700 hover:bg-gray-600 border-gray-600"
+                    >
+                      {validationExpanded ? '▲ Hide' : '▼ Show'}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              
+              {/* Validation Results */}
+              {cacheValidation && validationExpanded ? (
+                <div className="mt-2 space-y-2">
+                  {/* Summary Cards */}
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['orca', 'raydium', 'meteora'] as const).map((dex) => {
+                      const data = cacheValidation.summary?.[dex];
+                      if (!data) return null;
+                      const healthPct = data.totalPools > 0 
+                        ? Math.round((data.validPools / data.totalPools) * 100) 
+                        : 0;
+                      return (
+                        <div key={dex} className="p-2 bg-gray-900/70 rounded border border-gray-700">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className={`font-semibold text-xs ${
+                              dex === 'orca' ? 'text-blue-300' :
+                              dex === 'raydium' ? 'text-red-300' : 'text-green-300'
+                            }`}>
+                              {dex.charAt(0).toUpperCase() + dex.slice(1)}
+                            </span>
+                            <span className={`text-xs px-1 rounded ${
+                              healthPct >= 90 ? 'bg-green-800/50 text-green-300' :
+                              healthPct >= 70 ? 'bg-yellow-800/50 text-yellow-300' :
+                              'bg-red-800/50 text-red-300'
+                            }`}>
+                              {healthPct}%
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-2 text-xs">
+                            <div className="text-gray-400">Valid:</div>
+                            <div className="text-green-400">{fmt(data.validPools)}/{fmt(data.totalPools)}</div>
+                            {data.poolsWithMissingCenter > 0 ? (
+                              <>
+                                <div className="text-gray-400">Missing Center:</div>
+                                <div className="text-red-400">{fmt(data.poolsWithMissingCenter)}</div>
+                              </>
+                            ) : null}
+                            {data.poolsWithMissingArrays > 0 ? (
+                              <>
+                                <div className="text-gray-400">Missing Arrays:</div>
+                                <div className="text-yellow-400">{fmt(data.poolsWithMissingArrays)}</div>
+                              </>
+                            ) : null}
+                            {data.poolsWithNoCacheEntry > 0 ? (
+                              <>
+                                <div className="text-gray-400">No Cache:</div>
+                                <div className="text-orange-400">{fmt(data.poolsWithNoCacheEntry)}</div>
+                              </>
+                            ) : null}
+                          </div>
+                          <div className="text-gray-500 text-xs mt-1">{fmt(data.durationMs)}ms</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  
+                  {/* Invalid Pools Details */}
+                  {cacheValidation.invalidPools?.length > 0 ? (
+                    <div className="mt-2">
+                      <div className="text-xs text-gray-400 mb-1">
+                        Invalid Pools ({cacheValidation.invalidPools.length}):
+                      </div>
+                      <div className="max-h-32 overflow-y-auto bg-gray-900/50 rounded p-2 text-xs font-mono space-y-1">
+                        {cacheValidation.invalidPools.slice(0, 10).map((pool: any, idx: number) => (
+                          <div key={idx} className="flex items-start gap-2 border-b border-gray-800 pb-1">
+                            <span className={`px-1 rounded ${
+                              pool.dex === 'orca' ? 'bg-blue-900/50 text-blue-300' :
+                              pool.dex === 'raydium' ? 'bg-red-900/50 text-red-300' :
+                              'bg-green-900/50 text-green-300'
+                            }`}>
+                              {pool.dex}
+                            </span>
+                            <span className="text-gray-400 truncate max-w-[100px]" title={pool.poolId}>
+                              {pool.poolId?.slice(0, 8)}...
+                            </span>
+                            <span className="text-yellow-400 flex-1">
+                              {pool.issues?.slice(0, 2).join('; ')}
+                            </span>
+                          </div>
+                        ))}
+                        {cacheValidation.invalidPools.length > 10 ? (
+                          <div className="text-gray-500">
+                            ... and {cacheValidation.invalidPools.length - 10} more
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
 
