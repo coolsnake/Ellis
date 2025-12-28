@@ -90,20 +90,35 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
         if (poolTokenB) (hop as any).tokenProgramB = poolTokenB;
       }
       
-      // Populate execution cache with mint_a/mint_b and other critical fields from pool cache
-      // This ensures the builder has mints available even if they weren't in the initial cache population
+      // Populate execution cache with mint_a/mint_b, native ordering, and other critical fields
+      // This ensures the builder has mints and native ordering available for direction logic
       const poolMintA = (p as any)?.mint_a;
       const poolMintB = (p as any)?.mint_b;
+      const nativeMintA = (p as any)?.native_mint_a;
+      const nativeMintB = (p as any)?.native_mint_b;
       const existingStatic = executionCache.getStatic(id) || {} as any;
       
-      // Only update cache if mints are missing (the critical field that causes build failures)
-      if (poolMintA && poolMintB && (!existingStatic.mint_a || !existingStatic.mint_b)) {
+      // Update cache if critical fields are missing (mints, native ordering)
+      const needsUpdate = 
+        (poolMintA && poolMintB && (!existingStatic.mint_a || !existingStatic.mint_b)) ||
+        (nativeMintA && !existingStatic.native_mint_a) ||
+        (nativeReserveX && !existingStatic.reserve_x);
+      
+      if (needsUpdate) {
         executionCache.setStatic(id, {
           ...existingStatic,
           programId: existingStatic.programId || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
           dex: 'Meteora',
-          mint_a: poolMintA,
-          mint_b: poolMintB,
+          mint_a: poolMintA || existingStatic.mint_a,
+          mint_b: poolMintB || existingStatic.mint_b,
+          // CRITICAL: Store native ordering for builder's direction logic
+          native_mint_a: nativeMintA || existingStatic.native_mint_a,
+          native_mint_b: nativeMintB || existingStatic.native_mint_b,
+          native_account_a: (p as any)?.native_account_a || existingStatic.native_account_a,
+          native_account_b: (p as any)?.native_account_b || existingStatic.native_account_b,
+          // Native reserves (on-chain lbPair.reserveX/reserveY)
+          reserve_x: nativeReserveX || existingStatic.reserve_x,
+          reserve_y: nativeReserveY || existingStatic.reserve_y,
           decimals_a: (p as any)?.decimals_a ?? existingStatic.decimals_a,
           decimals_b: (p as any)?.decimals_b ?? existingStatic.decimals_b,
           token_program_a: (p as any)?.token_program_a || existingStatic.token_program_a,
@@ -112,6 +127,7 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
           account_b: (p as any)?.account_b || existingStatic.account_b,
           bin_array_bitmap_extension: (p as any)?.bin_array_bitmap_extension || existingStatic.bin_array_bitmap_extension,
           oracle: (p as any)?.oracle || existingStatic.oracle,
+          was_swapped: (p as any)?.was_swapped ?? existingStatic.was_swapped,
         });
       }
       

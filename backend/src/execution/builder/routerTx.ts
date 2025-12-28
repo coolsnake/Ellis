@@ -558,16 +558,27 @@ async function extractDexAccounts(
       ? new PublicKey(hop.userDestAta)
       : getAssociatedTokenAddressSync(outputMint, wallet, true, outputTokenProgram);
 
-    // Get pool's CANONICAL mint ordering from cache for direction determination
-    // CRITICAL: Use canonical mint_a/account_a which are PAIRED correctly after canonicalization
-    // Do NOT use native_mint_a with native_account_a because they may come from different sources
-    // (native_mint_a might be sorted alphabetically while native_account_a is true on-chain order)
+    // Get pool's mint and account ordering from cache
+    // CRITICAL: Use NATIVE ordering for direction (isAtoB) because on-chain programs use native order
+    // Native = original on-chain order (token_mint_0/token_mint_1)
+    // Canonical = alphabetically sorted (mint_a/mint_b) - may be swapped from native
     const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
     const poolMintA = stat?.mint_a;  // Canonical mint A
     const poolMintB = stat?.mint_b;  // Canonical mint B
     const poolAccountA = stat?.account_a;  // Canonical account A (paired with mint_a)
     const poolAccountB = stat?.account_b;  // Canonical account B (paired with mint_b)
-    const isAtoB = hop.inputMint === poolMintA;
+    
+    // NATIVE ordering - critical for on-chain direction flag
+    const nativeMintA = stat?.native_mint_a;  // On-chain token_mint_0
+    const nativeMintB = stat?.native_mint_b;  // On-chain token_mint_1
+    const nativeAccountA = stat?.native_account_a;  // On-chain vault for token_mint_0
+    const nativeAccountB = stat?.native_account_b;  // On-chain vault for token_mint_1
+    
+    // Direction flag uses NATIVE ordering (matches on-chain a_to_b interpretation)
+    // Fallback to canonical only if native is unavailable
+    const isAtoB = nativeMintA 
+      ? (hop.inputMint === nativeMintA) 
+      : (hop.inputMint === poolMintA);
 
     switch (dexType) {
       case DexType.Raydium:
@@ -600,15 +611,16 @@ async function extractDexAccounts(
           ? new PublicKey(exBitmapAddr)
           : deriveRaydiumExBitmapPda(poolId, programIdKey);
         
-        // CRITICAL: Use CANONICAL account ordering (properly paired with canonical mints)
-        // hop.vaultA/B come from resolver's native_account_a/b which may NOT match native_mint_a/b
-        // poolAccountA/B are canonical and properly paired with poolMintA/poolMintB
-        const inputVault = isAtoB 
-          ? (poolAccountA || hop.vaultA || hop.poolId)
-          : (poolAccountB || hop.vaultB || hop.poolId);
-        const outputVault = isAtoB
-          ? (poolAccountB || hop.vaultB || hop.poolId)
-          : (poolAccountA || hop.vaultA || hop.poolId);
+        // CRITICAL: Use NATIVE account ordering for vault selection
+        // Raydium CLMM passes input_vault and output_vault based on swap direction
+        // native_account_a is paired with native_mint_a (token_vault_0 with token_mint_0)
+        // Select vault based on which native mint matches input/output
+        const inputVault = (hop.inputMint === nativeMintA)
+          ? (nativeAccountA || hop.vaultA || poolAccountA || hop.poolId)
+          : (nativeAccountB || hop.vaultB || poolAccountB || hop.poolId);
+        const outputVault = (hop.outputMint === nativeMintA)
+          ? (nativeAccountA || hop.vaultA || poolAccountA || hop.poolId)
+          : (nativeAccountB || hop.vaultB || poolAccountB || hop.poolId);
         
         // Log the accounts being used for debugging
         logger.info('routerTx.raydium.accounts', {
@@ -620,21 +632,32 @@ async function extractDexAccounts(
           observationSource: hop.observationId ? 'cache' : 'derived',
           exBitmap: exBitmapPda.toBase58(),
           exBitmapSource: exBitmapAddr ? 'cache' : 'derived',
-          // Show canonical vs hop vaults for debugging
+          // Native ordering (used for direction and vaults)
+          nativeMintA: nativeMintA || 'missing',
+          nativeMintB: nativeMintB || 'missing',
+          nativeAccountA: nativeAccountA || 'missing',
+          nativeAccountB: nativeAccountB || 'missing',
+          // Canonical ordering (may be swapped)
+          canonicalMintA: poolMintA || 'missing',
+          canonicalMintB: poolMintB || 'missing',
           canonicalAccountA: poolAccountA || 'missing',
           canonicalAccountB: poolAccountB || 'missing',
+          wasSwapped: (stat as any)?.was_swapped ?? 'unknown',
+          // Hop fallback values
           hopVaultA: hop.vaultA || 'missing',
           hopVaultB: hop.vaultB || 'missing',
+          // Selected vaults
           selectedInputVault: inputVault,
           selectedOutputVault: outputVault,
+          // Tick arrays
           tickArrayCenter: hop.tickArrayCenter || 'missing',
           tickArrayLower: hop.tickArrayLower || 'missing',
           tickArrayUpper: hop.tickArrayUpper || 'missing',
+          // Direction (using native ordering)
           isAtoB,
+          isAtoBSource: nativeMintA ? 'native' : 'canonical_fallback',
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
-          canonicalMintA: poolMintA || 'missing',
-          canonicalMintB: poolMintB || 'missing',
         });
         
         accounts.push(
@@ -859,17 +882,19 @@ async function extractDexAccounts(
         // Orca Whirlpool: 12 accounts (matches arb-router/src/dex/orca.rs)
         // 0: TokenProgram, 1: TokenAuthority(signer), 2: Whirlpool, 3: TokenOwnerAccountA,
         // 4: TokenVaultA, 5: TokenOwnerAccountB, 6: TokenVaultB, 7-9: TickArrays, 10: Oracle, 11: Program
-        // Orca swap direction MUST be based on the pool's NATIVE mint ordering (tokenMintA/tokenMintB),
-        // matching the `aToB` bit passed in the on-chain execute step.
-        const nativeMintA = stat?.native_mint_a || stat?.mint_a;
+        
+        // CRITICAL: Orca swap direction MUST use NATIVE mint ordering (tokenMintA/tokenMintB)
+        // The on-chain program uses native A/B to determine swap direction
+        // nativeMintA/B were already extracted above for all DEX types
         const isAtoBOrca = nativeMintA ? (hop.inputMint === nativeMintA) : isAtoB;
         const userTokenA = isAtoBOrca ? userSourceAta : userDestAta;
         const userTokenB = isAtoBOrca ? userDestAta : userSourceAta;
         
-        // CRITICAL: Use CANONICAL account ordering (properly paired with canonical mints)
-        // Orca expects vaults in A/B order which corresponds to canonical A/B
-        const orcaVaultA = poolAccountA || hop.vaultA || hop.poolId;
-        const orcaVaultB = poolAccountB || hop.vaultB || hop.poolId;
+        // CRITICAL: Use NATIVE account ordering for vaults
+        // Orca expects vaults in A/B order matching the on-chain native order
+        // native_account_a is paired with native_mint_a (token_vault_a with token_mint_a)
+        const orcaVaultA = nativeAccountA || hop.vaultA || poolAccountA || hop.poolId;
+        const orcaVaultB = nativeAccountB || hop.vaultB || poolAccountB || hop.poolId;
         
         // CRITICAL: Orca Whirlpool swap expects tick arrays in a direction-specific SEQUENCE:
         // tick_array_0 contains current tick, then two sequential arrays in swap direction.
@@ -919,17 +944,21 @@ async function extractDexAccounts(
         logger.info('routerTx.orca.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
+          // Native ordering (used for direction and vaults)
           native: {
             mintA: nativeMintA || 'missing',
-            mintB: stat?.native_mint_b || 'missing',
-            wasSwapped: (stat as any)?.was_swapped ?? 'unknown',
+            mintB: nativeMintB || 'missing',
+            accountA: nativeAccountA || 'missing',
+            accountB: nativeAccountB || 'missing',
           },
+          // Canonical ordering (may be swapped)
           canonical: {
             mintA: poolMintA || 'missing',
             mintB: poolMintB || 'missing',
             accountA: poolAccountA || 'missing',
             accountB: poolAccountB || 'missing',
           },
+          wasSwapped: (stat as any)?.was_swapped ?? 'unknown',
           hopVaultA: hop.vaultA || 'missing',
           hopVaultB: hop.vaultB || 'missing',
           selectedVaultA: orcaVaultA,
@@ -961,9 +990,9 @@ async function extractDexAccounts(
           wallet,                                                              // 1: Token Authority (signer)
           poolId,                                                              // 2: Whirlpool
           userTokenA,                                                          // 3: Token Owner Account A
-          new PublicKey(orcaVaultA),                                           // 4: Token Vault A (canonical A)
+          new PublicKey(orcaVaultA),                                           // 4: Token Vault A (native)
           userTokenB,                                                          // 5: Token Owner Account B
-          new PublicKey(orcaVaultB),                                           // 6: Token Vault B (canonical B)
+          new PublicKey(orcaVaultB),                                           // 6: Token Vault B (native)
           tickArray0 ? new PublicKey(tickArray0) : poolId,                    // 7: Tick Array 0
           tickArray1 ? new PublicKey(tickArray1) : poolId,                    // 8: Tick Array 1
           tickArray2 ? new PublicKey(tickArray2) : poolId,                    // 9: Tick Array 2

@@ -107,14 +107,17 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
         hop.oracle = hop.oracle || oracleFromPool;
       }
       
-      // Get vault addresses from pool data (prefer token_vault_a/token_vault_b, fallback to account_a/account_b)
-      const vaultA = (p as any)?.token_vault_a || (p as any)?.account_a;
-      const vaultB = (p as any)?.token_vault_b || (p as any)?.account_b;
+      // CRITICAL: Use NATIVE vault ordering for Orca
+      // token_vault_a/token_vault_b are the on-chain native vault addresses
+      // native_account_a/b are also native ordering if available
+      // account_a/b may be canonical (swapped) ordering - use as last resort
+      const vaultA = (p as any)?.native_account_a || (p as any)?.token_vault_a || (p as any)?.account_a;
+      const vaultB = (p as any)?.native_account_b || (p as any)?.token_vault_b || (p as any)?.account_b;
       
       if (vaultA) hop.vaultA = hop.vaultA || String(vaultA);
       if (vaultB) hop.vaultB = hop.vaultB || String(vaultB);
       
-      // CRITICAL: Cache vault addresses, oracle, and mints in execution cache if we found them
+      // CRITICAL: Cache vault addresses, oracle, mints, and NATIVE ordering in execution cache
       // This ensures the builder has all required data even if it wasn't in the initial cache population
       const existing = executionCache.getStatic(poolIdBase) || {} as any;
       const updates: any = {};
@@ -130,7 +133,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
         updates.oracle = oracleFromPool;
       }
       
-      // Populate mints if missing (required by buildOrcaSwapIxLocal for swap direction)
+      // Populate mints if missing (required by builder for swap direction)
       const poolMintA = (p as any)?.mint_a;
       const poolMintB = (p as any)?.mint_b;
       if (poolMintA && poolMintB && (!existing.mint_a || !existing.mint_b)) {
@@ -140,6 +143,18 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
         updates.decimals_b = (p as any)?.decimals_b ?? existing.decimals_b;
         updates.programId = existing.programId || (p as any)?.program_id || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
       }
+      
+      // CRITICAL: Store native mint/account ordering for builder's direction logic
+      // The builder uses native ordering to determine isAtoB correctly
+      const nativeMintA = (p as any)?.native_mint_a;
+      const nativeMintB = (p as any)?.native_mint_b;
+      const nativeAccountA = (p as any)?.native_account_a;
+      const nativeAccountB = (p as any)?.native_account_b;
+      
+      if (nativeMintA && !existing.native_mint_a) updates.native_mint_a = nativeMintA;
+      if (nativeMintB && !existing.native_mint_b) updates.native_mint_b = nativeMintB;
+      if (nativeAccountA && !existing.native_account_a) updates.native_account_a = nativeAccountA;
+      if (nativeAccountB && !existing.native_account_b) updates.native_account_b = nativeAccountB;
       
       if (Object.keys(updates).length > 0) {
         executionCache.setStatic(poolIdBase, {

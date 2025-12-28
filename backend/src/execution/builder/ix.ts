@@ -878,19 +878,28 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
     });
   } catch (e) { logCatchError('ix.build', e); }
   
-  // Determine swap direction
+  // Determine swap direction using NATIVE mint ordering
+  // CRITICAL: On-chain programs use native ordering for aToB flag
   const inputMintStr = String(hop.inputMint);
-  const mintA = staticData.mint_a;
-  const mintB = staticData.mint_b;
+  const nativeMintA = staticData.native_mint_a;
+  const nativeMintB = staticData.native_mint_b;
+  const canonicalMintA = staticData.mint_a;
+  const canonicalMintB = staticData.mint_b;
+  
+  // Use native ordering if available, fallback to canonical
+  const mintA = nativeMintA || canonicalMintA;
+  const mintB = nativeMintB || canonicalMintB;
   const aToB = inputMintStr === mintA;
   
   if (!aToB && inputMintStr !== mintB) {
     throw createBuilderError('ORCA', `Input mint ${inputMintStr} does not match pool mints (A: ${mintA}, B: ${mintB})`, hop);
   }
   
-  // Get vault addresses
-  const vaultA = staticData.vaults?.a;
-  const vaultB = staticData.vaults?.b;
+  // Get vault addresses using NATIVE account ordering
+  const nativeAccountA = staticData.native_account_a;
+  const nativeAccountB = staticData.native_account_b;
+  const vaultA = nativeAccountA || staticData.vaults?.a;
+  const vaultB = nativeAccountB || staticData.vaults?.b;
   let oracle = staticData.oracle;
   
   if (!vaultA || !vaultB) {
@@ -1004,6 +1013,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
       ctx: {
         pool: hop.poolId,
         aToB,
+        aToB_source: nativeMintA ? 'native' : 'canonical',
         amountIn: hop.amountInRaw?.toString(),
         minOut: hop.minOutRaw?.toString(),
         buildTimeMs: buildTime.toFixed(2),
