@@ -22,7 +22,6 @@ import {
   NATIVE_MINT,
   createSyncNativeInstruction,
 } from '@solana/spl-token';
-import { createHash } from 'crypto';
 import BN from 'bn.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -31,14 +30,27 @@ import {
   MARGINFI_BANKS,
   BANK_LIQUIDITY_VAULT_AUTHORITIES,
   SYSVAR_INSTRUCTIONS_PUBKEY,
-  buildBorrowInstruction,
-  buildRepayInstruction,
   deriveMarginfiAccountPda,
   deriveLiquidityVault,
   deriveLiquidityVaultAuthority,
   getMarginfiAccount,
   buildInitializeAccountPdaInstruction,
 } from './flashloan.js';
+
+// ============================================================================
+// Instruction Discriminators (from MarginFi IDL)
+// ============================================================================
+
+/**
+ * These discriminators are taken directly from the MarginFi IDL.
+ * Using computed values can cause mismatches - always use IDL values.
+ */
+const IDL_DISCRIMINATORS = {
+  lending_account_start_flashloan: Buffer.from([14, 131, 33, 220, 81, 186, 180, 107]),
+  lending_account_end_flashloan: Buffer.from([105, 124, 201, 106, 153, 2, 8, 156]),
+  lending_account_borrow: Buffer.from([4, 126, 116, 53, 48, 5, 212, 31]),
+  lending_account_repay: Buffer.from([79, 209, 172, 177, 222, 51, 173, 151]),
+} as const;
 
 // ============================================================================
 // Types
@@ -99,14 +111,9 @@ function buildStartFlashloanIx(
   signer: PublicKey,
   endIndex: number,
 ): TransactionInstruction {
-  // Discriminator for lending_account_start_flashloan
-  // This is typically sha256("global:lending_account_start_flashloan")[0..8]
-  // We'll compute it properly
-  const discriminator = computeDiscriminator('lending_account_start_flashloan');
-  
   const data = Buffer.alloc(8 + 8);
-  data.set(discriminator, 0);
-  data.set(new BN(endIndex).toArrayLike(Buffer, 'le', 8), 8);
+  IDL_DISCRIMINATORS.lending_account_start_flashloan.copy(data, 0);
+  new BN(endIndex).toArrayLike(Buffer, 'le', 8).copy(data, 8);
   
   return new TransactionInstruction({
     programId: MARGINFI_PROGRAM_ID,
@@ -131,8 +138,6 @@ function buildEndFlashloanIx(
   signer: PublicKey,
   banks: PublicKey[],
 ): TransactionInstruction {
-  const discriminator = computeDiscriminator('lending_account_end_flashloan');
-  
   return new TransactionInstruction({
     programId: MARGINFI_PROGRAM_ID,
     keys: [
@@ -140,18 +145,8 @@ function buildEndFlashloanIx(
       { pubkey: signer, isSigner: true, isWritable: false },
       ...banks.map(bank => ({ pubkey: bank, isSigner: false, isWritable: false })),
     ],
-    data: discriminator,
+    data: IDL_DISCRIMINATORS.lending_account_end_flashloan,
   });
-}
-
-/**
- * Compute Anchor instruction discriminator
- * sha256("global:<instruction_name>")[0..8]
- */
-function computeDiscriminator(instructionName: string): Uint8Array {
-  const preimage = `global:${instructionName}`;
-  const hash = createHash('sha256').update(preimage).digest();
-  return new Uint8Array(hash.subarray(0, 8));
 }
 
 /**
@@ -168,11 +163,9 @@ function buildBorrowIx(
   const [liquidityVault] = deriveLiquidityVault(bank);
   const [liquidityVaultAuthority] = deriveLiquidityVaultAuthority(bank);
   
-  const discriminator = computeDiscriminator('lending_account_borrow');
-  
   const data = Buffer.alloc(8 + 8);
-  data.set(discriminator, 0);
-  data.set(new BN(amount.toString()).toArrayLike(Buffer, 'le', 8), 8);
+  IDL_DISCRIMINATORS.lending_account_borrow.copy(data, 0);
+  new BN(amount.toString()).toArrayLike(Buffer, 'le', 8).copy(data, 8);
   
   return new TransactionInstruction({
     programId: MARGINFI_PROGRAM_ID,
@@ -204,12 +197,10 @@ function buildRepayIx(
 ): TransactionInstruction {
   const [liquidityVault] = deriveLiquidityVault(bank);
   
-  const discriminator = computeDiscriminator('lending_account_repay');
-  
   // Data: discriminator (8) + amount (8) + repay_all (1)
   const data = Buffer.alloc(8 + 8 + 1);
-  data.set(discriminator, 0);
-  data.set(new BN(amount.toString()).toArrayLike(Buffer, 'le', 8), 8);
+  IDL_DISCRIMINATORS.lending_account_repay.copy(data, 0);
+  new BN(amount.toString()).toArrayLike(Buffer, 'le', 8).copy(data, 8);
   data.writeUInt8(repayAll ? 1 : 0, 16);
   
   return new TransactionInstruction({
@@ -386,6 +377,24 @@ export async function runFlashloanTest(
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
     tx.recentBlockhash = blockhash;
     tx.feePayer = wallet.publicKey;
+    
+    // Log all key accounts for debugging
+    const [liquidityVault] = deriveLiquidityVault(bank);
+    const [liquidityVaultAuthority] = deriveLiquidityVaultAuthority(bank);
+    
+    logger.info('marginfi.flashloan.accounts', {
+      cat: 'marginfi',
+      marginfiGroup: MARGINFI_GROUP_ID.toBase58(),
+      marginfiAccount: marginfiAccount.toBase58(),
+      bank: bank.toBase58(),
+      liquidityVault: liquidityVault.toBase58(),
+      liquidityVaultAuthority: liquidityVaultAuthority.toBase58(),
+      userTokenAccount: userTokenAccount.toBase58(),
+      wallet: wallet.publicKey.toBase58(),
+      needsAccountCreation,
+      endFlashloanIndex,
+      txInstructionCount: tx.instructions.length,
+    });
     
     if (simulateOnly) {
       // Simulate
