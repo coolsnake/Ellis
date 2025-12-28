@@ -395,6 +395,19 @@ export async function shutdown() {
     // Shutdown arb-rs process first
     try { shutdownRustProcess(); } catch {}
 
+    // Save pool snapshot BEFORE clearing caches (if persistence enabled)
+    try {
+      const { savePoolsSnapshot, isPersistenceEnabled } = await import('./pools.persistence.js');
+      if (isPersistenceEnabled()) {
+        const saved = await savePoolsSnapshot();
+        if (saved) {
+          logger.info('pools.shutdown.snapshot_saved', { cat: 'pools' });
+        }
+      }
+    } catch (err: any) {
+      try { logger.warn('pools.shutdown.snapshot_failed', { error: err.message, cat: 'pools' }); } catch {}
+    }
+
     // Stop timers and clear in-memory caches
     try { 
       const pools = await import('./pools.js'); 
@@ -440,9 +453,11 @@ export async function shutdown() {
     } catch {}
     
     // Delete persistent cache files to force fresh data on next boot
+    // Note: Pool snapshot file is preserved when persistence is enabled
     try {
       const { deleteFile, joinPath } = await import('../utils/fs.js');
       const { CONFIG } = await import('../utils/config.js');
+      const { getSnapshotFileName, isPersistenceEnabled } = await import('./pools.persistence.js');
       
       // Comprehensive list of ALL cache files to clean for fresh startup
       const cacheFiles = [
@@ -463,14 +478,25 @@ export async function shutdown() {
         'meteora-pools-graphql.json',
       ];
       
+      // If persistence is enabled, exclude the snapshot file from deletion
+      const snapshotFile = getSnapshotFileName();
+      const persistenceEnabled = isPersistenceEnabled();
+      const filesToDelete = persistenceEnabled 
+        ? cacheFiles.filter(f => f !== snapshotFile)
+        : cacheFiles;
+      
       let deletedCount = 0;
-      for (const file of cacheFiles) {
+      for (const file of filesToDelete) {
         try {
           await deleteFile(joinPath(CONFIG.cacheDir, file));
           deletedCount++;
         } catch {} // Ignore if file doesn't exist
       }
-      logger.info('Cache cleanup complete', { deleted: deletedCount, total: cacheFiles.length });
+      logger.info('Cache cleanup complete', { 
+        deleted: deletedCount, 
+        total: filesToDelete.length,
+        snapshotPreserved: persistenceEnabled
+      });
     } catch (e) {
       try { logger.warn('Cache file cleanup failed', { error: String(e) }); } catch {}
     }
@@ -563,6 +589,38 @@ server.listen(CONFIG.port, () => {
       
       // Load precomputed CLMM cache from disk
       try { await loadClmmCacheFromDisk(); logger.info('clmm.cache.loaded'); } catch {}
+      
+      // Load persisted pool snapshot for fast startup (if persistence enabled)
+      // This hydrates pool caches and builds the graph without fetching from APIs
+      try {
+        const { initializeFromSnapshot, isPersistenceEnabled } = await import('./pools.persistence.js');
+        if (isPersistenceEnabled()) {
+          const loaded = await initializeFromSnapshot();
+          if (loaded) {
+            logger.info('pools.startup.from_snapshot', { 
+              message: 'Pools loaded from snapshot - graph ready. Use retarget to start subscriptions.',
+              cat: 'pools' 
+            });
+            try {
+              const { emit } = await import('./realtime.js');
+              emit('log', {
+                level: 'info',
+                message: 'pools:startup from snapshot - use retarget to start subscriptions',
+                timestamp: new Date().toISOString(),
+                context: { cat: 'pools' }
+              });
+            } catch {}
+          } else {
+            logger.info('pools.startup.no_snapshot', { 
+              message: 'No pool snapshot found - use refresh to fetch pools',
+              cat: 'pools' 
+            });
+          }
+        }
+      } catch (err: any) {
+        logger.warn('pools.startup.snapshot_failed', { error: err.message, cat: 'pools' });
+      }
+      
       // Removed auto verified fetch; use manual /watchlist/fetch-verified endpoint
       // Removed auto tokens refresh; use manual /watchlist/bootstrap-pools endpoint
       try {

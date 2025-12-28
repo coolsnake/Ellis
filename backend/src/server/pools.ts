@@ -1562,7 +1562,29 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   } catch {}
   
   // === PHASE 7: SUBSCRIBE TO RETAINED POOLS PER DEX IN SEQUENCE ===
-  if (options.subscribe) {
+  // When pool persistence is enabled, subscriptions require manual trigger via retarget button
+  // unless autoStartSubscriptions is explicitly set to true
+  let shouldSubscribe = options.subscribe;
+  try {
+    const { shouldAutoStartSubscriptions } = await import('./pools.persistence.js');
+    if (!shouldAutoStartSubscriptions()) {
+      shouldSubscribe = false;
+      logger.info('pools.refresh.phase.subscribe.manual_control', { 
+        message: 'Pool persistence enabled - use retarget button to start subscriptions',
+        cat: 'pools' 
+      });
+      try {
+        emit('log', {
+          level: 'info',
+          message: 'pools:subscriptions require manual start - use retarget button',
+          timestamp: new Date().toISOString(),
+          context: { cat: 'pools' }
+        });
+      } catch {}
+    }
+  } catch {}
+  
+  if (shouldSubscribe) {
     logger.info('pools.refresh.phase.subscribe', { enabled: shouldFetch, cat: 'pools' });
     try {
       // Sequential subscription: enable WS and start refresh loop

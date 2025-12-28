@@ -332,6 +332,20 @@ export const CONFIG = {
     },
     // Default USD quote size used when neither size nor sizeUsd is provided
     defaultQuoteSizeUsd: Number(process.env.DEFAULT_QUOTE_SIZE_USD || 0),
+    
+    // Pool persistence configuration
+    // Enables saving filtered pools to disk on shutdown and loading on startup
+    // This allows fast startup without re-fetching from APIs
+    poolPersistence: {
+      // Enable pool persistence (save on shutdown, load on startup)
+      enabled: process.env.PERSIST_FILTERED_POOLS === 'true',
+      // Load pools from snapshot on startup (default: true when persistence enabled)
+      loadOnStartup: process.env.LOAD_POOLS_ON_STARTUP !== 'false',
+      // Auto-start WebSocket subscriptions after loading (default: false - use retarget button)
+      autoStartSubscriptions: process.env.AUTO_START_SUBSCRIPTIONS === 'true',
+      // Auto-revalidate tick/bin arrays on load using SDKs (default: false)
+      revalidateOnLoad: process.env.REVALIDATE_ON_LOAD === 'true',
+    },
   },
   // Optional: CORS allowlist (comma-separated origins), '*' to allow all
   corsOrigin: process.env.CORS_ORIGIN,

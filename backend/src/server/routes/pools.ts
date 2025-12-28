@@ -306,6 +306,99 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
   });
 
   /**
+   * POST /arb/pools/revalidate
+   * Validates tick/bin arrays for CLMM pools using SDKs and refreshes invalid ones.
+   * This is the preferred method for ensuring cached pools have valid tick/bin arrays.
+   * 
+   * Body params:
+   * - dex: 'orca' | 'raydium' | 'meteora' (optional - if not provided, validates all)
+   * - limit: number of pools per DEX to validate (default: 50, max: 200)
+   * - concurrency: parallel refresh operations (default: 10)
+   */
+  api.post('/arb/pools/revalidate', async (req, res) => {
+    try {
+      const { dex, limit = 50, concurrency = 10 } = req.body || {};
+      const { revalidateDex, revalidateAllPools } = await import('../pools.revalidate.js');
+      
+      const safeLimit = Math.min(Math.max(1, Number(limit) || 50), 200);
+      const safeConcurrency = Math.min(Math.max(1, Number(concurrency) || 10), 20);
+      
+      let result;
+      if (dex && ['orca', 'raydium', 'meteora'].includes(dex)) {
+        result = await revalidateDex(dex, { limit: safeLimit, concurrency: safeConcurrency });
+      } else {
+        result = await revalidateAllPools({ limit: safeLimit, concurrency: safeConcurrency });
+      }
+      
+      res.json({ 
+        success: true, 
+        ...result,
+        message: `Validated ${result.totalPools} pools, ${result.healthPercent}% healthy, refreshed ${result.refreshed}`,
+      });
+    } catch (e: any) {
+      logger.error('pools.revalidate.endpoint.failed', { error: String(e?.message || e), cat: 'pools' });
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * GET /arb/pools/persistence-status
+   * Returns the current pool persistence configuration and status
+   */
+  api.get('/arb/pools/persistence-status', async (_req, res) => {
+    try {
+      const { 
+        isPersistenceEnabled, 
+        shouldAutoStartSubscriptions, 
+        snapshotExists,
+        getSnapshotFilePath 
+      } = await import('../pools.persistence.js');
+      
+      const exists = await snapshotExists();
+      
+      res.json({
+        enabled: isPersistenceEnabled(),
+        autoStartSubscriptions: shouldAutoStartSubscriptions(),
+        snapshotExists: exists,
+        snapshotPath: getSnapshotFilePath(),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /arb/pools/save-snapshot
+   * Manually trigger saving the current pool caches to disk
+   */
+  api.post('/arb/pools/save-snapshot', async (_req, res) => {
+    try {
+      const { savePoolsSnapshot } = await import('../pools.persistence.js');
+      const saved = await savePoolsSnapshot();
+      res.json({ success: saved, message: saved ? 'Snapshot saved' : 'No pools to save or persistence disabled' });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /arb/pools/load-snapshot
+   * Manually trigger loading pools from disk snapshot
+   */
+  api.post('/arb/pools/load-snapshot', async (_req, res) => {
+    try {
+      const { initializeFromSnapshot } = await import('../pools.persistence.js');
+      const loaded = await initializeFromSnapshot();
+      res.json({ 
+        success: loaded, 
+        message: loaded ? 'Snapshot loaded and graph built' : 'No snapshot found or persistence disabled' 
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
    * GET /arb/pools/validate-cache
    * Validate tick/bin array cache entries against on-chain state
    * 
