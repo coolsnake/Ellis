@@ -1432,7 +1432,124 @@ export function createRouterRouter(io: SocketIOServer): Router {
     }
   });
 
+  // ============================================================================
+  // MarginFi Flashloan Testing Routes
+  // ============================================================================
+
+  /**
+   * GET /router/flashloan/prerequisites - Check if user can run flashloan test
+   */
+  api.get('/router/flashloan/prerequisites', async (req: Request, res: Response) => {
+    try {
+      const token = (req.query.token as string || 'SOL').toUpperCase() as 'SOL' | 'USDC';
+      const amount = req.query.amount ? BigInt(req.query.amount as string) : undefined;
+      
+      const routerConfig = await loadRouterConfig();
+      const connection = getRouterConnection(routerConfig.cluster);
+      const wallet = await ensureWallet();
+      
+      const { checkFlashloanPrerequisites, getRecommendedTestAmount } = await import('../../marginfi/testFlashloan.js');
+      
+      const testAmount = amount || getRecommendedTestAmount(token);
+      const result = await checkFlashloanPrerequisites(connection, wallet.publicKey, token, testAmount);
+      
+      res.json({
+        success: true,
+        ...result,
+        recommendedAmount: getRecommendedTestAmount(token).toString(),
+      });
+    } catch (err: any) {
+      logger.error('router.flashloan.prerequisites.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /router/flashloan/test - Run a flashloan test (borrow and repay)
+   */
+  api.post('/router/flashloan/test', async (req: Request, res: Response) => {
+    try {
+      const { 
+        token = 'SOL', 
+        amount, 
+        simulate = true,
+      } = req.body;
+      
+      const tokenUpper = token.toUpperCase() as 'SOL' | 'USDC';
+      if (tokenUpper !== 'SOL' && tokenUpper !== 'USDC') {
+        return res.status(400).json({ success: false, error: 'Token must be SOL or USDC' });
+      }
+      
+      const routerConfig = await loadRouterConfig();
+      const connection = getRouterConnection(routerConfig.cluster);
+      const wallet = await ensureWallet();
+      
+      const { runFlashloanTest, getRecommendedTestAmount, formatTestAmount } = await import('../../marginfi/testFlashloan.js');
+      
+      const testAmount = amount ? BigInt(amount) : getRecommendedTestAmount(tokenUpper);
+      
+      logger.info('router.flashloan.test.request', {
+        cat: 'router',
+        token: tokenUpper,
+        amount: testAmount.toString(),
+        formatted: formatTestAmount(tokenUpper, testAmount),
+        simulate,
+        cluster: routerConfig.cluster,
+      });
+      
+      emit('router:flashloan:start', { token: tokenUpper, amount: testAmount.toString(), simulate });
+      
+      const result = await runFlashloanTest({
+        connection,
+        wallet: Keypair.fromSecretKey(wallet.secretKey),
+        token: tokenUpper,
+        amount: testAmount,
+        simulateOnly: simulate,
+      });
+      
+      emit('router:flashloan:complete', result);
+      
+      res.json({
+        ...result,
+        formattedAmount: formatTestAmount(tokenUpper, testAmount),
+      });
+    } catch (err: any) {
+      logger.error('router.flashloan.test.error', { cat: 'router', error: err.message, stack: err.stack });
+      emit('router:flashloan:complete', { success: false, error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * GET /router/flashloan/banks - Get available MarginFi banks for flashloans
+   */
+  api.get('/router/flashloan/banks', async (_req: Request, res: Response) => {
+    try {
+      const { MARGINFI_BANKS, MARGINFI_GROUP_ID, MARGINFI_PROGRAM_ID } = await import('../../marginfi/flashloan.js');
+      
+      res.json({
+        success: true,
+        programId: MARGINFI_PROGRAM_ID.toBase58(),
+        groupId: MARGINFI_GROUP_ID.toBase58(),
+        banks: {
+          SOL: {
+            address: MARGINFI_BANKS.SOL.toBase58(),
+            mint: 'So11111111111111111111111111111111111111112',
+            decimals: 9,
+          },
+          USDC: {
+            address: MARGINFI_BANKS.USDC.toBase58(),
+            mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            decimals: 6,
+          },
+        },
+      });
+    } catch (err: any) {
+      logger.error('router.flashloan.banks.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   return api;
 }
-
 

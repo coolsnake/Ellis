@@ -129,6 +129,33 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [testingExecute, setTestingExecute] = useState(false);
   const [executeResult, setExecuteResult] = useState<TestExecuteResult | null>(null);
 
+  // MarginFi Flashloan Testing State
+  const [flashloanToken, setFlashloanToken] = useState<'SOL' | 'USDC'>('SOL');
+  const [flashloanAmount, setFlashloanAmount] = useState('1000000'); // 0.001 SOL default
+  const [flashloanSimulate, setFlashloanSimulate] = useState(true);
+  const [testingFlashloan, setTestingFlashloan] = useState(false);
+  const [flashloanResult, setFlashloanResult] = useState<{
+    success: boolean;
+    simulated?: boolean;
+    signature?: string;
+    error?: string;
+    logs?: string[];
+    unitsConsumed?: number;
+    marginfiAccount?: string;
+    formattedAmount?: string;
+  } | null>(null);
+  const [flashloanPrerequisites, setFlashloanPrerequisites] = useState<{
+    ready?: boolean;
+    hasMarginfiAccount?: boolean;
+    willCreateAccount?: boolean;
+    hasTokenBalance?: boolean;
+    marginfiAccount?: string;
+    tokenBalance?: string;
+    error?: string;
+    recommendedAmount?: string;
+  } | null>(null);
+  const [checkingPrerequisites, setCheckingPrerequisites] = useState(false);
+
   // Update variant when DEX changes
   const handleDexChange = (dex: 'raydium' | 'meteora' | 'orca') => {
     setTestDex(dex);
@@ -528,6 +555,75 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
     } finally {
       setTestingSwap(false);
     }
+  };
+
+  // MarginFi Flashloan handlers
+  const checkFlashloanPrerequisites = async () => {
+    setCheckingPrerequisites(true);
+    setFlashloanPrerequisites(null);
+    
+    try {
+      const result = await apiGet<{
+        success: boolean;
+        ready?: boolean;
+        hasMarginfiAccount?: boolean;
+        willCreateAccount?: boolean;
+        hasTokenBalance?: boolean;
+        marginfiAccount?: string;
+        tokenBalance?: string;
+        error?: string;
+        recommendedAmount?: string;
+      }>(`/router/flashloan/prerequisites?token=${flashloanToken}&amount=${flashloanAmount}`);
+      
+      setFlashloanPrerequisites(result);
+      if (result.recommendedAmount && !flashloanAmount) {
+        setFlashloanAmount(result.recommendedAmount);
+      }
+    } catch (err: any) {
+      setFlashloanPrerequisites({ error: err.message });
+    } finally {
+      setCheckingPrerequisites(false);
+    }
+  };
+
+  const handleTestFlashloan = async () => {
+    setTestingFlashloan(true);
+    setFlashloanResult(null);
+    
+    try {
+      const result = await apiPost<{
+        success: boolean;
+        simulated?: boolean;
+        signature?: string;
+        error?: string;
+        logs?: string[];
+        unitsConsumed?: number;
+        marginfiAccount?: string;
+        formattedAmount?: string;
+      }>('/router/flashloan/test', {
+        token: flashloanToken,
+        amount: flashloanAmount,
+        simulate: flashloanSimulate,
+      });
+      
+      setFlashloanResult(result);
+    } catch (err: any) {
+      setFlashloanResult({ success: false, error: err.message });
+    } finally {
+      setTestingFlashloan(false);
+    }
+  };
+
+  // Update recommended amount when token changes
+  const handleFlashloanTokenChange = (token: 'SOL' | 'USDC') => {
+    setFlashloanToken(token);
+    // Set default amounts based on token
+    if (token === 'SOL') {
+      setFlashloanAmount('1000000'); // 0.001 SOL
+    } else {
+      setFlashloanAmount('1000'); // 0.001 USDC
+    }
+    setFlashloanPrerequisites(null);
   };
 
   if (loading) {
@@ -1119,6 +1215,162 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
             )}
           </div>
         )}
+
+        {/* MarginFi Flashloan Testing Section */}
+        <div className="mb-6 p-4 bg-gray-700/50 rounded-lg border border-orange-600/30">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-orange-400 text-xs font-medium px-2 py-0.5 bg-orange-900/40 rounded">MARGINFI</span>
+            <h3 className="text-lg font-semibold text-white">Flashloan Test</h3>
+          </div>
+          <p className="text-gray-400 text-xs mb-4">
+            Test MarginFi flashloan integration. Borrows and immediately repays a small amount.
+            Requires a MarginFi account (create at <a href="https://app.marginfi.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">app.marginfi.com</a>).
+          </p>
+
+          {/* Token Selection */}
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="block text-gray-400 text-sm mb-1">Token</label>
+              <select
+                value={flashloanToken}
+                onChange={(e) => handleFlashloanTokenChange(e.target.value as 'SOL' | 'USDC')}
+                className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm"
+              >
+                <option value="SOL">SOL</option>
+                <option value="USDC">USDC</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-gray-400 text-sm mb-1">Amount (raw units)</label>
+              <input
+                type="text"
+                value={flashloanAmount}
+                onChange={(e) => setFlashloanAmount(e.target.value)}
+                placeholder={flashloanToken === 'SOL' ? '1000000 (0.001 SOL)' : '1000 (0.001 USDC)'}
+                className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 text-sm font-mono"
+              />
+            </div>
+          </div>
+
+          {/* Prerequisites Check */}
+          <div className="mb-4">
+            <button
+              onClick={checkFlashloanPrerequisites}
+              disabled={checkingPrerequisites}
+              className="px-4 py-2 bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 text-white rounded text-sm"
+            >
+              {checkingPrerequisites ? 'Checking...' : 'Check Prerequisites'}
+            </button>
+            
+            {flashloanPrerequisites && (
+              <div className={`mt-2 p-3 rounded text-sm ${
+                flashloanPrerequisites.ready 
+                  ? 'bg-green-900/30 text-green-300 border border-green-700' 
+                  : 'bg-yellow-900/30 text-yellow-300 border border-yellow-700'
+              }`}>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${
+                      flashloanPrerequisites.hasMarginfiAccount 
+                        ? 'bg-green-500' 
+                        : flashloanPrerequisites.willCreateAccount 
+                          ? 'bg-blue-500' 
+                          : 'bg-red-500'
+                    }`} />
+                    <span>MarginFi Account: {
+                      flashloanPrerequisites.hasMarginfiAccount 
+                        ? 'Found' 
+                        : flashloanPrerequisites.willCreateAccount 
+                          ? 'Will be created automatically' 
+                          : 'Not Found'
+                    }</span>
+                  </div>
+                  {flashloanPrerequisites.marginfiAccount && (
+                    <div className="text-xs text-gray-400 font-mono ml-4">
+                      {flashloanPrerequisites.marginfiAccount}
+                      {flashloanPrerequisites.willCreateAccount && <span className="text-blue-400 ml-2">(PDA)</span>}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${flashloanPrerequisites.hasTokenBalance ? 'bg-green-500' : 'bg-yellow-500'}`} />
+                    <span>Token Balance: {flashloanPrerequisites.tokenBalance || 'N/A'}</span>
+                  </div>
+                  {flashloanPrerequisites.error && (
+                    <div className="text-xs text-red-400 mt-1">{flashloanPrerequisites.error}</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Simulate Checkbox */}
+          <div className="flex items-center gap-2 mb-4">
+            <input
+              type="checkbox"
+              checked={flashloanSimulate}
+              onChange={(e) => setFlashloanSimulate(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label className="text-gray-300 text-sm">Simulate Only</label>
+          </div>
+
+          {/* Test Button */}
+          <button
+            onClick={handleTestFlashloan}
+            disabled={testingFlashloan}
+            className="w-full px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 text-white rounded font-medium"
+          >
+            {testingFlashloan ? 'Testing Flashloan...' : `Test ${flashloanToken} Flashloan`}
+          </button>
+
+          {/* Result */}
+          {flashloanResult && (
+            <div className={`mt-4 p-3 rounded text-sm ${
+              flashloanResult.success 
+                ? 'bg-green-900/30 text-green-300 border border-green-700' 
+                : 'bg-red-900/30 text-red-300 border border-red-700'
+            }`}>
+              {flashloanResult.success ? (
+                <div>
+                  <div className="font-medium">
+                    ✓ Flashloan {flashloanResult.simulated ? 'Simulation' : 'Transaction'} Successful
+                  </div>
+                  {flashloanResult.formattedAmount && (
+                    <div className="text-xs mt-1">Amount: {flashloanResult.formattedAmount}</div>
+                  )}
+                  {flashloanResult.signature && (
+                    <div className="text-xs mt-1 font-mono break-all">{flashloanResult.signature}</div>
+                  )}
+                  {flashloanResult.unitsConsumed && (
+                    <div className="text-xs mt-1">Compute Units: {flashloanResult.unitsConsumed.toLocaleString()}</div>
+                  )}
+                  {flashloanResult.marginfiAccount && (
+                    <div className="text-xs mt-1 text-gray-400">
+                      MarginFi Account: {flashloanResult.marginfiAccount.slice(0, 8)}...
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <div className="font-medium">✗ Flashloan Failed</div>
+                  <div className="text-xs mt-1 break-all">{flashloanResult.error}</div>
+                </div>
+              )}
+              
+              {/* Show logs if available */}
+              {flashloanResult.logs && flashloanResult.logs.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-xs text-gray-400 mb-1">Logs:</div>
+                  <div className="bg-gray-900/50 p-2 rounded text-xs font-mono max-h-32 overflow-y-auto">
+                    {flashloanResult.logs.slice(-15).map((log, i) => (
+                      <div key={i} className="text-gray-300 break-all">{log}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Deploy Actions */}
         <div className="mb-6 p-4 bg-gray-700/50 rounded-lg">
