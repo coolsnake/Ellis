@@ -859,14 +859,17 @@ export class ArbExecutor {
             // Log to tx history
             addTxRecord({
               id: traceId,
-              timestamp: Date.now(),
-              event: signature ? 'send_ok' : 'send_err',
-              route: pathStr,
-              amount: flashloanAmountUsd,
-              profit_bps: opp.profit_bps,
-              tx: signature || undefined,
-              hop_dexes: executionDexes,
-              flashloan: true,
+              timeMs: Date.now(),
+              path: executionPath,
+              hops: plan.hops.map((h: any) => ({
+                dex: h.dex,
+                variant: h.variant || '',
+                poolId: h.poolId,
+              })),
+              ixCount: routerResult.instructions.length,
+              txSizeBytes: 0, // Not available here
+              signature: signature || null,
+              status: signature ? 'send_ok' : 'send_err',
             });
             
             this.state.successfulExecutions++;
@@ -1556,7 +1559,7 @@ export class ArbExecutor {
     try {
       const { loadRouterConfig } = await import('../server/routerConfigStore.js');
       const { deriveVaultPda, fetchVault } = await import('../router/sdk.js');
-      const { getConnection } = await import('../utils/connection.js');
+      const { getConnection } = await import('../wallet/wallet.js');
       const { getPriceByMint } = await import('../server/priceStore.js');
       const { PublicKey } = await import('@solana/web3.js');
       
