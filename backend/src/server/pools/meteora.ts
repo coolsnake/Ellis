@@ -769,16 +769,17 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   native_mint_a: (pool as any).native_mint_a ?? existingStatic.native_mint_a,
                   native_mint_b: (pool as any).native_mint_b ?? existingStatic.native_mint_b,
                   binStep: (pool as any).bin_step ?? existingStatic.binStep,
-                  // Use validated bin arrays - CRITICAL: bin_array_lower should be the ACTIVE bin array
-                  // (the one containing the active bin), not activeIndex-1. This is consistent with
-                  // meteoraGraphQL.ts which sets bin_array_lower = bins.active || bins.lower.
-                  // The active bin array MUST be included first for swaps to work.
-                  // We also cache lower2/upper2 (±2 from active) for boundary cases where the active bin
-                  // is near the edge of its bin array and swaps need to traverse 2+ arrays.
-                  ...(validatedBinArrays?.active ? { bin_array_lower: validatedBinArrays.active } :
-                      validatedBinArrays?.lower ? { bin_array_lower: validatedBinArrays.lower } : {}),
-                  ...(validatedBinArrays?.upper ? { bin_array_upper: validatedBinArrays.upper } : {}),
+                  // Store all 5 validated bin arrays around the active bin:
+                  // - bin_array_active: The bin array containing the active bin (activeIndex)
+                  // - bin_array_lower: The bin array at activeIndex - 1
+                  // - bin_array_lower2: The bin array at activeIndex - 2
+                  // - bin_array_upper: The bin array at activeIndex + 1
+                  // - bin_array_upper2: The bin array at activeIndex + 2
+                  // All 5 are needed to support directional swaps that may cross 2+ bin array boundaries.
+                  ...(validatedBinArrays?.active ? { bin_array_active: validatedBinArrays.active } : {}),
+                  ...(validatedBinArrays?.lower ? { bin_array_lower: validatedBinArrays.lower } : {}),
                   ...(validatedBinArrays?.lower2 ? { bin_array_lower2: validatedBinArrays.lower2 } : {}),
+                  ...(validatedBinArrays?.upper ? { bin_array_upper: validatedBinArrays.upper } : {}),
                   ...(validatedBinArrays?.upper2 ? { bin_array_upper2: validatedBinArrays.upper2 } : {}),
                 });
                 

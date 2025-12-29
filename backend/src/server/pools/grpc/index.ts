@@ -5,13 +5,13 @@
  * Exports adapter management functions and helpers.
  */
 
-import { GrpcStreamAdapter, GrpcAdapterConfig, PoolSubscription } from './adapter.js';
+import { GrpcStreamAdapter, GrpcAdapterConfig, PoolSubscription, DexMetrics, DexMetricsMap } from './adapter.js';
 import { CONFIG } from '../../../utils/config.js';
 import { logger } from '../../../utils/logger.js';
 import { isValidPublicKey } from '../../../execution/builder/utils.js';
 
 // Re-export types
-export { GrpcStreamAdapter, GrpcAdapterConfig, PoolSubscription };
+export { GrpcStreamAdapter, GrpcAdapterConfig, PoolSubscription, DexMetrics, DexMetricsMap };
 
 // Singleton instance
 let grpcAdapter: GrpcStreamAdapter | null = null;
@@ -131,7 +131,7 @@ export async function getPoolTargetsForGrpc(): Promise<PoolSubscription[]> {
 }
 
 /**
- * Get gRPC adapter status
+ * Get gRPC adapter status including per-DEX metrics
  */
 export function getGrpcStatus(): {
   mode: 'grpc' | 'wss' | 'disabled';
@@ -140,6 +140,9 @@ export function getGrpcStatus(): {
   subscriptionCount: number;
   eventCount: number;
   lastEventMs: number;
+  lastPongMs: number;
+  reconnectAttempts: number;
+  dexMetrics: DexMetricsMap | null;
 } {
   const mode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
   const configured = isGrpcConfigured();
@@ -152,6 +155,9 @@ export function getGrpcStatus(): {
       subscriptionCount: 0,
       eventCount: 0,
       lastEventMs: 0,
+      lastPongMs: 0,
+      reconnectAttempts: 0,
+      dexMetrics: null,
     };
   }
   
@@ -163,6 +169,9 @@ export function getGrpcStatus(): {
     subscriptionCount: status.subscriptionCount,
     eventCount: status.eventCount,
     lastEventMs: status.lastEventMs,
+    lastPongMs: status.lastPongMs,
+    reconnectAttempts: status.reconnectAttempts,
+    dexMetrics: status.dexMetrics,
   };
 }
 

@@ -535,13 +535,16 @@ export async function handleMeteoraUpdate(
     // Add Meteora-specific fields
     if (Number.isFinite(activeId)) (item as any).active_id = Number(activeId);
     if (tickSpacing) (item as any).bin_step = tickSpacing;
-    // CRITICAL: bin_array_lower should be the ACTIVE bin array (containing active bin)
-    // This is consistent with meteoraGraphQL.ts and meteora.ts caching
-    // We also cache lower2/upper2 (±2 from active) for boundary cases
-    if (binArrayAddresses.active) (item as any).bin_array_lower = binArrayAddresses.active;
-    else if (binArrayAddresses.lower) (item as any).bin_array_lower = binArrayAddresses.lower;
-    if (binArrayAddresses.upper) (item as any).bin_array_upper = binArrayAddresses.upper;
+    // Store all 5 bin arrays around the active bin for directional swaps
+    // - bin_array_active: activeIndex (contains active bin)
+    // - bin_array_lower: activeIndex - 1
+    // - bin_array_lower2: activeIndex - 2
+    // - bin_array_upper: activeIndex + 1
+    // - bin_array_upper2: activeIndex + 2
+    if (binArrayAddresses.active) (item as any).bin_array_active = binArrayAddresses.active;
+    if (binArrayAddresses.lower) (item as any).bin_array_lower = binArrayAddresses.lower;
     if (binArrayAddresses.lower2) (item as any).bin_array_lower2 = binArrayAddresses.lower2;
+    if (binArrayAddresses.upper) (item as any).bin_array_upper = binArrayAddresses.upper;
     if (binArrayAddresses.upper2) (item as any).bin_array_upper2 = binArrayAddresses.upper2;
 
     // Update execution cache
@@ -573,12 +576,11 @@ export async function handleMeteoraUpdate(
         rawAccountDataUpdatedMs: Date.now()
       };
 
-      // CRITICAL: bin_array_lower should be the ACTIVE bin array (containing active bin)
-      // We also cache lower2/upper2 (±2 from active) for boundary cases
-      if (binArrayAddresses.active) nextStatic.bin_array_lower = binArrayAddresses.active;
-      else if (binArrayAddresses.lower) nextStatic.bin_array_lower = binArrayAddresses.lower;
-      if (binArrayAddresses.upper) nextStatic.bin_array_upper = binArrayAddresses.upper;
+      // Store all 5 bin arrays around the active bin for directional swaps
+      if (binArrayAddresses.active) nextStatic.bin_array_active = binArrayAddresses.active;
+      if (binArrayAddresses.lower) nextStatic.bin_array_lower = binArrayAddresses.lower;
       if (binArrayAddresses.lower2) nextStatic.bin_array_lower2 = binArrayAddresses.lower2;
+      if (binArrayAddresses.upper) nextStatic.bin_array_upper = binArrayAddresses.upper;
       if (binArrayAddresses.upper2) nextStatic.bin_array_upper2 = binArrayAddresses.upper2;
       executionCache.setStatic(poolId, nextStatic);
 
