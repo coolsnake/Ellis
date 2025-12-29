@@ -759,8 +759,12 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   native_mint_a: (pool as any).native_mint_a ?? existingStatic.native_mint_a,
                   native_mint_b: (pool as any).native_mint_b ?? existingStatic.native_mint_b,
                   binStep: (pool as any).bin_step ?? existingStatic.binStep,
-                  // Use validated bin arrays
-                  ...(validatedBinArrays?.lower ? { bin_array_lower: validatedBinArrays.lower } : {}),
+                  // Use validated bin arrays - CRITICAL: bin_array_lower should be the ACTIVE bin array
+                  // (the one containing the active bin), not activeIndex-1. This is consistent with
+                  // meteoraGraphQL.ts which sets bin_array_lower = bins.active || bins.lower.
+                  // The active bin array MUST be included first for swaps to work.
+                  ...(validatedBinArrays?.active ? { bin_array_lower: validatedBinArrays.active } :
+                      validatedBinArrays?.lower ? { bin_array_lower: validatedBinArrays.lower } : {}),
                   ...(validatedBinArrays?.upper ? { bin_array_upper: validatedBinArrays.upper } : {}),
                 });
                 

@@ -54,6 +54,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           // Load dynamic sizing config
           if (j.dynamicSizing) {
             set('dynamic_sizing_enabled', !!j.dynamicSizing.enabled);
+            set('sizing_method', j.dynamicSizing.method || 'heuristic');
             if (typeof j.dynamicSizing.minSizeUsd === 'number') {
               set('dynamic_sizing_min_usd', j.dynamicSizing.minSizeUsd);
             }
@@ -65,6 +66,16 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             }
             if (typeof j.dynamicSizing.profitScaling === 'boolean') {
               set('dynamic_sizing_profit_scaling', j.dynamicSizing.profitScaling);
+            }
+            // Load optimal sizing settings
+            if (j.dynamicSizing.optimalSettings) {
+              const os = j.dynamicSizing.optimalSettings;
+              if (typeof os.safetyFactor === 'number') set('optimal_safety_factor', os.safetyFactor);
+              if (typeof os.ammSlippageMultiplier === 'number') set('optimal_amm_multiplier', os.ammSlippageMultiplier);
+              if (typeof os.clmmSlippageMultiplier === 'number') set('optimal_clmm_multiplier', os.clmmSlippageMultiplier);
+              if (typeof os.dlmmSlippageMultiplier === 'number') set('optimal_dlmm_multiplier', os.dlmmSlippageMultiplier);
+              if (typeof os.iterativeMaxIterations === 'number') set('optimal_max_iterations', os.iterativeMaxIterations);
+              if (typeof os.iterativeTolerance === 'number') set('optimal_tolerance', os.iterativeTolerance);
             }
           }
         } 
@@ -142,8 +153,19 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               enabled: !!det.dynamic_sizing_enabled,
               minSizeUsd: toNum(det.dynamic_sizing_min_usd) || 5,
               maxSizeUsd: toNum(det.dynamic_sizing_max_usd) || 200,
+              method: det.sizing_method || 'heuristic',
+              // Heuristic settings
               bottleneckFraction: Number(det.dynamic_sizing_bottleneck_fraction) || 0.10,
               profitScaling: det.dynamic_sizing_profit_scaling !== false,
+              // Optimal sizing settings
+              optimalSettings: {
+                ammSlippageMultiplier: Number(det.optimal_amm_multiplier) || 2.0,
+                clmmSlippageMultiplier: Number(det.optimal_clmm_multiplier) || 3.0,
+                dlmmSlippageMultiplier: Number(det.optimal_dlmm_multiplier) || 1.3,
+                iterativeMaxIterations: toNum(det.optimal_max_iterations) || 15,
+                iterativeTolerance: Number(det.optimal_tolerance) || 1.0,
+                safetyFactor: Number(det.optimal_safety_factor) || 0.85,
+              },
             },
           }) 
         }),
@@ -289,10 +311,10 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             </div>
           </div>
 
-          {/* Dynamic Trade Sizing Section */}
+          {/* Trade Size Optimization Section */}
           <div className="bg-gray-700 rounded p-4 border-2 border-emerald-500/30">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-lg font-semibold text-white">Dynamic Trade Sizing</h3>
+              <h3 className="text-lg font-semibold text-white">Trade Size Optimization</h3>
               <label className="flex items-center gap-2 text-sm">
                 <input 
                   type="checkbox" 
@@ -303,16 +325,39 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                 <span className="text-emerald-400">Enabled</span>
               </label>
             </div>
-            <p className="text-xs text-gray-400 mb-3">
-              When enabled, trade size is calculated dynamically based on bottleneck liquidity instead of using a fixed size.
-              Size = <code className="bg-gray-600 px-1 rounded">bottleneckLiquidity × fraction × profitMultiplier</code>
-            </p>
             
-            <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${!det.dynamic_sizing_enabled ? 'opacity-50' : ''}`}>
+            {/* Sizing Method Selection */}
+            <div className={`mb-4 ${!det.dynamic_sizing_enabled ? 'opacity-50 pointer-events-none' : ''}`}>
+              <label className="block mb-2 text-gray-300 text-sm font-medium">Sizing Method</label>
+              <div className="flex gap-2">
+                {[
+                  { value: 'heuristic', label: 'Heuristic', desc: 'Simple fraction of bottleneck' },
+                  { value: 'optimal_analytical', label: 'Optimal (Analytical)', desc: 'Closed-form profit max' },
+                  { value: 'optimal_iterative', label: 'Optimal (Iterative)', desc: 'Search-based profit max' }
+                ].map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => set('sizing_method', opt.value)}
+                    disabled={!det.dynamic_sizing_enabled}
+                    className={`flex-1 p-2 rounded border text-sm transition-all ${
+                      (det.sizing_method || 'heuristic') === opt.value
+                        ? 'bg-emerald-600/30 border-emerald-500 text-emerald-300'
+                        : 'bg-gray-600 border-gray-500 text-gray-300 hover:border-gray-400'
+                    }`}
+                  >
+                    <div className="font-medium">{opt.label}</div>
+                    <div className="text-xs text-gray-400 mt-1">{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Common Size Bounds */}
+            <div className={`grid grid-cols-2 gap-4 mb-4 ${!det.dynamic_sizing_enabled ? 'opacity-50' : ''}`}>
               <div>
                 <label className="block mb-1 text-gray-300">
                   Min Size (USD)
-                  <span className="text-xs text-gray-500 ml-2">Floor for all trades</span>
+                  <span className="text-xs text-gray-500 ml-2">Floor</span>
                 </label>
                 <input 
                   type="number" 
@@ -325,7 +370,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <div>
                 <label className="block mb-1 text-gray-300">
                   Max Size (USD)
-                  <span className="text-xs text-gray-500 ml-2">Ceiling for all trades</span>
+                  <span className="text-xs text-gray-500 ml-2">Ceiling</span>
                 </label>
                 <input 
                   type="number" 
@@ -335,69 +380,180 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                   disabled={!det.dynamic_sizing_enabled}
                 />
               </div>
-              <div>
-                <label className="block mb-1 text-gray-300">
-                  Bottleneck Fraction
-                  <span className="text-xs text-gray-500 ml-2">0.05 = 5%, 0.15 = 15%</span>
-                </label>
-                <input 
-                  type="number" 
-                  step="0.01"
-                  min="0.01"
-                  max="0.50"
-                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
-                  value={det.dynamic_sizing_bottleneck_fraction ?? 0.10} 
-                  onChange={e=>set('dynamic_sizing_bottleneck_fraction', Number(e.target.value)||0.10)} 
-                  disabled={!det.dynamic_sizing_enabled}
-                />
-              </div>
-              <div className="flex items-end pb-1">
-                <label className="flex items-center gap-2">
-                  <input 
-                    type="checkbox" 
-                    className="w-4 h-4"
-                    checked={det.dynamic_sizing_profit_scaling !== false} 
-                    onChange={e=>set('dynamic_sizing_profit_scaling', e.target.checked)} 
-                    disabled={!det.dynamic_sizing_enabled}
-                  />
-                  <span className="text-gray-300">
-                    Scale by profit margin
-                    <span className="text-xs text-gray-500 block">Higher profit → larger size</span>
-                  </span>
-                </label>
-              </div>
             </div>
 
-            {/* Visual example when enabled */}
-            {det.dynamic_sizing_enabled && (
-              <div className="mt-4 p-3 bg-gray-800/50 rounded text-xs text-gray-400">
-                <strong className="text-gray-300">Example sizing:</strong>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">
-                  <div className="bg-gray-700/50 p-2 rounded">
-                    <div className="text-gray-500">$1K bottleneck</div>
-                    <div className="text-emerald-400 font-mono">
-                      ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, 1000 * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
-                    </div>
+            {/* Heuristic Settings */}
+            {(det.sizing_method || 'heuristic') === 'heuristic' && det.dynamic_sizing_enabled && (
+              <div className="bg-gray-800/50 rounded p-3 mb-4">
+                <h4 className="text-sm font-medium text-gray-300 mb-3">Heuristic Settings</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block mb-1 text-gray-400 text-sm">
+                      Bottleneck Fraction
+                      <span className="text-xs text-gray-500 ml-2">0.10 = 10%</span>
+                    </label>
+                    <input 
+                      type="number" 
+                      step="0.01"
+                      min="0.01"
+                      max="0.50"
+                      className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                      value={det.dynamic_sizing_bottleneck_fraction ?? 0.10} 
+                      onChange={e=>set('dynamic_sizing_bottleneck_fraction', Number(e.target.value)||0.10)} 
+                    />
                   </div>
-                  <div className="bg-gray-700/50 p-2 rounded">
-                    <div className="text-gray-500">$5K bottleneck</div>
-                    <div className="text-emerald-400 font-mono">
-                      ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, 5000 * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
-                    </div>
+                  <div className="flex items-end pb-1">
+                    <label className="flex items-center gap-2">
+                      <input 
+                        type="checkbox" 
+                        className="w-4 h-4"
+                        checked={det.dynamic_sizing_profit_scaling !== false} 
+                        onChange={e=>set('dynamic_sizing_profit_scaling', e.target.checked)} 
+                      />
+                      <span className="text-gray-300 text-sm">
+                        Scale by profit margin
+                      </span>
+                    </label>
                   </div>
-                  <div className="bg-gray-700/50 p-2 rounded">
-                    <div className="text-gray-500">$10K bottleneck</div>
-                    <div className="text-emerald-400 font-mono">
-                      ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, 10000 * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
+                </div>
+                {/* Heuristic example */}
+                <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
+                  {[1000, 5000, 10000, 50000].map(bottleneck => (
+                    <div key={bottleneck} className="bg-gray-700/50 p-2 rounded">
+                      <div className="text-gray-500">${(bottleneck/1000).toFixed(0)}K bottleneck</div>
+                      <div className="text-emerald-400 font-mono">
+                        ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, bottleneck * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
+                      </div>
                     </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Optimal Sizing Settings */}
+            {(det.sizing_method === 'optimal_analytical' || det.sizing_method === 'optimal_iterative') && det.dynamic_sizing_enabled && (
+              <div className="bg-gray-800/50 rounded p-3 mb-4">
+                <h4 className="text-sm font-medium text-amber-300 mb-3">
+                  {det.sizing_method === 'optimal_analytical' ? 'Analytical' : 'Iterative'} Optimal Settings
+                </h4>
+                
+                {/* Safety Factor */}
+                <div className="mb-4">
+                  <label className="block mb-1 text-gray-400 text-sm">
+                    Safety Factor
+                    <span className="text-xs text-gray-500 ml-2">Scales down from calculated optimal</span>
+                  </label>
+                  <input 
+                    type="range"
+                    min="0.5"
+                    max="1.0"
+                    step="0.05"
+                    className="w-full accent-emerald-500"
+                    value={det.optimal_safety_factor ?? 0.85}
+                    onChange={e=>set('optimal_safety_factor', Number(e.target.value))}
+                  />
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
+                    <span>50% (Very Safe)</span>
+                    <span className="text-emerald-400 font-mono text-sm">{((det.optimal_safety_factor ?? 0.85) * 100).toFixed(0)}%</span>
+                    <span>100% (Full Optimal)</span>
                   </div>
-                  <div className="bg-gray-700/50 p-2 rounded">
-                    <div className="text-gray-500">$50K bottleneck</div>
-                    <div className="text-emerald-400 font-mono">
-                      ${Math.max(det.dynamic_sizing_min_usd || 5, Math.min(det.dynamic_sizing_max_usd || 200, 50000 * (det.dynamic_sizing_bottleneck_fraction || 0.10))).toFixed(0)}
+                </div>
+
+                {/* Slippage Multipliers */}
+                <div className="mb-4">
+                  <label className="block mb-2 text-gray-400 text-sm">Slippage Model Multipliers</label>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block mb-1 text-gray-500 text-xs">AMM (xy=k)</label>
+                      <input 
+                        type="number" 
+                        step="0.1"
+                        min="1.0"
+                        max="5.0"
+                        className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                        value={det.optimal_amm_multiplier ?? 2.0} 
+                        onChange={e=>set('optimal_amm_multiplier', Number(e.target.value)||2.0)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block mb-1 text-gray-500 text-xs">CLMM (Orca/Ray)</label>
+                      <input 
+                        type="number" 
+                        step="0.1"
+                        min="1.0"
+                        max="5.0"
+                        className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                        value={det.optimal_clmm_multiplier ?? 3.0} 
+                        onChange={e=>set('optimal_clmm_multiplier', Number(e.target.value)||3.0)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block mb-1 text-gray-500 text-xs">DLMM (Meteora)</label>
+                      <input 
+                        type="number" 
+                        step="0.1"
+                        min="1.0"
+                        max="5.0"
+                        className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                        value={det.optimal_dlmm_multiplier ?? 1.3} 
+                        onChange={e=>set('optimal_dlmm_multiplier', Number(e.target.value)||1.3)} 
+                      />
                     </div>
                   </div>
                 </div>
+
+                {/* Iterative-specific settings */}
+                {det.sizing_method === 'optimal_iterative' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block mb-1 text-gray-500 text-xs">Max Iterations</label>
+                      <input 
+                        type="number" 
+                        min="5"
+                        max="30"
+                        className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                        value={det.optimal_max_iterations ?? 15} 
+                        onChange={e=>set('optimal_max_iterations', Number(e.target.value)||15)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block mb-1 text-gray-500 text-xs">Tolerance (USD)</label>
+                      <input 
+                        type="number" 
+                        step="0.5"
+                        min="0.5"
+                        max="10"
+                        className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                        value={det.optimal_tolerance ?? 1.0} 
+                        onChange={e=>set('optimal_tolerance', Number(e.target.value)||1.0)} 
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Method Explanation */}
+            {det.dynamic_sizing_enabled && (
+              <div className="p-3 bg-gray-800/30 rounded text-xs text-gray-400">
+                {(det.sizing_method || 'heuristic') === 'heuristic' && (
+                  <>
+                    <strong className="text-gray-300">Heuristic Mode:</strong> Size = bottleneckLiquidity × fraction × profitMultiplier.
+                    Fast but may leave profit on the table.
+                  </>
+                )}
+                {det.sizing_method === 'optimal_analytical' && (
+                  <>
+                    <strong className="text-amber-300">Optimal (Analytical):</strong> Uses closed-form formulas to calculate 
+                    profit-maximizing size. Formula: Δ* = R × (√rate_product - 1) / γ. Best for AMM-only paths.
+                  </>
+                )}
+                {det.sizing_method === 'optimal_iterative' && (
+                  <>
+                    <strong className="text-purple-300">Optimal (Iterative):</strong> Uses golden section search to find 
+                    the exact profit peak. Handles mixed pool types (AMM/CLMM/DLMM) accurately. Slightly slower.
+                  </>
+                )}
               </div>
             )}
           </div>

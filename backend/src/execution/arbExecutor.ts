@@ -62,13 +62,33 @@ export interface ExecutorConfig {
   maxExecutionsPerMinute?: number;
   blacklistedPaths?: string[];
   requireStartBalance?: boolean;
-  // Dynamic sizing - calculates trade size based on bottleneck liquidity
+  // Dynamic sizing - calculates trade size based on liquidity and profit optimization
   dynamicSizing?: {
     enabled: boolean;
     minSizeUsd: number;      // Floor for trade size
     maxSizeUsd: number;      // Ceiling for trade size
+    
+    // Sizing method: 'heuristic' | 'optimal_analytical' | 'optimal_iterative'
+    method: 'heuristic' | 'optimal_analytical' | 'optimal_iterative';
+    
+    // Heuristic mode settings
     bottleneckFraction: number; // Fraction of bottleneck liquidity (e.g., 0.10 = 10%)
-    profitScaling: boolean;  // Scale size up with higher profit margins
+    profitScaling: boolean;     // Scale size up with higher profit margins
+    
+    // Optimal mode settings
+    optimalSettings?: {
+      // Slippage model multipliers (1.0 = standard, higher = more conservative)
+      ammSlippageMultiplier: number;     // Default 2.0
+      clmmSlippageMultiplier: number;    // Default 3.0
+      dlmmSlippageMultiplier: number;    // Default 1.3
+      
+      // Iterative search settings
+      iterativeMaxIterations: number;    // Default 15
+      iterativeTolerance: number;        // Default 1.0 (USD)
+      
+      // Safety margin on optimal (0.9 = use 90% of calculated optimal)
+      safetyFactor: number;              // Default 0.85
+    };
   };
 }
 
@@ -617,7 +637,7 @@ export class ArbExecutor {
       
       try {
         // Calculate dynamic size based on opportunity characteristics
-        const sizeUsd = this.calculateDynamicSize(opp);
+        const sizeUsd = await this.calculateDynamicSize(opp);
         
         // Log what we're passing to the resolver
         logger.debug('arb.executor.resolving_plan', {
@@ -1191,9 +1211,13 @@ export class ArbExecutor {
 
   /**
    * Calculate dynamic trade size based on opportunity characteristics.
-   * Uses bottleneck liquidity and profit margin to determine optimal size.
+   * 
+   * Supports three methods:
+   * - 'heuristic': Simple fraction of bottleneck liquidity (fast)
+   * - 'optimal_analytical': Closed-form profit maximization (AMM-only, fast)
+   * - 'optimal_iterative': Golden section search profit maximization (any pool type)
    */
-  private calculateDynamicSize(opp: Opportunity): number {
+  private async calculateDynamicSize(opp: Opportunity): Promise<number> {
     const dynamicCfg = this.config.dynamicSizing;
     
     // If dynamic sizing disabled, use fixed config
@@ -1203,10 +1227,55 @@ export class ArbExecutor {
     
     const minSize = dynamicCfg.minSizeUsd || 5;
     const maxSize = dynamicCfg.maxSizeUsd || this.config.sizeUsd || 200;
-    const baseFraction = dynamicCfg.bottleneckFraction || 0.10;
+    const method = dynamicCfg.method || 'heuristic';
     
     // Get bottleneck liquidity (USD)
     const bottleneckUsd = opp.est_capacity ?? opp.min_edge_liquidity ?? 0;
+    
+    // For optimal methods, try to use the analytical/iterative calculator
+    if (method === 'optimal_analytical' || method === 'optimal_iterative') {
+      try {
+        const { calculateOptimalSizeFromOpportunity } = await import('./optimalSizing.js');
+        
+        const result = await calculateOptimalSizeFromOpportunity(
+          opp as any,
+          minSize,
+          maxSize,
+          method,
+          dynamicCfg.optimalSettings || {}
+        );
+        
+        if (result.optimalSizeUsd > 0 && result.expectedProfitUsd > 0) {
+          logger.debug('arb.executor.sizing.optimal', {
+            cat: 'arb',
+            path: opp.path.join('->'),
+            method: result.method,
+            optimalSizeUsd: result.optimalSizeUsd,
+            expectedProfitUsd: result.expectedProfitUsd,
+            grossProfit: result.breakdown.grossProfitUsd,
+            slippageCost: result.breakdown.slippageCostUsd,
+          });
+          return result.optimalSizeUsd;
+        }
+        
+        // Fall through to heuristic if optimal calculation fails
+        logger.debug('arb.executor.sizing.optimal_fallback', {
+          cat: 'arb',
+          path: opp.path.join('->'),
+          reason: 'zero_size_or_profit',
+        });
+      } catch (e: any) {
+        logger.warn('arb.executor.sizing.optimal_error', {
+          cat: 'arb',
+          path: opp.path.join('->'),
+          error: String(e?.message || e),
+        });
+        // Fall through to heuristic
+      }
+    }
+    
+    // Heuristic method (default fallback)
+    const baseFraction = dynamicCfg.bottleneckFraction || 0.10;
     
     if (bottleneckUsd <= 0) {
       // No liquidity info - use minimum safe size
@@ -1235,14 +1304,14 @@ export class ArbExecutor {
     // Clamp to configured bounds
     sizeUsd = Math.max(minSize, Math.min(maxSize, sizeUsd));
     
-    logger.debug('arb.executor.sizing.calculated', {
+    logger.debug('arb.executor.sizing.heuristic', {
       cat: 'arb',
       path: opp.path.join('->'),
+      method: 'heuristic',
       bottleneckUsd,
       baseFraction,
       profitBps: opp.net_bps ?? opp.profit_bps,
       calculatedSize: sizeUsd,
-      dynamicSizingEnabled: true,
     });
     
     return sizeUsd;

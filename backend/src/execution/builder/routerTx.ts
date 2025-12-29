@@ -818,9 +818,9 @@ async function extractDexAccounts(
           } else {
             // The derived active is DIFFERENT from known arrays!
             // This means the active bin might be in a bin array that's not cached.
-            // Fall back to using known arrays only, ordered by swap direction.
-            // The swap might fail if the active bin isn't covered, but at least
-            // we won't pass an invalid account.
+            // CRITICAL FIX: We MUST still include the derived active bin array first,
+            // because Meteora swap starts from the active bin. Without it, we get
+            // "AccountNotEnoughKeys" errors.
             logger.warn('routerTx.meteora.derivedActiveNotCached', {
               cat: 'tx',
               ctx: {
@@ -829,13 +829,18 @@ async function extractDexAccounts(
                 derivedActive: activeBinArrayStr.slice(0, 8),
                 knownLower: knownBinArrayLower.toBase58().slice(0, 8),
                 knownUpper: knownBinArrayUpper.toBase58().slice(0, 8),
+                fix: 'including_derived_active_first',
               }
             });
-            // Use known arrays in directional order
+            // Include the derived active first, then known arrays in directional order
+            // The derived active may not exist on-chain, but without it the swap will
+            // definitely fail. With it, there's a chance it exists and works.
             if (isXtoY) {
-              directionalBinArrays = [knownBinArrayLower, knownBinArrayUpper, knownBinArrayLower];
+              // X→Y: active first, then lower direction
+              directionalBinArrays = [activeBinArray, knownBinArrayLower, knownBinArrayLower];
             } else {
-              directionalBinArrays = [knownBinArrayUpper, knownBinArrayLower, knownBinArrayUpper];
+              // Y→X: active first, then upper direction
+              directionalBinArrays = [activeBinArray, knownBinArrayUpper, knownBinArrayUpper];
             }
           }
         } else if (knownBinArrayLower && knownBinArrayUpper) {

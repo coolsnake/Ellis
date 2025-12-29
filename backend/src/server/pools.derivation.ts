@@ -136,36 +136,20 @@ export async function deriveMeteoraBinArrayAddresses(
     pairPk: any,
     programId: any,
     activeId?: number
-): Promise<{ lower?: string; upper?: string }> {
+): Promise<{ lower?: string; upper?: string; active?: string }> {
     if (!Number.isFinite(activeId as number)) return {};
-    const helpers = await getMeteoraBinHelpers();
-    if (!helpers.getBounds || !helpers.binIdToBinArrayIndex) return {};
-    const activeBn = new BN(String(activeId));
-    let lowerIdx: number | undefined;
-    let upperIdx: number | undefined;
-    try {
-        const [lowerBin, upperBin] = helpers.getBounds(activeBn) || [];
-        if (!lowerBin && !upperBin) return {};
-        const toInt = (val: BN | number | undefined): number | undefined => {
-            if (val == null) return undefined;
-            if (typeof val === 'number') return val;
-            try { return Number(val.toString()); } catch { return undefined; }
-        };
-        const lowerIdxBn = lowerBin ? helpers.binIdToBinArrayIndex!(lowerBin) : undefined;
-        const upperIdxBn = upperBin ? helpers.binIdToBinArrayIndex!(upperBin) : undefined;
-        lowerIdx = toInt(lowerIdxBn as any);
-        upperIdx = toInt(upperIdxBn as any);
-    } catch (err: any) {
-        try { logger.debug('meteora.bin.bounds_failed', { error: String(err?.message || err), cat: 'pools' }); } catch { }
-        return {};
-    }
-    if (lowerIdx == null && upperIdx == null) return {};
+    
+    // Calculate bin array index directly from activeId
+    // BIN_ARRAY_SIZE = 70 in Meteora DLMM
+    const BIN_ARRAY_SIZE = 70;
+    const activeArrayIdx = Math.floor(activeId! / BIN_ARRAY_SIZE);
+    
     try {
         const { PublicKey } = await import('@solana/web3.js');
         const poolPk = pairPk instanceof PublicKey ? pairPk : new PublicKey(pairPk);
         const programPk = programId instanceof PublicKey ? programId : new PublicKey(programId);
-        const deriveAddr = (idx?: number): string | undefined => {
-            if (idx == null) return undefined;
+        
+        const deriveAddr = (idx: number): string => {
             const idxBn = new BN(idx);
             const seed = idxBn.isNeg()
                 ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
@@ -174,11 +158,16 @@ export async function deriveMeteoraBinArrayAddresses(
                 [Buffer.from('bin_array'), poolPk.toBuffer(), Buffer.from(seed)],
                 programPk
             );
-            return pda?.toBase58();
+            return pda.toBase58();
         };
+        
+        // Derive active, lower (active-1), and upper (active+1) bin arrays
+        // CRITICAL: 'active' is the bin array containing the active bin
+        // 'lower' and 'upper' are adjacent arrays for directional swaps
         return {
-            lower: deriveAddr(lowerIdx),
-            upper: deriveAddr(upperIdx),
+            active: deriveAddr(activeArrayIdx),
+            lower: deriveAddr(activeArrayIdx - 1),
+            upper: deriveAddr(activeArrayIdx + 1),
         };
     } catch (err: any) {
         try { logger.debug('meteora.bin.addr_failed', { error: String(err?.message || err), cat: 'pools' }); } catch { }

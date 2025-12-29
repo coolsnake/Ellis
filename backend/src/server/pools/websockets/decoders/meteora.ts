@@ -535,7 +535,10 @@ export async function handleMeteoraUpdate(
     // Add Meteora-specific fields
     if (Number.isFinite(activeId)) (item as any).active_id = Number(activeId);
     if (tickSpacing) (item as any).bin_step = tickSpacing;
-    if (binArrayAddresses.lower) (item as any).bin_array_lower = binArrayAddresses.lower;
+    // CRITICAL: bin_array_lower should be the ACTIVE bin array (containing active bin)
+    // This is consistent with meteoraGraphQL.ts and meteora.ts caching
+    if (binArrayAddresses.active) (item as any).bin_array_lower = binArrayAddresses.active;
+    else if (binArrayAddresses.lower) (item as any).bin_array_lower = binArrayAddresses.lower;
     if (binArrayAddresses.upper) (item as any).bin_array_upper = binArrayAddresses.upper;
 
     // Update execution cache
@@ -567,7 +570,9 @@ export async function handleMeteoraUpdate(
         rawAccountDataUpdatedMs: Date.now()
       };
 
-      if (binArrayAddresses.lower) nextStatic.bin_array_lower = binArrayAddresses.lower;
+      // CRITICAL: bin_array_lower should be the ACTIVE bin array (containing active bin)
+      if (binArrayAddresses.active) nextStatic.bin_array_lower = binArrayAddresses.active;
+      else if (binArrayAddresses.lower) nextStatic.bin_array_lower = binArrayAddresses.lower;
       if (binArrayAddresses.upper) nextStatic.bin_array_upper = binArrayAddresses.upper;
       executionCache.setStatic(poolId, nextStatic);
 
