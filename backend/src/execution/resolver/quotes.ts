@@ -266,13 +266,22 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         } catch (e) { logCatchError('resolver.quotes', e); }
         
         if (p) {
+          // Use CANONICAL ordering for quote calculation (price_a_per_b is in canonical terms)
           const poolMintA = String((p as any)?.mint_a || '');
           const poolMintB = String((p as any)?.mint_b || '');
           
-          // Determine actual swap direction by comparing hop mints with pool mints
-          // This is more reliable than relying solely on pool ID suffix
+          // Also get NATIVE ordering for clearer logging
+          const nativeMintA = String((p as any)?.native_mint_a || poolMintA);
+          const nativeMintB = String((p as any)?.native_mint_b || poolMintB);
+          
+          // Determine swap direction in CANONICAL terms (for calculation)
+          // This must match the price_a_per_b which is also in canonical terms
           const swappingAtoB = hop.inputMint === poolMintA && hop.outputMint === poolMintB;
           const swappingBtoA = hop.inputMint === poolMintB && hop.outputMint === poolMintA;
+          
+          // Also compute NATIVE direction for logging clarity
+          const nativeXtoY = hop.inputMint === nativeMintA && hop.outputMint === nativeMintB;
+          const nativeYtoX = hop.inputMint === nativeMintB && hop.outputMint === nativeMintA;
           
           // Validate that hop mints match pool mints
           if (!swappingAtoB && !swappingBtoA) {
@@ -384,8 +393,12 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                       outRaw: outRaw.toString(),
                       success: outRaw > 0n,
                       formula: actualIsRev ? 'amtIn * px * fee' : '(amtIn / px) * fee',
+                      // Canonical direction (matches price_a_per_b ordering)
                       swappingAtoB,
                       swappingBtoA,
+                      // Native direction (matches on-chain X/Y ordering)
+                      nativeXtoY,
+                      nativeYtoX,
                       actualIsRev,
                       isRevFromSuffix: /[#-]rev$/.test(hop.poolId || ''),
                     }

@@ -436,7 +436,9 @@ async function buildDirectRouterTx(
       const hop = plan.hops[0];
       const dexType = dexNameToType(hop.dex, hop.variant);
       const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
-      const poolMintA = stat?.mint_a;
+      // CRITICAL: Use NATIVE mint ordering for aToB flag
+      // On-chain programs (Meteora, Raydium, Orca) use native ordering for direction
+      const poolMintA = stat?.native_mint_a || stat?.mint_a;
       const aToB = hop.inputMint === poolMintA;
       const amountIn = BigInt(hop.amountInRaw.toString());
       const minAmountOut = BigInt(hop.minOutRaw.toString());
@@ -780,9 +782,10 @@ async function extractDexAccounts(
         // X→Y (isXtoY): active, active-1, active-2 (price goes DOWN → lower direction)
         // Y→X (!isXtoY): active, active+1, active+2 (price goes UP → upper direction)
         //
-        // CRITICAL: Derived bin arrays may NOT exist on-chain for thin liquidity pools!
-        // The pool cache only guarantees binArrayLower and binArrayUpper exist.
-        // Use known-good arrays from cache, falling back to derived only when necessary.
+        // CRITICAL: The FIRST bin array MUST contain the active bin!
+        // Meteora swap2 starts from the active bin and traverses in the swap direction.
+        // The cache's binArrayLower/binArrayUpper are NEIGHBORS of the active array, not the active itself!
+        // We must derive the active bin array and put it first.
         
         // Collect known-good bin arrays from the cache (these are confirmed to exist)
         const knownBinArrayLower = hop.binArrayLower ? new PublicKey(hop.binArrayLower) : null;
@@ -790,28 +793,39 @@ async function extractDexAccounts(
         
         let directionalBinArrays: PublicKey[] = [];
         
-        if (knownBinArrayLower && knownBinArrayUpper) {
-          // SAFE PATH: Use only known-good bin arrays in directional order
-          // For X→Y (going down): prefer lower arrays
-          // For Y→X (going up): prefer upper arrays
+        // ALWAYS derive the active bin array when we have activeId - it MUST be first!
+        if (typeof activeId === 'number' && Number.isFinite(activeId)) {
+          // Derive bin arrays starting with the active bin array
+          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
+          const activeBinArray = derived.arrays[0]; // First derived array contains activeId
+          
+          // Use derived active as first, then fill with known-good arrays for safety
+          // The active bin array should always exist (it contains the current price)
+          if (knownBinArrayLower && knownBinArrayUpper) {
+            // We have known-good neighbors - use them after the active
+            if (isXtoY) {
+              // X→Y: active, then lower direction arrays
+              directionalBinArrays = [activeBinArray, knownBinArrayLower, knownBinArrayLower];
+            } else {
+              // Y→X: active, then upper direction arrays
+              directionalBinArrays = [activeBinArray, knownBinArrayUpper, knownBinArrayUpper];
+            }
+          } else {
+            // Use derived arrays, with known-good fallback for safety
+            const safeArray = knownBinArrayLower || knownBinArrayUpper;
+            if (safeArray) {
+              directionalBinArrays = [activeBinArray, safeArray, safeArray];
+            } else {
+              directionalBinArrays = derived.arrays;
+            }
+          }
+        } else if (knownBinArrayLower && knownBinArrayUpper) {
+          // NO activeId available - fallback to known arrays (may not work for all swaps)
+          // This is a degraded path; the swap might fail if active bin isn't in these arrays
           if (isXtoY) {
-            // X→Y: lower direction - use lower, then upper as fallback, pad with lower
             directionalBinArrays = [knownBinArrayLower, knownBinArrayUpper, knownBinArrayLower];
           } else {
-            // Y→X: upper direction - use upper, then lower as fallback, pad with upper
             directionalBinArrays = [knownBinArrayUpper, knownBinArrayLower, knownBinArrayUpper];
-          }
-        } else if (typeof activeId === 'number' && Number.isFinite(activeId)) {
-          // FALLBACK: Derive bin arrays (may not all exist on-chain)
-          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
-          directionalBinArrays = derived.arrays;
-          
-          // If we have at least one known-good array, use it to replace potentially missing derived ones
-          const safeArray = knownBinArrayLower || knownBinArrayUpper;
-          if (safeArray) {
-            // Replace any derived arrays beyond the first with the known-good one
-            // The first derived array (containing activeId) should always exist
-            directionalBinArrays = [directionalBinArrays[0], safeArray, safeArray];
           }
         } else {
           // LAST RESORT: use whatever we have
@@ -861,7 +875,7 @@ async function extractDexAccounts(
           binArrays: {
             knownLower: hop.binArrayLower?.slice(0, 8) || 'missing',
             knownUpper: hop.binArrayUpper?.slice(0, 8) || 'missing',
-            usedKnownGood: !!(knownBinArrayLower && knownBinArrayUpper),
+            usedDerivedActive: typeof activeId === 'number' && Number.isFinite(activeId),
             directional: directionalBinArrays.map(pk => pk.toBase58().slice(0, 8)),
           },
           // Other fields
