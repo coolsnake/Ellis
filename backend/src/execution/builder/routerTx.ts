@@ -15,6 +15,7 @@ import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection, getBalances } from '../../wallet/wallet.js';
 import { executionCache } from '../cache.js';
 import { buildWrapSolIxs, buildUnwrapSolIx, isSolMint } from '../accounts.js';
+import { getTokenMeta } from '../resolver/tokenMeta.js';
 import {
   buildFlashBorrowIx,
   buildFlashRepayIx,
@@ -1110,9 +1111,19 @@ async function extractDexAccounts(
         break
 
       case DexType.Orca:
-        // Orca Whirlpool: 12 accounts (matches arb-router/src/dex/orca.rs)
-        // 0: TokenProgram, 1: TokenAuthority(signer), 2: Whirlpool, 3: TokenOwnerAccountA,
-        // 4: TokenVaultA, 5: TokenOwnerAccountB, 6: TokenVaultB, 7-9: TickArrays, 10: Oracle, 11: Program
+        // Orca Whirlpool supports two swap variants:
+        //
+        // swap (standard SPL tokens - 12 accounts):
+        //   0: TokenProgram, 1: TokenAuthority(signer), 2: Whirlpool, 3: TokenOwnerAccountA,
+        //   4: TokenVaultA, 5: TokenOwnerAccountB, 6: TokenVaultB, 7-9: TickArrays, 10: Oracle, 11: Program
+        //
+        // swapV2 (Token-2022 compatible - 15 accounts):
+        //   0: TokenProgramA, 1: TokenProgramB, 2: MemoProgram, 3: TokenAuthority(signer),
+        //   4: Whirlpool, 5: TokenMintA, 6: TokenMintB, 7: TokenOwnerAccountA,
+        //   8: TokenVaultA, 9: TokenOwnerAccountB, 10: TokenVaultB, 11-13: TickArrays, 14: Oracle
+        //   (15: Program for CPI)
+        //
+        // On-chain router auto-detects based on account count (12 vs 15+).
         
         // CRITICAL: Orca swap direction MUST use NATIVE mint ordering (tokenMintA/tokenMintB)
         // The on-chain program uses native A/B to determine swap direction
@@ -1120,6 +1131,43 @@ async function extractDexAccounts(
         const isAtoBOrca = nativeMintA ? (hop.inputMint === nativeMintA) : isAtoB;
         const userTokenA = isAtoBOrca ? userSourceAta : userDestAta;
         const userTokenB = isAtoBOrca ? userDestAta : userSourceAta;
+        
+        // Detect if we need swapV2 (Token-2022) or can use swap (standard SPL)
+        // Check token programs for both mints
+        let orcaTokenProgramA = TOKEN_PROGRAM_ID;
+        let orcaTokenProgramB = TOKEN_PROGRAM_ID;
+        let orcaNeedsSwapV2 = false;
+        
+        try {
+          const mintAStr = nativeMintA || hop.inputMint;
+          const mintBStr = nativeMintB || hop.outputMint;
+          
+          const [metaA, metaB] = await Promise.all([
+            getTokenMeta(mintAStr),
+            getTokenMeta(mintBStr),
+          ]);
+          
+          if (metaA.program === 'token-2022') {
+            orcaTokenProgramA = TOKEN_2022_PROGRAM_ID;
+            orcaNeedsSwapV2 = true;
+          }
+          if (metaB.program === 'token-2022') {
+            orcaTokenProgramB = TOKEN_2022_PROGRAM_ID;
+            orcaNeedsSwapV2 = true;
+          }
+        } catch {
+          // Fallback: check static cache for token program info
+          const tokenProgramA = (stat as any)?.token_program_a;
+          const tokenProgramB = (stat as any)?.token_program_b;
+          if (tokenProgramA === 'token-2022') {
+            orcaTokenProgramA = TOKEN_2022_PROGRAM_ID;
+            orcaNeedsSwapV2 = true;
+          }
+          if (tokenProgramB === 'token-2022') {
+            orcaTokenProgramB = TOKEN_2022_PROGRAM_ID;
+            orcaNeedsSwapV2 = true;
+          }
+        }
         
         // CRITICAL: Use NATIVE account ordering for vaults
         // Orca expects vaults in A/B order matching the on-chain native order
@@ -1171,10 +1219,18 @@ async function extractDexAccounts(
           }
         } catch { /* ignore */ }
         
+        // Get mint pubkeys for swapV2
+        const orcaMintA = nativeMintA ? new PublicKey(nativeMintA) : inputMint;
+        const orcaMintB = nativeMintB ? new PublicKey(nativeMintB) : outputMint;
+        
         // Log the accounts being used for debugging with native mint verification
         logger.info('routerTx.orca.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
+          // Instruction variant
+          variant: orcaNeedsSwapV2 ? 'swapV2' : 'swap',
+          tokenProgramA: orcaTokenProgramA.toBase58().slice(0, 8) + '...',
+          tokenProgramB: orcaTokenProgramB.toBase58().slice(0, 8) + '...',
           // Native ordering (used for direction and vaults)
           native: {
             mintA: nativeMintA || 'missing',
@@ -1216,20 +1272,44 @@ async function extractDexAccounts(
           outputMint: hop.outputMint,
         });
         
-        accounts.push(
-          TOKEN_PROGRAM_ID,                                                    // 0: Token Program
-          wallet,                                                              // 1: Token Authority (signer)
-          poolId,                                                              // 2: Whirlpool
-          userTokenA,                                                          // 3: Token Owner Account A
-          new PublicKey(orcaVaultA),                                           // 4: Token Vault A (native)
-          userTokenB,                                                          // 5: Token Owner Account B
-          new PublicKey(orcaVaultB),                                           // 6: Token Vault B (native)
-          tickArray0 ? new PublicKey(tickArray0) : poolId,                    // 7: Tick Array 0
-          tickArray1 ? new PublicKey(tickArray1) : poolId,                    // 8: Tick Array 1
-          tickArray2 ? new PublicKey(tickArray2) : poolId,                    // 9: Tick Array 2
-          hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 10: Oracle
-          programIdKey,                                                        // 11: Whirlpool Program
-        );
+        if (orcaNeedsSwapV2) {
+          // swapV2: Token-2022 compatible (15 accounts)
+          // Account layout matches Orca SDK's swapV2Ix
+          accounts.push(
+            orcaTokenProgramA,                                                 // 0: Token Program A
+            orcaTokenProgramB,                                                 // 1: Token Program B
+            MEMO_PROGRAM_ID,                                                   // 2: Memo Program (REQUIRED!)
+            wallet,                                                            // 3: Token Authority (signer)
+            poolId,                                                            // 4: Whirlpool
+            orcaMintA,                                                         // 5: Token Mint A
+            orcaMintB,                                                         // 6: Token Mint B
+            userTokenA,                                                        // 7: Token Owner Account A
+            new PublicKey(orcaVaultA),                                         // 8: Token Vault A (native)
+            userTokenB,                                                        // 9: Token Owner Account B
+            new PublicKey(orcaVaultB),                                         // 10: Token Vault B (native)
+            tickArray0 ? new PublicKey(tickArray0) : poolId,                   // 11: Tick Array 0
+            tickArray1 ? new PublicKey(tickArray1) : poolId,                   // 12: Tick Array 1
+            tickArray2 ? new PublicKey(tickArray2) : poolId,                   // 13: Tick Array 2
+            hop.oracle ? new PublicKey(hop.oracle) : poolId,                   // 14: Oracle
+            programIdKey,                                                      // 15: Whirlpool Program (for CPI)
+          );
+        } else {
+          // swap: Standard SPL tokens (12 accounts)
+          accounts.push(
+            TOKEN_PROGRAM_ID,                                                  // 0: Token Program
+            wallet,                                                            // 1: Token Authority (signer)
+            poolId,                                                            // 2: Whirlpool
+            userTokenA,                                                        // 3: Token Owner Account A
+            new PublicKey(orcaVaultA),                                         // 4: Token Vault A (native)
+            userTokenB,                                                        // 5: Token Owner Account B
+            new PublicKey(orcaVaultB),                                         // 6: Token Vault B (native)
+            tickArray0 ? new PublicKey(tickArray0) : poolId,                   // 7: Tick Array 0
+            tickArray1 ? new PublicKey(tickArray1) : poolId,                   // 8: Tick Array 1
+            tickArray2 ? new PublicKey(tickArray2) : poolId,                   // 9: Tick Array 2
+            hop.oracle ? new PublicKey(hop.oracle) : poolId,                   // 10: Oracle
+            programIdKey,                                                      // 11: Whirlpool Program
+          );
+        }
         break;
 
       case DexType.PumpSwap:

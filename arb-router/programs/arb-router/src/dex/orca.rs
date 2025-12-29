@@ -3,7 +3,12 @@
 //! Program ID: whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc
 //!
 //! Orca Whirlpool is a concentrated liquidity AMM on Solana.
-//! Uses the standard swap instruction (matches working local builder).
+//!
+//! ## Swap Instructions
+//! - `swap`: Original instruction for standard SPL tokens (12 accounts)
+//! - `swap_v2`: Token-2022 compatible instruction (16 accounts, includes Memo Program)
+//!
+//! The off-chain builder determines which variant to use based on token programs.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
@@ -11,14 +16,26 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::constants::dex_programs::ORCA_WHIRLPOOL;
 use crate::error::ArbRouterError;
 
-/// Number of accounts needed for an Orca Whirlpool swap
+/// Number of accounts needed for Orca Whirlpool `swap` (standard SPL tokens)
 /// 11 swap accounts + 1 for Whirlpool program (for CPI) = 12
-pub const ACCOUNTS_NEEDED: usize = 12;
+pub const SWAP_ACCOUNTS_NEEDED: usize = 12;
 
-/// Orca Whirlpool swap instruction discriminator
+/// Number of accounts needed for Orca Whirlpool `swap_v2` (Token-2022 compatible)
+/// 15 swap accounts + 1 for Whirlpool program (for CPI) = 16
+pub const SWAP_V2_ACCOUNTS_NEEDED: usize = 16;
+
+/// Default accounts needed (swap for standard tokens)
+pub const ACCOUNTS_NEEDED: usize = SWAP_ACCOUNTS_NEEDED;
+
+/// Orca Whirlpool `swap` instruction discriminator (standard SPL tokens)
 /// Computed as: sha256("global:swap")[0..8]
 /// Hex: f8c69e91e17587c8
 const SWAP_DISCRIMINATOR: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
+
+/// Orca Whirlpool `swap_v2` instruction discriminator (Token-2022 compatible)
+/// Computed as: sha256("global:swap_v2")[0..8]
+/// Hex: 2b04ed0b1ac91e62
+const SWAP_V2_DISCRIMINATOR: [u8; 8] = [0x2b, 0x04, 0xed, 0x0b, 0x1a, 0xc9, 0x1e, 0x62];
 
 /// Sqrt price limits for swap direction
 /// MIN_SQRT_PRICE_X64 + 1 for A->B (price decreases)
@@ -43,7 +60,11 @@ pub struct SwapParams {
 
 /// Execute a swap on Orca Whirlpool
 ///
-/// Expected accounts (in order) - standard swap layout (matches working local builder):
+/// Automatically detects whether to use `swap` or `swap_v2` based on account count:
+/// - 12 accounts (SWAP_ACCOUNTS_NEEDED): Use `swap` for standard SPL tokens
+/// - 16 accounts (SWAP_V2_ACCOUNTS_NEEDED): Use `swap_v2` for Token-2022
+///
+/// ## `swap` instruction layout (12 accounts, standard SPL tokens):
 /// 0. `[]` Token Program
 /// 1. `[signer]` Token Authority (user)
 /// 2. `[writable]` Whirlpool
@@ -51,11 +72,29 @@ pub struct SwapParams {
 /// 4. `[writable]` Token Vault A
 /// 5. `[writable]` Token Owner Account B (user's token B account)
 /// 6. `[writable]` Token Vault B
-/// 7. `[writable]` Tick Array 0 (lower)
-/// 8. `[writable]` Tick Array 1 (center)
-/// 9. `[writable]` Tick Array 2 (upper)
-/// 10. `[]` Oracle
+/// 7. `[writable]` Tick Array 0
+/// 8. `[writable]` Tick Array 1
+/// 9. `[writable]` Tick Array 2
+/// 10. `[writable]` Oracle
 /// 11. `[]` Whirlpool Program (for CPI)
+///
+/// ## `swap_v2` instruction layout (16 accounts, Token-2022 compatible):
+/// 0. `[]` Token Program A
+/// 1. `[]` Token Program B
+/// 2. `[]` Memo Program (REQUIRED!)
+/// 3. `[signer]` Token Authority (user)
+/// 4. `[writable]` Whirlpool
+/// 5. `[]` Token Mint A
+/// 6. `[]` Token Mint B
+/// 7. `[writable]` Token Owner Account A (user's token A account)
+/// 8. `[writable]` Token Vault A
+/// 9. `[writable]` Token Owner Account B (user's token B account)
+/// 10. `[writable]` Token Vault B
+/// 11. `[writable]` Tick Array 0
+/// 12. `[writable]` Tick Array 1
+/// 13. `[writable]` Tick Array 2
+/// 14. `[writable]` Oracle
+/// 15. `[]` Whirlpool Program (for CPI)
 ///
 /// # Arguments
 /// * `accounts` - DEX-specific accounts in the order above
@@ -68,8 +107,11 @@ pub fn swap(
     min_amount_out: u64,
     a_to_b: bool,
 ) -> Result<()> {
-    if accounts.len() < ACCOUNTS_NEEDED {
-        msg!("Orca: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
+    // Determine which instruction variant to use based on account count
+    let use_swap_v2 = accounts.len() >= SWAP_V2_ACCOUNTS_NEEDED;
+    
+    if !use_swap_v2 && accounts.len() < SWAP_ACCOUNTS_NEEDED {
+        msg!("Orca: Insufficient accounts. Expected at least {}, got {}", SWAP_ACCOUNTS_NEEDED, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
@@ -82,12 +124,6 @@ pub fn swap(
         MAX_SQRT_PRICE_LIMIT
     };
 
-    // Build the swap instruction data
-    // Format: discriminator(8) + amount(8) + otherAmountThreshold(8) + sqrtPriceLimit(16) 
-    //         + amountSpecifiedIsInput(1) + aToB(1) = 42 bytes total
-    let mut data = Vec::with_capacity(42);
-    data.extend_from_slice(&SWAP_DISCRIMINATOR);
-    
     // Serialize swap parameters
     let params = SwapParams {
         amount: amount_in,
@@ -96,53 +132,106 @@ pub fn swap(
         amount_specified_is_input: true,
         a_to_b,
     };
-    params.serialize(&mut data)?;
 
-    // Build account metas for swap
-    // Accounts 0-10 go to the CPI (exclude index 11 which is Whirlpool program)
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
-        .iter()
-        .enumerate()
-        .map(|(i, acc)| {
-            let is_signer = i == 1; // Token authority is signer (position 1)
-            // Writable: whirlpool(2), token_owner_a(3), vault_a(4), token_owner_b(5), vault_b(6), 
-            //           tick_arrays(7,8,9)
-            // Oracle(10) is read-only in standard swap
-            let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9);
-            if is_signer {
-                AccountMeta::new(*acc.key, true)
-            } else if is_writable {
-                AccountMeta::new(*acc.key, false)
-            } else {
-                AccountMeta::new_readonly(*acc.key, false)
-            }
-        })
-        .collect();
+    if use_swap_v2 {
+        // swap_v2: Token-2022 compatible (16 accounts)
+        // Format: discriminator(8) + amount(8) + otherAmountThreshold(8) + sqrtPriceLimit(16) 
+        //         + amountSpecifiedIsInput(1) + aToB(1) + remainingAccountsInfo(4) = 46 bytes
+        let mut data = Vec::with_capacity(46);
+        data.extend_from_slice(&SWAP_V2_DISCRIMINATOR);
+        params.serialize(&mut data)?;
+        // remainingAccountsInfo: empty Vec (length = 0)
+        data.extend_from_slice(&[0u8; 4]);
 
-    let ix = Instruction {
-        program_id: ORCA_WHIRLPOOL,
-        accounts: account_metas,
-        data,
-    };
+        // Build account metas for swap_v2
+        // Accounts 0-14 go to the CPI (exclude index 15 which is Whirlpool program)
+        let account_metas: Vec<AccountMeta> = accounts[..SWAP_V2_ACCOUNTS_NEEDED - 1]
+            .iter()
+            .enumerate()
+            .map(|(i, acc)| {
+                let is_signer = i == 3; // Token authority is signer (position 3 in swap_v2)
+                // Writable: whirlpool(4), token_owner_a(7), vault_a(8), token_owner_b(9), vault_b(10), 
+                //           tick_arrays(11,12,13), oracle(14)
+                let is_writable = matches!(i, 4 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14);
+                if is_signer {
+                    AccountMeta::new(*acc.key, true)
+                } else if is_writable {
+                    AccountMeta::new(*acc.key, false)
+                } else {
+                    AccountMeta::new_readonly(*acc.key, false)
+                }
+            })
+            .collect();
 
-    // Invoke the swap
-    let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
-    invoke(&ix, &account_infos)?;
+        let ix = Instruction {
+            program_id: ORCA_WHIRLPOOL,
+            accounts: account_metas,
+            data,
+        };
 
-    msg!("Orca Whirlpool swap executed: {} in, min {} out, a_to_b: {}", amount_in, min_amount_out, a_to_b);
+        // Invoke the swap_v2
+        let account_infos: Vec<AccountInfo> = accounts[..SWAP_V2_ACCOUNTS_NEEDED].to_vec();
+        invoke(&ix, &account_infos)?;
+
+        msg!("Orca Whirlpool swap_v2 executed: {} in, min {} out, a_to_b: {}", amount_in, min_amount_out, a_to_b);
+    } else {
+        // swap: Standard SPL tokens (12 accounts)
+        // Format: discriminator(8) + amount(8) + otherAmountThreshold(8) + sqrtPriceLimit(16) 
+        //         + amountSpecifiedIsInput(1) + aToB(1) = 42 bytes total
+        let mut data = Vec::with_capacity(42);
+        data.extend_from_slice(&SWAP_DISCRIMINATOR);
+        params.serialize(&mut data)?;
+
+        // Build account metas for swap
+        // Accounts 0-10 go to the CPI (exclude index 11 which is Whirlpool program)
+        let account_metas: Vec<AccountMeta> = accounts[..SWAP_ACCOUNTS_NEEDED - 1]
+            .iter()
+            .enumerate()
+            .map(|(i, acc)| {
+                let is_signer = i == 1; // Token authority is signer (position 1 in swap)
+                // Writable: whirlpool(2), token_owner_a(3), vault_a(4), token_owner_b(5), vault_b(6), 
+                //           tick_arrays(7,8,9), oracle(10 - writable in newer versions)
+                let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10);
+                if is_signer {
+                    AccountMeta::new(*acc.key, true)
+                } else if is_writable {
+                    AccountMeta::new(*acc.key, false)
+                } else {
+                    AccountMeta::new_readonly(*acc.key, false)
+                }
+            })
+            .collect();
+
+        let ix = Instruction {
+            program_id: ORCA_WHIRLPOOL,
+            accounts: account_metas,
+            data,
+        };
+
+        // Invoke the swap
+        let account_infos: Vec<AccountInfo> = accounts[..SWAP_ACCOUNTS_NEEDED].to_vec();
+        invoke(&ix, &account_infos)?;
+
+        msg!("Orca Whirlpool swap executed: {} in, min {} out, a_to_b: {}", amount_in, min_amount_out, a_to_b);
+    }
+
     Ok(())
 }
 
 /// Helper to derive tick array address
+/// CRITICAL: Orca SDK encodes start_tick_index as ASCII string, NOT binary!
+/// e.g., for index -9856, the seed is the string "-9856" (5 bytes), not i32 LE bytes
 pub fn derive_tick_array_address(
     whirlpool: &Pubkey,
     start_tick_index: i32,
 ) -> (Pubkey, u8) {
+    // Convert to string for PDA derivation (matches Orca SDK behavior)
+    let index_str = start_tick_index.to_string();
     Pubkey::find_program_address(
         &[
             b"tick_array",
             whirlpool.as_ref(),
-            &start_tick_index.to_le_bytes(),
+            index_str.as_bytes(),
         ],
         &ORCA_WHIRLPOOL,
     )

@@ -43,6 +43,14 @@ export interface BitmapExtensionValidation {
   issue?: string;
 }
 
+export interface RaydiumExBitmapValidation {
+  cachedValue: string | null;
+  derivedPda: string;
+  pdaExistsOnChain: boolean;
+  isValid: boolean;
+  issue?: string;
+}
+
 export interface PoolValidationResult {
   poolId: string;
   dex: 'orca' | 'raydium' | 'meteora';
@@ -51,7 +59,8 @@ export interface PoolValidationResult {
   hasStaticCache: boolean;
   tickArrayValidation?: TickArrayValidation;
   binArrayValidation?: BinArrayValidation;
-  bitmapExtensionValidation?: BitmapExtensionValidation;
+  bitmapExtensionValidation?: BitmapExtensionValidation;  // Meteora bitmap extension
+  exBitmapValidation?: RaydiumExBitmapValidation;          // Raydium tick array bitmap extension
   issues: string[];
   valid: boolean;
   // Additional cache data for debugging
@@ -60,7 +69,8 @@ export interface PoolValidationResult {
     tickSpacing?: number;
     activeId?: number;
     binStep?: number;
-    bitmapExtension?: string;
+    bitmapExtension?: string;  // Meteora
+    exBitmap?: string;         // Raydium
   };
 }
 
@@ -71,7 +81,8 @@ export interface BatchValidationResult {
   poolsWithMissingCenter: number;
   poolsWithMissingArrays: number;
   poolsWithNoCacheEntry: number;
-  poolsWithInvalidBitmapExtension: number;
+  poolsWithInvalidBitmapExtension: number;  // Meteora
+  poolsWithInvalidExBitmap: number;          // Raydium
   results: PoolValidationResult[];
   timestamp: number;
   durationMs: number;
@@ -182,6 +193,69 @@ export async function validatePoolCache(
           // Center is critical - if it doesn't exist, the pool can't be traded
           if (!validation.center?.exists) {
             issues.push('CRITICAL: Center tick array missing - pool cannot be traded');
+          }
+        }
+      }
+      
+      // Validate ex_bitmap (tick array bitmap extension) for Raydium CLMM
+      if (dex === 'raydium') {
+        const cachedExBitmap = (stat as any)?.ex_bitmap || null;
+        
+        result.cacheData = {
+          ...result.cacheData,
+          exBitmap: cachedExBitmap,
+        };
+        
+        // Derive the correct ex_bitmap PDA using "exaccount" seed
+        let derivedExBitmapPda: string | null = null;
+        try {
+          const poolPk = new PublicKey(basePoolId);
+          const [pda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('exaccount'), poolPk.toBuffer()],
+            RAYDIUM_CLMM_PROGRAM
+          );
+          derivedExBitmapPda = pda.toBase58();
+        } catch (e) {
+          issues.push('Failed to derive Raydium ex_bitmap PDA');
+        }
+        
+        if (derivedExBitmapPda) {
+          try {
+            const pdaPk = new PublicKey(derivedExBitmapPda);
+            const info = await connection.getAccountInfo(pdaPk);
+            const pdaExistsOnChain = !!info && info.owner.equals(RAYDIUM_CLMM_PROGRAM);
+            
+            const exBitmapValidation: RaydiumExBitmapValidation = {
+              cachedValue: cachedExBitmap,
+              derivedPda: derivedExBitmapPda,
+              pdaExistsOnChain,
+              isValid: false,
+            };
+            
+            if (pdaExistsOnChain) {
+              // PDA exists on-chain - we should have it cached
+              if (cachedExBitmap === derivedExBitmapPda) {
+                exBitmapValidation.isValid = true;
+              } else if (!cachedExBitmap) {
+                exBitmapValidation.issue = 'ex_bitmap exists on-chain but not cached';
+                issues.push(exBitmapValidation.issue);
+              } else {
+                exBitmapValidation.issue = 'Cached ex_bitmap does not match derived PDA';
+                issues.push(exBitmapValidation.issue);
+              }
+            } else {
+              // PDA doesn't exist on-chain - this is okay for pools with narrow tick ranges
+              // Having it cached is harmless (SDK will handle non-existent accounts)
+              exBitmapValidation.isValid = true;
+              if (cachedExBitmap && cachedExBitmap !== derivedExBitmapPda) {
+                exBitmapValidation.issue = 'Cached ex_bitmap is incorrect PDA (but account does not exist)';
+                // Not critical - just a warning, don't add to issues
+              }
+            }
+            
+            result.exBitmapValidation = exBitmapValidation;
+          } catch (e: any) {
+            issues.push(`Failed to verify ex_bitmap: ${e.message}`);
           }
         }
       }
@@ -401,7 +475,8 @@ export async function validatePoolCacheBatch(
   let poolsWithMissingCenter = 0;
   let poolsWithMissingArrays = 0;
   let poolsWithNoCacheEntry = 0;
-  let poolsWithInvalidBitmapExtension = 0;
+  let poolsWithInvalidBitmapExtension = 0;  // Meteora
+  let poolsWithInvalidExBitmap = 0;          // Raydium
   
   // Process in batches to avoid overwhelming RPC
   const BATCH_SIZE = 10;
@@ -439,6 +514,11 @@ export async function validatePoolCacheBatch(
         if (result.bitmapExtensionValidation && !result.bitmapExtensionValidation.isValid) {
           poolsWithInvalidBitmapExtension++;
         }
+        
+        // Track ex_bitmap issues (Raydium only)
+        if (result.exBitmapValidation && !result.exBitmapValidation.isValid) {
+          poolsWithInvalidExBitmap++;
+        }
       }
     }
   }
@@ -456,6 +536,7 @@ export async function validatePoolCacheBatch(
       poolsWithMissingArrays,
       poolsWithNoCacheEntry,
       poolsWithInvalidBitmapExtension,
+      poolsWithInvalidExBitmap,
       durationMs,
     }
   });
@@ -468,6 +549,7 @@ export async function validatePoolCacheBatch(
     poolsWithMissingArrays,
     poolsWithNoCacheEntry,
     poolsWithInvalidBitmapExtension,
+    poolsWithInvalidExBitmap,
     results,
     timestamp: Date.now(),
     durationMs,
@@ -886,6 +968,286 @@ export async function validatePoolBitmapExtension(
       });
       
       logger.info('cache.bitmap_ext.single.updated', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId,
+          previousValue,
+          newValue,
+          pdaExistsOnChain,
+        }
+      });
+    }
+    
+    return {
+      poolId: basePoolId,
+      previousValue,
+      newValue,
+      derivedPda: derivedPdaStr,
+      pdaExistsOnChain,
+      wasUpdated: needsUpdate,
+    };
+  } catch (e: any) {
+    return {
+      poolId: basePoolId,
+      previousValue: null,
+      newValue: null,
+      derivedPda: '',
+      pdaExistsOnChain: false,
+      wasUpdated: false,
+      issue: `Error: ${e.message}`,
+    };
+  }
+}
+
+/**
+ * Raydium Ex_Bitmap Validation Result for a single pool
+ */
+export interface RaydiumExBitmapRefreshResult {
+  poolId: string;
+  previousValue: string | null;
+  newValue: string | null;
+  derivedPda: string;
+  pdaExistsOnChain: boolean;
+  wasUpdated: boolean;
+  issue?: string;
+}
+
+/**
+ * Batch result for Raydium ex_bitmap validation
+ */
+export interface RaydiumExBitmapBatchResult {
+  totalPools: number;
+  poolsChecked: number;
+  poolsWithPdaOnChain: number;
+  poolsNeedingUpdate: number;
+  poolsUpdated: number;
+  poolsSkipped: number;
+  results: RaydiumExBitmapRefreshResult[];
+  timestamp: number;
+  durationMs: number;
+}
+
+/**
+ * Validate and refresh ex_bitmap (tick array bitmap extension) for Raydium CLMM pools.
+ * 
+ * This function:
+ * 1. Derives the correct ex_bitmap PDA for each pool using "exaccount" seed
+ * 2. Checks on-chain if the PDA exists
+ * 3. Updates the pool cache and execution cache with the correct value
+ * 
+ * Can be called from a button in the frontend to fix stale ex_bitmap cache.
+ */
+export async function validateAndRefreshRaydiumExBitmaps(
+  connection: Connection,
+  options?: { 
+    limit?: number;
+    dryRun?: boolean;  // If true, don't update caches, just report
+  }
+): Promise<RaydiumExBitmapBatchResult> {
+  const startTime = Date.now();
+  const limit = options?.limit ?? 100;
+  const dryRun = options?.dryRun ?? false;
+  
+  const raydiumPools = peekRaydiumPools();
+  const pools = (raydiumPools?.clmm || []).slice(0, limit);
+  
+  const results: RaydiumExBitmapRefreshResult[] = [];
+  let poolsWithPdaOnChain = 0;
+  let poolsNeedingUpdate = 0;
+  let poolsUpdated = 0;
+  let poolsSkipped = 0;
+  
+  // Derive all PDAs first
+  const poolsWithPda: Array<{ pool: any; poolPk: PublicKey; pda: PublicKey }> = [];
+  for (const pool of pools) {
+    try {
+      const poolPk = new PublicKey(pool.id);
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('exaccount'), poolPk.toBuffer()],
+        RAYDIUM_CLMM_PROGRAM
+      );
+      poolsWithPda.push({ pool, poolPk, pda });
+    } catch (e) {
+      results.push({
+        poolId: pool.id,
+        previousValue: null,
+        newValue: null,
+        derivedPda: '',
+        pdaExistsOnChain: false,
+        wasUpdated: false,
+        issue: 'Failed to derive PDA',
+      });
+      poolsSkipped++;
+    }
+  }
+  
+  // Batch check which PDAs exist on-chain
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < poolsWithPda.length; i += BATCH_SIZE) {
+    const batch = poolsWithPda.slice(i, i + BATCH_SIZE);
+    const pdas = batch.map(p => p.pda);
+    
+    try {
+      const infos = await connection.getMultipleAccountsInfo(pdas);
+      
+      for (let j = 0; j < batch.length; j++) {
+        const { pool, pda } = batch[j];
+        const info = infos[j];
+        const pdaExistsOnChain = !!info && info.owner.equals(RAYDIUM_CLMM_PROGRAM);
+        const derivedPdaStr = pda.toBase58();
+        
+        // Get current cached value
+        const stat = executionCache.getStatic(pool.id);
+        const cachedValue = (stat as any)?.ex_bitmap || pool.ex_bitmap || null;
+        
+        const result: RaydiumExBitmapRefreshResult = {
+          poolId: pool.id,
+          previousValue: cachedValue,
+          newValue: null,
+          derivedPda: derivedPdaStr,
+          pdaExistsOnChain,
+          wasUpdated: false,
+        };
+        
+        if (pdaExistsOnChain) {
+          poolsWithPdaOnChain++;
+          result.newValue = derivedPdaStr;
+          
+          const needsUpdate = cachedValue !== derivedPdaStr;
+          
+          if (needsUpdate) {
+            poolsNeedingUpdate++;
+            
+            if (!dryRun) {
+              pool.ex_bitmap = derivedPdaStr;
+              
+              if (stat) {
+                executionCache.setStatic(pool.id, {
+                  ...stat,
+                  ex_bitmap: derivedPdaStr,
+                });
+              }
+              
+              result.wasUpdated = true;
+              poolsUpdated++;
+              
+              logger.info('cache.raydium_exbitmap.updated', {
+                cat: 'cache',
+                ctx: {
+                  poolId: pool.id,
+                  previousValue: result.previousValue,
+                  newValue: derivedPdaStr,
+                }
+              });
+            } else {
+              result.issue = 'Would update (dry run)';
+            }
+          }
+        } else {
+          // PDA doesn't exist - clear cached value if it's stale
+          result.newValue = null;
+          
+          if (cachedValue && !dryRun) {
+            // Clear stale cache
+            if (stat) {
+              const { ex_bitmap, ...rest } = stat as any;
+              executionCache.setStatic(pool.id, rest);
+              result.wasUpdated = true;
+              poolsUpdated++;
+            }
+          }
+        }
+        
+        results.push(result);
+      }
+    } catch (e: any) {
+      // If batch fails, mark all as skipped
+      for (const { pool, pda } of batch) {
+        results.push({
+          poolId: pool.id,
+          previousValue: pool.ex_bitmap || null,
+          newValue: null,
+          derivedPda: pda.toBase58(),
+          pdaExistsOnChain: false,
+          wasUpdated: false,
+          issue: `RPC error: ${e.message}`,
+        });
+        poolsSkipped++;
+      }
+    }
+  }
+  
+  const durationMs = Date.now() - startTime;
+  
+  logger.info('cache.raydium_exbitmap.validation.complete', {
+    cat: 'cache',
+    ctx: {
+      totalPools: pools.length,
+      poolsChecked: results.length,
+      poolsWithPdaOnChain,
+      poolsNeedingUpdate,
+      poolsUpdated,
+      poolsSkipped,
+      dryRun,
+      durationMs,
+    }
+  });
+  
+  return {
+    totalPools: pools.length,
+    poolsChecked: results.length,
+    poolsWithPdaOnChain,
+    poolsNeedingUpdate,
+    poolsUpdated,
+    poolsSkipped,
+    results,
+    timestamp: Date.now(),
+    durationMs,
+  };
+}
+
+/**
+ * Validate and refresh a single pool's Raydium ex_bitmap.
+ * Useful for just-in-time validation before a swap.
+ */
+export async function validatePoolRaydiumExBitmap(
+  connection: Connection,
+  poolId: string
+): Promise<RaydiumExBitmapRefreshResult> {
+  const basePoolId = poolId.replace(/[#-]rev$/, '');
+  
+  try {
+    const poolPk = new PublicKey(basePoolId);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('exaccount'), poolPk.toBuffer()],
+      RAYDIUM_CLMM_PROGRAM
+    );
+    const derivedPdaStr = pda.toBase58();
+    
+    // Check on-chain
+    const info = await connection.getAccountInfo(pda);
+    const pdaExistsOnChain = !!info && info.owner.equals(RAYDIUM_CLMM_PROGRAM);
+    
+    // Get current cached value
+    const stat = executionCache.getStatic(basePoolId);
+    const previousValue = (stat as any)?.ex_bitmap || null;
+    
+    const newValue = pdaExistsOnChain ? derivedPdaStr : null;
+    const needsUpdate = previousValue !== newValue;
+    
+    if (needsUpdate && stat) {
+      if (newValue) {
+        executionCache.setStatic(basePoolId, {
+          ...stat,
+          ex_bitmap: newValue,
+        });
+      } else {
+        // Clear stale cache
+        const { ex_bitmap, ...rest } = stat as any;
+        executionCache.setStatic(basePoolId, rest);
+      }
+      
+      logger.info('cache.raydium_exbitmap.single.updated', {
         cat: 'cache',
         ctx: {
           poolId: basePoolId,

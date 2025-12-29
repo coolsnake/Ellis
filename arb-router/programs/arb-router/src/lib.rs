@@ -289,7 +289,7 @@ pub mod arb_router {
             // If amount_in == 0, read the current balance of the input token account
             // This enables dynamic amount propagation between hops
             let actual_amount_in = if step.amount_in == 0 {
-                let input_token_idx = get_user_token_in_index(&step.dex_type, step.a_to_b);
+                let input_token_idx = get_user_token_in_index(&step.dex_type, step.a_to_b, accounts_needed);
                 let input_token_account = &step_accounts[input_token_idx];
                 let balance = read_token_account_balance(input_token_account)?;
                 
@@ -653,7 +653,8 @@ fn get_accounts_needed_for_dex(dex_type: &DexType) -> usize {
 /// 
 /// Note: Some DEXes (like Meteora) use X/Y ordering for accounts, not input/output.
 /// The `a_to_b` parameter indicates swap direction to pick the correct account.
-fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool) -> usize {
+/// The `accounts_count` parameter helps distinguish instruction variants (e.g. swap vs swap_v2).
+fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool, accounts_count: usize) -> usize {
     match dex_type {
         // Raydium CLMM: position 3 (Input Token Account)
         DexType::Raydium => 3,
@@ -662,8 +663,14 @@ fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool) -> usize {
         // X→Y (a_to_b=true): input is X at position 4
         // Y→X (a_to_b=false): input is Y at position 5
         DexType::Meteora => if a_to_b { 4 } else { 5 },
-        // Orca Whirlpool: position 3 (Token Owner Account A - user's input for A->B)
-        DexType::Orca => 3,
+        // Orca Whirlpool: accounts are in A/B order
+        // - swap (12 accounts): Token Owner Account A is at position 3
+        // - swap_v2 (16 accounts): Token Owner Account A is at position 7
+        // A→B: input is A, B→A: input is B (offset by 2 for user token B)
+        DexType::Orca => {
+            let base_idx = if accounts_count >= dex::orca::SWAP_V2_ACCOUNTS_NEEDED { 7 } else { 3 };
+            if a_to_b { base_idx } else { base_idx + 2 }
+        },
         // PumpSwap: position 6 (User Token Account)
         DexType::PumpSwap => 6,
     }
