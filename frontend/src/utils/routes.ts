@@ -33,6 +33,10 @@ export const ROUTES = {
     retarget: '/arb/pools/retarget',
     validateCache: '/arb/pools/validate-cache',
     refreshInvalid: '/arb/pools/refresh-invalid',
+    revalidate: '/arb/pools/revalidate',
+    persistenceStatus: '/arb/pools/persistence-status',
+    saveSnapshot: '/arb/pools/save-snapshot',
+    loadSnapshot: '/arb/pools/load-snapshot',
   },
   arb: {
     config: '/arb/config',

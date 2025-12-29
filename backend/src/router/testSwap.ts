@@ -479,12 +479,23 @@ async function fetchMeteoraDlmmPool(
     
     // Bitmap extension: prefer from pool state, fallback to PDA derivation
     // Some pools require an actual bitmap extension for wide price ranges
+    // NOTE: PDA seed is "bitmap", NOT "BitmapExtension" (per Meteora SDK)
     if (!bitmapExtension) {
       try {
-        const [bitmapExtPda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('BitmapExtension'), poolPubkey.toBuffer()],
-          programId
-        );
+        // Try to use SDK derivation first
+        let bitmapExtPda: PublicKey;
+        try {
+          const { deriveBinArrayBitmapExtension } = await import('@meteora-ag/dlmm');
+          const [pda] = deriveBinArrayBitmapExtension(poolPubkey, programId);
+          bitmapExtPda = pda;
+        } catch {
+          // Manual fallback with correct seed
+          const [pda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('bitmap'), poolPubkey.toBuffer()],
+            programId
+          );
+          bitmapExtPda = pda;
+        }
         // Check if the bitmap extension account exists on-chain
         const bitmapExtInfo = await connection.getAccountInfo(bitmapExtPda);
         if (bitmapExtInfo && bitmapExtInfo.owner.equals(programId)) {

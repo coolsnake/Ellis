@@ -6,7 +6,7 @@
  */
 
 import { PublicKey, TransactionInstruction, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, createCloseAccountInstruction } from '@solana/spl-token';
 import BN from 'bn.js';
 import type { ExecutionPlan, DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
@@ -14,6 +14,7 @@ import { LogCode } from '../../utils/logging.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection } from '../../wallet/wallet.js';
 import { executionCache } from '../cache.js';
+import { buildWrapSolIxs, buildUnwrapSolIx, isSolMint } from '../accounts.js';
 import {
   buildFlashBorrowIx,
   buildFlashRepayIx,
@@ -395,8 +396,39 @@ async function buildDirectRouterTx(
     }
     
     const inputMint = new PublicKey(plan.hops[0].inputMint);
+    const outputMint = plan.hops[plan.hops.length - 1].outputMint;
     const inputTokenProgram = plan.hops[0].inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-    const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
+    let userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
+    
+    // Track if we need to wrap/unwrap SOL
+    const inputIsSol = isSolMint(plan.hops[0].inputMint);
+    const outputIsSol = isSolMint(outputMint);
+    
+    // Wrap SOL → WSOL if input is native SOL
+    if (inputIsSol) {
+      const amountToWrap = Number(plan.hops[0].amountInRaw || 0n);
+      if (amountToWrap > 0) {
+        const wrapResult = buildWrapSolIxs(wallet.publicKey, wallet.publicKey, amountToWrap);
+        instructions.push(...wrapResult.ixs);
+        userTokenAccount = wrapResult.wsolAta;
+        // Also update the hop's userSourceAta to point to WSOL ATA
+        plan.hops[0].userSourceAta = wrapResult.wsolAta.toBase58();
+        
+        try {
+          logger.info('routerTx.direct.wrapSol', {
+            cat: 'tx',
+            ctx: { amount: amountToWrap, wsolAta: wrapResult.wsolAta.toBase58() },
+          });
+        } catch {}
+      }
+    }
+    
+    // If output is SOL, ensure last hop's destination is WSOL ATA
+    if (outputIsSol) {
+      const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet.publicKey, false, TOKEN_PROGRAM_ID);
+      const lastHop = plan.hops[plan.hops.length - 1];
+      lastHop.userDestAta = wsolAta.toBase58();
+    }
 
     // Single-hop optimization: use route_swap so Meteora can include variable bin arrays.
     // (execute slices fixed account counts per step, which can under-provide bin arrays)
@@ -443,6 +475,21 @@ async function buildDirectRouterTx(
           programId
         )
       );
+    }
+    
+    // Unwrap WSOL → SOL if output is native SOL
+    if (outputIsSol) {
+      const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet.publicKey, false, TOKEN_PROGRAM_ID);
+      // Close the WSOL ATA to unwrap remaining balance back to native SOL
+      const closeIx = createCloseAccountInstruction(wsolAta, wallet.publicKey, wallet.publicKey);
+      instructions.push(closeIx);
+      
+      try {
+        logger.info('routerTx.direct.unwrapSol', {
+          cat: 'tx',
+          ctx: { wsolAta: wsolAta.toBase58() },
+        });
+      } catch {}
     }
 
     logger.info('routerTx.direct.built', {

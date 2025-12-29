@@ -156,10 +156,17 @@ export async function normalizeMeteoraHttp(raw: MeteoraApiListResponse | Meteora
     normalizeMode: true // RPC validation priority during normalization
   });
   
+  // Pass pool info with activeId for smarter bitmap extension resolution
+  // This allows skipping pools that don't need extensions (activeId within internal bitmap range)
   const bitmapExtensionMap = await resolveMeteoraBitmapExtensions(
     arr
-      .map(it => String((it as MeteoraPoolApiResponse).address || (it as MeteoraPoolApiResponse).id || (it as MeteoraPoolApiResponse).poolAddress || ''))
-      .filter(id => typeof id === 'string' && id.length > 0)
+      .map(it => {
+        const pool = it as MeteoraPoolApiResponse;
+        const id = String(pool.address || pool.id || pool.poolAddress || '');
+        const activeId = Number(pool.active_id ?? pool.activeId ?? 0);
+        return { id, activeId: Number.isFinite(activeId) ? activeId : undefined };
+      })
+      .filter(p => typeof p.id === 'string' && p.id.length > 0)
   );
   
   for (const it of arr) {
@@ -323,42 +330,156 @@ export async function normalizeMeteoraHttp(raw: MeteoraApiListResponse | Meteora
   return { amm: [], clmm: clmm };
 }
 
-export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise<Map<string, string>> {
+/**
+ * Pool info for bitmap extension resolution
+ * When activeId is provided, we can skip pools that don't need bitmap extensions
+ */
+export interface PoolBitmapInfo {
+  id: string;
+  activeId?: number;
+}
+
+/**
+ * Resolve bitmap extension PDAs for Meteora DLMM pools using SDK derivation.
+ * 
+ * Uses the official Meteora SDK's `deriveBinArrayBitmapExtension` function
+ * which uses the correct PDA seeds: ["bitmap", lbPair.toBytes()]
+ * 
+ * When activeId is provided, uses `isOverflowDefaultBinArrayBitmap` to skip
+ * pools that don't need bitmap extensions (their activeId is within the
+ * internal bitmap range of ±512 bin array indices).
+ * 
+ * @param pools - Array of pool IDs (strings) or pool info objects with activeId
+ * @returns Map of pool ID -> bitmap extension PDA (or program ID if not needed)
+ */
+export async function resolveMeteoraBitmapExtensions(
+  pools: (string | PoolBitmapInfo)[]
+): Promise<Map<string, string>> {
   const result = new Map<string, string>();
-  const unique = Array.from(new Set(poolIds.filter(id => typeof id === 'string' && id.length > 0)));
+  const fallback = METEORA_DLMM_PROGRAM_ID;
+  
+  // Normalize input to PoolBitmapInfo format
+  const poolInfos: PoolBitmapInfo[] = pools
+    .map(p => typeof p === 'string' ? { id: p } : p)
+    .filter(p => typeof p.id === 'string' && p.id.length > 0);
+  
+  // Dedupe by pool ID
+  const uniqueMap = new Map<string, PoolBitmapInfo>();
+  for (const p of poolInfos) {
+    if (!uniqueMap.has(p.id)) {
+      uniqueMap.set(p.id, p);
+    }
+  }
+  const unique = Array.from(uniqueMap.values());
+  
   if (unique.length === 0) return result;
 
   // Log sample of pool IDs being checked (first 3) for debugging
   try {
     logger.info('meteora.bitmap_ext.checking', {
       total: unique.length,
-      sample: unique.slice(0, 3).map(id => id.slice(0, 8) + '…'),
+      sample: unique.slice(0, 3).map(p => p.id.slice(0, 8) + '…'),
+      withActiveId: unique.filter(p => p.activeId !== undefined).length,
       cat: 'meteora'
     });
   } catch (e) { logCatchError('pools.meteora', e); }
 
-  const fallback = METEORA_DLMM_PROGRAM_ID;
   try {
     const { PublicKey } = await import('@solana/web3.js');
     const { getConnection } = await import('../../wallet/wallet.js');
     const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
     const connection = getConnection();
     const programId = new PublicKey(METEORA_DLMM_PROGRAM_ID);
+    
+    // Try to import SDK functions for correct derivation
+    let deriveBinArrayBitmapExtension: ((lbPair: any, programId: any) => [any, number]) | null = null;
+    let binIdToBinArrayIndex: ((binId: any) => any) | null = null;
+    let isOverflowDefaultBinArrayBitmap: ((binArrayIndex: any) => boolean) | null = null;
+    let BN: any = null;
+    
+    try {
+      const dlmmSdk = await import('@meteora-ag/dlmm');
+      deriveBinArrayBitmapExtension = dlmmSdk.deriveBinArrayBitmapExtension;
+      binIdToBinArrayIndex = dlmmSdk.binIdToBinArrayIndex;
+      isOverflowDefaultBinArrayBitmap = (dlmmSdk as any).isOverflowDefaultBinArrayBitmap;
+      
+      // Get BN from SDK or import separately
+      BN = (dlmmSdk as any).BN || (globalThis as any).BN;
+      if (!BN) {
+        const bnjs = await import('bn.js').catch(() => null);
+        BN = bnjs?.default || bnjs;
+      }
+      
+      logger.debug('meteora.bitmap_ext.sdk_loaded', {
+        hasDerive: !!deriveBinArrayBitmapExtension,
+        hasBinIdToIndex: !!binIdToBinArrayIndex,
+        hasOverflowCheck: !!isOverflowDefaultBinArrayBitmap,
+        hasBN: !!BN,
+        cat: 'meteora'
+      });
+    } catch (sdkErr) {
+      logger.warn('meteora.bitmap_ext.sdk_fallback', {
+        error: String((sdkErr as any)?.message || sdkErr),
+        reason: 'Using manual derivation with correct "bitmap" seed',
+        cat: 'meteora'
+      });
+    }
 
-    const derived: { id: string; pda: any }[] = [];
-    for (const id of unique) {
+    const derived: { id: string; pda: any; needsExtension: boolean }[] = [];
+    let skippedNoExtensionNeeded = 0;
+    
+    for (const poolInfo of unique) {
       try {
-        const poolPk = new PublicKey(id);
-        const [bitmapExtPda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('BitmapExtension'), poolPk.toBuffer()],
-          programId
-        );
-        derived.push({ id, pda: bitmapExtPda });
+        const poolPk = new PublicKey(poolInfo.id);
+        
+        // Check if this pool needs a bitmap extension based on activeId
+        let needsExtension = true; // Default to true if we can't determine
+        
+        if (poolInfo.activeId !== undefined && BN && binIdToBinArrayIndex && isOverflowDefaultBinArrayBitmap) {
+          try {
+            const activeBn = new BN(poolInfo.activeId);
+            const binArrayIndex = binIdToBinArrayIndex(activeBn);
+            needsExtension = isOverflowDefaultBinArrayBitmap(binArrayIndex);
+            
+            if (!needsExtension) {
+              // Pool doesn't need bitmap extension - use program ID as fallback
+              result.set(poolInfo.id, fallback);
+              skippedNoExtensionNeeded++;
+              continue;
+            }
+          } catch (checkErr) {
+            // If check fails, assume extension might be needed
+            logger.debug('meteora.bitmap_ext.overflow_check_failed', {
+              pool: poolInfo.id.slice(0, 8) + '…',
+              activeId: poolInfo.activeId,
+              error: String((checkErr as any)?.message || checkErr),
+              cat: 'meteora'
+            });
+          }
+        }
+        
+        // Derive bitmap extension PDA using SDK or manual method
+        let bitmapExtPda: any;
+        
+        if (deriveBinArrayBitmapExtension) {
+          // Use SDK's derivation function (correct seeds: ["bitmap", lbPair.toBytes()])
+          const [pda] = deriveBinArrayBitmapExtension(poolPk, programId);
+          bitmapExtPda = pda;
+        } else {
+          // Manual fallback with CORRECT seed ("bitmap", not "BitmapExtension")
+          const [pda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('bitmap'), poolPk.toBuffer()],
+            programId
+          );
+          bitmapExtPda = pda;
+        }
+        
+        derived.push({ id: poolInfo.id, pda: bitmapExtPda, needsExtension });
       } catch (err) {
-        result.set(id, fallback);
+        result.set(poolInfo.id, fallback);
         try {
           logger.info('meteora.bitmap_ext.derive_failed', {
-            pool: id,
+            pool: poolInfo.id,
             error: String((err as any)?.message || err),
             cat: 'meteora'
           });
@@ -370,6 +491,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
     try {
       logger.info('meteora.bitmap_ext.derived_sample', {
         total: derived.length,
+        skippedNoExtensionNeeded,
         sample: derived.slice(0, 3).map(entry => ({
           poolId: entry.id.slice(0, 8) + '…',
           pda: entry.pda.toBase58().slice(0, 8) + '…',
@@ -505,6 +627,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
     try {
       logger.info('meteora.bitmap_ext.batch_complete', {
         total: unique.length,
+        skippedNoExtensionNeeded,
         checked: totalChecked,
         exist: totalExist,
         missing: totalMissing,
@@ -521,8 +644,8 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
         cat: 'meteora'
       });
     } catch (e) { logCatchError('pools.meteora', e); }
-    for (const id of unique) {
-      if (!result.has(id)) result.set(id, fallback);
+    for (const p of unique) {
+      if (!result.has(p.id)) result.set(p.id, fallback);
     }
   }
   return result;

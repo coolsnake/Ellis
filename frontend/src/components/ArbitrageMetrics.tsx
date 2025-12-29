@@ -386,6 +386,59 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               fetchMetrics();
             } catch {}
           }}>Retarget WS</button>
+          <button className="px-2 py-1 text-sm border rounded hover:bg-gray-700" onClick={async ()=>{
+            try {
+              const headers: Record<string, string> = { 'content-type': 'application/json' };
+              try {
+                const s = localStorage.getItem('authCreds');
+                if (s) {
+                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+                }
+              } catch {}
+              await fetch(`${apiBase}${ROUTES.pools.revalidate}`, { method: 'POST', headers }).catch(()=>{});
+              fetchMetrics();
+            } catch {}
+          }}>Revalidate</button>
+          <button className="px-2 py-1 text-sm border rounded hover:bg-green-800 text-green-300" onClick={async ()=>{
+            try {
+              const headers: Record<string, string> = { 'content-type': 'application/json' };
+              try {
+                const s = localStorage.getItem('authCreds');
+                if (s) {
+                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+                }
+              } catch {}
+              const res = await fetch(`${apiBase}${ROUTES.pools.saveSnapshot}`, { method: 'POST', headers });
+              const data = await res.json().catch(()=>({}));
+              if (data.success) {
+                alert('Pool snapshot saved successfully');
+              } else {
+                alert(data.message || 'Failed to save snapshot');
+              }
+            } catch {}
+          }}>Save Pools</button>
+          <button className="px-2 py-1 text-sm border rounded hover:bg-blue-800 text-blue-300" onClick={async ()=>{
+            try {
+              const headers: Record<string, string> = { 'content-type': 'application/json' };
+              try {
+                const s = localStorage.getItem('authCreds');
+                if (s) {
+                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+                }
+              } catch {}
+              const res = await fetch(`${apiBase}${ROUTES.pools.loadSnapshot}`, { method: 'POST', headers });
+              const data = await res.json().catch(()=>({}));
+              if (data.success) {
+                alert('Pool snapshot loaded successfully');
+                fetchMetrics();
+              } else {
+                alert(data.message || 'Failed to load snapshot');
+              }
+            } catch {}
+          }}>Load Pools</button>
         </div>
       </div>
 

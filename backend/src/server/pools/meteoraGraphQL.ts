@@ -776,10 +776,15 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     tokenPrograms // Pass the map to collect token program info
   });
 
-  // Collect pool IDs for bitmap extension gap-filling
-  const poolIds = raw
-    .map(pool => pool.pubkey || pool.baseKey)
-    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  // Collect pool info for bitmap extension gap-filling (with activeId for smarter resolution)
+  const poolInfoMap = new Map<string, { id: string; activeId?: number }>();
+  for (const pool of raw) {
+    const id = pool.pubkey || pool.baseKey;
+    if (id && typeof id === 'string' && id.length > 0) {
+      const activeId = Number(pool.activeId ?? 0);
+      poolInfoMap.set(id, { id, activeId: Number.isFinite(activeId) ? activeId : undefined });
+    }
+  }
 
   // Build set of pools that already have bitmap extension PDAs from GraphQL
   const poolsWithGraphQLPDA = new Set<string>();
@@ -792,7 +797,8 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
   
   // Fetch via RPC for ALL pools that GraphQL didn't return a PDA for
   // Don't rely on binArrayBitmap field - GraphQL data may be stale
-  const poolsToCheck = poolIds.filter(id => !poolsWithGraphQLPDA.has(id));
+  // Pass activeId so we can skip pools that don't need bitmap extensions
+  const poolsToCheck = Array.from(poolInfoMap.values()).filter(p => !poolsWithGraphQLPDA.has(p.id));
   
   const bitmapExtensionMapPromise = poolsToCheck.length > 0
     ? resolveMeteoraBitmapExtensions(poolsToCheck)
