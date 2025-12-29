@@ -1468,6 +1468,13 @@ async function buildMeteoraDexAccountsForRouter(
   const userTokenIn = getAssociatedTokenAddressSync(inputMint, payer);
   const userTokenOut = getAssociatedTokenAddressSync(outputMint, payer);
   
+  // CRITICAL: Meteora expects user token accounts in X/Y order, NOT input/output order!
+  // The program uses account positions to identify token X vs Y accounts.
+  // X→Y: source is X (input), dest is Y (output)
+  // Y→X: source is Y (input), dest is X (output)
+  const userTokenX = isXtoY ? userTokenIn : userTokenOut;
+  const userTokenY = isXtoY ? userTokenOut : userTokenIn;
+  
   // Helper to safely convert to PublicKey with fallback
   const toPkOrFallback = (val: string | undefined, fallback: PublicKey): PublicKey => {
     if (!val || val === '') return fallback;
@@ -1486,8 +1493,8 @@ async function buildMeteoraDexAccountsForRouter(
       : METEORA_DLMM_PROGRAM,                                      // 1: Bitmap Extension (use program ID as fallback)
     toPkOrFallback(pool.reserveX, poolPubkey),                     // 2: Reserve X
     toPkOrFallback(pool.reserveY, poolPubkey),                     // 3: Reserve Y
-    userTokenIn,                                                   // 4: User Token In
-    userTokenOut,                                                  // 5: User Token Out
+    userTokenX,                                                    // 4: User Token X (NOT input - must be X/Y order!)
+    userTokenY,                                                    // 5: User Token Y (NOT output - must be X/Y order!)
     new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
     new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
     toPkOrFallback(pool.oracle, poolPubkey),                       // 8: Oracle
@@ -1535,8 +1542,8 @@ async function buildMeteoraDexAccountsForRouter(
       idx1_BitmapExt: accounts[1].toBase58(),
       idx2_ReserveX: accounts[2].toBase58(),
       idx3_ReserveY: accounts[3].toBase58(),
-      idx4_UserTokenIn: accounts[4].toBase58(),
-      idx5_UserTokenOut: accounts[5].toBase58(),
+      idx4_UserTokenX: accounts[4].toBase58(),
+      idx5_UserTokenY: accounts[5].toBase58(),
       idx6_TokenXMint: accounts[6].toBase58(),
       idx7_TokenYMint: accounts[7].toBase58(),
       idx8_Oracle: accounts[8].toBase58(),
@@ -1546,6 +1553,10 @@ async function buildMeteoraDexAccountsForRouter(
       inputMint: inputMint.toBase58(),
       outputMint: outputMint.toBase58(),
       isXtoY,
+      userTokenIn: userTokenIn.toBase58(),
+      userTokenOut: userTokenOut.toBase58(),
+      userTokenX: userTokenX.toBase58(),
+      userTokenY: userTokenY.toBase58(),
     },
     // Verify reserves match pool state (should all be true)
     verification: {
@@ -1553,6 +1564,12 @@ async function buildMeteoraDexAccountsForRouter(
       reserveYMatches: accounts[3].toBase58() === pool.reserveY,
       tokenXMintMatches: accounts[6].toBase58() === pool.tokenXMint,
       tokenYMintMatches: accounts[7].toBase58() === pool.tokenYMint,
+      userTokenXIsCorrect: isXtoY 
+        ? accounts[4].toBase58() === userTokenIn.toBase58()
+        : accounts[4].toBase58() === userTokenOut.toBase58(),
+      userTokenYIsCorrect: isXtoY
+        ? accounts[5].toBase58() === userTokenOut.toBase58()
+        : accounts[5].toBase58() === userTokenIn.toBase58(),
     },
     binArrayCount: binArrayAccounts.length,
     binArrays: sortedBinArrays.map(ba => ({ index: ba.index, address: ba.address.slice(0, 8) })),

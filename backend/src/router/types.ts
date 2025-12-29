@@ -118,6 +118,12 @@ export interface RouteStep {
 export interface ExecuteParams {
   /** Route steps to execute */
   steps: RouteStep[];
+  /** 
+   * Number of accounts for each step (enables variable bin arrays per hop).
+   * If empty/undefined, falls back to fixed account counts per DEX type.
+   * This allows Meteora hops to use more bin arrays when needed for low-TVL pools.
+   */
+  accountsPerStep?: number[];
   /** Minimum profit required */
   minProfit: bigint;
 }

@@ -126,6 +126,11 @@ pub struct ExecuteParams {
     /// The route steps to execute
     pub steps: Vec<RouteStep>,
     
+    /// Number of accounts for each step (enables variable bin arrays per hop)
+    /// If empty, falls back to fixed account counts per DEX type.
+    /// This allows Meteora hops to use more bin arrays when needed for low-TVL pools.
+    pub accounts_per_step: Vec<u8>,
+    
     /// Minimum profit required (in output token)
     /// Can be negative to allow losses (useful for testing)
     pub min_profit: i64,

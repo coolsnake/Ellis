@@ -297,13 +297,13 @@ async function buildFlashLoanArbTx(
     );
 
     // 2. Execute swaps (using execute instruction for multi-hop, now with validated accounts)
-    const { steps, dexAccounts } = await buildRouteSteps(plan.hops, wallet.publicKey);
+    const { steps, dexAccounts, accountsPerStep } = await buildRouteSteps(plan.hops, wallet.publicKey);
     
     instructions.push(
       buildExecuteIx(
         wallet.publicKey,
         userTokenAccount,
-        { steps, minProfit },
+        { steps, accountsPerStep, minProfit },
         dexAccounts,
         programId
       )
@@ -467,12 +467,12 @@ async function buildDirectRouterTx(
       );
     } else {
       // Multi-hop: execute supports dynamic amount propagation across steps
-      const { steps, dexAccounts } = await buildRouteSteps(plan.hops, wallet.publicKey);
+      const { steps, dexAccounts, accountsPerStep } = await buildRouteSteps(plan.hops, wallet.publicKey);
       instructions.push(
         buildExecuteIx(
           wallet.publicKey,
           userTokenAccount,
-          { steps, minProfit },
+          { steps, accountsPerStep, minProfit },
           dexAccounts,
           programId
         )
@@ -526,13 +526,18 @@ async function buildDirectRouterTx(
  * - First hop uses the specified amountInRaw
  * - Subsequent hops use amountIn=0, which tells the on-chain router to
  *   read the actual balance from the input token account (output of previous swap)
+ * 
+ * Returns accountsPerStep to enable variable account counts per hop.
+ * This is essential for Meteora pools that may need more bin arrays.
  */
 async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
   steps: RouteStep[];
   dexAccounts: PublicKey[];
+  accountsPerStep: number[];
 }> {
   const steps: RouteStep[] = [];
   const dexAccounts: PublicKey[] = [];
+  const accountsPerStep: number[] = [];
 
   for (let i = 0; i < hops.length; i++) {
     const hop = hops[i];
@@ -561,6 +566,9 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
     // Collect DEX accounts for this hop - pass wallet for signer account positions
     const hopAccounts = await extractDexAccounts(hop, dexType, wallet);
     dexAccounts.push(...hopAccounts);
+    
+    // Track actual account count for this hop (enables variable bin arrays for Meteora)
+    accountsPerStep.push(hopAccounts.length);
 
     logger.debug('routerTx.buildStep', {
       cat: 'tx',
@@ -576,7 +584,7 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
     });
   }
 
-  return { steps, dexAccounts };
+  return { steps, dexAccounts, accountsPerStep };
 }
 
 /**

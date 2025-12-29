@@ -238,12 +238,25 @@ pub mod arb_router {
     /// 
     /// Supports dynamic amount propagation: if step.amount_in == 0, uses the
     /// entire balance of the input token account (output from previous swap).
+    /// 
+    /// Variable account counts: If `accounts_per_step` is provided (non-empty),
+    /// each step uses the specified number of accounts instead of fixed DEX defaults.
+    /// This enables Meteora hops to use more bin arrays for low-TVL pools.
     pub fn execute<'info>(
         ctx: Context<'_, '_, '_, 'info, Execute<'info>>,
         params: ExecuteParams,
     ) -> Result<()> {
         require!(!params.steps.is_empty(), ArbRouterError::EmptyRoute);
         require!(params.steps.len() <= MAX_ROUTE_STEPS, ArbRouterError::TooManyRouteSteps);
+        
+        // Validate accounts_per_step if provided
+        let use_variable_accounts = !params.accounts_per_step.is_empty();
+        if use_variable_accounts {
+            require!(
+                params.accounts_per_step.len() == params.steps.len(),
+                ArbRouterError::InvalidAccount
+            );
+        }
 
         // Get initial balance
         let initial_balance = ctx.accounts.user_token_account.amount;
@@ -256,8 +269,21 @@ pub mod arb_router {
         for (i, step) in params.steps.iter().enumerate() {
             msg!("Executing step {} on DEX {:?}", i, step.dex_type as u8);
             
-            let accounts_needed = get_accounts_needed_for_dex(&step.dex_type);
+            // Use per-step account count if provided, otherwise fall back to fixed DEX defaults
+            let accounts_needed = if use_variable_accounts {
+                params.accounts_per_step[i] as usize
+            } else {
+                get_accounts_needed_for_dex(&step.dex_type)
+            };
+            
+            // Validate we have enough accounts
+            require!(
+                account_offset + accounts_needed <= ctx.remaining_accounts.len(),
+                ArbRouterError::InvalidAccount
+            );
+            
             let step_accounts = &ctx.remaining_accounts[account_offset..account_offset + accounts_needed];
+            msg!("Step {}: using {} accounts (offset: {})", i, accounts_needed, account_offset);
             
             // Determine actual amount to swap
             // If amount_in == 0, read the current balance of the input token account

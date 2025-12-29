@@ -406,15 +406,25 @@ export function buildExecuteIx(
     ...stepsData,
   ]);
 
+  // Serialize accounts_per_step as Vec<u8>: length (4 bytes LE) + u8 values
+  // If not provided, serialize as empty Vec (just the length = 0)
+  const accountsPerStep = params.accountsPerStep ?? [];
+  const accountsPerStepVec = Buffer.concat([
+    new BN(accountsPerStep.length).toArrayLike(Buffer, 'le', 4),
+    Buffer.from(accountsPerStep.map(n => n & 0xFF)), // Ensure u8 range
+  ]);
+
   // Serialize min_profit as signed i64 (two's complement for negative values)
   const minProfitBn = new BN(params.minProfit.toString());
   const minProfitBuffer = minProfitBn.isNeg()
     ? Buffer.from(minProfitBn.toTwos(64).toArrayLike(Buffer, 'le', 8))
     : Buffer.from(minProfitBn.toArrayLike(Buffer, 'le', 8));
 
+  // Match Rust ExecuteParams field order: steps, accounts_per_step, min_profit
   const data = Buffer.concat([
     DISCRIMINATORS.execute,
     stepsVec,
+    accountsPerStepVec,
     minProfitBuffer,
   ]);
 
