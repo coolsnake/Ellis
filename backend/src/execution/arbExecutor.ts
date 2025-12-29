@@ -104,6 +104,8 @@ export interface ExecutorConfig {
     // Fallback to wallet balance if flashloan unavailable
     fallbackToWallet: boolean;       // Default: true
   };
+  // On-chain router settings - route swaps through deployed router program
+  useRouter?: boolean;  // Use on-chain router for execution (when enabled and deployed)
 }
 
 interface ExecutionState {
@@ -715,8 +717,9 @@ export class ArbExecutor {
         );
 
         // Build transaction using the same method as arb routes - pass traceId
+        // Pass useRouter config to use on-chain router when enabled
         const { buildTransactionSummary } = await import('../server/arb.build.worker.compute.js');
-        built = await buildTransactionSummary(plan, undefined, undefined, traceId);
+        built = await buildTransactionSummary(plan, undefined, { useRouter: this.config.useRouter }, traceId);
 
         // Load execution config
         execCfg = await loadExecConfig();

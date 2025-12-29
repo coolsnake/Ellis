@@ -97,6 +97,10 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               set('flashloan_fallback_wallet', j.flashloanSettings.fallbackToWallet);
             }
           }
+          // Load router settings
+          if (typeof j.useRouter === 'boolean') {
+            set('use_router', j.useRouter);
+          }
         } 
       } catch {}
       // Load Jito config
@@ -195,6 +199,8 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               accountForFee: det.flashloan_account_for_fee !== false,
               fallbackToWallet: det.flashloan_fallback_wallet !== false,
             },
+            // Router settings - use on-chain router for execution
+            useRouter: !!det.use_router,
           }) 
         }),
         // Save Jito config
@@ -584,6 +590,28 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                 )}
               </div>
             )}
+          </div>
+
+          {/* On-chain Router Execution */}
+          <div className="bg-gray-700 rounded p-4 border-2 border-purple-500/30">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-lg font-semibold text-white">On-chain Router Execution</h3>
+              <label className="flex items-center gap-2 text-sm">
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4"
+                  checked={!!det.use_router} 
+                  onChange={e=>set('use_router', e.target.checked)} 
+                />
+                <span className="text-purple-400">Enabled</span>
+              </label>
+            </div>
+            
+            <p className="text-xs text-gray-400">
+              Route swaps through the deployed on-chain router program instead of building 
+              direct DEX instructions. Required for flashloans. The router must be deployed 
+              and enabled in Router Config.
+            </p>
           </div>
 
           {/* Flashloan Settings Section */}

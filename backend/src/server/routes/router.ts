@@ -60,7 +60,7 @@ import {
   requestAirdrop,
 } from '../../router/index.js';
 import { dexAltManager } from '../../execution/utils/altManager.js';
-import { loadStaticAlts } from '../../execution/utils/altSelection.js';
+import { loadAltsForRoute } from '../../execution/utils/altSelection.js';
 
 export function createRouterRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -1356,13 +1356,20 @@ export function createRouterRouter(io: SocketIOServer): Router {
       
       // Load ALTs for versioned transaction
       let lookupTables: AddressLookupTableAccount[] = [];
+      let altCoverage = 0;
+      let missingPools: string[] = [];
       try {
         // Initialize ALT manager if needed
         await dexAltManager.initialize();
         
-        // Load static ALTs (common, flashloan, userPdas)
-        const staticAlts = await loadStaticAlts();
-        lookupTables = staticAlts;
+        // Extract pool IDs from execution plan (works for all DEXes)
+        const poolIds = executionPlan.hops.map(hop => hop.poolId);
+        
+        // Load ALL relevant ALTs (static + pool-specific for any DEX)
+        const altResult = await loadAltsForRoute(poolIds);
+        lookupTables = altResult.lookupTables;
+        altCoverage = altResult.coverage;
+        missingPools = altResult.missingPools;
         
         // Log detailed ALT info for debugging
         const altDetails = lookupTables.map(alt => ({
@@ -1374,8 +1381,22 @@ export function createRouterRouter(io: SocketIOServer): Router {
           cat: 'router',
           altCount: lookupTables.length,
           totalAccounts: lookupTables.reduce((sum, alt) => sum + alt.state.addresses.length, 0),
+          coverage: `${(altCoverage * 100).toFixed(1)}%`,
+          poolIds,
+          missingPools: missingPools.length > 0 ? missingPools : undefined,
           details: altDetails,
         });
+        
+        // Warn if coverage is low for multi-hop transactions
+        if (altCoverage < 0.5 && executionPlan.hops.length >= 2) {
+          logger.warn('router.test-execute.low_alt_coverage', {
+            cat: 'router',
+            hops: executionPlan.hops.length,
+            coverage: `${(altCoverage * 100).toFixed(1)}%`,
+            missingPools,
+            suggestion: 'Create DEX pool ALTs via /arb/alt/create/dex-pools to improve transaction compression',
+          });
+        }
       } catch (altErr: any) {
         logger.warn('router.test-execute.alt_load_failed', {
           cat: 'router',
@@ -1414,12 +1435,27 @@ export function createRouterRouter(io: SocketIOServer): Router {
           cat: 'router',
           txSize,
           altCount: lookupTables.length,
+          coverage: `${(altCoverage * 100).toFixed(1)}%`,
+          missingPools,
         });
+        
+        // Provide helpful error message based on coverage
+        let errorMsg = `Transaction too large: ${txSize} bytes > 1232 limit`;
+        if (lookupTables.length === 0) {
+          errorMsg += '. No ALTs loaded - create ALTs via /arb/alt/create/common and /arb/alt/create/dex-pools';
+        } else if (altCoverage < 0.5) {
+          errorMsg += `. ALT coverage only ${(altCoverage * 100).toFixed(0)}% - create DEX pool ALTs for better compression`;
+        } else if (missingPools.length > 0) {
+          errorMsg += `. ${missingPools.length} pool(s) not covered by ALTs`;
+        }
+        
         return res.status(400).json({
           success: false,
-          error: `Transaction too large: ${txSize} bytes > 1232 limit (even with ${lookupTables.length} ALTs)`,
+          error: errorMsg,
           txSize,
           altCount: lookupTables.length,
+          coverage: altCoverage,
+          missingPools,
         });
       }
 
@@ -1437,6 +1473,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
           unitsConsumed: simResult.value.unitsConsumed,
           txSize,
           altCount: lookupTables.length,
+          coverage: `${(altCoverage * 100).toFixed(1)}%`,
         });
 
         emit('router:test-execute:complete', { 
@@ -1445,6 +1482,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
           unitsConsumed: simResult.value.unitsConsumed,
           txSize,
           altCount: lookupTables.length,
+          coverage: altCoverage,
         });
 
         return res.json({
@@ -1455,6 +1493,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
           unitsConsumed: simResult.value.unitsConsumed,
           txSize,
           altCount: lookupTables.length,
+          coverage: altCoverage,
           plan: {
             hops: executionPlan.hops.length,
             inputRaw: inputRaw.toString(),
@@ -1496,6 +1535,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
             signature,
             txSize,
             altCount: lookupTables.length,
+            coverage: altCoverage,
           });
 
           return res.json({
@@ -1505,6 +1545,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
             error: confirmation.value.err ? JSON.stringify(confirmation.value.err) : null,
             txSize,
             altCount: lookupTables.length,
+            coverage: altCoverage,
             plan: {
               hops: executionPlan.hops.length,
               inputRaw: inputRaw.toString(),
@@ -1517,6 +1558,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
             error: sendErr.message,
             txSize,
             altCount: lookupTables.length,
+            coverage: `${(altCoverage * 100).toFixed(1)}%`,
           });
 
           emit('router:test-execute:complete', { 
@@ -1524,6 +1566,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
             error: sendErr.message,
             txSize,
             altCount: lookupTables.length,
+            coverage: altCoverage,
           });
 
           return res.status(500).json({
@@ -1531,6 +1574,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
             error: sendErr.message,
             txSize,
             altCount: lookupTables.length,
+            coverage: altCoverage,
           });
         }
       }
