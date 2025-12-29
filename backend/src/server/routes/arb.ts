@@ -2584,6 +2584,374 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // ============================================================================
+  // ALT (Address Lookup Table) Management APIs
+  // ============================================================================
+
+  // Get ALT configuration and status
+  api.get('/arb/alt/config', async (_req: Request, res: Response) => {
+    try {
+      const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      const config = await loadAltConfig();
+      const cachedAlts = dexAltManager.getCachedAltAccounts();
+      
+      res.json({
+        config,
+        cache: {
+          altCount: cachedAlts.length,
+          totalAccounts: cachedAlts.reduce((sum, alt) => sum + (alt.state?.addresses?.length || 0), 0),
+          isWarm: dexAltManager.isCacheWarm(),
+        },
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.config_read_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Create common ALT (programs, system accounts, mints)
+  api.post('/arb/alt/create/common', async (_req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { ensureWallet } = await import('../../wallet/wallet.js');
+      
+      await dexAltManager.initialize();
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      
+      // Check if common ALT already exists
+      const config = await loadAltConfig();
+      if (config.alts.common) {
+        return res.status(400).json({ 
+          error: 'Common ALT already exists', 
+          address: config.alts.common,
+          suggestion: 'Use /arb/alt/extend/common to add more accounts'
+        });
+      }
+      
+      // Collect common accounts and create ALT
+      const accounts = await (dexAltManager as any).collectCommonAccounts();
+      const address = await (dexAltManager as any).createAltOnChain(wallet, accounts, 'common');
+      
+      // Update config
+      config.alts.common = address.toBase58();
+      config.walletPublicKey = wallet.publicKey.toBase58();
+      config.createdAt = Date.now();
+      await saveAltConfig(config);
+      
+      // Refresh cache
+      await dexAltManager.preloadAllAltAccounts();
+      
+      logger.info('arb.alt.api.common_created', { 
+        cat: 'tx', 
+        address: address.toBase58(),
+        accountCount: accounts.length,
+      });
+      
+      res.json({ 
+        status: 'created', 
+        category: 'common',
+        address: address.toBase58(),
+        accountCount: accounts.length,
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.common_create_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Create flashloan ALT (vault PDAs and token accounts)
+  api.post('/arb/alt/create/flashloan', async (req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { ensureWallet } = await import('../../wallet/wallet.js');
+      const { PublicKey } = await import('@solana/web3.js');
+      
+      await dexAltManager.initialize();
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      
+      // Get vault owner from request or config
+      const vaultOwner = req.body.vaultOwner 
+        ? new PublicKey(req.body.vaultOwner) 
+        : wallet.publicKey;
+      
+      // Get router program ID from config or request
+      const routerProgramId = req.body.routerProgramId
+        ? new PublicKey(req.body.routerProgramId)
+        : new PublicKey((CONFIG as any)?.router?.programId || '2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw');
+      
+      // Check if flashloan ALT already exists
+      const config = await loadAltConfig();
+      if (config.alts.flashloan) {
+        return res.status(400).json({ 
+          error: 'Flashloan ALT already exists', 
+          address: config.alts.flashloan,
+        });
+      }
+      
+      // Collect flashloan accounts
+      const accounts = await dexAltManager.collectFlashloanAccounts(vaultOwner, routerProgramId);
+      const address = await (dexAltManager as any).createAltOnChain(wallet, accounts, 'flashloan');
+      
+      // Update config
+      config.alts.flashloan = address.toBase58();
+      await saveAltConfig(config);
+      
+      // Refresh cache
+      await dexAltManager.preloadAllAltAccounts();
+      
+      logger.info('arb.alt.api.flashloan_created', { 
+        cat: 'tx', 
+        address: address.toBase58(),
+        accountCount: accounts.length,
+        vaultOwner: vaultOwner.toBase58(),
+      });
+      
+      res.json({ 
+        status: 'created', 
+        category: 'flashloan',
+        address: address.toBase58(),
+        accountCount: accounts.length,
+        vaultOwner: vaultOwner.toBase58(),
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.flashloan_create_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Create user PDAs ALT (wallet ATAs for common mints)
+  api.post('/arb/alt/create/user-pdas', async (_req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { ensureWallet } = await import('../../wallet/wallet.js');
+      
+      await dexAltManager.initialize();
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      
+      // Check if userPdas ALT already exists
+      const config = await loadAltConfig();
+      if (config.alts.userPdas) {
+        return res.status(400).json({ 
+          error: 'User PDAs ALT already exists', 
+          address: config.alts.userPdas,
+        });
+      }
+      
+      // Collect user PDA accounts
+      const accounts = await dexAltManager.collectUserPdaAccounts(wallet.publicKey);
+      const address = await (dexAltManager as any).createAltOnChain(wallet, accounts, 'userPdas');
+      
+      // Update config
+      config.alts.userPdas = address.toBase58();
+      await saveAltConfig(config);
+      
+      // Refresh cache
+      await dexAltManager.preloadAllAltAccounts();
+      
+      logger.info('arb.alt.api.userPdas_created', { 
+        cat: 'tx', 
+        address: address.toBase58(),
+        accountCount: accounts.length,
+        wallet: wallet.publicKey.toBase58(),
+      });
+      
+      res.json({ 
+        status: 'created', 
+        category: 'userPdas',
+        address: address.toBase58(),
+        accountCount: accounts.length,
+        wallet: wallet.publicKey.toBase58(),
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.userPdas_create_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Create DEX pool ALTs (multiple ALTs for top pools by TVL)
+  api.post('/arb/alt/create/dex-pools', async (req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      await dexAltManager.initialize();
+      
+      const dex = req.query.dex as 'raydium' | 'orca' | 'meteora' || req.body.dex;
+      const maxPools = Number(req.query.maxPools || req.body.maxPools || 50);
+      
+      if (!dex || !['raydium', 'orca', 'meteora'].includes(dex)) {
+        return res.status(400).json({ 
+          error: 'Invalid dex parameter. Must be one of: raydium, orca, meteora',
+        });
+      }
+      
+      logger.info('arb.alt.api.dex_pools_start', { cat: 'tx', dex, maxPools });
+      
+      const result = await dexAltManager.createDexPoolAlts(dex, maxPools);
+      
+      logger.info('arb.alt.api.dex_pools_created', { 
+        cat: 'tx', 
+        dex,
+        altsCreated: result.addresses.length,
+        totalPools: result.totalPools,
+        totalAccounts: result.totalAccounts,
+      });
+      
+      res.json({ 
+        status: 'created', 
+        dex,
+        maxPools,
+        result,
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.dex_pools_create_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Get ALT coverage for a route
+  api.post('/arb/alt/coverage', async (req: Request, res: Response) => {
+    try {
+      const { analyzeRouteAlts, DexType } = await import('../../execution/utils/altSelection.js');
+      
+      const poolIds = req.body.poolIds as string[];
+      const dexTypes = (req.body.dexTypes as number[]) || poolIds.map(() => DexType.Raydium);
+      
+      if (!poolIds || !Array.isArray(poolIds) || poolIds.length === 0) {
+        return res.status(400).json({ error: 'poolIds array required' });
+      }
+      
+      const analysis = await analyzeRouteAlts(poolIds, dexTypes);
+      
+      res.json(analysis);
+    } catch (e: any) {
+      logger.error('arb.alt.api.coverage_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Extend an existing ALT category with more accounts
+  api.post('/arb/alt/extend/:category', async (req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      await dexAltManager.initialize();
+      
+      const category = req.params.category;
+      const accounts = req.body.accounts as string[];
+      const poolIds = req.body.poolIds as string[];
+      
+      if (poolIds && poolIds.length > 0) {
+        // Collect accounts from pools
+        const dex = req.body.dex || 'raydium';
+        const collectedAccounts: string[] = [];
+        
+        for (const poolId of poolIds) {
+          const poolAccounts = await (dexAltManager as any).collectPoolSpecificAccounts(poolId, dex);
+          collectedAccounts.push(...poolAccounts.map((pk: any) => pk.toBase58()));
+        }
+        
+        const result = await dexAltManager.extendAlt(category, collectedAccounts);
+        
+        logger.info('arb.alt.api.extend_from_pools', { 
+          cat: 'tx', 
+          category,
+          poolCount: poolIds.length,
+          accountsAdded: collectedAccounts.length,
+          newTotal: result.accountCount,
+        });
+        
+        res.json({ 
+          status: 'extended', 
+          category,
+          ...result,
+          poolsAdded: poolIds.length,
+        });
+      } else if (accounts && accounts.length > 0) {
+        // Extend with explicit accounts
+        const result = await dexAltManager.extendAlt(category, accounts);
+        
+        logger.info('arb.alt.api.extend', { 
+          cat: 'tx', 
+          category,
+          accountsAdded: accounts.length,
+          newTotal: result.accountCount,
+        });
+        
+        res.json({ 
+          status: 'extended', 
+          category,
+          ...result,
+        });
+      } else {
+        return res.status(400).json({ 
+          error: 'Either accounts array or poolIds array required' 
+        });
+      }
+    } catch (e: any) {
+      logger.error('arb.alt.api.extend_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Refresh ALT cache
+  api.post('/arb/alt/refresh', async (_req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      const result = await dexAltManager.preloadAllAltAccounts();
+      
+      logger.info('arb.alt.api.cache_refreshed', { cat: 'tx', ...result });
+      
+      res.json({ 
+        status: 'refreshed', 
+        loaded: result.loaded,
+        failed: result.failed,
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.refresh_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Get pool-to-ALT mapping info
+  api.get('/arb/alt/pools', async (req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
+      
+      const config = await loadAltConfig();
+      const poolToAlt = config.poolToAlt || {};
+      const poolCount = Object.keys(poolToAlt).length;
+      
+      // If poolId query param, return specific pool info
+      const poolId = req.query.poolId as string;
+      if (poolId) {
+        const altAddress = await dexAltManager.getAltForPool(poolId);
+        return res.json({
+          poolId,
+          altAddress: altAddress || null,
+          isCovered: !!altAddress,
+        });
+      }
+      
+      res.json({
+        totalTrackedPools: poolCount,
+        dexAlts: config.dexAlts || {},
+        sampleMappings: Object.fromEntries(
+          Object.entries(poolToAlt).slice(0, 20)
+        ),
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.pools_read_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

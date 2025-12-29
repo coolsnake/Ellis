@@ -8,6 +8,8 @@ import {
   PublicKey,
   Transaction,
   TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
   SystemProgram,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
@@ -26,6 +28,9 @@ import { buildRouteSwapIx, dexNameToType, buildExecuteIx } from './sdk.js';
 import { DexType, RouteStep } from './types.js';
 import { getTokenMeta } from '../execution/resolver/tokenMeta.js';
 import { getBalances } from '../wallet/wallet.js';
+import { dexAltManager } from '../execution/utils/altManager.js';
+import { loadAltsForRoute, analyzeRouteAlts, DexType as AltDexType } from '../execution/utils/altSelection.js';
+import { loadAltConfig } from '../execution/utils/altConfig.js';
 
 // ============================================================================
 // Constants
@@ -54,10 +59,16 @@ export interface TestSwapParams {
   /** Router program ID - if provided, swap goes through the on-chain router */
   routerProgramId?: string;
   // Multi-hop parameters
-  hops?: number; // 1 or 2
+  hops?: number; // 1, 2, or 3
   secondPoolId?: string;
   secondDex?: string;
   secondVariant?: string;
+  // Third hop for 3-hop routes
+  thirdPoolId?: string;
+  thirdDex?: string;
+  thirdVariant?: string;
+  /** Use versioned transactions with ALTs (recommended for multi-hop) */
+  useVersionedTx?: boolean;
 }
 
 export interface TestSwapResult {
@@ -768,6 +779,10 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     secondPoolId,
     secondDex,
     secondVariant,
+    thirdPoolId,
+    thirdDex,
+    thirdVariant,
+    useVersionedTx = true, // Default to versioned transactions for ALT support
   } = params;
 
   try {
@@ -830,8 +845,8 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           routerProgram
         );
         swapIxs = [routerSwapIx];
-      } else if (hops === 2 && secondPoolId) {
-        // Two hops: use execute instruction
+      } else if ((hops === 2 && secondPoolId) || (hops === 3 && secondPoolId && thirdPoolId)) {
+        // Multi-hop: use execute instruction (2 or 3 hops)
         const secondPoolResult = await fetchPoolAccounts({ 
           connection, 
           poolId: secondPoolId, 
@@ -846,31 +861,56 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
 
         // Determine second pool mints
         let secondPoolMintA: string;
+        let secondPoolMintB: string;
         if (isRaydiumPool(secondPool)) {
           secondPoolMintA = secondPool.mintA;
+          secondPoolMintB = secondPool.mintB;
         } else if (isMeteoraDlmmPool(secondPool)) {
           secondPoolMintA = secondPool.tokenXMint;
+          secondPoolMintB = secondPool.tokenYMint;
         } else if (isOrcaWhirlpool(secondPool)) {
           secondPoolMintA = secondPool.mintA;
+          secondPoolMintB = secondPool.mintB;
         } else {
           return { success: false, simulated: false, error: 'Unknown second pool type' };
         }
 
         // Determine intermediate mint (output of first hop = input of second hop)
-        const intermediateMint = outMint;
-        const finalMint = inMint; // For round trip: SOL -> USDC -> SOL
+        const intermediateMint1 = outMint;
         
-        // Build steps for execute instruction
-        
+        // Build steps array
+        const steps: RouteStep[] = [];
+        const allDexAccounts: PublicKey[] = [];
+        const initialBalances: bigint[] = [];
+
+        // === FIRST STEP ===
         const firstStep: RouteStep = {
           dexType: dexType,
           amountIn: amountIn, // Use specified amount for first hop
           minAmountOut: minAmountOut,
           aToB: isAtoB,
         };
+        steps.push(firstStep);
+        initialBalances.push(0n); // First hop uses explicit amountIn
 
-        const secondIsAtoB = intermediateMint.toBase58() === secondPoolMintA;
+        const firstDexAccounts = await buildDexAccountsForRouter(
+          wallet.publicKey,
+          pool,
+          new PublicKey(poolId),
+          inMint,
+          intermediateMint1,
+          dexType
+        );
+        allDexAccounts.push(...firstDexAccounts);
+
+        // === SECOND STEP ===
+        const secondIsAtoB = intermediateMint1.toBase58() === secondPoolMintA;
         const secondDexType = dexNameToType(secondDex || dex, secondVariant || variant);
+        
+        // Determine second step output mint
+        const intermediateMint2 = secondIsAtoB 
+          ? new PublicKey(secondPoolMintB) 
+          : new PublicKey(secondPoolMintA);
         
         const secondStep: RouteStep = {
           dexType: secondDexType,
@@ -878,78 +918,145 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           minAmountOut: 1n, // Minimum output for second hop
           aToB: secondIsAtoB,
         };
+        steps.push(secondStep);
 
-        // Build DEX accounts for both hops
-        const firstDexAccounts = await buildDexAccountsForRouter(
-          wallet.publicKey,
-          pool,
-          new PublicKey(poolId),
-          inMint,
-          intermediateMint,
-          dexType
-        );
-
-        const secondDexAccounts = await buildDexAccountsForRouter(
-          wallet.publicKey,
-          secondPool,
-          new PublicKey(secondPoolId),
-          intermediateMint,
-          finalMint,
-          secondDexType
-        );
-
-        // Verify token accounts are correct
-        const userIntermediateAta = getAssociatedTokenAddressSync(intermediateMint, wallet.publicKey);
-        const userFinalAta = getAssociatedTokenAddressSync(finalMint, wallet.publicKey);
-        
-        logger.info('router.test.multi_hop.accounts', {
-          cat: 'router',
-          firstStep: {
-            inputMint: inMint.toBase58(),
-            outputMint: intermediateMint.toBase58(),
-            inputAta: getAssociatedTokenAddressSync(inMint, wallet.publicKey).toBase58(),
-            outputAta: userIntermediateAta.toBase58(),
-            dexAccountAtIndex3: firstDexAccounts[3]?.toBase58(),
-          },
-          secondStep: {
-            inputMint: intermediateMint.toBase58(),
-            outputMint: finalMint.toBase58(),
-            inputAta: userIntermediateAta.toBase58(),
-            outputAta: userFinalAta.toBase58(),
-            dexAccountAtIndex3: secondDexAccounts[3]?.toBase58(),
-            expectedToMatch: userIntermediateAta.toBase58(),
-          },
-        });
-
-        // Combine all DEX accounts - each step needs its own complete set including program ID
-        const allDexAccounts = [
-          ...firstDexAccounts,  // All 18 accounts for first hop
-          ...secondDexAccounts, // All 18 accounts for second hop
-        ];
-
-        // Compute initial balances for intermediate tokens to avoid swapping at-rest funds
-        // For first hop: we use explicit amountIn, so initial_balance = 0
-        // For second hop: we need the pre-existing wallet balance of the intermediate token
+        // Get initial balance for intermediate token 1
         let secondHopInitialBalance = 0n;
         try {
           const walletBalances = await getBalances(wallet.publicKey);
-          const intermediateMintStr = intermediateMint.toBase58();
+          const intermediateMintStr = intermediateMint1.toBase58();
           const uiBalance = walletBalances.tokens[intermediateMintStr] ?? 0;
           if (uiBalance > 0) {
-            // Get decimals for the intermediate token
-            const intermediateDecimals = 6; // Default to 6 for USDC/common tokens
+            const intermediateDecimals = 6;
             secondHopInitialBalance = BigInt(Math.floor(uiBalance * Math.pow(10, intermediateDecimals)));
-            logger.debug('router.test.multi_hop.initialBalance', {
-              cat: 'router',
-              intermediateMint: intermediateMintStr.slice(0, 8) + '...',
-              uiBalance,
-              initialBalance: secondHopInitialBalance.toString(),
-            });
           }
         } catch (e) {
           logger.warn('router.test.multi_hop.getBalances.failed', {
             cat: 'router',
             error: String((e as Error)?.message || e),
+          });
+        }
+        initialBalances.push(secondHopInitialBalance);
+
+        const secondDexAccounts = await buildDexAccountsForRouter(
+          wallet.publicKey,
+          secondPool,
+          new PublicKey(secondPoolId),
+          intermediateMint1,
+          intermediateMint2,
+          secondDexType
+        );
+        allDexAccounts.push(...secondDexAccounts);
+
+        // === THIRD STEP (if 3 hops) ===
+        if (hops === 3 && thirdPoolId) {
+          const thirdPoolResult = await fetchPoolAccounts({ 
+            connection, 
+            poolId: thirdPoolId, 
+            dex: thirdDex || dex, 
+            variant: thirdVariant || variant 
+          });
+          
+          if (!thirdPoolResult.success || !thirdPoolResult.pool) {
+            return { success: false, simulated: false, error: 'Failed to fetch third pool' };
+          }
+          const thirdPool = thirdPoolResult.pool;
+
+          // Determine third pool mints
+          let thirdPoolMintA: string;
+          if (isRaydiumPool(thirdPool)) {
+            thirdPoolMintA = thirdPool.mintA;
+          } else if (isMeteoraDlmmPool(thirdPool)) {
+            thirdPoolMintA = thirdPool.tokenXMint;
+          } else if (isOrcaWhirlpool(thirdPool)) {
+            thirdPoolMintA = thirdPool.mintA;
+          } else {
+            return { success: false, simulated: false, error: 'Unknown third pool type' };
+          }
+
+          const thirdIsAtoB = intermediateMint2.toBase58() === thirdPoolMintA;
+          const thirdDexType = dexNameToType(thirdDex || dex, thirdVariant || variant);
+          
+          // For 3-hop arbitrage, final mint should be same as input mint
+          const finalMint = inMint;
+          
+          const thirdStep: RouteStep = {
+            dexType: thirdDexType,
+            amountIn: 0n, // Use all from previous step
+            minAmountOut: 1n,
+            aToB: thirdIsAtoB,
+          };
+          steps.push(thirdStep);
+
+          // Get initial balance for intermediate token 2
+          let thirdHopInitialBalance = 0n;
+          try {
+            const walletBalances = await getBalances(wallet.publicKey);
+            const intermediateMint2Str = intermediateMint2.toBase58();
+            const uiBalance = walletBalances.tokens[intermediateMint2Str] ?? 0;
+            if (uiBalance > 0) {
+              const intermediateDecimals = 6;
+              thirdHopInitialBalance = BigInt(Math.floor(uiBalance * Math.pow(10, intermediateDecimals)));
+            }
+          } catch (e) {
+            // Ignore - use 0
+          }
+          initialBalances.push(thirdHopInitialBalance);
+
+          const thirdDexAccounts = await buildDexAccountsForRouter(
+            wallet.publicKey,
+            thirdPool,
+            new PublicKey(thirdPoolId),
+            intermediateMint2,
+            finalMint,
+            thirdDexType
+          );
+          allDexAccounts.push(...thirdDexAccounts);
+
+          logger.info('router.test.three_hop.accounts', {
+            cat: 'router',
+            ctx: {
+              hop1: {
+                pool: poolId.slice(0, 8) + '...',
+                inputMint: inMint.toBase58().slice(0, 8) + '...',
+                outputMint: intermediateMint1.toBase58().slice(0, 8) + '...',
+                accountCount: firstDexAccounts.length,
+              },
+              hop2: {
+                pool: secondPoolId.slice(0, 8) + '...',
+                inputMint: intermediateMint1.toBase58().slice(0, 8) + '...',
+                outputMint: intermediateMint2.toBase58().slice(0, 8) + '...',
+                accountCount: secondDexAccounts.length,
+              },
+              hop3: {
+                pool: thirdPoolId.slice(0, 8) + '...',
+                inputMint: intermediateMint2.toBase58().slice(0, 8) + '...',
+                outputMint: finalMint.toBase58().slice(0, 8) + '...',
+                accountCount: thirdDexAccounts.length,
+              },
+              totalAccounts: allDexAccounts.length,
+            },
+          });
+        } else {
+          // For 2-hop, log the accounts
+          const finalMint = inMint; // For round trip: SOL -> USDC -> SOL
+          logger.info('router.test.two_hop.accounts', {
+            cat: 'router',
+            ctx: {
+              hop1: {
+                pool: poolId.slice(0, 8) + '...',
+                inputMint: inMint.toBase58().slice(0, 8) + '...',
+                outputMint: intermediateMint1.toBase58().slice(0, 8) + '...',
+                accountCount: firstDexAccounts.length,
+              },
+              hop2: {
+                pool: secondPoolId.slice(0, 8) + '...',
+                inputMint: intermediateMint1.toBase58().slice(0, 8) + '...',
+                outputMint: finalMint.toBase58().slice(0, 8) + '...',
+                accountCount: secondDexAccounts.length,
+              },
+              totalAccounts: allDexAccounts.length,
+            },
           });
         }
 
@@ -958,17 +1065,16 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           wallet.publicKey,
           userInAta,
           {
-            steps: [firstStep, secondStep],
+            steps,
             minProfit: -1000000000n, // Allow large loss for testing (fees will cause loss in round-trip swaps)
-            // Pass initial balances: first hop uses explicit amount (0), second hop needs wallet balance
-            initialBalances: [0n, secondHopInitialBalance],
+            initialBalances,
           },
           allDexAccounts,
           routerProgram
         );
         swapIxs = [executeIx];
       } else {
-        return { success: false, simulated: false, error: 'Invalid hops configuration' };
+        return { success: false, simulated: false, error: 'Invalid hops configuration. For 2 hops provide secondPoolId, for 3 hops provide secondPoolId and thirdPoolId.' };
       }
     } else {
       // Direct mode (not using router) - single hop only for now
@@ -996,7 +1102,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     }
 
     // Build transaction with setup instructions
-    const tx = new Transaction();
+    const allInstructions: TransactionInstruction[] = [];
     
     // Detect token programs for mints using cached token meta (handles Token-2022)
     const [inMeta, outMeta] = await Promise.all([
@@ -1013,7 +1119,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     
     // For multi-hop, also ensure intermediate token account exists
     let intermediateAta: PublicKey | undefined;
-    if (hops === 2 && routerProgramId) {
+    if (hops >= 2 && routerProgramId) {
       const intermediateMint = outMint; // For round-trip, intermediate is the output of first hop
       const intermediateMeta = await getTokenMeta(intermediateMint.toBase58());
       const intermediateMintTokenProgram = intermediateMeta.program === 'token-2022' 
@@ -1023,7 +1129,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
       
       const intermediateAtaInfo = await connection.getAccountInfo(intermediateAta);
       if (!intermediateAtaInfo) {
-        tx.add(createAssociatedTokenAccountInstruction(
+        allInstructions.push(createAssociatedTokenAccountInstruction(
           wallet.publicKey, intermediateAta, wallet.publicKey, intermediateMint, intermediateMintTokenProgram
         ));
       }
@@ -1035,14 +1141,14 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     ]);
     
     if (!inAtaInfo) {
-      tx.add(createAssociatedTokenAccountInstruction(
+      allInstructions.push(createAssociatedTokenAccountInstruction(
         wallet.publicKey, userInAta, wallet.publicKey, inMint, inMintTokenProgram
       ));
     }
     
     // If input is SOL, always wrap the required amount (even if account exists)
     if (inMint.equals(NATIVE_MINT)) {
-      tx.add(
+      allInstructions.push(
         SystemProgram.transfer({
           fromPubkey: wallet.publicKey,
           toPubkey: userInAta,
@@ -1053,124 +1159,185 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     }
     
     if (!outAtaInfo) {
-      tx.add(createAssociatedTokenAccountInstruction(
+      allInstructions.push(createAssociatedTokenAccountInstruction(
         wallet.publicKey, userOutAta, wallet.publicKey, outMint, outMintTokenProgram
       ));
     }
     
-    // Add swap instructions from SDK
-    for (const ix of swapIxs) {
-      tx.add(ix);
-    }
-    
-    // Set recent blockhash and fee payer
-    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-    tx.feePayer = wallet.publicKey;
+    // Add swap instructions
+    allInstructions.push(...swapIxs);
 
-    if (simulateOnly) {
-      // Simulate transaction
-      const simulation = await connection.simulateTransaction(tx, [wallet]);
-      
-      // Build pool accounts based on pool type
-      let poolAccounts: Record<string, string>;
-      if (isRaydiumPool(pool)) {
-        poolAccounts = {
-          pool: poolId,
-          dex: 'raydium_clmm',
-          ammConfig: pool.ammConfig,
-          vaultA: pool.vaultA,
-          vaultB: pool.vaultB,
-          mintA: pool.mintA,
-          mintB: pool.mintB,
-          observation: pool.observationId,
-          tickArrayLower: pool.tickArrays.lower,
-          tickArrayCenter: pool.tickArrays.center,
-          tickArrayUpper: pool.tickArrays.upper,
-        };
-      } else if (isMeteoraDlmmPool(pool)) {
-        poolAccounts = {
-          pool: poolId,
-          dex: 'meteora_dlmm',
-          tokenXMint: pool.tokenXMint,
-          tokenYMint: pool.tokenYMint,
-          reserveX: pool.reserveX,
-          reserveY: pool.reserveY,
-          oracle: pool.oracle,
-          activeId: String(pool.activeId),
-          binStep: String(pool.binStep),
-          binArrays: JSON.stringify(pool.binArrays),
-        };
-      } else if (isOrcaWhirlpool(pool)) {
-        poolAccounts = {
-          pool: poolId,
-          dex: 'orca_whirlpool',
-          mintA: pool.mintA,
-          mintB: pool.mintB,
-          vaultA: pool.vaultA,
-          vaultB: pool.vaultB,
-          oracle: pool.oracle,
-          tickCurrentIndex: String(pool.tickCurrentIndex),
-          tickSpacing: String(pool.tickSpacing),
-          tickArrayLower: pool.tickArrays.lower,
-          tickArrayCenter: pool.tickArrays.center,
-          tickArrayUpper: pool.tickArrays.upper,
-        };
-      } else {
-        poolAccounts = { pool: poolId };
-      }
-      
-      return {
-        success: !simulation.value.err,
-        simulated: true,
-        error: simulation.value.err ? JSON.stringify(simulation.value.err) : undefined,
-        logs: simulation.value.logs || [],
-        unitsConsumed: simulation.value.unitsConsumed,
-        poolAccounts,
+    // Collect pool IDs for ALT selection
+    const routePoolIds = [poolId];
+    if (secondPoolId) routePoolIds.push(secondPoolId);
+    if (thirdPoolId) routePoolIds.push(thirdPoolId);
+
+    // Build pool accounts metadata for return
+    let poolAccounts: Record<string, string>;
+    if (isRaydiumPool(pool)) {
+      poolAccounts = {
+        pool: poolId,
+        dex: 'raydium_clmm',
+        ammConfig: pool.ammConfig,
+        vaultA: pool.vaultA,
+        vaultB: pool.vaultB,
+        mintA: pool.mintA,
+        mintB: pool.mintB,
+        observation: pool.observationId,
+        tickArrayLower: pool.tickArrays.lower,
+        tickArrayCenter: pool.tickArrays.center,
+        tickArrayUpper: pool.tickArrays.upper,
+      };
+    } else if (isMeteoraDlmmPool(pool)) {
+      poolAccounts = {
+        pool: poolId,
+        dex: 'meteora_dlmm',
+        tokenXMint: pool.tokenXMint,
+        tokenYMint: pool.tokenYMint,
+        reserveX: pool.reserveX,
+        reserveY: pool.reserveY,
+        oracle: pool.oracle,
+        activeId: String(pool.activeId),
+        binStep: String(pool.binStep),
+        binArrays: JSON.stringify(pool.binArrays),
+      };
+    } else if (isOrcaWhirlpool(pool)) {
+      poolAccounts = {
+        pool: poolId,
+        dex: 'orca_whirlpool',
+        mintA: pool.mintA,
+        mintB: pool.mintB,
+        vaultA: pool.vaultA,
+        vaultB: pool.vaultB,
+        oracle: pool.oracle,
+        tickCurrentIndex: String(pool.tickCurrentIndex),
+        tickSpacing: String(pool.tickSpacing),
+        tickArrayLower: pool.tickArrays.lower,
+        tickArrayCenter: pool.tickArrays.center,
+        tickArrayUpper: pool.tickArrays.upper,
       };
     } else {
-      // Execute transaction
-      const signature = await sendAndConfirmTransaction(
-        connection,
-        tx,
-        [wallet],
-        { commitment: 'confirmed' }
-      );
+      poolAccounts = { pool: poolId };
+    }
+
+    // Use versioned transactions with ALTs for multi-hop or when explicitly requested
+    if (useVersionedTx && (hops >= 2 || routerProgramId)) {
+      // Initialize ALT manager and load ALTs for this route
+      await dexAltManager.initialize();
+      const { lookupTables, coverage, missingPools } = await loadAltsForRoute(routePoolIds);
       
-      // Build pool accounts based on pool type
-      let poolAccounts: Record<string, string>;
-      if (isRaydiumPool(pool)) {
-        poolAccounts = {
-          pool: poolId,
-          dex: 'raydium_clmm',
-          ammConfig: pool.ammConfig,
-          vaultA: pool.vaultA,
-          vaultB: pool.vaultB,
-        };
-      } else if (isMeteoraDlmmPool(pool)) {
-        poolAccounts = {
-          pool: poolId,
-          dex: 'meteora_dlmm',
-          reserveX: pool.reserveX,
-          reserveY: pool.reserveY,
-        };
-      } else if (isOrcaWhirlpool(pool)) {
-        poolAccounts = {
-          pool: poolId,
-          dex: 'orca_whirlpool',
-          vaultA: pool.vaultA,
-          vaultB: pool.vaultB,
-          oracle: pool.oracle,
+      // Log ALT coverage
+      logger.info('router.test.alt.coverage', {
+        cat: 'router',
+        ctx: {
+          hops,
+          poolCount: routePoolIds.length,
+          altCount: lookupTables.length,
+          coverage: `${(coverage * 100).toFixed(1)}%`,
+          missingPools: missingPools.length > 0 ? missingPools : undefined,
+          instructionCount: allInstructions.length,
+        },
+      });
+
+      // Get blockhash for versioned transaction
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      
+      // Build versioned transaction with ALTs
+      const messageV0 = new TransactionMessage({
+        payerKey: wallet.publicKey,
+        recentBlockhash: blockhash,
+        instructions: allInstructions,
+      }).compileToV0Message(lookupTables);
+
+      const versionedTx = new VersionedTransaction(messageV0);
+      versionedTx.sign([wallet]);
+
+      // Log transaction size
+      const txSize = versionedTx.serialize().length;
+      logger.info('router.test.versioned_tx.built', {
+        cat: 'router',
+        ctx: {
+          hops,
+          txSize,
+          maxSize: 1232,
+          fitsInBlock: txSize < 1232,
+          altCount: lookupTables.length,
+          instructionCount: allInstructions.length,
+        },
+      });
+
+      if (simulateOnly) {
+        // Simulate versioned transaction
+        const simulation = await connection.simulateTransaction(versionedTx);
+        
+        return {
+          success: !simulation.value.err,
+          simulated: true,
+          error: simulation.value.err ? JSON.stringify(simulation.value.err) : undefined,
+          logs: simulation.value.logs || [],
+          unitsConsumed: simulation.value.unitsConsumed,
+          poolAccounts,
         };
       } else {
-        poolAccounts = { pool: poolId };
+        // Execute versioned transaction
+        const signature = await connection.sendTransaction(versionedTx, {
+          skipPreflight: false,
+          preflightCommitment: 'confirmed',
+        });
+        
+        // Confirm transaction
+        await connection.confirmTransaction({
+          signature,
+          blockhash,
+          lastValidBlockHeight,
+        }, 'confirmed');
+        
+        return {
+          success: true,
+          simulated: false,
+          signature,
+          poolAccounts,
+        };
+      }
+    } else {
+      // Legacy transaction path (for single-hop direct mode)
+      const tx = new Transaction();
+      for (const ix of allInstructions) {
+        tx.add(ix);
       }
       
-      return {
-        success: true,
-        simulated: false,
-        signature,
-        poolAccounts,
-      };
+      // Set recent blockhash and fee payer
+      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      tx.feePayer = wallet.publicKey;
+
+      if (simulateOnly) {
+        // Simulate transaction
+        const simulation = await connection.simulateTransaction(tx, [wallet]);
+        
+        return {
+          success: !simulation.value.err,
+          simulated: true,
+          error: simulation.value.err ? JSON.stringify(simulation.value.err) : undefined,
+          logs: simulation.value.logs || [],
+          unitsConsumed: simulation.value.unitsConsumed,
+          poolAccounts,
+        };
+      } else {
+        // Execute transaction
+        const signature = await sendAndConfirmTransaction(
+          connection,
+          tx,
+          [wallet],
+          { commitment: 'confirmed' }
+        );
+        
+        return {
+          success: true,
+          simulated: false,
+          signature,
+          poolAccounts,
+        };
+      }
     }
   } catch (err: any) {
     logger.error('router.test.swap.error', { cat: 'router', error: err.message, stack: err.stack });
