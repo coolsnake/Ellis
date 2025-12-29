@@ -13,22 +13,26 @@ interface ActivityResult {
  * Check if a pool has had any on-chain activity within the specified time window
  * @param poolId - Pool account address (base58 string)
  * @param maxInactiveMs - Maximum milliseconds since last activity (default: 12 hours)
+ * @param checkSuccess - Whether to filter for successful transactions only (default: true)
  * @returns Activity result with active status and last activity timestamp
  */
 export async function checkPoolActivity(
   poolId: string,
-  maxInactiveMs: number = 12 * 60 * 60 * 1000 // 12 hours default
+  maxInactiveMs: number = 12 * 60 * 60 * 1000, // 12 hours default
+  checkSuccess: boolean = true
 ): Promise<ActivityResult> {
   const connection = getConnection();
   
   try {
     const poolPubkey = new PublicKey(poolId);
     
-    // Get the most recent transaction signature for this pool
+    // Get recent transaction signatures for this pool
+    // Fetch more if checking success, since some may have failed
+    const signatureLimit = checkSuccess ? 10 : 1;
     const signatures = await withRpcLimit(
       () => connection.getSignaturesForAddress(
         poolPubkey,
-        { limit: 1 },
+        { limit: signatureLimit },
         'confirmed'
       ),
       1,
@@ -42,7 +46,22 @@ export async function checkPoolActivity(
       };
     }
     
-    const mostRecent = signatures[0];
+    // Find the most recent successful transaction
+    // getSignaturesForAddress returns err field: null means success, non-null means failed
+    let mostRecent = signatures[0];
+    
+    if (checkSuccess) {
+      const successfulSig = signatures.find(sig => sig.err === null && sig.blockTime);
+      if (!successfulSig) {
+        // No successful transactions found in the batch
+        return {
+          active: false,
+          lastActivityMs: null,
+          error: 'no_successful_transactions_found',
+        };
+      }
+      mostRecent = successfulSig;
+    }
     
     // If blockTime is null, we can't determine activity
     if (!mostRecent.blockTime) {
