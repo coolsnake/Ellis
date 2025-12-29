@@ -5,7 +5,7 @@
 
 import { Router, type Request, type Response } from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
-import { PublicKey, Keypair, Transaction, sendAndConfirmTransaction } from '@solana/web3.js';
+import { PublicKey, Keypair, Transaction, TransactionMessage, VersionedTransaction, sendAndConfirmTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import BN from 'bn.js';
 import { logger } from '../../utils/logger.js';
@@ -59,6 +59,8 @@ import {
   checkDeploymentBalance,
   requestAirdrop,
 } from '../../router/index.js';
+import { dexAltManager } from '../../execution/utils/altManager.js';
+import { loadStaticAlts } from '../../execution/utils/altSelection.js';
 
 export function createRouterRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -1274,8 +1276,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
         });
       }
 
-      // Build a transaction from the instructions
-      const tx = new Transaction();
+      // Build transaction instructions array
+      const allInstructions: typeof txResult.instructions = [];
       
       // CRITICAL: Create user token accounts before execute instruction
       // The router's execute instruction expects user_token_account to exist
@@ -1300,7 +1302,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
       ]);
       
       if (!inputAtaInfo) {
-        tx.add(createAssociatedTokenAccountInstruction(
+        allInstructions.push(createAssociatedTokenAccountInstruction(
           wallet.publicKey, // payer
           userInputAta,     // ata
           wallet.publicKey, // owner
@@ -1310,7 +1312,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
       }
       
       if (!outputAtaInfo) {
-        tx.add(createAssociatedTokenAccountInstruction(
+        allInstructions.push(createAssociatedTokenAccountInstruction(
           wallet.publicKey, // payer
           userOutputAta,    // ata
           wallet.publicKey, // owner
@@ -1336,7 +1338,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         const intermediateAtaInfo = await connection.getAccountInfo(intermediateAta);
         
         if (!intermediateAtaInfo) {
-          tx.add(createAssociatedTokenAccountInstruction(
+          allInstructions.push(createAssociatedTokenAccountInstruction(
             wallet.publicKey,
             intermediateAta,
             wallet.publicKey,
@@ -1346,20 +1348,84 @@ export function createRouterRouter(io: SocketIOServer): Router {
         }
       }
       
-      // Now add the router instructions
-      tx.add(...txResult.instructions);
+      // Add the router instructions
+      allInstructions.push(...txResult.instructions);
 
-      // Add recent blockhash
+      // Get recent blockhash
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-      tx.recentBlockhash = blockhash;
-      tx.lastValidBlockHeight = lastValidBlockHeight;
-      tx.feePayer = wallet.publicKey;
+      
+      // Load ALTs for versioned transaction
+      let lookupTables: AddressLookupTableAccount[] = [];
+      try {
+        // Initialize ALT manager if needed
+        await dexAltManager.initialize();
+        
+        // Load static ALTs (common, flashloan, userPdas)
+        const staticAlts = await loadStaticAlts();
+        lookupTables = staticAlts;
+        
+        // Log detailed ALT info for debugging
+        const altDetails = lookupTables.map(alt => ({
+          address: alt.key.toBase58().slice(0, 8) + '...',
+          accounts: alt.state.addresses.length,
+        }));
+        
+        logger.info('router.test-execute.alts_loaded', {
+          cat: 'router',
+          altCount: lookupTables.length,
+          totalAccounts: lookupTables.reduce((sum, alt) => sum + alt.state.addresses.length, 0),
+          details: altDetails,
+        });
+      } catch (altErr: any) {
+        logger.warn('router.test-execute.alt_load_failed', {
+          cat: 'router',
+          error: altErr.message,
+          stack: altErr.stack?.split('\n').slice(0, 3).join('\n'),
+        });
+        // Continue without ALTs - may still work for smaller transactions
+      }
+      
+      // Build versioned transaction
+      const messageV0 = new TransactionMessage({
+        payerKey: wallet.publicKey,
+        recentBlockhash: blockhash,
+        instructions: allInstructions,
+      }).compileToV0Message(lookupTables);
+      
+      const versionedTx = new VersionedTransaction(messageV0);
+      const keypair = Keypair.fromSecretKey(wallet.secretKey);
+      versionedTx.sign([keypair]);
+      
+      // Check transaction size
+      const txSize = versionedTx.serialize().length;
+      const fitsInBlock = txSize <= 1232;
+      
+      logger.info('router.test-execute.tx_built', {
+        cat: 'router',
+        txSizeBytes: txSize,
+        fitsInBlock,
+        instructionCount: allInstructions.length,
+        altCount: lookupTables.length,
+        hops: executionPlan.hops.length,
+      });
+      
+      if (!fitsInBlock) {
+        logger.error('router.test-execute.tx_too_large', {
+          cat: 'router',
+          txSize,
+          altCount: lookupTables.length,
+        });
+        return res.status(400).json({
+          success: false,
+          error: `Transaction too large: ${txSize} bytes > 1232 limit (even with ${lookupTables.length} ALTs)`,
+          txSize,
+          altCount: lookupTables.length,
+        });
+      }
 
       if (simulate) {
-        // Simulate the transaction - sign it first for proper simulation
-        const keypair = Keypair.fromSecretKey(wallet.secretKey);
-        tx.sign(keypair);
-        const simResult = await connection.simulateTransaction(tx);
+        // Simulate the versioned transaction
+        const simResult = await connection.simulateTransaction(versionedTx);
 
         const success = !simResult.value.err;
         
@@ -1369,12 +1435,16 @@ export function createRouterRouter(io: SocketIOServer): Router {
           error: simResult.value.err,
           logs: simResult.value.logs?.slice(-10),
           unitsConsumed: simResult.value.unitsConsumed,
+          txSize,
+          altCount: lookupTables.length,
         });
 
         emit('router:test-execute:complete', { 
           success, 
           simulated: true,
           unitsConsumed: simResult.value.unitsConsumed,
+          txSize,
+          altCount: lookupTables.length,
         });
 
         return res.json({
@@ -1383,6 +1453,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
           error: simResult.value.err ? JSON.stringify(simResult.value.err) : null,
           logs: simResult.value.logs,
           unitsConsumed: simResult.value.unitsConsumed,
+          txSize,
+          altCount: lookupTables.length,
           plan: {
             hops: executionPlan.hops.length,
             inputRaw: inputRaw.toString(),
@@ -1390,13 +1462,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
           },
         });
       } else {
-        // Send the transaction
+        // Send the versioned transaction
         try {
-          // Sign the transaction
-          const keypair = Keypair.fromSecretKey(wallet.secretKey);
-          tx.sign(keypair);
-
-          const signature = await connection.sendRawTransaction(tx.serialize(), {
+          const signature = await connection.sendRawTransaction(versionedTx.serialize(), {
             skipPreflight: true,
             preflightCommitment: 'confirmed',
           });
@@ -1426,6 +1494,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
             success, 
             simulated: false,
             signature,
+            txSize,
+            altCount: lookupTables.length,
           });
 
           return res.json({
@@ -1433,6 +1503,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
             simulated: false,
             signature,
             error: confirmation.value.err ? JSON.stringify(confirmation.value.err) : null,
+            txSize,
+            altCount: lookupTables.length,
             plan: {
               hops: executionPlan.hops.length,
               inputRaw: inputRaw.toString(),
@@ -1443,16 +1515,22 @@ export function createRouterRouter(io: SocketIOServer): Router {
           logger.error('router.test-execute.send_error', {
             cat: 'router',
             error: sendErr.message,
+            txSize,
+            altCount: lookupTables.length,
           });
 
           emit('router:test-execute:complete', { 
             success: false, 
             error: sendErr.message,
+            txSize,
+            altCount: lookupTables.length,
           });
 
           return res.status(500).json({
             success: false,
             error: sendErr.message,
+            txSize,
+            altCount: lookupTables.length,
           });
         }
       }

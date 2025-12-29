@@ -80,8 +80,10 @@ export class DexAltManager {
                   continue;
                 }
                 
-                // ALT is valid, add it to our map
+                // ALT is valid, add it to our maps
                 this.altAddresses.set(category, pk);
+                // CRITICAL: Also cache the ALT account for getCachedAltByAddress()
+                this.altAccounts.set(address, altAccount.value);
               } catch (e) {
                 // Invalid address or RPC error, skip it
                 invalidCategories.push(category);
