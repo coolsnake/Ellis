@@ -696,7 +696,9 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                     
                     const validArrays: Array<{ index: number; address: string }> = [];
                     let validLower: string | undefined;
+                    let validLower2: string | undefined;
                     let validUpper: string | undefined;
+                    let validUpper2: string | undefined;
                     let validActive: string | undefined;
                     
                     const BIN_ARRAY_SIZE = 70;
@@ -709,15 +711,21 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                       if (info && info.owner.equals(programId) && info.data.length > 0) {
                         validArrays.push(arr);
                         
-                        // Track special positions
+                        // Track special positions (active and ±2 neighbors)
                         if (arr.index === activeBinArrayIdx) {
                           validActive = arr.address;
                         }
                         if (arr.index === activeBinArrayIdx - 1) {
                           validLower = arr.address;
                         }
+                        if (arr.index === activeBinArrayIdx - 2) {
+                          validLower2 = arr.address;
+                        }
                         if (arr.index === activeBinArrayIdx + 1) {
                           validUpper = arr.address;
+                        }
+                        if (arr.index === activeBinArrayIdx + 2) {
+                          validUpper2 = arr.address;
                         }
                       }
                     }
@@ -725,7 +733,9 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                     if (validArrays.length > 0) {
                       validatedBinArrays = {
                         lower: validLower,
+                        lower2: validLower2,
                         upper: validUpper,
+                        upper2: validUpper2,
                         active: validActive,
                         arrays: validArrays,
                         range: binArrayAddresses.range
@@ -860,7 +870,9 @@ async function deriveBinArrays(
   DLMM: any
 ): Promise<{ 
   lower?: string;
+  lower2?: string;
   upper?: string;
+  upper2?: string;
   active?: string;
   arrays?: Array<{ index: number; address: string }>;
   range?: { lower: number; upper: number };
@@ -913,7 +925,9 @@ async function deriveBinArrays(
     
     let activeAddress: string | undefined;
     let lowerAddress: string | undefined;
+    let lower2Address: string | undefined;
     let upperAddress: string | undefined;
+    let upper2Address: string | undefined;
     
     for (let i = startIdx; i <= endIdx; i++) {
       try {
@@ -938,15 +952,21 @@ async function deriveBinArrays(
         const address = typeof binArrayPk?.toBase58 === 'function' ? binArrayPk.toBase58() : String(binArrayPk);
         arrays.push({ index: i, address });
         
-        // Track active, lower, and upper for backward compatibility
+        // Track active and ±2 neighbors for directional swaps
         if (i === activeBinArrayIdx) {
           activeAddress = address;
         }
         if (i === activeBinArrayIdx - 1) {
           lowerAddress = address;
         }
+        if (i === activeBinArrayIdx - 2) {
+          lower2Address = address;
+        }
         if (i === activeBinArrayIdx + 1) {
           upperAddress = address;
+        }
+        if (i === activeBinArrayIdx + 2) {
+          upper2Address = address;
         }
       } catch (e: any) {
         // Skip invalid derivations
@@ -963,10 +983,12 @@ async function deriveBinArrays(
       return undefined;
     }
     
-    // Return both new format (arrays) and backward-compatible format (lower/upper)
+    // Return both new format (arrays) and backward-compatible format (lower/upper/lower2/upper2)
     return {
       lower: lowerAddress,
+      lower2: lower2Address,
       upper: upperAddress,
+      upper2: upper2Address,
       active: activeAddress,
       arrays,
       range: { lower: startIdx, upper: endIdx }
