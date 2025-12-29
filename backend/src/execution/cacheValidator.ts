@@ -21,6 +21,99 @@ const ORCA_TICK_ARRAY_SIZE = 88;
 const RAYDIUM_TICK_ARRAY_SIZE = 60;
 const METEORA_BIN_ARRAY_SIZE = 70;
 
+/**
+ * Derive and validate tick arrays for a pool
+ * Returns derived addresses and their on-chain validation status
+ */
+async function deriveAndValidateTickArrays(
+  connection: Connection,
+  poolId: string,
+  currentTick: number,
+  tickSpacing: number,
+  dex: 'orca' | 'raydium'
+): Promise<{
+  tickArrays?: { center: string; lower: string[]; upper: string[] };
+  validation?: TickArrayValidation;
+}> {
+  try {
+    const poolPk = new PublicKey(poolId);
+    const tickArraySize = dex === 'orca' ? ORCA_TICK_ARRAY_SIZE : RAYDIUM_TICK_ARRAY_SIZE;
+    const ticksInArray = tickArraySize * tickSpacing;
+    const realIndex = Math.floor(currentTick / ticksInArray);
+    const programId = dex === 'orca' ? ORCA_WHIRLPOOL_PROGRAM : RAYDIUM_CLMM_PROGRAM;
+    
+    // Derive tick array PDAs
+    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
+      if (dex === 'orca') {
+        // Orca uses ASCII string encoding
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('tick_array'), poolPk.toBuffer(), Buffer.from(startTickIndex.toString())],
+          programId
+        );
+        return pda;
+      } else {
+        // Raydium uses binary i32 LE encoding
+        const startTickBuffer = Buffer.alloc(4);
+        startTickBuffer.writeInt32LE(startTickIndex, 0);
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('tick_array'), poolPk.toBuffer(), startTickBuffer],
+          programId
+        );
+        return pda;
+      }
+    };
+    
+    // Derive lower, center, upper tick arrays (and extras for coverage)
+    const centerStart = realIndex * ticksInArray;
+    const tickArrayPdas = [
+      { type: 'lower' as const, offset: -2, pda: deriveTickArrayPda((realIndex - 2) * ticksInArray) },
+      { type: 'lower' as const, offset: -1, pda: deriveTickArrayPda((realIndex - 1) * ticksInArray) },
+      { type: 'center' as const, offset: 0, pda: deriveTickArrayPda(centerStart) },
+      { type: 'upper' as const, offset: 1, pda: deriveTickArrayPda((realIndex + 1) * ticksInArray) },
+      { type: 'upper' as const, offset: 2, pda: deriveTickArrayPda((realIndex + 2) * ticksInArray) },
+    ];
+    
+    // Batch check existence
+    const pdaKeys = tickArrayPdas.map(p => p.pda);
+    const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+    
+    const lower: string[] = [];
+    let center: string | undefined;
+    const upper: string[] = [];
+    const validation: TickArrayValidation = { lower: null, center: null, upper: null };
+    
+    for (let i = 0; i < tickArrayPdas.length; i++) {
+      const { type, pda } = tickArrayPdas[i];
+      const info = infos[i];
+      const exists = !!info && info.owner.equals(programId);
+      const addr = pda.toBase58();
+      
+      if (type === 'center') {
+        center = addr;
+        validation.center = { address: addr, exists };
+      } else if (type === 'lower') {
+        if (exists) lower.push(addr);
+        if (!validation.lower) validation.lower = { address: addr, exists };
+      } else if (type === 'upper') {
+        if (exists) upper.push(addr);
+        if (!validation.upper) validation.upper = { address: addr, exists };
+      }
+    }
+    
+    if (!center) {
+      return { validation };
+    }
+    
+    return {
+      tickArrays: { center, lower, upper },
+      validation,
+    };
+  } catch (e) {
+    logCatchError('deriveAndValidateTickArrays', e);
+    return {};
+  }
+}
+
 export interface TickArrayValidation {
   lower: { address: string; exists: boolean } | null;
   center: { address: string; exists: boolean } | null;
@@ -129,12 +222,37 @@ export async function validatePoolCache(
       };
       
       if (!tickArrays) {
-        issues.push('No tickArrays in hot cache');
-        
-        // Try to derive tick arrays if we have the required data
+        // Try to derive and validate tick arrays if we have the required data
         if (currentTick !== undefined && tickSpacing && tickSpacing > 0) {
-          issues.push('Could derive tick arrays from currentTick and tickSpacing');
+          // Derive tick arrays and validate on-chain
+          const derivedResult = await deriveAndValidateTickArrays(
+            connection, 
+            basePoolId, 
+            currentTick, 
+            tickSpacing, 
+            dex
+          );
+          
+          if (derivedResult.tickArrays) {
+            result.tickArrayValidation = derivedResult.validation;
+            
+            if (derivedResult.validation?.center?.exists) {
+              // Successfully derived and validated - update cache
+              executionCache.setHot(basePoolId, {
+                ...hot,
+                currentTickIndex: currentTick,
+                tickSpacing,
+                tickArrays: derivedResult.tickArrays,
+              });
+              // Don't add issues - the arrays are now valid
+            } else {
+              issues.push('Derived center tick array does not exist on-chain');
+            }
+          } else {
+            issues.push('Failed to derive tick arrays');
+          }
         } else {
+          issues.push('No tickArrays in hot cache');
           if (currentTick === undefined) issues.push('Missing currentTickIndex');
           if (!tickSpacing) issues.push('Missing tickSpacing');
         }
