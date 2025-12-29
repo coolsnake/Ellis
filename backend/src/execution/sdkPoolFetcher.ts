@@ -9,6 +9,15 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { logger } from '../utils/logger.js';
 import { logCatchError } from '../utils/errorHandler.js';
 
+// Try to import Raydium layout directly for better reliability
+let RaydiumClmmLayout: any = null;
+try {
+  const layoutModule = await import('@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js');
+  RaydiumClmmLayout = layoutModule.PoolInfoLayout;
+} catch {
+  // Will fall back to dynamic lookup
+}
+
 // Constants
 const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
 const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
@@ -458,24 +467,53 @@ export async function fetchRaydiumPoolViaSdk(
   try {
     // Fetch pool account
     const accountInfo = await connection.getAccountInfo(poolPk);
-    if (!accountInfo || !accountInfo.data) return null;
-    
-    // Use Raydium SDK to decode
-    const sdk = await import('@raydium-io/raydium-sdk-v2');
-    const layout = (sdk as any).PoolInfoLayout || 
-                   (sdk as any).Clmm?.PoolInfoLayout ||
-                   (sdk as any).CLMM?.POOL_STATE_LAYOUT;
-    
-    if (!layout?.decode) {
-      // Manual decode fallback
-      return await fetchRaydiumPoolManual(connection, poolId, program);
+    if (!accountInfo || !accountInfo.data) {
+      logger.debug('raydium.sdk.fetch.no_account', { cat: 'cache', ctx: { pool: poolId } });
+      return null;
     }
     
-    const state = layout.decode(accountInfo.data);
+    // Try pre-imported layout first, then dynamic lookup
+    let layout = RaydiumClmmLayout;
+    
+    if (!layout?.decode) {
+      // Use Raydium SDK with comprehensive fallback pattern
+      const sdk = await import('@raydium-io/raydium-sdk-v2');
+      layout = (sdk as any)?.PoolInfoLayout ||
+               (sdk as any)?.Clmm?.PoolInfoLayout ||
+               (sdk as any)?.Clmm?.PoolStateLayout ||
+               (sdk as any)?.CLMM?.POOL_STATE_LAYOUT ||
+               (sdk as any)?.PoolStateLayout;
+    }
+    
+    if (!layout?.decode) {
+      // Manual decode fallback using known offsets
+      logger.debug('raydium.sdk.fetch.manual_fallback', { cat: 'cache', ctx: { pool: poolId } });
+      return await fetchRaydiumPoolManual(connection, poolId, program, accountInfo.data);
+    }
+    
+    let state: any;
+    try {
+      state = layout.decode(accountInfo.data);
+    } catch (decodeErr) {
+      logger.debug('raydium.sdk.fetch.decode_error', { 
+        cat: 'cache', 
+        ctx: { pool: poolId, error: String((decodeErr as any)?.message || decodeErr) } 
+      });
+      return await fetchRaydiumPoolManual(connection, poolId, program, accountInfo.data);
+    }
+    
     const tickCurrent = Number(state.tickCurrent ?? state.tick_current ?? 0);
     const tickSpacing = Number(state.tickSpacing ?? state.tick_spacing ?? 0);
     const sqrtPriceX64 = String(state.sqrtPriceX64 ?? '0');
     const liquidity = String(state.liquidity ?? '0');
+    
+    if (tickSpacing <= 0) {
+      logger.debug('raydium.sdk.fetch.invalid_tick_spacing', { 
+        cat: 'cache', 
+        ctx: { pool: poolId, tickSpacing } 
+      });
+      return null;
+    }
     
     // Calculate tick array indices
     const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
@@ -549,26 +587,131 @@ export async function fetchRaydiumPoolViaSdk(
 }
 
 /**
- * Manual Raydium pool fetch fallback
+ * Manual Raydium pool fetch fallback using known pool state offsets
+ * 
+ * Raydium CLMM PoolState layout (partial):
+ * - Discriminator: 8 bytes (offset 0)
+ * - bump: 1 byte (offset 8) 
+ * - ammConfig: 32 bytes (offset 9)
+ * - owner: 32 bytes (offset 41)
+ * - tokenMint0: 32 bytes (offset 73)
+ * - tokenMint1: 32 bytes (offset 105)
+ * - tokenVault0: 32 bytes (offset 137)
+ * - tokenVault1: 32 bytes (offset 169)
+ * - observationKey: 32 bytes (offset 201)
+ * - mintDecimals0: 1 byte (offset 233)
+ * - mintDecimals1: 1 byte (offset 234)
+ * - tickSpacing: 2 bytes u16 LE (offset 235)
+ * - liquidity: 16 bytes u128 LE (offset 237)
+ * - sqrtPriceX64: 16 bytes u128 LE (offset 253)
+ * - tickCurrent: 4 bytes i32 LE (offset 269)
  */
 async function fetchRaydiumPoolManual(
   connection: Connection,
   poolId: string,
-  program: PublicKey
+  program: PublicKey,
+  accountData?: Buffer
 ): Promise<ValidatedPoolState | null> {
-  // Simplified manual decode - enough to get tick info
+  const startTime = Date.now();
   const poolPk = new PublicKey(poolId);
-  const accountInfo = await connection.getAccountInfo(poolPk);
-  if (!accountInfo) return null;
   
-  // This is a simplified version - full decode would require the complete layout
-  return {
-    poolId,
-    dex: 'raydium',
-    programId: program.toBase58(),
-    lastFetched: Date.now(),
-    fetchDurationMs: 0,
-  };
+  let data = accountData;
+  if (!data) {
+    const accountInfo = await connection.getAccountInfo(poolPk);
+    if (!accountInfo || !accountInfo.data) return null;
+    data = Buffer.from(accountInfo.data);
+  } else {
+    data = Buffer.from(data);
+  }
+  
+  if (data.length < 280) {
+    logger.debug('raydium.manual.insufficient_data', { 
+      cat: 'cache', 
+      ctx: { pool: poolId, dataLen: data.length } 
+    });
+    return null;
+  }
+  
+  try {
+    // Extract fields from known offsets
+    const tickSpacing = data.readUInt16LE(235);
+    const tickCurrent = data.readInt32LE(269);
+    
+    if (tickSpacing <= 0 || tickSpacing > 1000) {
+      logger.debug('raydium.manual.invalid_tick_spacing', { 
+        cat: 'cache', 
+        ctx: { pool: poolId, tickSpacing, tickCurrent } 
+      });
+      return null;
+    }
+    
+    // Calculate tick array indices
+    const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
+    const centerIdx = Math.floor(tickCurrent / ticksInArray);
+    const centerStart = centerIdx * ticksInArray;
+    const delta = ticksInArray;
+    
+    // Derive tick arrays for range [-5, +5]
+    const RANGE = 5;
+    const tickArrayPdas: Array<{ offset: number; pda: PublicKey }> = [];
+    
+    for (let i = -RANGE; i <= RANGE; i++) {
+      const startTick = centerStart + (i * delta);
+      const pda = deriveRaydiumTickArrayPda(poolPk, startTick, program);
+      tickArrayPdas.push({ offset: i, pda });
+    }
+    
+    // Batch check existence
+    const pdaKeys = tickArrayPdas.map(p => p.pda);
+    const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+    
+    const lower: string[] = [];
+    let center: string | undefined;
+    const upper: string[] = [];
+    
+    for (let i = 0; i < tickArrayPdas.length; i++) {
+      const info = infos[i];
+      if (info && info.owner.equals(program) && info.data.length > 0) {
+        const { offset, pda } = tickArrayPdas[i];
+        const addr = pda.toBase58();
+        
+        if (offset === 0) {
+          center = addr;
+        } else if (offset < 0) {
+          lower.push(addr);
+        } else {
+          upper.push(addr);
+        }
+      }
+    }
+    
+    const fetchDurationMs = Date.now() - startTime;
+    
+    logger.debug('raydium.manual.fetch.complete', {
+      cat: 'cache',
+      ctx: {
+        pool: poolId.slice(0, 8) + '...',
+        tickCurrent,
+        tickSpacing,
+        tickArraysFound: { lower: lower.length, center: !!center, upper: upper.length },
+        durationMs: fetchDurationMs
+      }
+    });
+    
+    return {
+      poolId,
+      dex: 'raydium',
+      programId: program.toBase58(),
+      currentTick: tickCurrent,
+      tickSpacing,
+      tickArrays: center ? { center, lower, upper } : undefined,
+      lastFetched: Date.now(),
+      fetchDurationMs,
+    };
+  } catch (e) {
+    logCatchError('sdkPoolFetcher.raydium.manual', e);
+    return null;
+  }
 }
 
 /**

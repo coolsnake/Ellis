@@ -645,7 +645,26 @@ export async function refreshInvalidPools(
                   upper: validatedState.tickArrays.upper,
                 },
               });
+              logger.debug('cache.refresh.pool.success', {
+                cat: 'cache',
+                ctx: {
+                  poolId: pool.poolId,
+                  dex: pool.dex,
+                  tickArraysFound: {
+                    center: !!validatedState.tickArrays.center,
+                    lower: validatedState.tickArrays.lower?.length ?? 0,
+                    upper: validatedState.tickArrays.upper?.length ?? 0,
+                  },
+                }
+              });
               return { success: true, poolId: pool.poolId };
+            } else if (validatedState.currentTick !== undefined) {
+              // Pool was fetched but no tick arrays found on-chain
+              return { 
+                success: false, 
+                poolId: pool.poolId, 
+                error: `No tick arrays found on-chain (tick: ${validatedState.currentTick}, spacing: ${validatedState.tickSpacing})` 
+              };
             }
             
             if (validatedState.binArrays) {
@@ -678,9 +697,15 @@ export async function refreshInvalidPools(
             }
           }
           
-          return { success: false, poolId: pool.poolId, error: 'No validated arrays found' };
+          return { 
+            success: false, 
+            poolId: pool.poolId, 
+            error: validatedState 
+              ? `State fetched but no arrays found (dex: ${pool.dex})` 
+              : 'Failed to fetch pool state from chain'
+          };
         } catch (err: any) {
-          return { success: false, poolId: pool.poolId, error: err.message };
+          return { success: false, poolId: pool.poolId, error: `${pool.dex}: ${err.message}` };
         }
       })
     );
