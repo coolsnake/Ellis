@@ -1649,38 +1649,36 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
     
     switch (dexType) {
       case DexType.Raydium:
-        // Check and derive tick arrays
+        // CRITICAL: Do NOT blindly derive tick arrays - derived PDAs may not exist on-chain!
+        // Tick arrays must come from validated sources (pool fetch, websocket, cacheValidator).
+        // If missing, flag them as missing rather than using potentially invalid addresses.
         if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
-          const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
-          const currentTick = hot?.currentTickIndex;
+          // Try to get from static cache (may have been stored during pool loading)
+          if (stat?.tickArrayLower && !hop.tickArrayLower) {
+            hop.tickArrayLower = stat.tickArrayLower;
+            derivedAccounts.tickArrayLower = hop.tickArrayLower;
+          }
+          if (stat?.tickArrayCenter && !hop.tickArrayCenter) {
+            hop.tickArrayCenter = stat.tickArrayCenter;
+            derivedAccounts.tickArrayCenter = hop.tickArrayCenter;
+          }
+          if (stat?.tickArrayUpper && !hop.tickArrayUpper) {
+            hop.tickArrayUpper = stat.tickArrayUpper;
+            derivedAccounts.tickArrayUpper = hop.tickArrayUpper;
+          }
           
-          if (tickSpacing && currentTick !== undefined) {
-            const programId = hop.programId ? new PublicKey(hop.programId) : RAYDIUM_CLMM_PROGRAM;
-            const derived = deriveRaydiumTickArrays(poolPk, currentTick, tickSpacing, programId);
-            
-            if (!hop.tickArrayLower) {
-              hop.tickArrayLower = derived.lower.toBase58();
-              derivedAccounts.tickArrayLower = hop.tickArrayLower;
-            }
-            if (!hop.tickArrayCenter) {
-              hop.tickArrayCenter = derived.center.toBase58();
-              derivedAccounts.tickArrayCenter = hop.tickArrayCenter;
-            }
-            if (!hop.tickArrayUpper) {
-              hop.tickArrayUpper = derived.upper.toBase58();
-              derivedAccounts.tickArrayUpper = hop.tickArrayUpper;
-            }
-            
-            logger.debug('routerTx.raydium.tickArrays.derived', {
+          // Still missing? Flag as missing (don't blindly derive)
+          if (!hop.tickArrayLower) missingAccounts.push('tickArrayLower');
+          if (!hop.tickArrayCenter) missingAccounts.push('tickArrayCenter');
+          if (!hop.tickArrayUpper) missingAccounts.push('tickArrayUpper');
+          
+          if (missingAccounts.length > 0) {
+            logger.warn('routerTx.raydium.tickArrays.missing', {
               cat: 'tx',
               pool: poolId,
-              currentTick,
-              tickSpacing,
+              missing: missingAccounts.filter(a => a.includes('tickArray')),
+              hint: 'Pool needs tick array validation. Call /arb/pools/revalidate or set REVALIDATE_ON_LOAD=true',
             });
-          } else {
-            if (!hop.tickArrayLower) missingAccounts.push('tickArrayLower');
-            if (!hop.tickArrayCenter) missingAccounts.push('tickArrayCenter');
-            if (!hop.tickArrayUpper) missingAccounts.push('tickArrayUpper');
           }
         }
         
@@ -1705,40 +1703,38 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
         break;
         
       case DexType.Orca:
-        // Check and derive tick arrays
+        // CRITICAL: Do NOT blindly derive tick arrays - derived PDAs may not exist on-chain!
+        // Tick arrays must come from validated sources (pool fetch, websocket, cacheValidator).
+        // If missing, try to get from static cache, otherwise flag as missing.
         {
-          const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
-          const currentTick = hot?.currentTickIndex;
-
-          // IMPORTANT: Orca Whirlpool swap validates tick array sequence. We derive the
-          // direction-specific sequence [0, dir1, dir2] and OVERWRITE any pre-filled values.
-          if (tickSpacing && currentTick !== undefined) {
-            // Direction must match Whirlpool native ordering (tokenMintA/tokenMintB)
-            const mintA = String((stat as any)?.native_mint_a || (stat as any)?.mint_a || '');
-            const mintB = String((stat as any)?.native_mint_b || (stat as any)?.mint_b || '');
-            const aToB = (mintA ? hop.inputMint === mintA : false) && (mintB ? hop.outputMint === mintB : true);
-            const bToA = (mintA ? hop.outputMint === mintA : false) && (mintB ? hop.inputMint === mintB : false);
-            const isAtoB = aToB || !bToA; // default A->B if uncertain
-
-            const derived = deriveOrcaTickArraysForSwap(poolPk, currentTick, tickSpacing, isAtoB);
-            hop.tickArrayLower = derived.tickArray0.toBase58();
-            hop.tickArrayCenter = derived.tickArray1.toBase58();
-            hop.tickArrayUpper = derived.tickArray2.toBase58();
-            derivedAccounts.tickArrayLower = hop.tickArrayLower;
-            derivedAccounts.tickArrayCenter = hop.tickArrayCenter;
-            derivedAccounts.tickArrayUpper = hop.tickArrayUpper;
-
-            logger.debug('routerTx.orca.tickArrays.derived', {
-              cat: 'tx',
-              pool: poolId,
-              currentTick,
-              tickSpacing,
-              isAtoB,
-            });
-          } else {
+          if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
+            // Try to get from static cache (may have been stored during pool loading)
+            if (stat?.tickArrayLower && !hop.tickArrayLower) {
+              hop.tickArrayLower = stat.tickArrayLower;
+              derivedAccounts.tickArrayLower = hop.tickArrayLower;
+            }
+            if (stat?.tickArrayCenter && !hop.tickArrayCenter) {
+              hop.tickArrayCenter = stat.tickArrayCenter;
+              derivedAccounts.tickArrayCenter = hop.tickArrayCenter;
+            }
+            if (stat?.tickArrayUpper && !hop.tickArrayUpper) {
+              hop.tickArrayUpper = stat.tickArrayUpper;
+              derivedAccounts.tickArrayUpper = hop.tickArrayUpper;
+            }
+            
+            // Still missing? Flag as missing (don't blindly derive)
             if (!hop.tickArrayLower) missingAccounts.push('tickArrayLower');
             if (!hop.tickArrayCenter) missingAccounts.push('tickArrayCenter');
             if (!hop.tickArrayUpper) missingAccounts.push('tickArrayUpper');
+            
+            if (missingAccounts.some(a => a.includes('tickArray'))) {
+              logger.warn('routerTx.orca.tickArrays.missing', {
+                cat: 'tx',
+                pool: poolId,
+                missing: missingAccounts.filter(a => a.includes('tickArray')),
+                hint: 'Pool needs tick array validation. Call /arb/pools/revalidate or set REVALIDATE_ON_LOAD=true',
+              });
+            }
           }
         }
         

@@ -1,4 +1,3 @@
-import { PublicKey } from '@solana/web3.js';
 import type { DirectHop } from '../../execution/types.js';
 import { executionCache } from '../cache.js';
 import { peekRaydiumPools } from '../../server/pools.js';
@@ -6,38 +5,13 @@ import { logger } from '../../utils/logger.js';
 import { getClmmStatic } from '../../execution/clmmCache.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 
-// Constants for tick array derivation
-const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
-const RAYDIUM_TICK_ARRAY_SIZE = 60;
-
-/**
- * Derive Raydium CLMM tick array PDAs from current tick and tick spacing
- */
-function deriveRaydiumTickArrays(
-  poolId: PublicKey,
-  currentTickIndex: number,
-  tickSpacing: number,
-  programId: PublicKey = RAYDIUM_CLMM_PROGRAM
-): { lower: string; center: string; upper: string } {
-  const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
-  const realIndex = Math.floor(currentTickIndex / ticksInArray);
-  
-  const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-    const startTickBuffer = Buffer.alloc(4);
-    startTickBuffer.writeInt32LE(startTickIndex, 0);
-    const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('tick_array'), poolId.toBuffer(), startTickBuffer],
-      programId
-    );
-    return pda;
-  };
-  
-  return {
-    lower: deriveTickArrayPda((realIndex - 1) * ticksInArray).toBase58(),
-    center: deriveTickArrayPda(realIndex * ticksInArray).toBase58(),
-    upper: deriveTickArrayPda((realIndex + 1) * ticksInArray).toBase58(),
-  };
-}
+// NOTE: Tick array derivation has been intentionally removed.
+// Derived tick array PDAs may not exist on-chain (pools with thin liquidity).
+// Tick arrays must come from validated sources:
+// 1. Pool fetch with on-chain validation (raydiumGraphQL.ts, orca.ts)
+// 2. WebSocket updates (websockets/decoders/raydium.ts)
+// 3. cacheValidator.ts (explicit validation via /arb/pools/revalidate)
+// 4. Pool persistence with REVALIDATE_ON_LOAD=true
 
 export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   // Prefer statics from in-memory exec cache.
@@ -141,61 +115,30 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
     } catch (e) { logCatchError('resolver.raydiumClmm', e); }
   }
   
-  // FALLBACK: If tick arrays are still missing, derive them from current tick and tick spacing
+  // WARNING: Do NOT blindly derive tick arrays - derived PDAs may not exist on-chain!
+  // Tick arrays should come from validated sources (pool fetch, websocket updates, or cacheValidator).
+  // If tick arrays are missing, log a warning - the builder should handle missing arrays gracefully.
   if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
     const currentTick = hot?.currentTickIndex;
     const tickSpacing = hop.tickSpacing || stat?.tick_spacing || stat?.tickSpacing;
     
-    if (currentTick !== undefined && tickSpacing && tickSpacing > 0) {
-      try {
-        const poolId = hop.poolId.replace(/[#-]rev$/, '');
-        const poolPk = new PublicKey(poolId);
-        const programId = hop.programId ? new PublicKey(hop.programId) : RAYDIUM_CLMM_PROGRAM;
-        const derived = deriveRaydiumTickArrays(poolPk, currentTick, tickSpacing, programId);
-        
-        if (!hop.tickArrayLower) hop.tickArrayLower = derived.lower;
-        if (!hop.tickArrayCenter) hop.tickArrayCenter = derived.center;
-        if (!hop.tickArrayUpper) hop.tickArrayUpper = derived.upper;
-        
-        // Also update hot cache for future use
-        const existingHot = executionCache.getHot(poolId) || {};
-        executionCache.setHot(poolId, {
-          ...existingHot,
-          tickArrays: {
-            lower: hop.tickArrayLower,
-            center: hop.tickArrayCenter,
-            upper: hop.tickArrayUpper,
-          },
-        });
-        
-        try {
-          logger.info('raydium.clmm.resolver.tick_arrays_derived', {
-            cat: 'tx',
-            ctx: {
-              pool: hop.poolId,
-              currentTick,
-              tickSpacing,
-              lower: hop.tickArrayLower?.slice(0, 8) + '…',
-              center: hop.tickArrayCenter?.slice(0, 8) + '…',
-              upper: hop.tickArrayUpper?.slice(0, 8) + '…',
-            }
-          });
-        } catch (e) { logCatchError('resolver.raydiumClmm', e); }
-      } catch (e) {
-        logCatchError('resolver.raydiumClmm.deriveTickArrays', e);
-      }
-    } else {
-      try {
-        logger.warn('raydium.clmm.resolver.tick_arrays_missing', {
-          cat: 'tx',
-          ctx: {
-            pool: hop.poolId,
-            hasCurrentTick: currentTick !== undefined,
-            hasTickSpacing: !!tickSpacing,
-          }
-        });
-      } catch (e) { logCatchError('resolver.raydiumClmm', e); }
-    }
+    try {
+      logger.warn('raydium.clmm.resolver.tick_arrays_missing', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId,
+          hasLower: !!hop.tickArrayLower,
+          hasCenter: !!hop.tickArrayCenter,
+          hasUpper: !!hop.tickArrayUpper,
+          hasCurrentTick: currentTick !== undefined,
+          hasTickSpacing: !!tickSpacing,
+          hint: 'Tick arrays not in cache. Pool needs validation via /arb/pools/revalidate or REVALIDATE_ON_LOAD=true',
+        }
+      });
+    } catch (e) { logCatchError('resolver.raydiumClmm', e); }
+    
+    // Mark hop as needing tick array validation (builder can check this)
+    (hop as any).needsTickArrayValidation = true;
   }
   
   try { logger.info('raydium.clmm.resolve', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch (e) { logCatchError('resolver.raydiumClmm', e); }

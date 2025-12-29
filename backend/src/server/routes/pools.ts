@@ -317,17 +317,19 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
    */
   api.post('/arb/pools/revalidate', async (req, res) => {
     try {
-      const { dex, limit = 50, concurrency = 10 } = req.body || {};
+      const { dex, limit = 50, concurrency = 10, all = false } = req.body || {};
       const { revalidateDex, revalidateAllPools } = await import('../pools.revalidate.js');
       
-      const safeLimit = Math.min(Math.max(1, Number(limit) || 50), 200);
+      // Use all=true or limit=0 to validate all pools
+      const validateAll = all === true || limit === 0;
+      const safeLimit = validateAll ? Infinity : Math.min(Math.max(1, Number(limit) || 50), 200);
       const safeConcurrency = Math.min(Math.max(1, Number(concurrency) || 10), 20);
       
       let result;
       if (dex && ['orca', 'raydium', 'meteora'].includes(dex)) {
-        result = await revalidateDex(dex, { limit: safeLimit, concurrency: safeConcurrency });
+        result = await revalidateDex(dex, { limit: safeLimit, validateAll, concurrency: safeConcurrency });
       } else {
-        result = await revalidateAllPools({ limit: safeLimit, concurrency: safeConcurrency });
+        result = await revalidateAllPools({ limit: safeLimit, validateAll, concurrency: safeConcurrency });
       }
       
       res.json({ 

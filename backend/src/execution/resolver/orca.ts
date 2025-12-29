@@ -5,36 +5,15 @@ import { peekOrcaPools } from '../../server/pools.js';
 import { logger } from '../../utils/logger.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 
-// Constants for tick array derivation
+// Orca Whirlpool program ID (needed for oracle derivation)
 const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
-const ORCA_TICK_ARRAY_SIZE = 88;
 
-/**
- * Derive Orca tick array PDAs from current tick and tick spacing
- */
-function deriveOrcaTickArrays(
-  poolId: PublicKey,
-  currentTickIndex: number,
-  tickSpacing: number
-): { lower: string; center: string; upper: string } {
-  const ticksInArray = ORCA_TICK_ARRAY_SIZE * tickSpacing;
-  const realIndex = Math.floor(currentTickIndex / ticksInArray);
-  
-  const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-    // CRITICAL: Orca SDK encodes startTick as ASCII string, not binary i32
-    const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('tick_array'), poolId.toBuffer(), Buffer.from(startTickIndex.toString())],
-      ORCA_WHIRLPOOL_PROGRAM
-    );
-    return pda;
-  };
-  
-  return {
-    lower: deriveTickArrayPda((realIndex - 1) * ticksInArray).toBase58(),
-    center: deriveTickArrayPda(realIndex * ticksInArray).toBase58(),
-    upper: deriveTickArrayPda((realIndex + 1) * ticksInArray).toBase58(),
-  };
-}
+// NOTE: Tick array derivation has been intentionally removed.
+// Derived tick array PDAs may not exist on-chain (pools with thin liquidity).
+// Tick arrays must come from validated sources:
+// 1. Pool fetch with on-chain validation (orca.ts with getMultipleAccountsInfo)
+// 2. cacheValidator.ts (explicit validation via /arb/pools/revalidate)
+// 3. Pool persistence with REVALIDATE_ON_LOAD=true
 
 /**
  * Derive Orca oracle PDA
@@ -164,63 +143,31 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
     }
   } catch (e) { logCatchError('resolver.orca', e); }
   
-  // FALLBACK: If tick arrays are still missing, derive them from current tick and tick spacing
+  // WARNING: Do NOT blindly derive tick arrays - derived PDAs may not exist on-chain!
+  // Tick arrays should come from validated sources (pool fetch, websocket updates, or cacheValidator).
+  // If tick arrays are missing, log a warning - the builder should handle missing arrays gracefully.
   if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
     const currentTick = hot?.currentTickIndex ?? poolTickIndexNative;
     const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
     
-    if (currentTick !== undefined && tickSpacing && tickSpacing > 0) {
-      try {
-        const poolPk = new PublicKey(poolIdBase);
-        const derived = deriveOrcaTickArrays(poolPk, currentTick, tickSpacing);
-        
-        if (!hop.tickArrayLower) hop.tickArrayLower = derived.lower;
-        if (!hop.tickArrayCenter) hop.tickArrayCenter = derived.center;
-        if (!hop.tickArrayUpper) hop.tickArrayUpper = derived.upper;
-        
-        // Also update hot cache for future use
-        const existingHot = executionCache.getHot(poolIdBase) || {};
-        executionCache.setHot(poolIdBase, {
-          ...existingHot,
-          ...(currentTick !== undefined ? { currentTickIndex: currentTick } : {}),
-          ...(tickSpacing ? { tickSpacing } : {}),
-          tickArrays: {
-            lower: hop.tickArrayLower,
-            center: hop.tickArrayCenter,
-            upper: hop.tickArrayUpper,
-          },
-        });
-        
-        try {
-          logger.info('orca.resolver.tick_arrays_derived', {
-            cat: 'tx',
-            traceId,
-            ctx: {
-              pool: hop.poolId,
-              currentTick,
-              tickSpacing,
-              lower: hop.tickArrayLower?.slice(0, 8) + '…',
-              center: hop.tickArrayCenter?.slice(0, 8) + '…',
-              upper: hop.tickArrayUpper?.slice(0, 8) + '…',
-            }
-          });
-        } catch (e) { logCatchError('resolver.orca', e); }
-      } catch (e) {
-        logCatchError('resolver.orca.deriveTickArrays', e);
-      }
-    } else {
-      try {
-        logger.warn('orca.resolver.tick_arrays_missing', {
-          cat: 'tx',
-          traceId,
-          ctx: {
-            pool: hop.poolId,
-            hasCurrentTick: currentTick !== undefined,
-            hasTickSpacing: !!tickSpacing,
-          }
-        });
-      } catch (e) { logCatchError('resolver.orca', e); }
-    }
+    try {
+      logger.warn('orca.resolver.tick_arrays_missing', {
+        cat: 'tx',
+        traceId,
+        ctx: {
+          pool: hop.poolId,
+          hasLower: !!hop.tickArrayLower,
+          hasCenter: !!hop.tickArrayCenter,
+          hasUpper: !!hop.tickArrayUpper,
+          hasCurrentTick: currentTick !== undefined,
+          hasTickSpacing: !!tickSpacing,
+          hint: 'Tick arrays not in cache. Pool needs validation via /arb/pools/revalidate or REVALIDATE_ON_LOAD=true',
+        }
+      });
+    } catch (e) { logCatchError('resolver.orca', e); }
+    
+    // Mark hop as needing tick array validation (builder can check this)
+    (hop as any).needsTickArrayValidation = true;
   }
   
   // FALLBACK: Derive oracle if still missing

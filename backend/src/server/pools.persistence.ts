@@ -380,6 +380,16 @@ function populateExecutionCacheFromPools(
       if ((pool as any).ex_bitmap) staticData.ex_bitmap = (pool as any).ex_bitmap;
       if ((pool as any).amm_config) staticData.amm_config = (pool as any).amm_config;
       
+      // Tick arrays (Raydium CLMM and Orca Whirlpool) - CRITICAL for swap execution
+      // These should be validated arrays from pool fetch or websocket updates
+      if ((pool as any).tick_array_lower) staticData.tickArrayLower = (pool as any).tick_array_lower;
+      if ((pool as any).tick_array_center) staticData.tickArrayCenter = (pool as any).tick_array_center;
+      if ((pool as any).tick_array_upper) staticData.tickArrayUpper = (pool as any).tick_array_upper;
+      // Alternative field names (from different sources)
+      if ((pool as any).tickArrayLower) staticData.tickArrayLower = (pool as any).tickArrayLower;
+      if ((pool as any).tickArrayCenter) staticData.tickArrayCenter = (pool as any).tickArrayCenter;
+      if ((pool as any).tickArrayUpper) staticData.tickArrayUpper = (pool as any).tickArrayUpper;
+      
       // Orca Whirlpool-specific
       if ((pool as any).oracle) staticData.oracle = (pool as any).oracle;
       if ((pool as any).token_vault_a) staticData.token_vault_a = (pool as any).token_vault_a;
@@ -425,6 +435,22 @@ function populateExecutionCacheFromPools(
       }
       if (pool.fee_bps !== undefined) {
         hotData.feeRate = pool.fee_bps;
+        hasHotData = true;
+      }
+      
+      // Tick arrays for hot cache - CRITICAL for swap execution
+      // Check multiple possible field names from different sources
+      const tickArrayLower = (pool as any).tick_array_lower || (pool as any).tickArrayLower;
+      const tickArrayCenter = (pool as any).tick_array_center || (pool as any).tickArrayCenter;
+      const tickArrayUpper = (pool as any).tick_array_upper || (pool as any).tickArrayUpper;
+      
+      if (tickArrayCenter) {
+        // Store in format expected by resolvers: { center: string, lower: string[], upper: string[] }
+        hotData.tickArrays = {
+          center: tickArrayCenter,
+          lower: tickArrayLower ? [tickArrayLower] : [],
+          upper: tickArrayUpper ? [tickArrayUpper] : [],
+        };
         hasHotData = true;
       }
       
@@ -486,7 +512,8 @@ export async function initializeFromSnapshot(): Promise<boolean> {
     try {
       logger.info('pools.persistence.auto_revalidate.start', { cat: 'pools' });
       const { revalidateAllPools } = await import('./pools.revalidate.js');
-      const result = await revalidateAllPools({ limit: 50, concurrency: 10 });
+      // Validate ALL pools in cache, not just a subset
+      const result = await revalidateAllPools({ validateAll: true, concurrency: 10 });
       logger.info('pools.persistence.auto_revalidate.done', { 
         healthPercent: result.healthPercent,
         refreshed: result.refreshed,
