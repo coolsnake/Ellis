@@ -793,40 +793,62 @@ async function extractDexAccounts(
         
         let directionalBinArrays: PublicKey[] = [];
         
-        // ALWAYS derive the active bin array when we have activeId - it MUST be first!
-        if (typeof activeId === 'number' && Number.isFinite(activeId)) {
+        // Derive the active bin array when we have activeId
+        // CRITICAL: Only use the derived array if it matches a known-good array,
+        // otherwise we risk providing a non-existent account!
+        if (typeof activeId === 'number' && Number.isFinite(activeId) && knownBinArrayLower && knownBinArrayUpper) {
           // Derive bin arrays starting with the active bin array
           const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
           const activeBinArray = derived.arrays[0]; // First derived array contains activeId
+          const activeBinArrayStr = activeBinArray.toBase58();
           
-          // Use derived active as first, then fill with known-good arrays for safety
-          // The active bin array should always exist (it contains the current price)
-          if (knownBinArrayLower && knownBinArrayUpper) {
-            // We have known-good neighbors - use them after the active
+          // Check if the derived active matches one of the known-good arrays
+          const matchesLower = activeBinArrayStr === knownBinArrayLower.toBase58();
+          const matchesUpper = activeBinArrayStr === knownBinArrayUpper.toBase58();
+          
+          if (matchesLower || matchesUpper) {
+            // Great! The derived active exists on-chain
             if (isXtoY) {
-              // X→Y: active, then lower direction arrays
+              // X→Y: active first, then in lower direction
               directionalBinArrays = [activeBinArray, knownBinArrayLower, knownBinArrayLower];
             } else {
-              // Y→X: active, then upper direction arrays
+              // Y→X: active first, then in upper direction
               directionalBinArrays = [activeBinArray, knownBinArrayUpper, knownBinArrayUpper];
             }
           } else {
-            // Use derived arrays, with known-good fallback for safety
-            const safeArray = knownBinArrayLower || knownBinArrayUpper;
-            if (safeArray) {
-              directionalBinArrays = [activeBinArray, safeArray, safeArray];
+            // The derived active is DIFFERENT from known arrays!
+            // This means the active bin might be in a bin array that's not cached.
+            // Fall back to using known arrays only, ordered by swap direction.
+            // The swap might fail if the active bin isn't covered, but at least
+            // we won't pass an invalid account.
+            logger.warn('routerTx.meteora.derivedActiveNotCached', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                activeId,
+                derivedActive: activeBinArrayStr.slice(0, 8),
+                knownLower: knownBinArrayLower.toBase58().slice(0, 8),
+                knownUpper: knownBinArrayUpper.toBase58().slice(0, 8),
+              }
+            });
+            // Use known arrays in directional order
+            if (isXtoY) {
+              directionalBinArrays = [knownBinArrayLower, knownBinArrayUpper, knownBinArrayLower];
             } else {
-              directionalBinArrays = derived.arrays;
+              directionalBinArrays = [knownBinArrayUpper, knownBinArrayLower, knownBinArrayUpper];
             }
           }
         } else if (knownBinArrayLower && knownBinArrayUpper) {
-          // NO activeId available - fallback to known arrays (may not work for all swaps)
-          // This is a degraded path; the swap might fail if active bin isn't in these arrays
+          // NO activeId available - fallback to known arrays
           if (isXtoY) {
             directionalBinArrays = [knownBinArrayLower, knownBinArrayUpper, knownBinArrayLower];
           } else {
             directionalBinArrays = [knownBinArrayUpper, knownBinArrayLower, knownBinArrayUpper];
           }
+        } else if (typeof activeId === 'number' && Number.isFinite(activeId)) {
+          // No known arrays but have activeId - derive (risky, might not exist)
+          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
+          directionalBinArrays = derived.arrays;
         } else {
           // LAST RESORT: use whatever we have
           const fallbackArrays: PublicKey[] = [];
@@ -919,21 +941,38 @@ async function extractDexAccounts(
         );
         
         // Add 3 directional bin arrays (16-18)
+        // CRITICAL: Only use bin arrays we KNOW exist on-chain
+        // The knownBinArrayLower/Upper are from pool cache and verified to exist
+        // Derived bin arrays might not exist if the pool has sparse liquidity
         accounts.push(...directionalBinArrays);
         
         // For single-hop route_swap (allowVariableAccounts=true), optionally add more bin arrays
-        // from cache for extra coverage beyond the minimum 3
+        // BUT only if they're from verified sources (not derived PDAs that might not exist)
         if (opts?.allowVariableAccounts) {
           try {
-            const maxBinArrays = 16; // Allow up to 16 bin arrays for single-hop
+            // Only add the other known array if it's not already included
+            const already = new Set(accounts.map((a) => a.toBase58()));
+            
+            // Add the other known array (lower if we used upper, upper if we used lower)
+            if (knownBinArrayLower && !already.has(knownBinArrayLower.toBase58())) {
+              accounts.push(knownBinArrayLower);
+              already.add(knownBinArrayLower.toBase58());
+            }
+            if (knownBinArrayUpper && !already.has(knownBinArrayUpper.toBase58())) {
+              accounts.push(knownBinArrayUpper);
+              already.add(knownBinArrayUpper.toBase58());
+            }
+            
+            // Only add additional bin arrays from cache if they're explicitly listed
+            // (not derived) and we haven't hit the limit
+            const maxBinArrays = 8; // Conservative limit
             const cachedArrays = hotCache?.binArrays?.arrays;
             
             if (Array.isArray(cachedArrays) && cachedArrays.length > 0) {
-              const already = new Set(accounts.map((a) => a.toBase58()));
               const dirSorted = cachedArrays
                 .map((x: any) => ({ index: Number(x?.index), address: String(x?.address || '') }))
-                .filter((x: any) => Number.isFinite(x.index) && x.address)
-                .sort((a: any, b: any) => (isAtoB ? (a.index - b.index) : (b.index - a.index)));
+                .filter((x: any) => Number.isFinite(x.index) && x.address && x.address.length > 30)
+                .sort((a: any, b: any) => (isXtoY ? (a.index - b.index) : (b.index - a.index)));
 
               for (const it of dirSorted) {
                 try {
