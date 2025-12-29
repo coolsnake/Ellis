@@ -1447,10 +1447,13 @@ function deriveMeteoraDlmmEventAuthority(): PublicKey {
 /**
  * Build Meteora DLMM accounts in the order expected by the on-chain router
  * 
- * Based on Meteora CPI example (dlmm::cpi::accounts::Swap2):
- * #1-14: Fixed accounts (0-13 in our 0-indexed array, includes Memo at 13)
- * #15: Meteora Program (included for CPI invoke)
- * #16+: Bin arrays (remaining accounts)
+ * Supports two swap variants based on token type:
+ * - swap (standard SPL tokens): 14 fixed + 1 program + bin arrays = 18+ accounts
+ *   User tokens in INPUT/OUTPUT order, no Memo Program
+ * - swap2 (Token-2022): 15 fixed + 1 program + bin arrays = 19+ accounts  
+ *   User tokens in X/Y native order, includes Memo Program
+ *
+ * The on-chain router auto-detects the variant based on account count.
  */
 async function buildMeteoraDexAccountsForRouter(
   payer: PublicKey,
@@ -1460,6 +1463,7 @@ async function buildMeteoraDexAccountsForRouter(
   outputMint: PublicKey
 ): Promise<PublicKey[]> {
   const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  const TOKEN_2022_PROGRAM = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
   
   // Determine swap direction (X -> Y or Y -> X)
   const isXtoY = inputMint.toBase58() === pool.tokenXMint;
@@ -1468,12 +1472,10 @@ async function buildMeteoraDexAccountsForRouter(
   const userTokenIn = getAssociatedTokenAddressSync(inputMint, payer);
   const userTokenOut = getAssociatedTokenAddressSync(outputMint, payer);
   
-  // CRITICAL: Meteora expects user token accounts in X/Y order, NOT input/output order!
-  // The program uses account positions to identify token X vs Y accounts.
-  // X→Y: source is X (input), dest is Y (output)
-  // Y→X: source is Y (input), dest is X (output)
-  const userTokenX = isXtoY ? userTokenIn : userTokenOut;
-  const userTokenY = isXtoY ? userTokenOut : userTokenIn;
+  // Detect if either token uses Token-2022
+  const tokenProgramPk = new PublicKey(pool.tokenProgram);
+  const isToken2022 = tokenProgramPk.equals(TOKEN_2022_PROGRAM);
+  const needsSwap2 = isToken2022;
   
   // Helper to safely convert to PublicKey with fallback
   const toPkOrFallback = (val: string | undefined, fallback: PublicKey): PublicKey => {
@@ -1485,26 +1487,55 @@ async function buildMeteoraDexAccountsForRouter(
     }
   };
   
-  // Fixed accounts (indices 0-14) - matches Meteora CPI accounts::Swap2 order
-  const fixedAccounts: PublicKey[] = [
-    poolPubkey,                                                    // 0: LB Pair
-    pool.bitmapExtension 
-      ? new PublicKey(pool.bitmapExtension) 
-      : METEORA_DLMM_PROGRAM,                                      // 1: Bitmap Extension (use program ID as fallback)
-    toPkOrFallback(pool.reserveX, poolPubkey),                     // 2: Reserve X
-    toPkOrFallback(pool.reserveY, poolPubkey),                     // 3: Reserve Y
-    userTokenX,                                                    // 4: User Token X (NOT input - must be X/Y order!)
-    userTokenY,                                                    // 5: User Token Y (NOT output - must be X/Y order!)
-    new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
-    new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
-    toPkOrFallback(pool.oracle, poolPubkey),                       // 8: Oracle
-    METEORA_DLMM_PROGRAM,                                          // 9: Host Fee In (program ID as placeholder)
-    payer,                                                         // 10: User (signer)
-    new PublicKey(pool.tokenProgram),                              // 11: Token X Program
-    new PublicKey(pool.tokenProgram),                              // 12: Token Y Program
-    MEMO_PROGRAM_ID,                                               // 13: Memo Program (REQUIRED for swap2!)
-    deriveMeteoraDlmmEventAuthority(),                             // 14: Event Authority (PDA)
-  ];
+  let fixedAccounts: PublicKey[];
+  
+  if (needsSwap2) {
+    // swap2: Token-2022 compatible
+    // User tokens in X/Y native order, includes Memo Program
+    const userTokenX = isXtoY ? userTokenIn : userTokenOut;
+    const userTokenY = isXtoY ? userTokenOut : userTokenIn;
+    
+    fixedAccounts = [
+      poolPubkey,                                                    // 0: LB Pair
+      pool.bitmapExtension 
+        ? new PublicKey(pool.bitmapExtension) 
+        : METEORA_DLMM_PROGRAM,                                      // 1: Bitmap Extension
+      toPkOrFallback(pool.reserveX, poolPubkey),                     // 2: Reserve X
+      toPkOrFallback(pool.reserveY, poolPubkey),                     // 3: Reserve Y
+      userTokenX,                                                    // 4: User Token X (X/Y order for swap2!)
+      userTokenY,                                                    // 5: User Token Y (X/Y order for swap2!)
+      new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
+      new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
+      toPkOrFallback(pool.oracle, poolPubkey),                       // 8: Oracle
+      METEORA_DLMM_PROGRAM,                                          // 9: Host Fee In (program ID as placeholder)
+      payer,                                                         // 10: User (signer)
+      tokenProgramPk,                                                // 11: Token X Program
+      tokenProgramPk,                                                // 12: Token Y Program
+      MEMO_PROGRAM_ID,                                               // 13: Memo Program (REQUIRED for swap2!)
+      deriveMeteoraDlmmEventAuthority(),                             // 14: Event Authority (PDA)
+    ];
+  } else {
+    // swap: Standard SPL tokens
+    // User tokens in INPUT/OUTPUT order, no Memo Program
+    fixedAccounts = [
+      poolPubkey,                                                    // 0: LB Pair
+      pool.bitmapExtension 
+        ? new PublicKey(pool.bitmapExtension) 
+        : METEORA_DLMM_PROGRAM,                                      // 1: Bitmap Extension
+      toPkOrFallback(pool.reserveX, poolPubkey),                     // 2: Reserve X
+      toPkOrFallback(pool.reserveY, poolPubkey),                     // 3: Reserve Y
+      userTokenIn,                                                   // 4: User Token In (INPUT/OUTPUT order for swap!)
+      userTokenOut,                                                  // 5: User Token Out (INPUT/OUTPUT order for swap!)
+      new PublicKey(pool.tokenXMint),                                // 6: Token X Mint
+      new PublicKey(pool.tokenYMint),                                // 7: Token Y Mint
+      toPkOrFallback(pool.oracle, poolPubkey),                       // 8: Oracle
+      METEORA_DLMM_PROGRAM,                                          // 9: Host Fee In (program ID as placeholder)
+      payer,                                                         // 10: User (signer)
+      tokenProgramPk,                                                // 11: Token X Program
+      tokenProgramPk,                                                // 12: Token Y Program
+      deriveMeteoraDlmmEventAuthority(),                             // 13: Event Authority (NO Memo for swap!)
+    ];
+  }
   
   // Bin arrays (remaining accounts) - order based on swap direction
   // For X -> Y swaps (selling X): order by increasing bin array index
@@ -1516,18 +1547,22 @@ async function buildMeteoraDexAccountsForRouter(
   const binArrayAccounts: PublicKey[] = sortedBinArrays
     .map((ba: BinArrayInfo) => new PublicKey(ba.address));
   
-  // Structure: [fixed accounts (15), program (1), bin arrays (N)]
+  // Structure: [fixed accounts, program (1), bin arrays (N)]
   // Program is included for CPI invoke
+  const programIdx = needsSwap2 ? 15 : 14;
   const accounts: PublicKey[] = [
-    ...fixedAccounts,                                              // 0-14: Fixed accounts
-    METEORA_DLMM_PROGRAM,                                          // 15: Meteora DLMM Program
-    ...binArrayAccounts,                                           // 16+: Bin arrays
+    ...fixedAccounts,                                              // Fixed accounts
+    METEORA_DLMM_PROGRAM,                                          // Program ID
+    ...binArrayAccounts,                                           // Bin arrays
   ];
   
   // Log with detailed account comparison for debugging
   logger.info('router.test.dex_accounts.meteora', { 
     cat: 'router',
     poolId: poolPubkey.toBase58(),
+    // Instruction variant
+    variant: needsSwap2 ? 'swap2' : 'swap',
+    isToken2022,
     // Pool state (from SDK decode)
     poolState: {
       tokenXMint: pool.tokenXMint,
@@ -1542,8 +1577,8 @@ async function buildMeteoraDexAccountsForRouter(
       idx1_BitmapExt: accounts[1].toBase58(),
       idx2_ReserveX: accounts[2].toBase58(),
       idx3_ReserveY: accounts[3].toBase58(),
-      idx4_UserTokenX: accounts[4].toBase58(),
-      idx5_UserTokenY: accounts[5].toBase58(),
+      idx4_UserToken: accounts[4].toBase58(),
+      idx5_UserToken: accounts[5].toBase58(),
       idx6_TokenXMint: accounts[6].toBase58(),
       idx7_TokenYMint: accounts[7].toBase58(),
       idx8_Oracle: accounts[8].toBase58(),
@@ -1555,8 +1590,7 @@ async function buildMeteoraDexAccountsForRouter(
       isXtoY,
       userTokenIn: userTokenIn.toBase58(),
       userTokenOut: userTokenOut.toBase58(),
-      userTokenX: userTokenX.toBase58(),
-      userTokenY: userTokenY.toBase58(),
+      userTokenOrder: needsSwap2 ? 'X/Y native' : 'input/output',
     },
     // Verify reserves match pool state (should all be true)
     verification: {
@@ -1564,12 +1598,6 @@ async function buildMeteoraDexAccountsForRouter(
       reserveYMatches: accounts[3].toBase58() === pool.reserveY,
       tokenXMintMatches: accounts[6].toBase58() === pool.tokenXMint,
       tokenYMintMatches: accounts[7].toBase58() === pool.tokenYMint,
-      userTokenXIsCorrect: isXtoY 
-        ? accounts[4].toBase58() === userTokenIn.toBase58()
-        : accounts[4].toBase58() === userTokenOut.toBase58(),
-      userTokenYIsCorrect: isXtoY
-        ? accounts[5].toBase58() === userTokenOut.toBase58()
-        : accounts[5].toBase58() === userTokenIn.toBase58(),
     },
     binArrayCount: binArrayAccounts.length,
     binArrays: sortedBinArrays.map(ba => ({ index: ba.index, address: ba.address.slice(0, 8) })),

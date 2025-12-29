@@ -4,6 +4,12 @@
 //!
 //! Meteora DLMM uses a discrete liquidity distribution model with "bins"
 //! for efficient capital usage.
+//!
+//! ## Swap Instructions
+//! - `swap`: Original instruction for standard SPL tokens (14 fixed accounts, no Memo)
+//! - `swap2`: Token-2022 compatible instruction (15 fixed accounts, includes Memo Program)
+//!
+//! The off-chain builder determines which variant to use based on token programs.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
@@ -11,47 +17,76 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::constants::dex_programs::METEORA_DLMM;
 use crate::error::ArbRouterError;
 
-/// Minimum number of bin arrays to provide to Meteora DLMM `swap2`.
+/// Minimum number of bin arrays to provide to Meteora DLMM swaps.
 /// For execute (multi-hop), we use 3 bin arrays directionally:
 /// - Active bin array (where current price is)
 /// - 2 more bin arrays in the direction of price movement
 /// Off-chain builder selects these based on swap direction (X→Y = lower, Y→X = upper)
 pub const MIN_BIN_ARRAYS: usize = 3;
 
-/// Number of accounts needed for a Meteora DLMM swap
-/// 15 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays
-/// NOTE: swap2 REQUIRES Memo Program at index 13!
-pub const ACCOUNTS_NEEDED: usize = 16 + MIN_BIN_ARRAYS; // 19 total
+/// Number of accounts needed for Meteora DLMM `swap` (standard SPL tokens)
+/// 14 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays = 18 total
+/// Account layout: NO Memo Program, user tokens in INPUT/OUTPUT order
+pub const SWAP_ACCOUNTS_NEEDED: usize = 15 + MIN_BIN_ARRAYS; // 18 total
 
-/// Meteora DLMM swap2 instruction discriminator
-/// swap2 is preferred over swap - handles bitmap extension edge cases better
-/// SHA256("global:swap2")[0..8] = [65, 75, 63, 76, 235, 91, 91, 136]
+/// Number of accounts needed for Meteora DLMM `swap2` (Token-2022 compatible)
+/// 15 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays = 19 total
+/// Account layout: INCLUDES Memo Program at index 13, user tokens in X/Y order
+pub const SWAP2_ACCOUNTS_NEEDED: usize = 16 + MIN_BIN_ARRAYS; // 19 total
+
+/// Default accounts needed (swap for standard tokens)
+pub const ACCOUNTS_NEEDED: usize = SWAP_ACCOUNTS_NEEDED;
+
+/// Meteora DLMM `swap` instruction discriminator (standard SPL tokens)
+/// SHA256("global:swap")[0..8]
+const SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
+
+/// Meteora DLMM `swap2` instruction discriminator (Token-2022 compatible)
+/// SHA256("global:swap2")[0..8]
 const SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
-/// Meteora DLMM swap2 parameters
+/// Meteora DLMM swap parameters
 #[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct Swap2Params {
+pub struct SwapParams {
     /// Amount to swap
     pub amount_in: u64,
     /// Minimum output amount
     pub min_amount_out: u64,
-    // Note: slices Vec is serialized separately as empty (4 bytes of zeros)
 }
 
 /// Execute a swap on Meteora DLMM
 ///
-/// Expected accounts (in order) - matches Meteora swap2 instruction layout:
+/// Automatically detects whether to use `swap` or `swap2` based on account count:
+/// - 18 accounts (SWAP_ACCOUNTS_NEEDED): Use `swap` for standard SPL tokens
+/// - 19 accounts (SWAP2_ACCOUNTS_NEEDED): Use `swap2` for Token-2022
+///
+/// ## `swap` instruction layout (18 accounts, standard SPL tokens):
 /// 0. `[writable]` LB Pair
 /// 1. `[]` Bin Array Bitmap Extension (optional, use program ID as placeholder)
 /// 2. `[writable]` Reserve X (token vault)
 /// 3. `[writable]` Reserve Y (token vault)
-/// 4. `[writable]` User Token X (user's token X account - NOT "token in"!)
-/// 5. `[writable]` User Token Y (user's token Y account - NOT "token out"!)
+/// 4. `[writable]` User Token In (INPUT token account)
+/// 5. `[writable]` User Token Out (OUTPUT token account)
 /// 6. `[]` Token X Mint
 /// 7. `[]` Token Y Mint
-/// 
-/// CRITICAL: User token accounts must be in X/Y order, not input/output order!
-/// The program infers swap direction from amounts and which account has funds.
+/// 8. `[writable]` Oracle
+/// 9. `[]` Host Fee In (program ID as placeholder)
+/// 10. `[signer, writable]` User (authority)
+/// 11. `[]` Token X Program
+/// 12. `[]` Token Y Program
+/// 13. `[]` Event Authority
+/// 14. `[]` Meteora DLMM Program (for CPI invoke)
+/// 15+. `[writable]` Bin Arrays (remaining accounts)
+///
+/// ## `swap2` instruction layout (19 accounts, Token-2022 compatible):
+/// 0. `[writable]` LB Pair
+/// 1. `[]` Bin Array Bitmap Extension (optional, use program ID as placeholder)
+/// 2. `[writable]` Reserve X (token vault)
+/// 3. `[writable]` Reserve Y (token vault)
+/// 4. `[writable]` User Token X (X token account - native order, NOT input/output!)
+/// 5. `[writable]` User Token Y (Y token account - native order, NOT input/output!)
+/// 6. `[]` Token X Mint
+/// 7. `[]` Token Y Mint
 /// 8. `[writable]` Oracle
 /// 9. `[]` Host Fee In (program ID as placeholder)
 /// 10. `[signer, writable]` User (authority)
@@ -60,46 +95,56 @@ pub struct Swap2Params {
 /// 13. `[]` Memo Program (REQUIRED for swap2!)
 /// 14. `[]` Event Authority
 /// 15. `[]` Meteora DLMM Program (for CPI invoke)
-/// 16+. `[writable]` Bin Arrays (remaining accounts, variable count)
+/// 16+. `[writable]` Bin Arrays (remaining accounts)
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
 ) -> Result<()> {
-    if accounts.len() < ACCOUNTS_NEEDED {
-        msg!("Meteora: Insufficient accounts. Expected at least {}, got {}", ACCOUNTS_NEEDED, accounts.len());
+    // Determine which instruction variant to use based on account count
+    let use_swap2 = accounts.len() >= SWAP2_ACCOUNTS_NEEDED;
+    
+    if !use_swap2 && accounts.len() < SWAP_ACCOUNTS_NEEDED {
+        msg!("Meteora: Insufficient accounts. Expected at least {}, got {}", SWAP_ACCOUNTS_NEEDED, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
-    // Build the swap2 instruction data
-    let params = Swap2Params {
+    let params = SwapParams {
         amount_in,
         min_amount_out,
     };
 
-    // swap2 data format: [discriminator(8), amount_in(8), min_amount_out(8), slices_len(4)]
-    // slices is an empty Vec, so we just write 4 bytes of zeros for the length
-    let mut data = Vec::with_capacity(8 + 8 + 8 + 4);
-    data.extend_from_slice(&SWAP2_DISCRIMINATOR);
-    params.serialize(&mut data)?;
-    data.extend_from_slice(&[0u8; 4]); // Empty slices Vec (length = 0)
+    let (discriminator, fixed_count, program_idx, bin_array_start) = if use_swap2 {
+        // swap2: 15 fixed + 1 program, bin arrays start at 16
+        (SWAP2_DISCRIMINATOR, 15usize, 15usize, 16usize)
+    } else {
+        // swap: 14 fixed + 1 program, bin arrays start at 15
+        (SWAP_DISCRIMINATOR, 14usize, 14usize, 15usize)
+    };
 
-    // Account structure (matches Meteora swap2 - includes Memo Program!):
-    // 0-14: Fixed accounts (15 accounts, including Memo Program at 13)
-    // 15: Meteora DLMM Program (for CPI)
-    // 16+: Bin arrays (remaining accounts, writable)
-    
-    // For the instruction, we need: fixed accounts (0-14) + bin arrays (16+)
-    // The program at index 15 is used as program_id, not in account_metas
-    
+    // Build instruction data
+    // swap: [discriminator(8), amount_in(8), min_amount_out(8)]
+    // swap2: [discriminator(8), amount_in(8), min_amount_out(8), slices_len(4)]
+    let data_size = if use_swap2 { 8 + 8 + 8 + 4 } else { 8 + 8 + 8 };
+    let mut data = Vec::with_capacity(data_size);
+    data.extend_from_slice(&discriminator);
+    params.serialize(&mut data)?;
+    if use_swap2 {
+        data.extend_from_slice(&[0u8; 4]); // Empty slices Vec (length = 0)
+    }
+
     let mut account_metas: Vec<AccountMeta> = Vec::new();
     
-    // Add fixed accounts (0-14)
-    for (i, acc) in accounts[..15].iter().enumerate() {
-        let is_signer = i == 10; // User is signer
-        // Writable: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), user(10)
-        // Note: hostFeeIn(9), memoProgram(13), eventAuth(14) are NOT writable
+    // Add fixed accounts (0 to fixed_count-1)
+    for (i, acc) in accounts[..fixed_count].iter().enumerate() {
+        let is_signer = i == 10; // User is signer at index 10 for both variants
+        
+        // Writable accounts differ slightly between swap and swap2
+        // Both: lbPair(0), reserves(2,3), userTokens(4,5), oracle(8), user(10)
+        // swap: eventAuth is at 13, so hostFeeIn(9), tokenProgs(11,12), eventAuth(13) are NOT writable
+        // swap2: memoProgram(13), eventAuth(14) are NOT writable
         let is_writable = matches!(i, 0 | 2 | 3 | 4 | 5 | 8 | 10);
+        
         if is_signer {
             account_metas.push(AccountMeta::new(*acc.key, true));
         } else if is_writable {
@@ -109,8 +154,8 @@ pub fn swap(
         }
     }
     
-    // Add bin arrays (16+) - all are writable
-    for acc in accounts[16..].iter() {
+    // Add bin arrays (bin_array_start+) - all are writable
+    for acc in accounts[bin_array_start..].iter() {
         account_metas.push(AccountMeta::new(*acc.key, false));
     }
 
@@ -123,8 +168,9 @@ pub fn swap(
     // Invoke the swap - include all accounts for the CPI
     invoke(&ix, accounts)?;
 
-    msg!("Meteora DLMM swap2 executed: {} in, min {} out, {} bin arrays", 
-         amount_in, min_amount_out, accounts.len() - 16);
+    let variant = if use_swap2 { "swap2" } else { "swap" };
+    msg!("Meteora DLMM {} executed: {} in, min {} out, {} bin arrays", 
+         variant, amount_in, min_amount_out, accounts.len() - bin_array_start);
     Ok(())
 }
 

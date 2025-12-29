@@ -740,16 +740,27 @@ async function extractDexAccounts(
         break;
 
       case DexType.Meteora:
-        // Meteora DLMM: 19 accounts total (15 fixed + 1 program + 3 directional bin arrays)
-        // Must match arb-router/programs/arb-router/src/dex/meteora.rs expected order:
-        // 0: LBPair, 1: BitmapExt, 2-3: Reserves, 4-5: UserTokens, 6-7: Mints,
-        // 8: Oracle, 9: HostFee, 10: User, 11: TokenXProgram, 12: TokenYProgram,
-        // 13: MemoProgram, 14: EventAuth, 15: Program, 16+: BinArrays (directional)
+        // Meteora DLMM: Supports two swap variants based on token type:
+        //
+        // swap (standard SPL tokens - 18 accounts):
+        //   0-13: 14 fixed accounts (no Memo), user tokens in INPUT/OUTPUT order
+        //   14: Program, 15+: BinArrays
+        //
+        // swap2 (Token-2022 compatible - 19 accounts):
+        //   0-14: 15 fixed accounts (includes Memo at 13), user tokens in X/Y order
+        //   15: Program, 16+: BinArrays
+        //
+        // On-chain router auto-detects based on account count (18 vs 19).
         const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
         
         // Get token programs from hop (set by resolver from pool cache)
         const tokenXProgram = tokenProgramLabelToKey((hop as any).tokenProgramA);
         const tokenYProgram = tokenProgramLabelToKey((hop as any).tokenProgramB);
+        
+        // Detect if we need swap2 (Token-2022) or can use swap (standard SPL)
+        const isToken2022X = tokenXProgram.equals(TOKEN_2022_PROGRAM_ID);
+        const isToken2022Y = tokenYProgram.equals(TOKEN_2022_PROGRAM_ID);
+        const needsSwap2 = isToken2022X || isToken2022Y;
         
         // CRITICAL: Meteora expects NATIVE reserves (reserveX/reserveY paired with tokenXMint/tokenYMint)
         // NOT canonical ordering! The on-chain lbPair has_one constraint validates against native reserves.
@@ -931,6 +942,10 @@ async function extractDexAccounts(
         logger.info('routerTx.meteora.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
+          // Instruction variant
+          variant: needsSwap2 ? 'swap2' : 'swap',
+          isToken2022X,
+          isToken2022Y,
           // Native ordering (what Meteora expects)
           native: {
             reserveX,
@@ -972,7 +987,7 @@ async function extractDexAccounts(
           activeId: activeId ?? 'missing',
           isXtoY,
           isAtoBCanonical: isAtoB, // For comparison - canonical direction
-          // User token accounts (in X/Y order, NOT input/output!)
+          // User token accounts
           userTokenX: userTokenX.toBase58(),
           userTokenY: userTokenY.toBase58(),
           userSourceAta: userSourceAta.toBase58(),
@@ -984,30 +999,56 @@ async function extractDexAccounts(
           outputMint: hop.outputMint,
         });
         
-        // Add fixed accounts (0-15) - matches Meteora swap2 instruction layout
-        // NOTE: swap2 REQUIRES Memo Program (unlike swap instruction used by Jupiter)
-        accounts.push(
-          poolId,                                                              // 0: LB Pair
-          hop.bitmapExtension 
-            ? new PublicKey(hop.bitmapExtension) 
-            : programIdKey,                                                    // 1: Bitmap Extension (use program ID as placeholder)
-          new PublicKey(reserveX),                                             // 2: Reserve X (native, paired with tokenXMint)
-          new PublicKey(reserveY),                                             // 3: Reserve Y (native, paired with tokenYMint)
-          userTokenX,                                                          // 4: User Token X (NOT "Token In" - must be X/Y order!)
-          userTokenY,                                                          // 5: User Token Y (NOT "Token Out" - must be X/Y order!)
-          tokenXMint ? new PublicKey(tokenXMint) : inputMint,                 // 6: Token X Mint (native)
-          tokenYMint ? new PublicKey(tokenYMint) : outputMint,                // 7: Token Y Mint (native)
-          hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)
-          programIdKey,                                                        // 9: Host Fee In (use program as placeholder)
-          wallet,                                                              // 10: User (signer)
-          tokenXProgram,                                                       // 11: Token X Program
-          tokenYProgram,                                                       // 12: Token Y Program
-          MEMO_PROGRAM_ID,                                                     // 13: Memo Program (REQUIRED for swap2!)
-          meteoraEventAuthority,                                               // 14: Event Authority (PDA)
-          programIdKey,                                                        // 15: Meteora DLMM Program
-        );
+        if (needsSwap2) {
+          // swap2: Token-2022 compatible (19 accounts)
+          // User tokens in X/Y native order, includes Memo Program
+          accounts.push(
+            poolId,                                                              // 0: LB Pair
+            hop.bitmapExtension 
+              ? new PublicKey(hop.bitmapExtension) 
+              : programIdKey,                                                    // 1: Bitmap Extension (use program ID as placeholder)
+            new PublicKey(reserveX),                                             // 2: Reserve X (native, paired with tokenXMint)
+            new PublicKey(reserveY),                                             // 3: Reserve Y (native, paired with tokenYMint)
+            userTokenX,                                                          // 4: User Token X (X/Y order for swap2!)
+            userTokenY,                                                          // 5: User Token Y (X/Y order for swap2!)
+            tokenXMint ? new PublicKey(tokenXMint) : inputMint,                 // 6: Token X Mint (native)
+            tokenYMint ? new PublicKey(tokenYMint) : outputMint,                // 7: Token Y Mint (native)
+            hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)
+            programIdKey,                                                        // 9: Host Fee In (use program as placeholder)
+            wallet,                                                              // 10: User (signer)
+            tokenXProgram,                                                       // 11: Token X Program
+            tokenYProgram,                                                       // 12: Token Y Program
+            MEMO_PROGRAM_ID,                                                     // 13: Memo Program (REQUIRED for swap2!)
+            meteoraEventAuthority,                                               // 14: Event Authority (PDA)
+            programIdKey,                                                        // 15: Meteora DLMM Program
+          );
+          // Bin arrays at indices 16-18
+        } else {
+          // swap: Standard SPL tokens (18 accounts)
+          // User tokens in INPUT/OUTPUT order, no Memo Program
+          accounts.push(
+            poolId,                                                              // 0: LB Pair
+            hop.bitmapExtension 
+              ? new PublicKey(hop.bitmapExtension) 
+              : programIdKey,                                                    // 1: Bitmap Extension (use program ID as placeholder)
+            new PublicKey(reserveX),                                             // 2: Reserve X (native, paired with tokenXMint)
+            new PublicKey(reserveY),                                             // 3: Reserve Y (native, paired with tokenYMint)
+            userSourceAta,                                                       // 4: User Token In (INPUT/OUTPUT order for swap!)
+            userDestAta,                                                         // 5: User Token Out (INPUT/OUTPUT order for swap!)
+            tokenXMint ? new PublicKey(tokenXMint) : inputMint,                 // 6: Token X Mint (native)
+            tokenYMint ? new PublicKey(tokenYMint) : outputMint,                // 7: Token Y Mint (native)
+            hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)
+            programIdKey,                                                        // 9: Host Fee In (use program as placeholder)
+            wallet,                                                              // 10: User (signer)
+            tokenXProgram,                                                       // 11: Token X Program
+            tokenYProgram,                                                       // 12: Token Y Program
+            meteoraEventAuthority,                                               // 13: Event Authority (NO Memo for swap!)
+            programIdKey,                                                        // 14: Meteora DLMM Program
+          );
+          // Bin arrays at indices 15-17
+        }
         
-        // Add 3 directional bin arrays (16-18)
+        // Add 3 directional bin arrays
         // CRITICAL: Only use bin arrays we KNOW exist on-chain
         // The knownBinArrayLower/Upper are from pool cache and verified to exist
         // Derived bin arrays might not exist if the pool has sparse liquidity
@@ -1017,9 +1058,8 @@ async function extractDexAccounts(
         // Previously we added up to 8 bin arrays from cache, but this caused errors:
         // - Error 3007: Derived PDAs might not exist on-chain (owned by System Program)
         // - Error 3005: Meteora tries to read ALL passed bin arrays, failing if any are bad
-        // Jupiter only uses 3 bin arrays in their successful swaps.
-        // If a swap needs more price range than 3 bin arrays cover, it's a liquidity issue.
-        break;
+        // Jupiter and other successful swaps use 2-3 bin arrays typically.
+        break
 
       case DexType.Orca:
         // Orca Whirlpool: 12 accounts (matches arb-router/src/dex/orca.rs)
