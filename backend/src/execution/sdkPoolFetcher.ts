@@ -615,27 +615,28 @@ async function fetchRaydiumPoolManual(
   const startTime = Date.now();
   const poolPk = new PublicKey(poolId);
   
-  let data = accountData;
-  if (!data) {
+  let rawData: Uint8Array;
+  if (!accountData) {
     const accountInfo = await connection.getAccountInfo(poolPk);
     if (!accountInfo || !accountInfo.data) return null;
-    data = Buffer.from(accountInfo.data);
+    rawData = accountInfo.data;
   } else {
-    data = Buffer.from(data);
+    rawData = accountData;
   }
   
-  if (data.length < 280) {
+  if (rawData.length < 280) {
     logger.debug('raydium.manual.insufficient_data', { 
       cat: 'cache', 
-      ctx: { pool: poolId, dataLen: data.length } 
+      ctx: { pool: poolId, dataLen: rawData.length } 
     });
     return null;
   }
   
   try {
-    // Extract fields from known offsets
-    const tickSpacing = data.readUInt16LE(235);
-    const tickCurrent = data.readInt32LE(269);
+    // Extract fields from known offsets using DataView for cross-platform compatibility
+    const view = new DataView(rawData.buffer, rawData.byteOffset, rawData.byteLength);
+    const tickSpacing = view.getUint16(235, true);  // true = little endian
+    const tickCurrent = view.getInt32(269, true);   // true = little endian
     
     if (tickSpacing <= 0 || tickSpacing > 1000) {
       logger.debug('raydium.manual.invalid_tick_spacing', { 
