@@ -245,6 +245,7 @@ export interface BatchValidationResult {
   poolsWithNoCacheEntry: number;
   poolsWithInvalidBitmapExtension: number;  // Meteora
   poolsWithInvalidExBitmap: number;          // Raydium
+  poolsWithMissingAmmConfig: number;         // Raydium - missing ammConfig
   results: PoolValidationResult[];
   timestamp: number;
   durationMs: number;
@@ -502,6 +503,54 @@ export async function validatePoolCache(
             issues.push(`Failed to verify ex_bitmap: ${e.message}`);
           }
         }
+        
+        // Validate ammConfig is cached (required for Raydium swap transactions)
+        let cachedAmmConfig = (stat as any)?.amm_config || null;
+        
+        if (!cachedAmmConfig) {
+          // Try to fetch ammConfig from on-chain pool data
+          try {
+            const poolPk = new PublicKey(basePoolId);
+            const accountInfo = await connection.getAccountInfo(poolPk);
+            
+            if (accountInfo?.data) {
+              const { deriveRaydiumClmmCacheFields } = await import('../server/pools.derivation.js');
+              const derived = await deriveRaydiumClmmCacheFields(basePoolId, accountInfo.data as Buffer);
+              
+              if (derived?.ammConfig) {
+                cachedAmmConfig = derived.ammConfig;
+                
+                // Update static cache with the fetched ammConfig
+                const existingStatic = executionCache.getStatic(basePoolId) || {};
+                executionCache.setStatic(basePoolId, {
+                  ...existingStatic,
+                  amm_config: cachedAmmConfig,
+                });
+                
+                logger.debug('cache.ammConfig.fetched', {
+                  cat: 'cache',
+                  poolId: basePoolId.slice(0, 8),
+                  ammConfig: cachedAmmConfig.slice(0, 8),
+                });
+              }
+            }
+          } catch (e: any) {
+            logger.debug('cache.ammConfig.fetch.failed', {
+              cat: 'cache',
+              poolId: basePoolId.slice(0, 8),
+              error: e.message,
+            });
+          }
+        }
+        
+        result.cacheData = {
+          ...result.cacheData,
+          ammConfig: cachedAmmConfig,
+        };
+        
+        if (!cachedAmmConfig) {
+          issues.push('Missing ammConfig - required for swap transactions');
+        }
       }
     } else if (dex === 'meteora') {
       const binArrays = hot?.binArrays as any;
@@ -727,6 +776,7 @@ export async function validatePoolCacheBatch(
   let poolsWithNoCacheEntry = 0;
   let poolsWithInvalidBitmapExtension = 0;  // Meteora
   let poolsWithInvalidExBitmap = 0;          // Raydium
+  let poolsWithMissingAmmConfig = 0;         // Raydium - missing ammConfig
   
   // Process in batches to avoid overwhelming RPC
   const BATCH_SIZE = 10;
@@ -769,6 +819,11 @@ export async function validatePoolCacheBatch(
         if (result.exBitmapValidation && !result.exBitmapValidation.isValid) {
           poolsWithInvalidExBitmap++;
         }
+        
+        // Track missing ammConfig (Raydium only)
+        if (result.dex === 'raydium' && result.issues?.some(i => i.includes('ammConfig'))) {
+          poolsWithMissingAmmConfig++;
+        }
       }
     }
   }
@@ -787,6 +842,7 @@ export async function validatePoolCacheBatch(
       poolsWithNoCacheEntry,
       poolsWithInvalidBitmapExtension,
       poolsWithInvalidExBitmap,
+      poolsWithMissingAmmConfig,
       durationMs,
     }
   });
@@ -800,6 +856,7 @@ export async function validatePoolCacheBatch(
     poolsWithNoCacheEntry,
     poolsWithInvalidBitmapExtension,
     poolsWithInvalidExBitmap,
+    poolsWithMissingAmmConfig,
     results,
     timestamp: Date.now(),
     durationMs,
@@ -885,16 +942,25 @@ export async function refreshInvalidPools(
           }
           
           if (validatedState) {
-            // Also populate static cache if missing (handles "No cache entry" case)
-            if (!executionCache.getStatic(pool.poolId)) {
-              executionCache.setStatic(pool.poolId, {
-                programId: validatedState.programId,
-                dex: pool.dex === 'orca' ? 'Orca' : pool.dex === 'raydium' ? 'Raydium' : 'Meteora',
-                pool_kind: 'clmm',
-                tick_spacing: validatedState.tickSpacing,
-                binStep: validatedState.binStep,
-              });
+            // Also populate/update static cache (handles "No cache entry" case and missing fields)
+            const existingStatic = executionCache.getStatic(pool.poolId) || {};
+            const staticUpdate: any = {
+              ...existingStatic,
+              programId: validatedState.programId,
+              dex: pool.dex === 'orca' ? 'Orca' : pool.dex === 'raydium' ? 'Raydium' : 'Meteora',
+              pool_kind: 'clmm',
+            };
+            
+            if (validatedState.tickSpacing) staticUpdate.tick_spacing = validatedState.tickSpacing;
+            if (validatedState.binStep) staticUpdate.binStep = validatedState.binStep;
+            
+            // Raydium-specific: store ammConfig and observationState
+            if (pool.dex === 'raydium') {
+              if (validatedState.ammConfig) staticUpdate.amm_config = validatedState.ammConfig;
+              if (validatedState.observationState) staticUpdate.observation_state = validatedState.observationState;
             }
+            
+            executionCache.setStatic(pool.poolId, staticUpdate);
             
             // Update cache with validated arrays
             if (validatedState.tickArrays) {

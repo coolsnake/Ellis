@@ -50,6 +50,9 @@ export interface ValidatedPoolState {
   // DLMM specific
   activeId?: number;
   binStep?: number;
+  // Raydium-specific accounts
+  ammConfig?: string;
+  observationState?: string;
   // Validated arrays
   tickArrays?: ValidatedTickArrays;
   binArrays?: ValidatedBinArrays;
@@ -646,6 +649,25 @@ async function fetchRaydiumPoolManual(
       return null;
     }
     
+    // Extract ammConfig (32-byte pubkey at offset 8, after discriminator)
+    // Raydium CLMM layout: discriminator(8) + ammConfig(32) + poolCreator(32) + ...
+    let ammConfig: string | undefined;
+    let observationState: string | undefined;
+    
+    try {
+      // Use derivation helper for accurate extraction
+      const { deriveRaydiumClmmCacheFields } = await import('../server/pools.derivation.js');
+      const derived = await deriveRaydiumClmmCacheFields(poolId, rawData as Buffer);
+      if (derived?.ammConfig) ammConfig = derived.ammConfig;
+      if (derived?.observationState) observationState = derived.observationState;
+    } catch {
+      // Fallback: extract ammConfig manually from offset 8 (after 8-byte discriminator)
+      if (rawData.length >= 40) {
+        const ammConfigBytes = rawData.slice(8, 40);
+        ammConfig = new PublicKey(ammConfigBytes).toBase58();
+      }
+    }
+    
     // Calculate tick array indices
     const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
     const centerIdx = Math.floor(tickCurrent / ticksInArray);
@@ -705,6 +727,8 @@ async function fetchRaydiumPoolManual(
       programId: program.toBase58(),
       currentTick: tickCurrent,
       tickSpacing,
+      ammConfig,
+      observationState,
       tickArrays: center ? { center, lower, upper } : undefined,
       lastFetched: Date.now(),
       fetchDurationMs,

@@ -378,6 +378,7 @@ function populateExecutionCacheFromPools(
       // Raydium CLMM-specific
       if ((pool as any).observation_state) staticData.observation_state = (pool as any).observation_state;
       if ((pool as any).ex_bitmap) staticData.ex_bitmap = (pool as any).ex_bitmap;
+      if ((pool as any).amm_config) staticData.amm_config = (pool as any).amm_config;
       
       // Orca Whirlpool-specific
       if ((pool as any).oracle) staticData.oracle = (pool as any).oracle;
