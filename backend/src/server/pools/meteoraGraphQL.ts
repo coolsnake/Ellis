@@ -806,7 +806,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
   
   try {
     logger.info('meteora.graphql.bitmap_ext.gap_fill', {
-      total: poolIds.length,
+      total: poolInfoMap.size,
       fromGraphQL: poolsWithGraphQLPDA.size,
       toCheckRPC: poolsToCheck.length,
       cat: 'meteora'
