@@ -4,6 +4,538 @@ import { useSocket } from '../app/contexts/socket';
 
 // Fetcher state tracking
 type FetcherState = 'idle' | 'fetching' | 'enriching' | 'subscribing' | 'ready' | 'error';
+
+// ALT category types
+type AltCategory = 'common' | 'flashloan' | 'userPdas';
+type DexAltType = 'raydium' | 'orca' | 'meteora';
+
+interface AltDetailedInfo {
+  address: string;
+  accountCount: number;
+  isDeactivated: boolean;
+  deactivationSlot?: number;
+  canClose: boolean;
+  slotsUntilCloseable?: number;
+  minutesUntilCloseable?: number;
+  rentAmount: number;
+  rentAmountSOL?: string;
+}
+
+interface AltManagementSectionProps {
+  apiBase: string;
+  altStatus: any;
+  onRefresh: () => void;
+  altActionLoading: string | null;
+  setAltActionLoading: (v: string | null) => void;
+}
+
+const getAuthHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  try {
+    const s = localStorage.getItem('authCreds');
+    if (s) {
+      const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+      if (creds && creds.user && creds.pass) {
+        headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+      }
+    }
+  } catch {}
+  return headers;
+};
+
+const AltManagementSection: React.FC<AltManagementSectionProps> = ({
+  apiBase,
+  altStatus,
+  onRefresh,
+  altActionLoading,
+  setAltActionLoading,
+}) => {
+  const [expanded, setExpanded] = React.useState(false);
+  const [altConfig, setAltConfig] = React.useState<any>(null);
+  const [altInfos, setAltInfos] = React.useState<Record<string, AltDetailedInfo>>({});
+  const [dexPoolCounts, setDexPoolCounts] = React.useState<Record<DexAltType, number>>({
+    raydium: 50,
+    orca: 50,
+    meteora: 50,
+  });
+  const [actionResult, setActionResult] = React.useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Load ALT config on mount and when expanded
+  React.useEffect(() => {
+    if (expanded) {
+      loadAltConfig();
+    }
+  }, [expanded]);
+
+  const loadAltConfig = async () => {
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.config}`, { headers: getAuthHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setAltConfig(data);
+      }
+    } catch {}
+  };
+
+  const loadAltInfo = async (category: string) => {
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.info}/${category}`, { headers: getAuthHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setAltInfos(prev => ({ ...prev, [category]: data }));
+      }
+    } catch {}
+  };
+
+  const handleCreateCategory = async (category: AltCategory) => {
+    const actionKey = `create-${category}`;
+    if (altActionLoading) return;
+    setAltActionLoading(actionKey);
+    setActionResult(null);
+
+    try {
+      let endpoint = '';
+      switch (category) {
+        case 'common':
+          endpoint = ROUTES.arb.alts.createCommon;
+          break;
+        case 'flashloan':
+          endpoint = ROUTES.arb.alts.createFlashloan;
+          break;
+        case 'userPdas':
+          endpoint = ROUTES.arb.alts.createUserPdas;
+          break;
+      }
+
+      const res = await fetch(`${apiBase}${endpoint}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({
+          type: 'success',
+          message: `Created ${category} ALT: ${data.accountCount || 0} accounts`,
+        });
+        onRefresh();
+        loadAltConfig();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to create ALT' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  const handleCreateDexPools = async (dex: DexAltType) => {
+    const actionKey = `create-dex-${dex}`;
+    if (altActionLoading) return;
+    setAltActionLoading(actionKey);
+    setActionResult(null);
+
+    try {
+      const maxPools = dexPoolCounts[dex] || 50;
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.createDexPools}?dex=${dex}&maxPools=${maxPools}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({
+          type: 'success',
+          message: `Created ${dex} ALTs: ${data.totalPools || 0} pools, ${data.totalAccounts || 0} accounts in ${data.altCount || 1} ALT(s)`,
+        });
+        onRefresh();
+        loadAltConfig();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to create DEX ALTs' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  const handleRefreshCache = async () => {
+    if (altActionLoading) return;
+    setAltActionLoading('refresh-cache');
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.refresh}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({
+          type: 'success',
+          message: `Cache refreshed: ${data.altCount || 0} ALTs loaded`,
+        });
+        onRefresh();
+        loadAltConfig();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to refresh cache' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  const handleDeactivate = async (category: string) => {
+    if (!confirm(`Deactivate ${category} ALT? You'll need to wait ~5 minutes before closing.`)) return;
+    if (altActionLoading) return;
+    setAltActionLoading(`deactivate-${category}`);
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.deactivate}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ category }),
+      });
+
+      if (res.ok) {
+        setActionResult({ type: 'success', message: `Deactivated ${category}. Wait ~5 min to close.` });
+        onRefresh();
+        loadAltInfo(category);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to deactivate' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  const handleClose = async (category: string) => {
+    const info = altInfos[category];
+    if (!confirm(`Close ${category} ALT and recover ${info?.rentAmountSOL || '~0.01'} SOL?`)) return;
+    if (altActionLoading) return;
+    setAltActionLoading(`close-${category}`);
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.close}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ category }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({ type: 'success', message: `Closed ${category}. Recovered ${data.rentRecoveredSOL || '?'} SOL` });
+        onRefresh();
+        loadAltConfig();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to close ALT' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  const truncAddr = (addr: string) => addr ? `${addr.slice(0, 6)}...${addr.slice(-6)}` : '-';
+
+  const categoryLabels: Record<AltCategory, { label: string; desc: string; icon: string }> = {
+    common: { label: 'Common', desc: 'System programs, DEX programs, common mints', icon: '🔧' },
+    flashloan: { label: 'Flashloan', desc: 'Vault PDAs, vault token accounts', icon: '⚡' },
+    userPdas: { label: 'User PDAs', desc: 'User ATAs for common mints', icon: '👤' },
+  };
+
+  const dexLabels: Record<DexAltType, { label: string; color: string }> = {
+    raydium: { label: 'Raydium', color: 'text-red-300' },
+    orca: { label: 'Orca', color: 'text-blue-300' },
+    meteora: { label: 'Meteora', color: 'text-green-300' },
+  };
+
+  if (!altStatus) return null;
+
+  return (
+    <div className="border border-gray-700 rounded p-3 bg-gray-800/50">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-2">
+        <button 
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 text-md font-semibold text-amber-300 hover:text-amber-200"
+        >
+          <span>{expanded ? '▼' : '▶'}</span>
+          <span>Address Lookup Tables</span>
+        </button>
+        <div className="flex items-center gap-2">
+          <span className={`px-2 py-0.5 text-xs rounded border ${
+            altStatus.initialized && altStatus.altCount > 0 
+              ? 'bg-green-800/40 border-green-700 text-green-300' 
+              : 'bg-yellow-800/50 border-yellow-700 text-yellow-300'
+          }`}>
+            {altStatus.altCount || 0} ALT{altStatus.altCount !== 1 ? 's' : ''}
+          </span>
+          <button
+            onClick={handleRefreshCache}
+            disabled={altActionLoading !== null}
+            className={`px-2 py-1 text-xs border rounded ${
+              altActionLoading === 'refresh-cache' 
+                ? 'bg-gray-700 opacity-50 cursor-not-allowed' 
+                : 'bg-purple-700 hover:bg-purple-600 border-purple-600'
+            }`}
+          >
+            {altActionLoading === 'refresh-cache' ? '⏳' : '🔄'} Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Quick Status */}
+      {!expanded && (
+        <div className="text-xs text-gray-400">
+          Categories: {altStatus.categories?.join(', ') || 'None'} 
+          {altConfig?.poolToAltCount ? ` • ${altConfig.poolToAltCount} pools mapped` : ''}
+        </div>
+      )}
+
+      {/* Action Result */}
+      {actionResult && (
+        <div className={`mb-3 px-3 py-2 rounded text-xs ${
+          actionResult.type === 'success' 
+            ? 'bg-green-900/40 border border-green-700 text-green-300' 
+            : 'bg-red-900/40 border border-red-700 text-red-300'
+        }`}>
+          {actionResult.type === 'success' ? '✓' : '✗'} {actionResult.message}
+          <button 
+            onClick={() => setActionResult(null)} 
+            className="ml-2 opacity-60 hover:opacity-100"
+          >×</button>
+        </div>
+      )}
+
+      {/* Expanded Content */}
+      {expanded && (
+        <div className="space-y-4 mt-3">
+          {/* Static ALT Categories */}
+          <div>
+            <h5 className="text-sm font-medium text-gray-300 mb-2">Static ALTs</h5>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              {(Object.keys(categoryLabels) as AltCategory[]).map((cat) => {
+                const { label, desc, icon } = categoryLabels[cat];
+                const addr = altConfig?.alts?.[cat];
+                const exists = !!addr;
+                const isLoading = altActionLoading === `create-${cat}`;
+
+                return (
+                  <div key={cat} className="bg-gray-900/60 rounded p-2 border border-gray-700">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-medium text-gray-200">{icon} {label}</span>
+                      {exists ? (
+                        <span className="text-xs px-1.5 py-0.5 bg-green-900/50 text-green-400 rounded">Active</span>
+                      ) : (
+                        <span className="text-xs px-1.5 py-0.5 bg-gray-700 text-gray-400 rounded">None</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-500 mb-2">{desc}</div>
+                    {exists ? (
+                      <div className="text-xs font-mono text-gray-400 truncate" title={addr}>
+                        {truncAddr(addr)}
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => handleCreateCategory(cat)}
+                        disabled={altActionLoading !== null}
+                        className={`w-full px-2 py-1 text-xs rounded ${
+                          isLoading 
+                            ? 'bg-gray-700 opacity-50 cursor-not-allowed' 
+                            : 'bg-blue-700 hover:bg-blue-600 text-white'
+                        }`}
+                      >
+                        {isLoading ? 'Creating...' : 'Create ALT'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* DEX Pool ALTs */}
+          <div>
+            <h5 className="text-sm font-medium text-gray-300 mb-2">DEX Pool ALTs</h5>
+            <div className="space-y-2">
+              {(Object.keys(dexLabels) as DexAltType[]).map((dex) => {
+                const { label, color } = dexLabels[dex];
+                const dexAltSet = altConfig?.dexAlts?.[dex];
+                const altCount = dexAltSet?.addresses?.length || 0;
+                const totalPools = dexAltSet?.totalPools || 0;
+                const totalAccounts = dexAltSet?.totalAccounts || 0;
+                const isLoading = altActionLoading === `create-dex-${dex}`;
+
+                return (
+                  <div key={dex} className="bg-gray-900/60 rounded p-2 border border-gray-700">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className={`text-sm font-medium ${color}`}>{label}</span>
+                        {altCount > 0 && (
+                          <span className="text-xs text-gray-400">
+                            {altCount} ALT{altCount > 1 ? 's' : ''} • {totalPools} pools • {totalAccounts} accounts
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="10"
+                          max="200"
+                          value={dexPoolCounts[dex]}
+                          onChange={(e) => setDexPoolCounts(prev => ({
+                            ...prev,
+                            [dex]: Math.min(200, Math.max(10, parseInt(e.target.value) || 50)),
+                          }))}
+                          className="w-16 px-1 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-center"
+                          title="Max pools to include"
+                        />
+                        <button
+                          onClick={() => handleCreateDexPools(dex)}
+                          disabled={altActionLoading !== null}
+                          className={`px-2 py-1 text-xs rounded ${
+                            isLoading 
+                              ? 'bg-gray-700 opacity-50 cursor-not-allowed' 
+                              : altCount > 0 
+                                ? 'bg-purple-700 hover:bg-purple-600 text-white'
+                                : 'bg-green-700 hover:bg-green-600 text-white'
+                          }`}
+                        >
+                          {isLoading ? '⏳' : altCount > 0 ? 'Refresh' : 'Create'}
+                        </button>
+                      </div>
+                    </div>
+                    {dexAltSet?.addresses?.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {dexAltSet.addresses.slice(0, 3).map((addr: string, i: number) => (
+                          <span key={i} className="text-xs font-mono text-gray-500 bg-gray-800 px-1 rounded">
+                            {truncAddr(addr)}
+                          </span>
+                        ))}
+                        {dexAltSet.addresses.length > 3 && (
+                          <span className="text-xs text-gray-500">+{dexAltSet.addresses.length - 3} more</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Pool Coverage Stats */}
+          {altConfig?.poolToAltCount > 0 && (
+            <div className="bg-gray-900/60 rounded p-2 border border-gray-700">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-300">Pool-to-ALT Mappings</span>
+                <span className="text-sm font-mono text-amber-300">{altConfig.poolToAltCount} pools</span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                Pools with ALT coverage for efficient versioned transactions
+              </div>
+            </div>
+          )}
+
+          {/* Existing ALTs Management */}
+          {altStatus.addresses && Object.keys(altStatus.addresses).length > 0 && (
+            <div>
+              <h5 className="text-sm font-medium text-gray-300 mb-2">Manage Existing ALTs</h5>
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {Object.entries(altStatus.addresses).map(([category, address]: [string, any]) => {
+                  const info = altInfos[category];
+                  const isDeactivating = altActionLoading === `deactivate-${category}`;
+                  const isClosing = altActionLoading === `close-${category}`;
+
+                  // Load info if not loaded
+                  if (!info && expanded) {
+                    loadAltInfo(category);
+                  }
+
+                  return (
+                    <div key={category} className="flex items-center justify-between bg-gray-900/40 rounded px-2 py-1.5 border border-gray-700">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-gray-300">{category}</span>
+                          {info && (
+                            <span className="text-xs text-gray-500">{info.accountCount} accts</span>
+                          )}
+                          {info?.isDeactivated && (
+                            <span className="text-xs px-1 bg-orange-900/50 text-orange-400 rounded">Deactivated</span>
+                          )}
+                        </div>
+                        <div className="text-xs font-mono text-gray-500 truncate">{truncAddr(String(address))}</div>
+                      </div>
+                      <div className="flex items-center gap-1 ml-2">
+                        {info?.isDeactivated ? (
+                          info.canClose ? (
+                            <button
+                              onClick={() => handleClose(category)}
+                              disabled={altActionLoading !== null}
+                              className={`px-2 py-0.5 text-xs rounded ${
+                                isClosing
+                                  ? 'bg-gray-700 opacity-50'
+                                  : 'bg-red-700 hover:bg-red-600 text-white'
+                              }`}
+                            >
+                              {isClosing ? '⏳' : `Close (${info.rentAmountSOL} SOL)`}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-yellow-400">
+                              ⏳ {info.minutesUntilCloseable || 0}m
+                            </span>
+                          )
+                        ) : (
+                          <button
+                            onClick={() => handleDeactivate(category)}
+                            disabled={altActionLoading !== null}
+                            className={`px-2 py-0.5 text-xs rounded ${
+                              isDeactivating
+                                ? 'bg-gray-700 opacity-50'
+                                : 'bg-orange-700 hover:bg-orange-600 text-white'
+                            }`}
+                          >
+                            {isDeactivating ? '⏳' : 'Deactivate'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Warnings */}
+          {altStatus.startupStatus?.errors?.length > 0 && (
+            <div className="bg-yellow-900/20 border border-yellow-700/50 rounded p-2">
+              <div className="text-xs text-yellow-400 font-medium mb-1">⚠️ Warnings</div>
+              <div className="text-xs text-yellow-300/80">
+                {altStatus.startupStatus.errors.slice(0, 3).join('; ')}
+                {altStatus.startupStatus.errors.length > 3 && ` (+${altStatus.startupStatus.errors.length - 3} more)`}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 type DexKey = 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap';
 type WsStats = { attached?: number; events?: number };
 type WsTargetsState = Partial<Record<DexKey, number>>;
@@ -1008,122 +1540,13 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           </div>
 
           {/* ALT Management Section */}
-          {altStatus ? (
-            <div className="border border-gray-700 rounded p-3 bg-gray-800/50">
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="text-md font-semibold text-amber-300">Address Lookup Tables</h4>
-                <div className="flex items-center gap-2">
-                  <button 
-                    className={`px-2 py-1 text-xs border rounded ${altActionLoading === 'extend-common' ? 'bg-gray-700 opacity-50 cursor-not-allowed' : 'bg-blue-700 hover:bg-blue-600'}`}
-                    disabled={altActionLoading !== null}
-                    onClick={async () => {
-                      if (altActionLoading) return;
-                      setAltActionLoading('extend-common');
-                      try {
-                        const headers: Record<string, string> = { 'content-type': 'application/json' };
-                        try {
-                          const s = localStorage.getItem('authCreds');
-                          if (s) {
-                            const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
-                            if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
-                          }
-                        } catch {}
-                        const category = altStatus.categories?.[0] || 'common';
-                        const res = await fetch(`${apiBase}${ROUTES.arb.alts.extendWithCategory}`, {
-                          method: 'POST',
-                          headers,
-                          body: JSON.stringify({
-                            category,
-                            accountCategory: 'common',
-                            options: {
-                              includeSystemPrograms: true,
-                              includeWalletAtas: true,
-                            },
-                          }),
-                        });
-                        if (res.ok) {
-                          const result = await res.json();
-                          alert(`ALT extended successfully!\nAccounts added: ${result.accountsAdded}\nTotal accounts: ${result.accountCount}\nSignature: ${result.signature || 'N/A'}`);
-                          fetchMetrics();
-                        } else {
-                          const error = await res.json().catch(() => ({ error: 'Unknown error' }));
-                          alert(`Failed to extend ALT: ${error.error || 'Unknown error'}`);
-                        }
-                      } catch (e: any) {
-                        alert(`Error: ${e?.message || e}`);
-                      } finally {
-                        setAltActionLoading(null);
-                      }
-                    }}
-                  >
-                    {altActionLoading === 'extend-common' ? 'Extending...' : 'Extend with Common'}
-                  </button>
-                  <button 
-                    className={`px-2 py-1 text-xs border rounded ${altActionLoading === 'preview' ? 'bg-gray-700 opacity-50 cursor-not-allowed' : 'bg-purple-700 hover:bg-purple-600'}`}
-                    disabled={altActionLoading !== null}
-                    onClick={async () => {
-                      if (altActionLoading) return;
-                      setAltActionLoading('preview');
-                      try {
-                        const headers: Record<string, string> = {};
-                        try {
-                          const s = localStorage.getItem('authCreds');
-                          if (s) {
-                            const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
-                            if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
-                          }
-                        } catch {}
-                        const res = await fetch(`${apiBase}${ROUTES.arb.alts.collectAccounts}?category=common&includeSystemPrograms=true&includeWalletAtas=true`, { headers });
-                        if (res.ok) {
-                          const result = await res.json();
-                          alert(`Would collect ${result.accountCount} accounts:\n${result.accounts.slice(0, 10).join('\n')}${result.accounts.length > 10 ? `\n... and ${result.accounts.length - 10} more` : ''}`);
-                        } else {
-                          const error = await res.json().catch(() => ({ error: 'Unknown error' }));
-                          alert(`Failed to preview: ${error.error || 'Unknown error'}`);
-                        }
-                      } catch (e: any) {
-                        alert(`Error: ${e?.message || e}`);
-                      } finally {
-                        setAltActionLoading(null);
-                      }
-                    }}
-                  >
-                    {altActionLoading === 'preview' ? 'Loading...' : 'Preview Accounts'}
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-                <div>
-                  <div className="text-gray-400">Status</div>
-                  <div className={`px-1 rounded border inline-block ${altStatus.initialized && altStatus.altCount > 0 ? 'bg-green-800/40 border-green-700' : 'bg-yellow-800/50 border-yellow-700'}`}>
-                    {altStatus.initialized ? 'Initialized' : 'Not Initialized'} · {altStatus.altCount || 0} ALT{altStatus.altCount !== 1 ? 's' : ''}
-                  </div>
-                </div>
-                {altStatus.categories?.length > 0 ? (
-                  <div>
-                    <div className="text-gray-400">Categories</div>
-                    <div>{altStatus.categories.join(', ')}</div>
-                  </div>
-                ) : null}
-                {altStatus.startupStatus?.errors?.length > 0 ? (
-                  <div className="col-span-2">
-                    <div className="text-yellow-400">Warnings</div>
-                    <div className="text-xs opacity-80">{altStatus.startupStatus.errors.slice(0, 3).join('; ')}{altStatus.startupStatus.errors.length > 3 ? ` (+${altStatus.startupStatus.errors.length - 3} more)` : ''}</div>
-                  </div>
-                ) : null}
-                {altStatus.addresses && Object.keys(altStatus.addresses).length > 0 ? (
-                  <div className="col-span-2">
-                    <div className="text-gray-400">ALT Addresses</div>
-                    <div className="text-xs opacity-70 font-mono break-all">
-                      {Object.entries(altStatus.addresses).map(([cat, addr]: [string, any]) => (
-                        <div key={cat} className="truncate">{cat}: {String(addr).slice(0, 8)}...{String(addr).slice(-8)}</div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
+          <AltManagementSection 
+            apiBase={apiBase} 
+            altStatus={altStatus} 
+            onRefresh={fetchMetrics}
+            altActionLoading={altActionLoading}
+            setAltActionLoading={setAltActionLoading}
+          />
         </div>
       )}
     </div>

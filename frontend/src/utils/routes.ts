@@ -92,6 +92,16 @@ export const ROUTES = {
       deactivate: '/arb/alts/deactivate',
       close: '/arb/alts/close',
       reinitialize: '/arb/alts/reinitialize',
+      // New integrated ALT endpoints
+      config: '/arb/alt/config',
+      createCommon: '/arb/alt/create/common',
+      createFlashloan: '/arb/alt/create/flashloan',
+      createUserPdas: '/arb/alt/create/user-pdas',
+      createDexPools: '/arb/alt/create/dex-pools',
+      coverage: '/arb/alt/coverage',
+      extendCategory: '/arb/alt/extend', // POST /arb/alt/extend/:category
+      refresh: '/arb/alt/refresh',
+      pools: '/arb/alt/pools',
     },
   },
   exec: {
