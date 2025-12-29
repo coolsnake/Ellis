@@ -1354,12 +1354,11 @@ async function getRaydiumSdkAccountOrder(
  * 10. User (signer)
  * 11. Token X Program
  * 12. Token Y Program
- * 13. Event Authority
- * 14. Meteora DLMM Program (for CPI invoke)
- * 15. Bin Array Lower (remaining account)
- * 16. Bin Array Upper (remaining account)
- * 
- * NOTE: Memo Program is NOT included - Meteora swap2 doesn't use it!
+ * 13. Memo Program (REQUIRED for swap2!)
+ * 14. Event Authority
+ * 15. Meteora DLMM Program (for CPI invoke)
+ * 16. Bin Array Lower (remaining account)
+ * 17. Bin Array Upper (remaining account)
  * 
  * For Orca Whirlpool, the router expects 12 accounts:
  * 0. Token Program
@@ -1449,12 +1448,9 @@ function deriveMeteoraDlmmEventAuthority(): PublicKey {
  * Build Meteora DLMM accounts in the order expected by the on-chain router
  * 
  * Based on Meteora CPI example (dlmm::cpi::accounts::Swap2):
- * #1-13: Fixed accounts (0-12 in our 0-indexed array)
- * #14: Event Authority
+ * #1-14: Fixed accounts (0-13 in our 0-indexed array, includes Memo at 13)
  * #15: Meteora Program (included for CPI invoke)
  * #16+: Bin arrays (remaining accounts)
- * 
- * NOTE: Memo Program is NOT included - Meteora swap2 doesn't use it!
  */
 async function buildMeteoraDexAccountsForRouter(
   payer: PublicKey,
@@ -1482,8 +1478,7 @@ async function buildMeteoraDexAccountsForRouter(
     }
   };
   
-  // Fixed accounts (indices 0-13) - matches Meteora CPI accounts::Swap2 order
-  // NOTE: Memo Program is NOT included - Meteora swap2 doesn't use it!
+  // Fixed accounts (indices 0-14) - matches Meteora CPI accounts::Swap2 order
   const fixedAccounts: PublicKey[] = [
     poolPubkey,                                                    // 0: LB Pair
     pool.bitmapExtension 
@@ -1500,7 +1495,8 @@ async function buildMeteoraDexAccountsForRouter(
     payer,                                                         // 10: User (signer)
     new PublicKey(pool.tokenProgram),                              // 11: Token X Program
     new PublicKey(pool.tokenProgram),                              // 12: Token Y Program
-    deriveMeteoraDlmmEventAuthority(),                             // 13: Event Authority (PDA)
+    MEMO_PROGRAM_ID,                                               // 13: Memo Program (REQUIRED for swap2!)
+    deriveMeteoraDlmmEventAuthority(),                             // 14: Event Authority (PDA)
   ];
   
   // Bin arrays (remaining accounts) - order based on swap direction
@@ -1513,12 +1509,12 @@ async function buildMeteoraDexAccountsForRouter(
   const binArrayAccounts: PublicKey[] = sortedBinArrays
     .map((ba: BinArrayInfo) => new PublicKey(ba.address));
   
-  // Structure: [fixed accounts (14), program (1), bin arrays (N)]
+  // Structure: [fixed accounts (15), program (1), bin arrays (N)]
   // Program is included for CPI invoke
   const accounts: PublicKey[] = [
-    ...fixedAccounts,                                              // 0-13: Fixed accounts
-    METEORA_DLMM_PROGRAM,                                          // 14: Meteora DLMM Program
-    ...binArrayAccounts,                                           // 15+: Bin arrays
+    ...fixedAccounts,                                              // 0-14: Fixed accounts
+    METEORA_DLMM_PROGRAM,                                          // 15: Meteora DLMM Program
+    ...binArrayAccounts,                                           // 16+: Bin arrays
   ];
   
   // Log with detailed account comparison for debugging

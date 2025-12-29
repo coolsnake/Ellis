@@ -450,8 +450,8 @@ async function buildDirectRouterTx(
             dexType,
             pool: hop.poolId,
             dexAccounts: dexAccounts.length,
-            // For Meteora, bin arrays are the "remaining accounts" after index 14 (program) => start at 15
-            meteoraBinArrays: dexType === DexType.Meteora ? Math.max(0, dexAccounts.length - 15) : undefined,
+            // For Meteora, bin arrays are the "remaining accounts" after index 15 (program) => start at 16
+            meteoraBinArrays: dexType === DexType.Meteora ? Math.max(0, dexAccounts.length - 16) : undefined,
             aToB,
           }
         });
@@ -736,7 +736,7 @@ async function extractDexAccounts(
         // Must match arb-router/programs/arb-router/src/dex/meteora.rs expected order:
         // 0: LBPair, 1: BitmapExt, 2-3: Reserves, 4-5: UserTokens, 6-7: Mints,
         // 8: Oracle, 9: HostFee, 10: User, 11: TokenXProgram, 12: TokenYProgram,
-        // 13: EventAuth, 14: Program, 15-17: BinArrays (directional) - NO MemoProgram!
+        // 13: MemoProgram, 14: EventAuth, 15: Program, 16+: BinArrays (directional)
         const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
         
         // Get token programs from hop (set by resolver from pool cache)
@@ -793,67 +793,46 @@ async function extractDexAccounts(
         
         let directionalBinArrays: PublicKey[] = [];
         
-        // Derive the active bin array when we have activeId
-        // CRITICAL: Only use the derived array if it matches a known-good array,
-        // otherwise we risk providing a non-existent account!
-        if (typeof activeId === 'number' && Number.isFinite(activeId) && knownBinArrayLower && knownBinArrayUpper) {
-          // Derive bin arrays starting with the active bin array
-          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
-          const activeBinArray = derived.arrays[0]; // First derived array contains activeId
-          const activeBinArrayStr = activeBinArray.toBase58();
-          
-          // Check if the derived active matches one of the known-good arrays
-          const matchesLower = activeBinArrayStr === knownBinArrayLower.toBase58();
-          const matchesUpper = activeBinArrayStr === knownBinArrayUpper.toBase58();
-          
-          if (matchesLower || matchesUpper) {
-            // Great! The derived active exists on-chain
-            if (isXtoY) {
-              // X→Y: active first, then in lower direction
-              directionalBinArrays = [activeBinArray, knownBinArrayLower, knownBinArrayLower];
-            } else {
-              // Y→X: active first, then in upper direction
-              directionalBinArrays = [activeBinArray, knownBinArrayUpper, knownBinArrayUpper];
-            }
-          } else {
-            // The derived active is DIFFERENT from known arrays!
-            // This means the active bin might be in a bin array that's not cached.
-            // CRITICAL FIX: We MUST still include the derived active bin array first,
-            // because Meteora swap starts from the active bin. Without it, we get
-            // "AccountNotEnoughKeys" errors.
-            logger.warn('routerTx.meteora.derivedActiveNotCached', {
-              cat: 'tx',
-              ctx: {
-                poolId: hop.poolId,
-                activeId,
-                derivedActive: activeBinArrayStr.slice(0, 8),
-                knownLower: knownBinArrayLower.toBase58().slice(0, 8),
-                knownUpper: knownBinArrayUpper.toBase58().slice(0, 8),
-                fix: 'including_derived_active_first',
-              }
-            });
-            // Include the derived active first, then known arrays in directional order
-            // The derived active may not exist on-chain, but without it the swap will
-            // definitely fail. With it, there's a chance it exists and works.
-            if (isXtoY) {
-              // X→Y: active first, then lower direction
-              directionalBinArrays = [activeBinArray, knownBinArrayLower, knownBinArrayLower];
-            } else {
-              // Y→X: active first, then upper direction
-              directionalBinArrays = [activeBinArray, knownBinArrayUpper, knownBinArrayUpper];
-            }
-          }
-        } else if (knownBinArrayLower && knownBinArrayUpper) {
-          // NO activeId available - fallback to known arrays
-          if (isXtoY) {
-            directionalBinArrays = [knownBinArrayLower, knownBinArrayUpper, knownBinArrayLower];
-          } else {
-            directionalBinArrays = [knownBinArrayUpper, knownBinArrayLower, knownBinArrayUpper];
-          }
-        } else if (typeof activeId === 'number' && Number.isFinite(activeId)) {
-          // No known arrays but have activeId - derive (risky, might not exist)
+        // Derive 3 directional bin arrays based on activeId and swap direction
+        // CRITICAL: Meteora swap2 traverses bin arrays starting from the active bin.
+        // We MUST include the active bin array first, then arrays in the swap direction:
+        // - X→Y: price goes DOWN → need arrays at activeIndex, activeIndex-1, activeIndex-2
+        // - Y→X: price goes UP → need arrays at activeIndex, activeIndex+1, activeIndex+2
+        if (typeof activeId === 'number' && Number.isFinite(activeId)) {
+          // Always derive the full directional set from activeId
           const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
           directionalBinArrays = derived.arrays;
+          
+          // Log for debugging
+          logger.debug('routerTx.meteora.binArraysDerived', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              activeId,
+              isXtoY,
+              activeIndex: derived.activeIndex,
+              derived: derived.arrays.map((a, i) => `${i}:${a.toBase58().slice(0, 8)}`),
+              knownLower: knownBinArrayLower?.toBase58().slice(0, 8),
+              knownUpper: knownBinArrayUpper?.toBase58().slice(0, 8),
+            }
+          });
+        } else if (knownBinArrayLower && knownBinArrayUpper) {
+          // NO activeId available - fallback to known arrays
+          // This is risky but better than nothing
+          if (isXtoY) {
+            directionalBinArrays = [knownBinArrayLower, knownBinArrayLower, knownBinArrayUpper];
+          } else {
+            directionalBinArrays = [knownBinArrayUpper, knownBinArrayUpper, knownBinArrayLower];
+          }
+          logger.warn('routerTx.meteora.noActiveId', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              isXtoY,
+              knownLower: knownBinArrayLower.toBase58().slice(0, 8),
+              knownUpper: knownBinArrayUpper.toBase58().slice(0, 8),
+            }
+          });
         } else {
           // LAST RESORT: use whatever we have
           const fallbackArrays: PublicKey[] = [];
@@ -864,6 +843,10 @@ async function extractDexAccounts(
             fallbackArrays.push(fallbackArrays.length > 0 ? fallbackArrays[fallbackArrays.length - 1] : poolId);
           }
           directionalBinArrays = fallbackArrays;
+          logger.warn('routerTx.meteora.fallbackBinArrays', {
+            cat: 'tx',
+            ctx: { poolId: hop.poolId, count: fallbackArrays.length }
+          });
         }
         
         // Log the accounts being used for debugging with verification
@@ -923,9 +906,8 @@ async function extractDexAccounts(
           outputMint: hop.outputMint,
         });
         
-        // Add fixed accounts (0-14) - matches Meteora swap2 instruction layout
-        // NOTE: Memo Program is NOT included - Meteora swap2 doesn't use it!
-        // Jupiter's successful swaps use exactly this layout.
+        // Add fixed accounts (0-15) - matches Meteora swap2 instruction layout
+        // NOTE: swap2 REQUIRES Memo Program (unlike swap instruction used by Jupiter)
         accounts.push(
           poolId,                                                              // 0: LB Pair
           hop.bitmapExtension 
@@ -942,8 +924,9 @@ async function extractDexAccounts(
           wallet,                                                              // 10: User (signer)
           tokenXProgram,                                                       // 11: Token X Program
           tokenYProgram,                                                       // 12: Token Y Program
-          meteoraEventAuthority,                                               // 13: Event Authority (PDA)
-          programIdKey,                                                        // 14: Meteora DLMM Program
+          MEMO_PROGRAM_ID,                                                     // 13: Memo Program (REQUIRED for swap2!)
+          meteoraEventAuthority,                                               // 14: Event Authority (PDA)
+          programIdKey,                                                        // 15: Meteora DLMM Program
         );
         
         // Add 3 directional bin arrays (16-18)
@@ -987,7 +970,7 @@ async function extractDexAccounts(
                   if (already.has(b58)) continue;
                   accounts.push(pk);
                   already.add(b58);
-                  const binCount = accounts.length - 15;  // Bin arrays start at index 15
+                  const binCount = accounts.length - 16;  // Bin arrays start at index 16
                   if (binCount >= maxBinArrays) break;
                 } catch {}
               }
@@ -1182,8 +1165,8 @@ async function extractDexAccounts(
   if (dexType === DexType.Meteora && opts?.allowVariableAccounts) {
     while (accounts.length < expected) {
       // Prefer padding with a valid bin array if we have one, otherwise fall back to pool ID.
-      // Bin arrays start at index 15 (after 15 fixed accounts: 0-14)
-      const pad = accounts.length > 15 ? accounts[accounts.length - 1] : new PublicKey(hop.poolId.replace(/[#-]rev$/, ''));
+      // Bin arrays start at index 16 (after 16 fixed accounts: 0-15)
+      const pad = accounts.length > 16 ? accounts[accounts.length - 1] : new PublicKey(hop.poolId.replace(/[#-]rev$/, ''));
       accounts.push(pad);
     }
     return accounts;
