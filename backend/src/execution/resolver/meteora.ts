@@ -78,8 +78,12 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
       
       const binLower = String((p as any)?.bin_array_lower || '');
       const binUpper = String((p as any)?.bin_array_upper || '');
+      const binLower2 = String((p as any)?.bin_array_lower2 || '');
+      const binUpper2 = String((p as any)?.bin_array_upper2 || '');
       if (binLower && !hop.binArrayLower) hop.binArrayLower = binLower;
       if (binUpper && !hop.binArrayUpper) hop.binArrayUpper = binUpper;
+      if (binLower2) (hop as any).binArrayLower2 = binLower2;
+      if (binUpper2) (hop as any).binArrayUpper2 = binUpper2;
       
       // Extract token programs from pool cache if not in executionCache
       // This eliminates RPC calls in the builder for token program detection

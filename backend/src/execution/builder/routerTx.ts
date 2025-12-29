@@ -796,8 +796,11 @@ async function extractDexAccounts(
         // We must derive the active bin array and put it first.
         
         // Collect known-good bin arrays from the cache (these are confirmed to exist)
+        // We now have ±2 arrays from active: lower2, lower (active), upper, upper2
         const knownBinArrayLower = hop.binArrayLower ? new PublicKey(hop.binArrayLower) : null;
         const knownBinArrayUpper = hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : null;
+        const knownBinArrayLower2 = (hop as any).binArrayLower2 ? new PublicKey((hop as any).binArrayLower2) : null;
+        const knownBinArrayUpper2 = (hop as any).binArrayUpper2 ? new PublicKey((hop as any).binArrayUpper2) : null;
         
         let directionalBinArrays: PublicKey[] = [];
         
@@ -819,20 +822,22 @@ async function extractDexAccounts(
           // Derive directional bin arrays
           const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
           
-          // Build the set with ONLY known-good arrays
+          // Build a set of ALL known-good arrays (from cache ±2)
           const knownLowerStr = knownBinArrayLower?.toBase58();
           const knownUpperStr = knownBinArrayUpper?.toBase58();
+          const knownLower2Str = knownBinArrayLower2?.toBase58();
+          const knownUpper2Str = knownBinArrayUpper2?.toBase58();
           const derivedStrs = derived.arrays.map(a => a.toBase58());
           
-          // Check which derived arrays match known-good cached arrays
-          const derivedMatches = derivedStrs.map(d => d === knownLowerStr || d === knownUpperStr);
+          // Create a set of all known-good array addresses for quick lookup
+          const knownGoodSet = new Set<string>();
+          if (knownLowerStr) knownGoodSet.add(knownLowerStr);
+          if (knownUpperStr) knownGoodSet.add(knownUpperStr);
+          if (knownLower2Str) knownGoodSet.add(knownLower2Str);
+          if (knownUpper2Str) knownGoodSet.add(knownUpper2Str);
           
-          // Get the set of known-good arrays we can use
-          const knownGoodArrays: PublicKey[] = [];
-          if (knownBinArrayLower) knownGoodArrays.push(knownBinArrayLower);
-          if (knownBinArrayUpper && knownUpperStr !== knownLowerStr) {
-            knownGoodArrays.push(knownBinArrayUpper);
-          }
+          // Check which derived arrays match any known-good cached array
+          const derivedMatches = derivedStrs.map(d => knownGoodSet.has(d));
           
           // Build the final array using ONLY known-good arrays
           // Order them based on swap direction
@@ -843,11 +848,15 @@ async function extractDexAccounts(
               // This derived array matches a known-good one, safe to use
               directionalBinArrays.push(derived.arrays[i]);
             } else if (isXtoY) {
-              // X→Y: prefer lower arrays, fall back to any known-good
-              directionalBinArrays.push(knownBinArrayLower || knownBinArrayUpper!);
+              // X→Y: prefer lower arrays (lower2 → lower → upper → upper2)
+              directionalBinArrays.push(
+                knownBinArrayLower2 || knownBinArrayLower || knownBinArrayUpper || knownBinArrayUpper2!
+              );
             } else {
-              // Y→X: prefer upper arrays, fall back to any known-good
-              directionalBinArrays.push(knownBinArrayUpper || knownBinArrayLower!);
+              // Y→X: prefer upper arrays (upper2 → upper → lower → lower2)
+              directionalBinArrays.push(
+                knownBinArrayUpper2 || knownBinArrayUpper || knownBinArrayLower || knownBinArrayLower2!
+              );
             }
           }
           
@@ -860,10 +869,12 @@ async function extractDexAccounts(
               activeIndex,
               isXtoY,
               derivedMatches,
-              knownGoodCount: knownGoodArrays.length,
+              knownGoodCount: knownGoodSet.size,
               final: directionalBinArrays.map((a, i) => `${i}:${a.toBase58().slice(0, 8)}`),
               knownLower: knownLowerStr?.slice(0, 8),
               knownUpper: knownUpperStr?.slice(0, 8),
+              knownLower2: knownLower2Str?.slice(0, 8),
+              knownUpper2: knownUpper2Str?.slice(0, 8),
             }
           });
         } else if (knownBinArrayLower || knownBinArrayUpper) {
@@ -1583,6 +1594,8 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
           const cachedActive = cachedBinArrays?.active || cachedBinArrays?.lower;
           const cachedLower = cachedBinArrays?.lower;
           const cachedUpper = cachedBinArrays?.upper;
+          const cachedLower2 = cachedBinArrays?.lower2;
+          const cachedUpper2 = cachedBinArrays?.upper2;
 
           // Start with cache values if present
           // Note: These are just candidates; we will validate below when possible.
@@ -1593,6 +1606,13 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
           if (!hop.binArrayUpper && cachedUpper) {
             hop.binArrayUpper = String(cachedUpper);
             derivedAccounts.binArrayUpper = hop.binArrayUpper;
+          }
+          // Also cache the ±2 arrays for boundary cases
+          if (cachedLower2) {
+            (hop as any).binArrayLower2 = String(cachedLower2);
+          }
+          if (cachedUpper2) {
+            (hop as any).binArrayUpper2 = String(cachedUpper2);
           }
 
           // If still missing, derive from activeId

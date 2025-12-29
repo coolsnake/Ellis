@@ -763,9 +763,13 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   // (the one containing the active bin), not activeIndex-1. This is consistent with
                   // meteoraGraphQL.ts which sets bin_array_lower = bins.active || bins.lower.
                   // The active bin array MUST be included first for swaps to work.
+                  // We also cache lower2/upper2 (±2 from active) for boundary cases where the active bin
+                  // is near the edge of its bin array and swaps need to traverse 2+ arrays.
                   ...(validatedBinArrays?.active ? { bin_array_lower: validatedBinArrays.active } :
                       validatedBinArrays?.lower ? { bin_array_lower: validatedBinArrays.lower } : {}),
                   ...(validatedBinArrays?.upper ? { bin_array_upper: validatedBinArrays.upper } : {}),
+                  ...(validatedBinArrays?.lower2 ? { bin_array_lower2: validatedBinArrays.lower2 } : {}),
+                  ...(validatedBinArrays?.upper2 ? { bin_array_upper2: validatedBinArrays.upper2 } : {}),
                 });
                 
                 cached++;

@@ -136,7 +136,7 @@ export async function deriveMeteoraBinArrayAddresses(
     pairPk: any,
     programId: any,
     activeId?: number
-): Promise<{ lower?: string; upper?: string; active?: string }> {
+): Promise<{ lower?: string; lower2?: string; upper?: string; upper2?: string; active?: string }> {
     if (!Number.isFinite(activeId as number)) return {};
     
     // Calculate bin array index directly from activeId
@@ -161,13 +161,17 @@ export async function deriveMeteoraBinArrayAddresses(
             return pda.toBase58();
         };
         
-        // Derive active, lower (active-1), and upper (active+1) bin arrays
+        // Derive active and ±2 adjacent bin arrays for directional swaps
         // CRITICAL: 'active' is the bin array containing the active bin
-        // 'lower' and 'upper' are adjacent arrays for directional swaps
+        // We need ±2 because if the active bin is near an array boundary,
+        // a swap might need to traverse 2+ arrays in either direction.
+        // Example: activeId=-420 (bottom of array -6), Y→X swap needs -6, -5, -4
         return {
             active: deriveAddr(activeArrayIdx),
             lower: deriveAddr(activeArrayIdx - 1),
+            lower2: deriveAddr(activeArrayIdx - 2),
             upper: deriveAddr(activeArrayIdx + 1),
+            upper2: deriveAddr(activeArrayIdx + 2),
         };
     } catch (err: any) {
         try { logger.debug('meteora.bin.addr_failed', { error: String(err?.message || err), cat: 'pools' }); } catch { }
