@@ -114,7 +114,7 @@ pub fn swap(
         min_amount_out,
     };
 
-    let (discriminator, fixed_count, program_idx, bin_array_start) = if use_swap2 {
+    let (discriminator, fixed_count, _program_idx, bin_array_start) = if use_swap2 {
         // swap2: 15 fixed + 1 program, bin arrays start at 16
         (SWAP2_DISCRIMINATOR, 15usize, 15usize, 16usize)
     } else {
