@@ -755,16 +755,19 @@ async function extractDexAccounts(
           // Selected vaults
           selectedInputVault: inputVault,
           selectedOutputVault: outputVault,
-          // Tick arrays (stored)
+          // Tick arrays (stored in hop)
           tickArrayCenter: hop.tickArrayCenter || 'missing',
           tickArrayLower: hop.tickArrayLower || 'missing',
           tickArrayUpper: hop.tickArrayUpper || 'missing',
           // Direction (using native ordering)
           isAtoB,
-          // Directional tick arrays (used in instruction)
-          tickArray0: hop.tickArrayCenter || 'missing',
-          tickArray1: (isAtoB ? hop.tickArrayLower : hop.tickArrayUpper) || 'missing',
-          tickArray2: (isAtoB ? hop.tickArrayLower : hop.tickArrayUpper) || 'missing',
+          // Directional tick arrays (will be used in instruction)
+          directionalTickArrays: {
+            array0: hop.tickArrayCenter || 'missing',
+            array1: (isAtoB ? hop.tickArrayLower : hop.tickArrayUpper) || 'missing',
+            array2: (isAtoB ? hop.tickArrayLower : hop.tickArrayUpper) || 'missing',
+            direction: isAtoB ? 'A→B (down)' : 'B→A (up)',
+          },
           isAtoBSource: nativeMintA ? 'native' : 'canonical_fallback',
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
@@ -774,30 +777,32 @@ async function extractDexAccounts(
         // - A→B (isAtoB=true, tick decreases): [center, lower, lower] (going DOWN)
         // - B→A (isAtoB=false, tick increases): [center, upper, upper] (going UP)
         // The third tick array is duplicated because lower-1/upper+1 may not exist on thin liquidity pools.
-        const tickArray0 = hop.tickArrayCenter;
-        const tickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
-        const tickArray2 = tickArray1; // Safe: duplicate second array (third may not exist)
-        
-        accounts.push(
-          wallet,                                                              // 0: Payer (signer)
-          ammConfig,                                                           // 1: AMM Config (from cache or placeholder)
-          poolId,                                                              // 2: Pool State
-          userSourceAta,                                                       // 3: Input Token Account (user)
-          userDestAta,                                                         // 4: Output Token Account (user)
-          new PublicKey(inputVault),                                           // 5: Input Vault (from canonical pairing)
-          new PublicKey(outputVault),                                          // 6: Output Vault (from canonical pairing)
-          observationState,                                                    // 7: Observation State (derived PDA)
-          TOKEN_PROGRAM_ID,                                                    // 8: Token Program
-          TOKEN_2022_PROGRAM_ID,                                               // 9: Token-2022 Program
-          MEMO_PROGRAM_ID,                                                     // 10: Memo Program
-          inputMint,                                                           // 11: Input Token Mint
-          outputMint,                                                          // 12: Output Token Mint
-          exBitmapPda,                                                         // 13: Tick Array Bitmap Extension (exBitmap)
-          tickArray0 ? new PublicKey(tickArray0) : poolId,                     // 14: Tick Array 0 (center)
-          tickArray1 ? new PublicKey(tickArray1) : poolId,                     // 15: Tick Array 1 (directional: lower for A→B, upper for B→A)
-          tickArray2 ? new PublicKey(tickArray2) : poolId,                     // 16: Tick Array 2 (duplicate of 1)
-          programIdKey,                                                        // 17: Raydium CLMM Program
-        );
+        {
+          const rayTickArray0 = hop.tickArrayCenter;
+          const rayTickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
+          const rayTickArray2 = rayTickArray1; // Safe: duplicate second array (third may not exist)
+          
+          accounts.push(
+            wallet,                                                              // 0: Payer (signer)
+            ammConfig,                                                           // 1: AMM Config (from cache or placeholder)
+            poolId,                                                              // 2: Pool State
+            userSourceAta,                                                       // 3: Input Token Account (user)
+            userDestAta,                                                         // 4: Output Token Account (user)
+            new PublicKey(inputVault),                                           // 5: Input Vault (from canonical pairing)
+            new PublicKey(outputVault),                                          // 6: Output Vault (from canonical pairing)
+            observationState,                                                    // 7: Observation State (derived PDA)
+            TOKEN_PROGRAM_ID,                                                    // 8: Token Program
+            TOKEN_2022_PROGRAM_ID,                                               // 9: Token-2022 Program
+            MEMO_PROGRAM_ID,                                                     // 10: Memo Program
+            inputMint,                                                           // 11: Input Token Mint
+            outputMint,                                                          // 12: Output Token Mint
+            exBitmapPda,                                                         // 13: Tick Array Bitmap Extension (exBitmap)
+            rayTickArray0 ? new PublicKey(rayTickArray0) : poolId,               // 14: Tick Array 0 (center)
+            rayTickArray1 ? new PublicKey(rayTickArray1) : poolId,               // 15: Tick Array 1 (directional: lower for A→B, upper for B→A)
+            rayTickArray2 ? new PublicKey(rayTickArray2) : poolId,               // 16: Tick Array 2 (duplicate of 1)
+            programIdKey,                                                        // 17: Raydium CLMM Program
+          );
+        }
         break;
 
       case DexType.Meteora:
