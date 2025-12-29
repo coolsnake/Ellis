@@ -51,4 +51,23 @@ export async function deleteFile(filePath: string): Promise<void> {
   }
 }
 
+export async function listDir(dirPath: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(dirPath);
+    return entries;
+  } catch (error: any) {
+    if (error && error.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+}
 
+export async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}

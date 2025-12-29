@@ -38,6 +38,13 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [refreshLoading, setRefreshLoading] = React.useState<boolean>(false);
   const [refreshResult, setRefreshResult] = React.useState<any | null>(null);
   
+  // Named snapshots state
+  const [snapshots, setSnapshots] = React.useState<any[]>([]);
+  const [activeSnapshot, setActiveSnapshot] = React.useState<string>('default');
+  const [newSnapshotName, setNewSnapshotName] = React.useState<string>('');
+  const [snapshotLoading, setSnapshotLoading] = React.useState<boolean>(false);
+  const [showSnapshotPanel, setShowSnapshotPanel] = React.useState<boolean>(false);
+  
   // DEX fetcher states
   const [fetcherStates, setFetcherStates] = React.useState<Record<string, FetcherState>>({
     raydium: 'idle',
@@ -99,6 +106,109 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     } catch {}
     fetchMetrics();
     try { window.dispatchEvent(new CustomEvent('graph-refresh')); } catch {}
+  };
+
+  // Fetch available snapshots
+  const fetchSnapshots = async () => {
+    try {
+      const headers: Record<string, string> = {};
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const r = await fetch(`${apiBase}${ROUTES.pools.snapshots}`, { headers });
+      if (r.ok) {
+        const data = await r.json();
+        if (data.snapshots) setSnapshots(data.snapshots);
+        if (data.activeSnapshot) setActiveSnapshot(data.activeSnapshot);
+      }
+    } catch {}
+  };
+
+  // Save current pools as named snapshot
+  const saveSnapshot = async (name: string, description?: string) => {
+    if (!name.trim()) return;
+    setSnapshotLoading(true);
+    try {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const res = await fetch(`${apiBase}${ROUTES.pools.snapshotSave}`, { 
+        method: 'POST', 
+        headers, 
+        body: JSON.stringify({ name, description }) 
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) {
+        setNewSnapshotName('');
+        fetchSnapshots();
+      } else {
+        alert(data.error || 'Failed to save snapshot');
+      }
+    } catch {}
+    setSnapshotLoading(false);
+  };
+
+  // Load a named snapshot
+  const loadSnapshot = async (name: string) => {
+    setSnapshotLoading(true);
+    try {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const res = await fetch(`${apiBase}${ROUTES.pools.snapshotLoad}`, { 
+        method: 'POST', 
+        headers, 
+        body: JSON.stringify({ name }) 
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) {
+        setActiveSnapshot(name);
+        fetchMetrics();
+        fetchSnapshots();
+      } else {
+        alert(data.error || 'Failed to load snapshot');
+      }
+    } catch {}
+    setSnapshotLoading(false);
+  };
+
+  // Delete a named snapshot
+  const deleteSnapshot = async (name: string) => {
+    if (!confirm(`Delete snapshot "${name}"?`)) return;
+    try {
+      const headers: Record<string, string> = {};
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const res = await fetch(`${apiBase}${ROUTES.pools.snapshotDelete}/${encodeURIComponent(name)}`, { 
+        method: 'DELETE', 
+        headers 
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) {
+        fetchSnapshots();
+      } else {
+        alert(data.error || 'Failed to delete snapshot');
+      }
+    } catch {}
   };
 
   const runCacheValidation = async (limit = 20) => {
@@ -166,6 +276,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   React.useEffect(() => {
     if (paused) return;
     fetchMetrics();
+    fetchSnapshots();
     fetch(`${apiBase}${ROUTES.arb.metricsJson}`).catch(()=>{});
     // Probe arb config to detect enabled state
     fetch(`${apiBase}${ROUTES.arb.config}`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
@@ -400,47 +511,102 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               fetchMetrics();
             } catch {}
           }}>Revalidate</button>
-          <button className="px-2 py-1 text-sm border rounded hover:bg-green-800 text-green-300" onClick={async ()=>{
-            try {
-              const headers: Record<string, string> = { 'content-type': 'application/json' };
-              try {
-                const s = localStorage.getItem('authCreds');
-                if (s) {
-                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
-                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
-                }
-              } catch {}
-              const res = await fetch(`${apiBase}${ROUTES.pools.saveSnapshot}`, { method: 'POST', headers });
-              const data = await res.json().catch(()=>({}));
-              if (data.success) {
-                alert('Pool snapshot saved successfully');
-              } else {
-                alert(data.message || 'Failed to save snapshot');
-              }
-            } catch {}
-          }}>Save Pools</button>
-          <button className="px-2 py-1 text-sm border rounded hover:bg-blue-800 text-blue-300" onClick={async ()=>{
-            try {
-              const headers: Record<string, string> = { 'content-type': 'application/json' };
-              try {
-                const s = localStorage.getItem('authCreds');
-                if (s) {
-                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
-                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
-                }
-              } catch {}
-              const res = await fetch(`${apiBase}${ROUTES.pools.loadSnapshot}`, { method: 'POST', headers });
-              const data = await res.json().catch(()=>({}));
-              if (data.success) {
-                alert('Pool snapshot loaded successfully');
-                fetchMetrics();
-              } else {
-                alert(data.message || 'Failed to load snapshot');
-              }
-            } catch {}
-          }}>Load Pools</button>
+          <button 
+            className={`px-2 py-1 text-sm border rounded ${showSnapshotPanel ? 'bg-purple-800 text-purple-200' : 'hover:bg-purple-800 text-purple-300'}`}
+            onClick={() => { setShowSnapshotPanel(v => !v); if (!showSnapshotPanel) fetchSnapshots(); }}
+          >
+            📁 Snapshots {activeSnapshot !== 'default' && `(${activeSnapshot})`}
+          </button>
         </div>
       </div>
+      
+      {/* Named Snapshots Panel */}
+      {showSnapshotPanel && (
+        <div className="border border-purple-700 rounded p-3 bg-purple-900/30 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-md font-semibold text-purple-300">Pool Snapshots</h4>
+            <span className="text-xs text-gray-400">Active: <span className="text-purple-300">{activeSnapshot}</span></span>
+          </div>
+          
+          {/* Save new snapshot */}
+          <div className="flex gap-2 items-center">
+            <input
+              type="text"
+              placeholder="Snapshot name..."
+              value={newSnapshotName}
+              onChange={(e) => setNewSnapshotName(e.target.value)}
+              className="flex-1 px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded focus:border-purple-500 focus:outline-none"
+              onKeyDown={(e) => { if (e.key === 'Enter') saveSnapshot(newSnapshotName); }}
+            />
+            <button
+              className="px-3 py-1 text-sm bg-green-800 hover:bg-green-700 text-green-200 rounded disabled:opacity-50"
+              disabled={!newSnapshotName.trim() || snapshotLoading}
+              onClick={() => saveSnapshot(newSnapshotName)}
+            >
+              Save As
+            </button>
+            <button
+              className="px-3 py-1 text-sm bg-blue-800 hover:bg-blue-700 text-blue-200 rounded disabled:opacity-50"
+              disabled={snapshotLoading}
+              onClick={() => saveSnapshot('default')}
+            >
+              Quick Save
+            </button>
+          </div>
+          
+          {/* Snapshots list */}
+          {snapshots.length > 0 ? (
+            <div className="max-h-48 overflow-y-auto space-y-1">
+              {snapshots.map((snap) => (
+                <div 
+                  key={snap.name}
+                  className={`flex items-center justify-between p-2 rounded text-sm ${
+                    snap.isActive ? 'bg-purple-800/50 border border-purple-600' : 'bg-gray-800/50 hover:bg-gray-700/50'
+                  }`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium truncate">{snap.name}</span>
+                      {snap.isActive && <span className="text-xs text-purple-400">(active)</span>}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {snap.poolCount?.total || 0} pools • {snap.ageHours}h ago
+                      {snap.description && <span className="ml-2 text-gray-500">- {snap.description}</span>}
+                    </div>
+                  </div>
+                  <div className="flex gap-1 ml-2">
+                    {!snap.isActive && (
+                      <>
+                        <button
+                          className="px-2 py-1 text-xs bg-blue-700 hover:bg-blue-600 rounded disabled:opacity-50"
+                          disabled={snapshotLoading}
+                          onClick={() => loadSnapshot(snap.name)}
+                        >
+                          Load
+                        </button>
+                        <button
+                          className="px-2 py-1 text-xs bg-red-800 hover:bg-red-700 rounded"
+                          onClick={() => deleteSnapshot(snap.name)}
+                        >
+                          ✕
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-gray-400 text-center py-2">
+              No saved snapshots. Save current pools to create one.
+            </div>
+          )}
+          
+          <div className="text-xs text-gray-500 pt-1 border-t border-gray-700">
+            💡 Snapshots preserve filtered pool configurations for quick switching between setups.
+          </div>
+        </div>
+      )}
 
       {!m ? <div className="text-sm opacity-70">Loading...</div> : (
         <div className="space-y-4">

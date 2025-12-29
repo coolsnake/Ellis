@@ -37,6 +37,12 @@ export const ROUTES = {
     persistenceStatus: '/arb/pools/persistence-status',
     saveSnapshot: '/arb/pools/save-snapshot',
     loadSnapshot: '/arb/pools/load-snapshot',
+    // Named snapshot management
+    snapshots: '/arb/pools/snapshots',
+    snapshotSave: '/arb/pools/snapshot/save',
+    snapshotLoad: '/arb/pools/snapshot/load',
+    snapshotDelete: '/arb/pools/snapshot', // DELETE :name
+    snapshotMerge: '/arb/pools/snapshot/merge',
   },
   arb: {
     config: '/arb/config',

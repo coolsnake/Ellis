@@ -9,10 +9,12 @@
  * - Load pools on startup for immediate graph usability
  * - On-demand revalidation of tick/bin arrays via SDK
  * - Manual subscription control (user triggers via retarget)
+ * - Named snapshots for different pool configurations
+ * - Merge multiple snapshots together
  */
 
 import { CONFIG } from '../utils/config.js';
-import { readJson, writeJson, joinPath, ensureDir } from '../utils/fs.js';
+import { readJson, writeJson, joinPath, ensureDir, fileExists, listDir, deleteFile } from '../utils/fs.js';
 import { logger } from '../utils/logger.js';
 import type { PoolsPayload } from './pools/types.js';
 import { 
@@ -23,6 +25,8 @@ import { emit } from './realtime.js';
 
 export interface PoolsSnapshot {
   version: number;
+  name?: string;
+  description?: string;
   savedAt: string;
   savedAtMs: number;
   raydium: PoolsPayload;
@@ -39,7 +43,31 @@ export interface PoolsSnapshot {
   };
 }
 
+export interface SnapshotInfo {
+  name: string;
+  description?: string;
+  savedAt: string;
+  ageHours: number;
+  poolCount: {
+    total: number;
+    raydium: number;
+    orca: number;
+    meteora: number;
+    meteoraBalanced: number;
+    pumpswap: number;
+  };
+  isActive: boolean;
+}
+
+export interface SnapshotMeta {
+  activeSnapshot: string;
+  lastUpdated: string;
+}
+
 const SNAPSHOT_FILE = 'filtered-pools-snapshot.json';
+const SNAPSHOTS_DIR = 'pool-snapshots';
+const SNAPSHOT_META_FILE = 'snapshot-meta.json';
+const DEFAULT_SNAPSHOT_NAME = 'default';
 const SNAPSHOT_VERSION = 2;
 
 /**
@@ -344,5 +372,477 @@ export async function snapshotExists(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ============================================================================
+// NAMED SNAPSHOTS - Save, load, and manage multiple pool configurations
+// ============================================================================
+
+/**
+ * Get the snapshots directory path
+ */
+function getSnapshotsDir(): string {
+  return joinPath(CONFIG.cacheDir, SNAPSHOTS_DIR);
+}
+
+/**
+ * Get the snapshot meta file path
+ */
+function getSnapshotMetaPath(): string {
+  return joinPath(CONFIG.cacheDir, SNAPSHOT_META_FILE);
+}
+
+/**
+ * Sanitize snapshot name for use as filename
+ */
+function sanitizeSnapshotName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 50) || 'unnamed';
+}
+
+/**
+ * Get the file path for a named snapshot
+ */
+function getNamedSnapshotPath(name: string): string {
+  const sanitized = sanitizeSnapshotName(name);
+  return joinPath(getSnapshotsDir(), `${sanitized}.json`);
+}
+
+/**
+ * Load the snapshot metadata (tracks active snapshot)
+ */
+async function loadSnapshotMeta(): Promise<SnapshotMeta> {
+  try {
+    const meta = await readJson<SnapshotMeta>(getSnapshotMetaPath(), null as any);
+    return meta || { activeSnapshot: DEFAULT_SNAPSHOT_NAME, lastUpdated: new Date().toISOString() };
+  } catch {
+    return { activeSnapshot: DEFAULT_SNAPSHOT_NAME, lastUpdated: new Date().toISOString() };
+  }
+}
+
+/**
+ * Save the snapshot metadata
+ */
+async function saveSnapshotMeta(meta: SnapshotMeta): Promise<void> {
+  try {
+    await ensureDir(CONFIG.cacheDir);
+    await writeJson(getSnapshotMetaPath(), meta);
+  } catch (err: any) {
+    logger.warn('pools.snapshot.meta.save.failed', { error: err.message, cat: 'pools' });
+  }
+}
+
+/**
+ * Get the name of the currently active snapshot
+ */
+export async function getActiveSnapshotName(): Promise<string> {
+  const meta = await loadSnapshotMeta();
+  return meta.activeSnapshot;
+}
+
+/**
+ * Build current pools into a snapshot object
+ */
+function buildCurrentSnapshot(name?: string, description?: string): PoolsSnapshot {
+  return {
+    version: SNAPSHOT_VERSION,
+    name,
+    description,
+    savedAt: new Date().toISOString(),
+    savedAtMs: Date.now(),
+    raydium: raydiumCache.data || { amm: [], clmm: [] },
+    orca: orcaCache.data || { amm: [], clmm: [] },
+    meteora: meteoraCache.data || { amm: [], clmm: [] },
+    meteoraBalanced: metbalCache.data || { amm: [], clmm: [] },
+    pumpswap: pumpswapCache.data || { amm: [], clmm: [] },
+  };
+}
+
+/**
+ * Count pools in a snapshot
+ */
+function countSnapshotPools(snapshot: PoolsSnapshot): {
+  total: number;
+  raydium: number;
+  orca: number;
+  meteora: number;
+  meteoraBalanced: number;
+  pumpswap: number;
+} {
+  const counts = {
+    raydium: (snapshot.raydium?.amm?.length || 0) + (snapshot.raydium?.clmm?.length || 0),
+    orca: (snapshot.orca?.amm?.length || 0) + (snapshot.orca?.clmm?.length || 0),
+    meteora: (snapshot.meteora?.amm?.length || 0) + (snapshot.meteora?.clmm?.length || 0),
+    meteoraBalanced: (snapshot.meteoraBalanced?.amm?.length || 0),
+    pumpswap: (snapshot.pumpswap?.amm?.length || 0),
+    total: 0,
+  };
+  counts.total = counts.raydium + counts.orca + counts.meteora + counts.meteoraBalanced + counts.pumpswap;
+  return counts;
+}
+
+/**
+ * Save current pools as a named snapshot
+ */
+export async function saveNamedSnapshot(
+  name: string,
+  options?: { description?: string; setActive?: boolean }
+): Promise<{ success: boolean; name: string; poolCount: number; error?: string }> {
+  const sanitizedName = sanitizeSnapshotName(name);
+  
+  try {
+    await ensureDir(getSnapshotsDir());
+    
+    const snapshot = buildCurrentSnapshot(sanitizedName, options?.description);
+    const counts = countSnapshotPools(snapshot);
+    
+    if (counts.total === 0) {
+      return { success: false, name: sanitizedName, poolCount: 0, error: 'No pools to save' };
+    }
+    
+    const filePath = getNamedSnapshotPath(sanitizedName);
+    await writeJson(filePath, snapshot);
+    
+    // Update active snapshot if requested
+    if (options?.setActive !== false) {
+      await saveSnapshotMeta({
+        activeSnapshot: sanitizedName,
+        lastUpdated: new Date().toISOString(),
+      });
+    }
+    
+    logger.info('pools.snapshot.saved', {
+      name: sanitizedName,
+      poolCount: counts.total,
+      counts,
+      cat: 'pools'
+    });
+    
+    try {
+      emit('log', {
+        level: 'info',
+        message: `pools:snapshot "${sanitizedName}" saved with ${counts.total} pools`,
+        timestamp: new Date().toISOString(),
+        context: { cat: 'pools' }
+      });
+    } catch {}
+    
+    return { success: true, name: sanitizedName, poolCount: counts.total };
+  } catch (err: any) {
+    logger.error('pools.snapshot.save.failed', { name: sanitizedName, error: err.message, cat: 'pools' });
+    return { success: false, name: sanitizedName, poolCount: 0, error: err.message };
+  }
+}
+
+/**
+ * Load a named snapshot
+ */
+export async function loadNamedSnapshot(
+  name: string,
+  options?: { buildGraph?: boolean; setActive?: boolean }
+): Promise<{ success: boolean; name: string; poolCount: number; error?: string }> {
+  const sanitizedName = sanitizeSnapshotName(name);
+  
+  try {
+    const filePath = getNamedSnapshotPath(sanitizedName);
+    const snapshot = await readJson<PoolsSnapshot>(filePath, null as any);
+    
+    if (!snapshot) {
+      return { success: false, name: sanitizedName, poolCount: 0, error: 'Snapshot not found' };
+    }
+    
+    // Hydrate caches
+    const counts = hydratePoolCaches(snapshot);
+    
+    // Update active snapshot
+    if (options?.setActive !== false) {
+      await saveSnapshotMeta({
+        activeSnapshot: sanitizedName,
+        lastUpdated: new Date().toISOString(),
+      });
+    }
+    
+    // Build graph if requested
+    if (options?.buildGraph !== false) {
+      try {
+        const { rebuildGraphNow } = await import('./graph.js');
+        await rebuildGraphNow(undefined, { pushToArb: false });
+      } catch (err: any) {
+        logger.warn('pools.snapshot.graph_build.failed', { error: err.message, cat: 'pools' });
+      }
+    }
+    
+    logger.info('pools.snapshot.loaded', {
+      name: sanitizedName,
+      poolCount: counts.total,
+      counts,
+      cat: 'pools'
+    });
+    
+    try {
+      emit('log', {
+        level: 'info',
+        message: `pools:snapshot "${sanitizedName}" loaded with ${counts.total} pools`,
+        timestamp: new Date().toISOString(),
+        context: { cat: 'pools' }
+      });
+    } catch {}
+    
+    return { success: true, name: sanitizedName, poolCount: counts.total };
+  } catch (err: any) {
+    logger.error('pools.snapshot.load.failed', { name: sanitizedName, error: err.message, cat: 'pools' });
+    return { success: false, name: sanitizedName, poolCount: 0, error: err.message };
+  }
+}
+
+/**
+ * List all available snapshots
+ */
+export async function listSnapshots(): Promise<SnapshotInfo[]> {
+  const snapshots: SnapshotInfo[] = [];
+  const activeName = await getActiveSnapshotName();
+  
+  try {
+    await ensureDir(getSnapshotsDir());
+    const files = await listDir(getSnapshotsDir());
+    const jsonFiles = files.filter(f => f.endsWith('.json'));
+    
+    for (const file of jsonFiles) {
+      try {
+        const filePath = joinPath(getSnapshotsDir(), file);
+        const snapshot = await readJson<PoolsSnapshot>(filePath, null as any);
+        
+        if (snapshot) {
+          const name = file.replace('.json', '');
+          const counts = countSnapshotPools(snapshot);
+          const ageMs = Date.now() - (snapshot.savedAtMs || 0);
+          
+          snapshots.push({
+            name,
+            description: snapshot.description,
+            savedAt: snapshot.savedAt,
+            ageHours: Math.round(ageMs / 3600000 * 10) / 10,
+            poolCount: counts,
+            isActive: name === activeName,
+          });
+        }
+      } catch {}
+    }
+    
+    // Sort by most recently saved
+    snapshots.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
+  } catch (err: any) {
+    logger.warn('pools.snapshots.list.failed', { error: err.message, cat: 'pools' });
+  }
+  
+  return snapshots;
+}
+
+/**
+ * Delete a named snapshot
+ */
+export async function deleteNamedSnapshot(name: string): Promise<{ success: boolean; error?: string }> {
+  const sanitizedName = sanitizeSnapshotName(name);
+  
+  // Prevent deleting the active snapshot
+  const activeName = await getActiveSnapshotName();
+  if (sanitizedName === activeName) {
+    return { success: false, error: 'Cannot delete the active snapshot' };
+  }
+  
+  try {
+    const filePath = getNamedSnapshotPath(sanitizedName);
+    await deleteFile(filePath);
+    
+    logger.info('pools.snapshot.deleted', { name: sanitizedName, cat: 'pools' });
+    
+    return { success: true };
+  } catch (err: any) {
+    logger.error('pools.snapshot.delete.failed', { name: sanitizedName, error: err.message, cat: 'pools' });
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Merge multiple snapshots together
+ * Mode: 'union' combines all pools, 'intersection' keeps only common pools
+ */
+export async function mergeSnapshots(
+  names: string[],
+  options?: { 
+    mode?: 'union' | 'intersection';
+    buildGraph?: boolean;
+    saveTo?: string;
+  }
+): Promise<{ success: boolean; poolCount: number; error?: string }> {
+  const mode = options?.mode || 'union';
+  
+  if (names.length === 0) {
+    return { success: false, poolCount: 0, error: 'No snapshots specified' };
+  }
+  
+  try {
+    // Load all snapshots
+    const loadedSnapshots: PoolsSnapshot[] = [];
+    for (const name of names) {
+      const sanitizedName = sanitizeSnapshotName(name);
+      const filePath = getNamedSnapshotPath(sanitizedName);
+      const snapshot = await readJson<PoolsSnapshot>(filePath, null as any);
+      if (snapshot) {
+        loadedSnapshots.push(snapshot);
+      } else {
+        logger.warn('pools.snapshot.merge.missing', { name: sanitizedName, cat: 'pools' });
+      }
+    }
+    
+    if (loadedSnapshots.length === 0) {
+      return { success: false, poolCount: 0, error: 'No valid snapshots found' };
+    }
+    
+    // Merge function for pool arrays
+    const mergePools = <T extends { id: string }>(arrays: T[][], mode: 'union' | 'intersection'): T[] => {
+      if (arrays.length === 0) return [];
+      if (arrays.length === 1) return arrays[0] || [];
+      
+      if (mode === 'union') {
+        // Combine all, deduplicate by ID
+        const poolMap = new Map<string, T>();
+        for (const arr of arrays) {
+          for (const pool of (arr || [])) {
+            if (pool?.id && !poolMap.has(pool.id)) {
+              poolMap.set(pool.id, pool);
+            }
+          }
+        }
+        return Array.from(poolMap.values());
+      } else {
+        // Intersection: keep only pools present in all snapshots
+        const firstIds = new Set((arrays[0] || []).map(p => p?.id).filter(Boolean));
+        for (let i = 1; i < arrays.length; i++) {
+          const currentIds = new Set((arrays[i] || []).map(p => p?.id).filter(Boolean));
+          for (const id of firstIds) {
+            if (!currentIds.has(id)) {
+              firstIds.delete(id);
+            }
+          }
+        }
+        // Return pools from first snapshot that are in intersection
+        return (arrays[0] || []).filter(p => p?.id && firstIds.has(p.id));
+      }
+    };
+    
+    // Merge each DEX's pools
+    const mergedSnapshot: PoolsSnapshot = {
+      version: SNAPSHOT_VERSION,
+      name: options?.saveTo ? sanitizeSnapshotName(options.saveTo) : undefined,
+      description: `Merged from: ${names.join(', ')} (${mode})`,
+      savedAt: new Date().toISOString(),
+      savedAtMs: Date.now(),
+      raydium: {
+        amm: mergePools(loadedSnapshots.map(s => s.raydium?.amm || []), mode),
+        clmm: mergePools(loadedSnapshots.map(s => s.raydium?.clmm || []), mode),
+      },
+      orca: {
+        amm: mergePools(loadedSnapshots.map(s => s.orca?.amm || []), mode),
+        clmm: mergePools(loadedSnapshots.map(s => s.orca?.clmm || []), mode),
+      },
+      meteora: {
+        amm: mergePools(loadedSnapshots.map(s => s.meteora?.amm || []), mode),
+        clmm: mergePools(loadedSnapshots.map(s => s.meteora?.clmm || []), mode),
+      },
+      meteoraBalanced: {
+        amm: mergePools(loadedSnapshots.map(s => s.meteoraBalanced?.amm || []), mode),
+        clmm: [],
+      },
+      pumpswap: {
+        amm: mergePools(loadedSnapshots.map(s => s.pumpswap?.amm || []), mode),
+        clmm: [],
+      },
+    };
+    
+    // Hydrate caches with merged data
+    const counts = hydratePoolCaches(mergedSnapshot);
+    
+    // Save merged snapshot if name provided
+    if (options?.saveTo) {
+      const saveName = sanitizeSnapshotName(options.saveTo);
+      const filePath = getNamedSnapshotPath(saveName);
+      await ensureDir(getSnapshotsDir());
+      await writeJson(filePath, mergedSnapshot);
+      
+      // Update active snapshot
+      await saveSnapshotMeta({
+        activeSnapshot: saveName,
+        lastUpdated: new Date().toISOString(),
+      });
+      
+      logger.info('pools.snapshot.merged.saved', {
+        name: saveName,
+        sources: names,
+        mode,
+        poolCount: counts.total,
+        cat: 'pools'
+      });
+    }
+    
+    // Build graph if requested
+    if (options?.buildGraph !== false) {
+      try {
+        const { rebuildGraphNow } = await import('./graph.js');
+        await rebuildGraphNow(undefined, { pushToArb: false });
+      } catch (err: any) {
+        logger.warn('pools.snapshot.merge.graph_build.failed', { error: err.message, cat: 'pools' });
+      }
+    }
+    
+    logger.info('pools.snapshot.merged', {
+      sources: names,
+      mode,
+      poolCount: counts.total,
+      counts,
+      cat: 'pools'
+    });
+    
+    try {
+      emit('log', {
+        level: 'info',
+        message: `pools:merged ${names.length} snapshots (${mode}) = ${counts.total} pools`,
+        timestamp: new Date().toISOString(),
+        context: { cat: 'pools' }
+      });
+    } catch {}
+    
+    return { success: true, poolCount: counts.total };
+  } catch (err: any) {
+    logger.error('pools.snapshot.merge.failed', { names, error: err.message, cat: 'pools' });
+    return { success: false, poolCount: 0, error: err.message };
+  }
+}
+
+/**
+ * Save current pools as default (called on shutdown)
+ * This is the standard save that happens automatically
+ */
+export async function saveDefaultSnapshot(): Promise<boolean> {
+  const result = await saveNamedSnapshot(DEFAULT_SNAPSHOT_NAME, {
+    description: 'Auto-saved on shutdown',
+    setActive: true,
+  });
+  return result.success;
+}
+
+/**
+ * Load the default snapshot on startup
+ */
+export async function loadDefaultSnapshot(): Promise<boolean> {
+  const result = await loadNamedSnapshot(DEFAULT_SNAPSHOT_NAME, {
+    buildGraph: true,
+    setActive: true,
+  });
+  return result.success;
 }
 

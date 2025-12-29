@@ -398,6 +398,116 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
     }
   });
 
+  // ============================================================================
+  // NAMED SNAPSHOT MANAGEMENT
+  // ============================================================================
+
+  /**
+   * GET /arb/pools/snapshots
+   * List all available named snapshots
+   */
+  api.get('/arb/pools/snapshots', async (_req, res) => {
+    try {
+      const { listSnapshots, getActiveSnapshotName } = await import('../pools.persistence.js');
+      const snapshots = await listSnapshots();
+      const activeSnapshot = await getActiveSnapshotName();
+      res.json({ 
+        success: true, 
+        snapshots,
+        activeSnapshot,
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /arb/pools/snapshot/save
+   * Save current pools as a named snapshot
+   * Body: { name: string, description?: string }
+   */
+  api.post('/arb/pools/snapshot/save', async (req, res) => {
+    try {
+      const { name, description } = req.body || {};
+      if (!name || typeof name !== 'string') {
+        return res.status(400).json({ success: false, error: 'Name is required' });
+      }
+      
+      const { saveNamedSnapshot } = await import('../pools.persistence.js');
+      const result = await saveNamedSnapshot(name, { description });
+      
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /arb/pools/snapshot/load
+   * Load a named snapshot
+   * Body: { name: string }
+   */
+  api.post('/arb/pools/snapshot/load', async (req, res) => {
+    try {
+      const { name } = req.body || {};
+      if (!name || typeof name !== 'string') {
+        return res.status(400).json({ success: false, error: 'Name is required' });
+      }
+      
+      const { loadNamedSnapshot } = await import('../pools.persistence.js');
+      const result = await loadNamedSnapshot(name, { buildGraph: true, setActive: true });
+      
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * DELETE /arb/pools/snapshot/:name
+   * Delete a named snapshot
+   */
+  api.delete('/arb/pools/snapshot/:name', async (req, res) => {
+    try {
+      const { name } = req.params;
+      if (!name) {
+        return res.status(400).json({ success: false, error: 'Name is required' });
+      }
+      
+      const { deleteNamedSnapshot } = await import('../pools.persistence.js');
+      const result = await deleteNamedSnapshot(name);
+      
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /arb/pools/snapshot/merge
+   * Merge multiple snapshots together
+   * Body: { names: string[], mode?: 'union' | 'intersection', saveTo?: string }
+   */
+  api.post('/arb/pools/snapshot/merge', async (req, res) => {
+    try {
+      const { names, mode = 'union', saveTo } = req.body || {};
+      if (!names || !Array.isArray(names) || names.length === 0) {
+        return res.status(400).json({ success: false, error: 'Names array is required' });
+      }
+      
+      const { mergeSnapshots } = await import('../pools.persistence.js');
+      const result = await mergeSnapshots(names, { 
+        mode: mode === 'intersection' ? 'intersection' : 'union',
+        buildGraph: true,
+        saveTo,
+      });
+      
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
   /**
    * GET /arb/pools/validate-cache
    * Validate tick/bin array cache entries against on-chain state
