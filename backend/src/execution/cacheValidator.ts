@@ -233,6 +233,7 @@ export interface PoolValidationResult {
     binStep?: number;
     bitmapExtension?: string;  // Meteora
     exBitmap?: string;         // Raydium
+    ammConfig?: string;        // Raydium - required for swaps
   };
 }
 
