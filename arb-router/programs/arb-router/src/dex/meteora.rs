@@ -44,10 +44,13 @@ pub struct Swap2Params {
 /// 1. `[]` Bin Array Bitmap Extension (optional, use program ID as placeholder)
 /// 2. `[writable]` Reserve X (token vault)
 /// 3. `[writable]` Reserve Y (token vault)
-/// 4. `[writable]` User Token In
-/// 5. `[writable]` User Token Out
+/// 4. `[writable]` User Token X (user's token X account - NOT "token in"!)
+/// 5. `[writable]` User Token Y (user's token Y account - NOT "token out"!)
 /// 6. `[]` Token X Mint
 /// 7. `[]` Token Y Mint
+/// 
+/// CRITICAL: User token accounts must be in X/Y order, not input/output order!
+/// The program infers swap direction from amounts and which account has funds.
 /// 8. `[writable]` Oracle
 /// 9. `[]` Host Fee In (program ID as placeholder)
 /// 10. `[signer, writable]` User (authority)

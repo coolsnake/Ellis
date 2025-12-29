@@ -717,6 +717,13 @@ async function extractDexAccounts(
         // X->Y means inputMint matches tokenXMint (native mint A)
         const isXtoY = hop.inputMint === tokenXMint;
         
+        // CRITICAL: Meteora expects user token accounts in X/Y order, NOT input/output order!
+        // The program infers swap direction from amounts and which account has funds.
+        // isXtoY = true: User sends X, receives Y → userTokenX = source, userTokenY = dest
+        // isXtoY = false: User sends Y, receives X → userTokenX = dest, userTokenY = source
+        const userTokenX = isXtoY ? userSourceAta : userDestAta;
+        const userTokenY = isXtoY ? userDestAta : userSourceAta;
+        
         // Get activeId from cache for directional bin array derivation
         const meteoraPoolIdStr = hop.poolId.replace(/[#-]rev$/, '');
         const hotCache = executionCache.getHot(meteoraPoolIdStr) as any;
@@ -816,6 +823,11 @@ async function extractDexAccounts(
           activeId: activeId ?? 'missing',
           isXtoY,
           isAtoBCanonical: isAtoB, // For comparison - canonical direction
+          // User token accounts (in X/Y order, NOT input/output!)
+          userTokenX: userTokenX.toBase58(),
+          userTokenY: userTokenY.toBase58(),
+          userSourceAta: userSourceAta.toBase58(),
+          userDestAta: userDestAta.toBase58(),
           tokenXProgram: tokenXProgram.toBase58(),
           tokenYProgram: tokenYProgram.toBase58(),
           eventAuthority: meteoraEventAuthority.toBase58(),
@@ -831,8 +843,8 @@ async function extractDexAccounts(
             : programIdKey,                                                    // 1: Bitmap Extension (use program ID as placeholder)
           new PublicKey(reserveX),                                             // 2: Reserve X (native, paired with tokenXMint)
           new PublicKey(reserveY),                                             // 3: Reserve Y (native, paired with tokenYMint)
-          userSourceAta,                                                       // 4: User Token In
-          userDestAta,                                                         // 5: User Token Out
+          userTokenX,                                                          // 4: User Token X (NOT "Token In" - must be X/Y order!)
+          userTokenY,                                                          // 5: User Token Y (NOT "Token Out" - must be X/Y order!)
           tokenXMint ? new PublicKey(tokenXMint) : inputMint,                 // 6: Token X Mint (native)
           tokenYMint ? new PublicKey(tokenYMint) : outputMint,                // 7: Token Y Mint (native)
           hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)

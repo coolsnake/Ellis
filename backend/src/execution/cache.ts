@@ -120,19 +120,16 @@ type WithExpiry<T> = { value: T; expiresAt: number };
 
 export class ExecutionCache {
   private staticByPool: Map<string, WithExpiry<PoolStatic>> = new Map();
-  private hotByPool: Map<string, WithExpiry<PoolHot>> = new Map();
+  // Hot cache stores frequently-changing fields (tick/current price/liquidity/tick arrays/bin arrays).
+  // No TTL - entries persist until explicitly updated via WebSocket or pool refresh.
+  private hotByPool: Map<string, PoolHot> = new Map();
   private tokenMeta: Map<string, WithExpiry<{ decimals: number; program: 'spl-token'|'token-2022' }>> = new Map();
   private ttlStaticMs: number;
-  private ttlHotMs: number;
   private ttlTokenMs: number;
   private snapshotFile: string;
 
-  constructor(opts?: { ttlStaticMs?: number; ttlHotMs?: number; ttlTokenMs?: number; snapshotName?: string }) {
+  constructor(opts?: { ttlStaticMs?: number; ttlTokenMs?: number; snapshotName?: string }) {
     this.ttlStaticMs = Math.max(5 * 60_000, Number(opts?.ttlStaticMs ?? 30 * 60_000));
-    // Hot cache stores frequently-changing fields (tick/current price/liquidity/etc).
-    // Default to a longer TTL to avoid execution-time misses when WS updates are sparse,
-    // while still allowing fresher data to overwrite via WS/refresh.
-    this.ttlHotMs = Math.max(200, Number(opts?.ttlHotMs ?? 60_000));
     this.ttlTokenMs = Math.max(60_000, Number(opts?.ttlTokenMs ?? 3_600_000));
     const name = opts?.snapshotName || 'dex-accounts.json';
     this.snapshotFile = joinPath(CONFIG.cacheDir, name);
@@ -149,15 +146,12 @@ export class ExecutionCache {
   }
 
   getHot(poolId: string): PoolHot | undefined {
-    const e = this.hotByPool.get(poolId);
-    if (!e) return undefined;
-    if (Date.now() > e.expiresAt) { this.hotByPool.delete(poolId); return undefined; }
-    return e.value;
+    return this.hotByPool.get(poolId);
   }
+  
   setHot(poolId: string, val: PoolHot): void {
     // Automatically merge with existing data to prevent loss of tickArrays/binArrays
-    const existingEntry = this.hotByPool.get(poolId);
-    const existing = (existingEntry && Date.now() <= existingEntry.expiresAt) ? existingEntry.value : {};
+    const existing = this.hotByPool.get(poolId) || {};
     
     // Detect if tick/bin crossed array boundaries - if so, replace arrays entirely
     // This prevents stale array addresses from persisting when price moves significantly
@@ -182,7 +176,7 @@ export class ExecutionCache {
           } : existing.binArrays),
     };
     
-    this.hotByPool.set(poolId, { value: merged, expiresAt: Date.now() + this.ttlHotMs });
+    this.hotByPool.set(poolId, merged);
   }
 
   /**
@@ -251,8 +245,18 @@ export class ExecutionCache {
   async saveSnapshot(): Promise<void> {
     try {
       await ensureDir(joinPath(this.snapshotFile, '..'));
+      // Convert hot cache entries to serializable format (bigint -> string)
+      const hotEntries: Array<[string, any]> = [];
+      for (const [poolId, val] of this.hotByPool.entries()) {
+        hotEntries.push([poolId, {
+          ...val,
+          sqrtPriceX64: val.sqrtPriceX64?.toString(),
+          liquidity: val.liquidity?.toString(),
+        }]);
+      }
       const payload = {
         static: Array.from(this.staticByPool.entries()),
+        hot: hotEntries,
         tokenMeta: Array.from(this.tokenMeta.entries()),
         savedAt: new Date().toISOString(),
       } as any;
@@ -262,11 +266,21 @@ export class ExecutionCache {
 
   async loadSnapshot(): Promise<void> {
     try {
-      const payload = await readJson(this.snapshotFile, { static: [], tokenMeta: [] } as any);
+      const payload = await readJson(this.snapshotFile, { static: [], hot: [], tokenMeta: [] } as any);
       const now = Date.now();
       if (Array.isArray(payload?.static)) {
         for (const [poolId, val] of payload.static as Array<[string, PoolStatic]>) {
           this.staticByPool.set(poolId, { value: val, expiresAt: now + this.ttlStaticMs });
+        }
+      }
+      // Load hot cache (no expiry, convert string back to bigint)
+      if (Array.isArray(payload?.hot)) {
+        for (const [poolId, val] of payload.hot as Array<[string, any]>) {
+          this.hotByPool.set(poolId, {
+            ...val,
+            sqrtPriceX64: val.sqrtPriceX64 ? BigInt(val.sqrtPriceX64) : undefined,
+            liquidity: val.liquidity ? BigInt(val.liquidity) : undefined,
+          });
         }
       }
       if (Array.isArray(payload?.tokenMeta)) {
@@ -275,17 +289,6 @@ export class ExecutionCache {
         }
       }
     } catch {}
-  }
-
-  /**
-   * Extend the TTL of hot cache for a pool (useful during active arb execution)
-   * Prevents cache expiry while a multi-hop transaction is being built
-   */
-  extendHotTtl(poolId: string, additionalMs: number = 30_000): void {
-    const entry = this.hotByPool.get(poolId);
-    if (entry) {
-      entry.expiresAt = Math.max(entry.expiresAt, Date.now() + additionalMs);
-    }
   }
 
   /**
