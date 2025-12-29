@@ -502,6 +502,46 @@ export function buildInitializeAccountPdaInstruction(
 }
 
 // ============================================================================
+// Cached Flashloan Instruction Builder
+// ============================================================================
+
+/**
+ * Build flashloan instructions using cached data (fast path)
+ * Falls back to derivation if cache miss
+ */
+export async function buildCachedFlashloanInstructions(
+  params: {
+    userWallet: PublicKey;
+    token: 'SOL' | 'USDC';
+    amount: bigint;
+    userTokenAccount: PublicKey;
+    marginfiGroup?: PublicKey;
+  }
+): Promise<FlashloanInstructions> {
+  const { marginfiFlashloanCache } = await import('./flashloanCache.js');
+  const { userWallet, token, amount, userTokenAccount, marginfiGroup = MARGINFI_GROUP_ID } = params;
+  
+  // Get cached or derived account
+  const marginfiAccount = marginfiFlashloanCache.getOrDeriveAccount(userWallet, marginfiGroup);
+  
+  // Get cached or derived bank info
+  const bankInfo = marginfiFlashloanCache.getOrDeriveBank(token);
+  
+  // Build instructions using cached data
+  return buildFlashloanTestInstructions(
+    {
+      marginfiAccount,
+      bank: bankInfo.bank,
+      amount,
+      mint: bankInfo.mint,
+      userWallet,
+      userTokenAccount,
+    },
+    marginfiGroup
+  );
+}
+
+// ============================================================================
 // Utilities
 // ============================================================================
 

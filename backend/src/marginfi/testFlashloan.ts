@@ -12,6 +12,8 @@ import {
 import { MarginfiClient, MarginfiAccountWrapper, getConfig } from '@mrgnlabs/marginfi-client-v2';
 import { Wallet } from '@coral-xyz/anchor';
 import { logger } from '../utils/logger.js';
+import { marginfiFlashloanCache } from './flashloanCache.js';
+import { deriveLiquidityVault, deriveLiquidityVaultAuthority } from './flashloan.js';
 
 // ============================================================================
 // Types
@@ -159,6 +161,9 @@ export async function runFlashloanTest(
         unitsConsumed: simulation.value.unitsConsumed,
       });
       
+      // Cache validated data after successful simulation
+      await cacheFlashloanData(wallet.publicKey, marginfiAccount, bank, token);
+      
       return {
         success: true,
         simulated: true,
@@ -178,6 +183,9 @@ export async function runFlashloanTest(
         cat: 'marginfi',
         signature,
       });
+      
+      // Cache validated data after successful execution
+      await cacheFlashloanData(wallet.publicKey, marginfiAccount, bank, token);
       
       return {
         success: true,
@@ -200,6 +208,57 @@ export async function runFlashloanTest(
       simulated: simulateOnly,
       error: err.message,
     };
+  }
+}
+
+// ============================================================================
+// Cache Helper
+// ============================================================================
+
+/**
+ * Cache validated MarginFi flashloan data after successful test
+ */
+async function cacheFlashloanData(
+  walletPublicKey: any,
+  marginfiAccount: MarginfiAccountWrapper,
+  bank: any,
+  token: 'SOL' | 'USDC'
+): Promise<void> {
+  try {
+    // Cache MarginFi account
+    marginfiFlashloanCache.setAccount(
+      walletPublicKey,
+      marginfiAccount.address
+    );
+    
+    // Derive and cache bank vault info
+    const bankPk = bank.address;
+    const [liquidityVault] = deriveLiquidityVault(bankPk);
+    const [liquidityVaultAuthority] = deriveLiquidityVaultAuthority(bankPk);
+    
+    marginfiFlashloanCache.setBank(
+      token,
+      bankPk,
+      liquidityVault,
+      liquidityVaultAuthority,
+      bank.mint
+    );
+    
+    // Save cache to disk
+    await marginfiFlashloanCache.save();
+    
+    logger.info('marginfi.flashloan.cache.updated', {
+      cat: 'marginfi',
+      token,
+      account: marginfiAccount.address.toBase58(),
+      bank: bankPk.toBase58(),
+    });
+  } catch (err: any) {
+    // Don't fail the flashloan test if caching fails
+    logger.warn('marginfi.flashloan.cache.error', {
+      cat: 'marginfi',
+      error: err.message,
+    });
   }
 }
 

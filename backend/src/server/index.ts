@@ -590,6 +590,15 @@ server.listen(CONFIG.port, () => {
       // Load precomputed CLMM cache from disk
       try { await loadClmmCacheFromDisk(); logger.info('clmm.cache.loaded'); } catch {}
       
+      // Load MarginFi flashloan cache from disk
+      try {
+        const { marginfiFlashloanCache } = await import('../marginfi/flashloanCache.js');
+        await marginfiFlashloanCache.load();
+        logger.info('marginfi.flashloan.cache.loaded', { cat: 'marginfi' });
+      } catch (err: any) {
+        logger.debug('marginfi.flashloan.cache.load.failed', { error: err.message, cat: 'marginfi' });
+      }
+      
       // Load persisted pool snapshot for fast startup (if persistence enabled)
       // This hydrates pool caches and builds the graph without fetching from APIs
       try {
