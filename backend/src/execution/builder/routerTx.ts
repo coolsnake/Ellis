@@ -12,7 +12,7 @@ import type { ExecutionPlan, DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { logCatchError } from '../../utils/errorHandler.js';
-import { getConnection } from '../../wallet/wallet.js';
+import { getConnection, getBalances } from '../../wallet/wallet.js';
 import { executionCache } from '../cache.js';
 import { buildWrapSolIxs, buildUnwrapSolIx, isSolMint } from '../accounts.js';
 import {
@@ -297,13 +297,13 @@ async function buildFlashLoanArbTx(
     );
 
     // 2. Execute swaps (using execute instruction for multi-hop, now with validated accounts)
-    const { steps, dexAccounts, accountsPerStep } = await buildRouteSteps(plan.hops, wallet.publicKey);
+    const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteSteps(plan.hops, wallet.publicKey);
     
     instructions.push(
       buildExecuteIx(
         wallet.publicKey,
         userTokenAccount,
-        { steps, accountsPerStep, minProfit },
+        { steps, accountsPerStep, minProfit, initialBalances },
         dexAccounts,
         programId
       )
@@ -467,12 +467,12 @@ async function buildDirectRouterTx(
       );
     } else {
       // Multi-hop: execute supports dynamic amount propagation across steps
-      const { steps, dexAccounts, accountsPerStep } = await buildRouteSteps(plan.hops, wallet.publicKey);
+      const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteSteps(plan.hops, wallet.publicKey);
       instructions.push(
         buildExecuteIx(
           wallet.publicKey,
           userTokenAccount,
-          { steps, accountsPerStep, minProfit },
+          { steps, accountsPerStep, minProfit, initialBalances },
           dexAccounts,
           programId
         )
@@ -529,15 +529,32 @@ async function buildDirectRouterTx(
  * 
  * Returns accountsPerStep to enable variable account counts per hop.
  * This is essential for Meteora pools that may need more bin arrays.
+ * 
+ * Also returns initialBalances - pre-existing wallet balances for intermediate tokens.
+ * These are subtracted on-chain to avoid accidentally swapping at-rest funds.
  */
 async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
   steps: RouteStep[];
   dexAccounts: PublicKey[];
   accountsPerStep: number[];
+  initialBalances: bigint[];
 }> {
   const steps: RouteStep[] = [];
   const dexAccounts: PublicKey[] = [];
   const accountsPerStep: number[] = [];
+  const initialBalances: bigint[] = [];
+
+  // Fetch cached wallet balances (no RPC call if cache is fresh)
+  // This is used to subtract pre-existing balances from dynamic amount propagation
+  let walletBalances: { sol: number; tokens: Record<string, number> } | null = null;
+  try {
+    walletBalances = await getBalances(wallet);
+  } catch (e) {
+    logger.warn('routerTx.buildRouteSteps.getBalances.failed', {
+      cat: 'tx',
+      error: String((e as Error)?.message || e),
+    });
+  }
 
   for (let i = 0; i < hops.length; i++) {
     const hop = hops[i];
@@ -563,6 +580,36 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
       aToB,
     });
 
+    // Compute initial balance for this hop's input token
+    // For hop 0, we use explicit amountIn so initial_balance doesn't matter (set to 0)
+    // For hop 1+, we need the pre-existing wallet balance of the input token
+    // to subtract from the on-chain balance reading
+    let initialBalance = 0n;
+    if (i > 0 && walletBalances) {
+      const inputMint = hop.inputMint;
+      const inputDecimals = hop.inputDecimals ?? 6;
+      
+      // Get UI balance and convert to raw amount
+      const uiBalance = inputMint === SOL_MINT 
+        ? walletBalances.sol 
+        : (walletBalances.tokens[inputMint] ?? 0);
+      
+      if (uiBalance > 0) {
+        initialBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
+        logger.debug('routerTx.buildStep.initialBalance', {
+          cat: 'tx',
+          ctx: {
+            hopIndex: i,
+            inputMint: inputMint.slice(0, 8) + '...',
+            uiBalance,
+            initialBalance: initialBalance.toString(),
+            decimals: inputDecimals,
+          },
+        });
+      }
+    }
+    initialBalances.push(initialBalance);
+
     // Collect DEX accounts for this hop - pass wallet for signer account positions
     const hopAccounts = await extractDexAccounts(hop, dexType, wallet);
     dexAccounts.push(...hopAccounts);
@@ -580,11 +627,12 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
         isDynamic: i > 0,
         accountCount: hopAccounts.length,
         aToB,
+        initialBalance: initialBalance.toString(),
       },
     });
   }
 
-  return { steps, dexAccounts, accountsPerStep };
+  return { steps, dexAccounts, accountsPerStep, initialBalances };
 }
 
 /**

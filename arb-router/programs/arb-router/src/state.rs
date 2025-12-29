@@ -134,6 +134,13 @@ pub struct ExecuteParams {
     /// Minimum profit required (in output token)
     /// Can be negative to allow losses (useful for testing)
     pub min_profit: i64,
+    
+    /// Pre-existing wallet balances for intermediate token accounts.
+    /// Used to exclude at-rest balances from dynamic amount propagation.
+    /// When amount_in == 0 for a step, we read the token account balance and
+    /// subtract the corresponding initial_balance to get only the swap output.
+    /// If empty or shorter than steps, missing entries default to 0.
+    pub initial_balances: Vec<u64>,
 }
 
 /// Parameters for a single swap

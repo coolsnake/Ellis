@@ -292,8 +292,15 @@ pub mod arb_router {
                 let input_token_idx = get_user_token_in_index(&step.dex_type, step.a_to_b);
                 let input_token_account = &step_accounts[input_token_idx];
                 let balance = read_token_account_balance(input_token_account)?;
-                msg!("Step {}: Using dynamic amount from balance: {} (idx: {})", i, balance, input_token_idx);
-                balance
+                
+                // Subtract pre-existing balance to avoid swapping at-rest funds
+                // This prevents accidentally including wallet balances that were there before the swap
+                let initial_balance = params.initial_balances.get(i).copied().unwrap_or(0);
+                let swap_amount = balance.saturating_sub(initial_balance);
+                
+                msg!("Step {}: balance={}, initial={}, swap_amount={} (idx: {})", 
+                    i, balance, initial_balance, swap_amount, input_token_idx);
+                swap_amount
             } else {
                 step.amount_in
             };

@@ -126,6 +126,14 @@ export interface ExecuteParams {
   accountsPerStep?: number[];
   /** Minimum profit required */
   minProfit: bigint;
+  /**
+   * Pre-existing wallet balances for intermediate token accounts.
+   * Used to exclude at-rest balances from dynamic amount propagation.
+   * When amount_in == 0 for a step, the on-chain program reads the token account balance
+   * and subtracts the corresponding initial_balance to get only the swap output.
+   * If empty or shorter than steps, missing entries default to 0.
+   */
+  initialBalances?: bigint[];
 }
 
 /**

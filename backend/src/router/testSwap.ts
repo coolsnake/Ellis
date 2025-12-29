@@ -25,6 +25,7 @@ import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/r
 import { buildRouteSwapIx, dexNameToType, buildExecuteIx } from './sdk.js';
 import { DexType, RouteStep } from './types.js';
 import { getTokenMeta } from '../execution/resolver/tokenMeta.js';
+import { getBalances } from '../wallet/wallet.js';
 
 // ============================================================================
 // Constants
@@ -926,6 +927,32 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           ...secondDexAccounts, // All 18 accounts for second hop
         ];
 
+        // Compute initial balances for intermediate tokens to avoid swapping at-rest funds
+        // For first hop: we use explicit amountIn, so initial_balance = 0
+        // For second hop: we need the pre-existing wallet balance of the intermediate token
+        let secondHopInitialBalance = 0n;
+        try {
+          const walletBalances = await getBalances(wallet.publicKey);
+          const intermediateMintStr = intermediateMint.toBase58();
+          const uiBalance = walletBalances.tokens[intermediateMintStr] ?? 0;
+          if (uiBalance > 0) {
+            // Get decimals for the intermediate token
+            const intermediateDecimals = 6; // Default to 6 for USDC/common tokens
+            secondHopInitialBalance = BigInt(Math.floor(uiBalance * Math.pow(10, intermediateDecimals)));
+            logger.debug('router.test.multi_hop.initialBalance', {
+              cat: 'router',
+              intermediateMint: intermediateMintStr.slice(0, 8) + '...',
+              uiBalance,
+              initialBalance: secondHopInitialBalance.toString(),
+            });
+          }
+        } catch (e) {
+          logger.warn('router.test.multi_hop.getBalances.failed', {
+            cat: 'router',
+            error: String((e as Error)?.message || e),
+          });
+        }
+
         const userInAta = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
         const executeIx = buildExecuteIx(
           wallet.publicKey,
@@ -933,6 +960,8 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
           {
             steps: [firstStep, secondStep],
             minProfit: -1000000000n, // Allow large loss for testing (fees will cause loss in round-trip swaps)
+            // Pass initial balances: first hop uses explicit amount (0), second hop needs wallet balance
+            initialBalances: [0n, secondHopInitialBalance],
           },
           allDexAccounts,
           routerProgram

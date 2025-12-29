@@ -420,12 +420,24 @@ export function buildExecuteIx(
     ? Buffer.from(minProfitBn.toTwos(64).toArrayLike(Buffer, 'le', 8))
     : Buffer.from(minProfitBn.toArrayLike(Buffer, 'le', 8));
 
-  // Match Rust ExecuteParams field order: steps, accounts_per_step, min_profit
+  // Serialize initial_balances as Vec<u64>: length (4 bytes LE) + u64 values
+  // These are pre-existing wallet balances to subtract from dynamic amount propagation
+  const initialBalances = params.initialBalances ?? [];
+  const initialBalancesData = initialBalances.map(bal => 
+    new BN(bal.toString()).toArrayLike(Buffer, 'le', 8)
+  );
+  const initialBalancesVec = Buffer.concat([
+    new BN(initialBalances.length).toArrayLike(Buffer, 'le', 4),
+    ...initialBalancesData,
+  ]);
+
+  // Match Rust ExecuteParams field order: steps, accounts_per_step, min_profit, initial_balances
   const data = Buffer.concat([
     DISCRIMINATORS.execute,
     stepsVec,
     accountsPerStepVec,
     minProfitBuffer,
+    initialBalancesVec,
   ]);
 
   const keys = [
