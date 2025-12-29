@@ -194,8 +194,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_swap2_params_serialize() {
-        let params = Swap2Params {
+    fn test_swap_params_serialize() {
+        let params = SwapParams {
             amount_in: 1000000,
             min_amount_out: 990000,
         };
@@ -203,7 +203,7 @@ mod tests {
         let mut data = Vec::new();
         params.serialize(&mut data).unwrap();
         
-        // Should be 8 + 8 = 16 bytes (slices added separately)
+        // Should be 8 + 8 = 16 bytes
         assert_eq!(data.len(), 16);
     }
 }
