@@ -1310,7 +1310,9 @@ async function extractDexAccounts(
             programIdKey,                                                      // 11: Whirlpool Program
           );
         }
-        break;
+        // CRITICAL: Return early for Orca to avoid truncation by getAccountsNeededForDex
+        // which only returns 12 (swap), but swapV2 needs 16 accounts
+        return accounts;
 
       case DexType.PumpSwap:
         // PumpSwap: 12 accounts
