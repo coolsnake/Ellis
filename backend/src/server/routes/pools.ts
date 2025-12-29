@@ -561,6 +561,91 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
     }
   });
 
+  /**
+   * POST /arb/pools/validate-bitmap-extensions
+   * Validate and refresh Meteora DLMM bitmap extensions.
+   * 
+   * Derives correct PDAs, checks on-chain existence, and updates caches.
+   * Use this when bitmap extension errors occur (error code 6036).
+   * 
+   * Query params:
+   * - limit: number of pools to check (default 100)
+   * - dryRun: if 'true', only report what would be updated without changing caches
+   */
+  api.post('/arb/pools/validate-bitmap-extensions', async (req, res) => {
+    try {
+      const { validateAndRefreshBitmapExtensions } = await import('../../execution/cacheValidator.js');
+      const { getConnection } = await import('../../wallet/wallet.js');
+      const connection = getConnection();
+      
+      const limit = Number(req.query.limit) || 100;
+      const dryRun = req.query.dryRun === 'true';
+      
+      const result = await validateAndRefreshBitmapExtensions(connection, { limit, dryRun });
+      
+      return res.json({
+        success: true,
+        message: dryRun 
+          ? `Dry run: ${result.poolsNeedingUpdate} pools would be updated`
+          : `Updated ${result.poolsUpdated} of ${result.poolsNeedingUpdate} pools needing update`,
+        totalPools: result.totalPools,
+        poolsChecked: result.poolsChecked,
+        poolsWithPdaOnChain: result.poolsWithPdaOnChain,
+        poolsNeedingUpdate: result.poolsNeedingUpdate,
+        poolsUpdated: result.poolsUpdated,
+        poolsSkipped: result.poolsSkipped,
+        dryRun,
+        durationMs: result.durationMs,
+        // Include details for pools that needed updates
+        updatedPools: result.results
+          .filter(r => r.wasUpdated || r.issue?.includes('Would update'))
+          .map(r => ({
+            poolId: r.poolId,
+            previousValue: r.previousValue?.slice(0, 8) + '...',
+            newValue: r.newValue?.slice(0, 8) + '...',
+            pdaExistsOnChain: r.pdaExistsOnChain,
+          })),
+      });
+    } catch (e: any) {
+      logger.error('bitmap extension validation failed', { error: String(e?.message || e) });
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /arb/pools/validate-bitmap-extension/:poolId
+   * Validate and refresh a single pool's bitmap extension.
+   * Useful for just-in-time validation before a swap.
+   */
+  api.post('/arb/pools/validate-bitmap-extension/:poolId', async (req, res) => {
+    try {
+      const { validatePoolBitmapExtension } = await import('../../execution/cacheValidator.js');
+      const { getConnection } = await import('../../wallet/wallet.js');
+      const connection = getConnection();
+      
+      const poolId = req.params.poolId;
+      if (!poolId) {
+        return res.status(400).json({ error: 'poolId is required' });
+      }
+      
+      const result = await validatePoolBitmapExtension(connection, poolId);
+      
+      return res.json({
+        success: true,
+        poolId: result.poolId,
+        previousValue: result.previousValue,
+        newValue: result.newValue,
+        derivedPda: result.derivedPda,
+        pdaExistsOnChain: result.pdaExistsOnChain,
+        wasUpdated: result.wasUpdated,
+        issue: result.issue,
+      });
+    } catch (e: any) {
+      logger.error('single bitmap extension validation failed', { error: String(e?.message || e) });
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

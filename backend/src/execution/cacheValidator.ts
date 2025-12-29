@@ -34,6 +34,15 @@ export interface BinArrayValidation {
   allArrays?: Array<{ index: number; address: string; exists: boolean }>;
 }
 
+export interface BitmapExtensionValidation {
+  cachedValue: string | null;
+  derivedPda: string;
+  pdaExistsOnChain: boolean;
+  isUsingProgramIdFallback: boolean;
+  isValid: boolean;
+  issue?: string;
+}
+
 export interface PoolValidationResult {
   poolId: string;
   dex: 'orca' | 'raydium' | 'meteora';
@@ -42,6 +51,7 @@ export interface PoolValidationResult {
   hasStaticCache: boolean;
   tickArrayValidation?: TickArrayValidation;
   binArrayValidation?: BinArrayValidation;
+  bitmapExtensionValidation?: BitmapExtensionValidation;
   issues: string[];
   valid: boolean;
   // Additional cache data for debugging
@@ -50,6 +60,7 @@ export interface PoolValidationResult {
     tickSpacing?: number;
     activeId?: number;
     binStep?: number;
+    bitmapExtension?: string;
   };
 }
 
@@ -60,6 +71,7 @@ export interface BatchValidationResult {
   poolsWithMissingCenter: number;
   poolsWithMissingArrays: number;
   poolsWithNoCacheEntry: number;
+  poolsWithInvalidBitmapExtension: number;
   results: PoolValidationResult[];
   timestamp: number;
   durationMs: number;
@@ -276,6 +288,79 @@ export async function validatePoolCache(
           }
         }
       }
+      
+      // Validate bitmap extension for Meteora
+      const cachedBitmapExt = (stat as any)?.bin_array_bitmap_extension;
+      const programIdStr = METEORA_DLMM_PROGRAM.toBase58();
+      const isUsingProgramIdFallback = cachedBitmapExt === programIdStr;
+      
+      result.cacheData = {
+        ...result.cacheData,
+        bitmapExtension: cachedBitmapExt,
+      };
+      
+      // Derive the correct bitmap extension PDA using "bitmap" seed
+      let derivedPda: string | null = null;
+      try {
+        const poolPk = new PublicKey(basePoolId);
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('bitmap'), poolPk.toBuffer()],
+          METEORA_DLMM_PROGRAM
+        );
+        derivedPda = pda.toBase58();
+      } catch (e) {
+        issues.push('Failed to derive bitmap extension PDA');
+      }
+      
+      if (derivedPda) {
+        // Check if the derived PDA exists on-chain
+        try {
+          const pdaPk = new PublicKey(derivedPda);
+          const info = await connection.getAccountInfo(pdaPk);
+          const pdaExistsOnChain = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
+          
+          const bitmapValidation: BitmapExtensionValidation = {
+            cachedValue: cachedBitmapExt || null,
+            derivedPda,
+            pdaExistsOnChain,
+            isUsingProgramIdFallback,
+            isValid: false,
+          };
+          
+          if (pdaExistsOnChain) {
+            // PDA exists on-chain - we MUST use it, not the program ID
+            if (cachedBitmapExt === derivedPda) {
+              bitmapValidation.isValid = true;
+            } else if (isUsingProgramIdFallback) {
+              bitmapValidation.issue = 'CRITICAL: Bitmap extension exists on-chain but cache has program ID fallback';
+              issues.push(bitmapValidation.issue);
+            } else if (!cachedBitmapExt) {
+              bitmapValidation.issue = 'Bitmap extension exists on-chain but not cached';
+              issues.push(bitmapValidation.issue);
+            } else {
+              bitmapValidation.issue = 'Cached bitmap extension does not match derived PDA';
+              issues.push(bitmapValidation.issue);
+            }
+          } else {
+            // PDA doesn't exist on-chain - program ID fallback is acceptable
+            if (isUsingProgramIdFallback || !cachedBitmapExt) {
+              bitmapValidation.isValid = true;
+            } else if (cachedBitmapExt !== derivedPda) {
+              // Cached value is neither the program ID nor the correct PDA
+              bitmapValidation.issue = 'Cached bitmap extension is invalid (PDA does not exist on-chain)';
+              issues.push(bitmapValidation.issue);
+            } else {
+              // Cached the derived PDA but it doesn't exist - use program ID instead
+              bitmapValidation.issue = 'Cached PDA does not exist on-chain, should use program ID';
+              issues.push(bitmapValidation.issue);
+            }
+          }
+          
+          result.bitmapExtensionValidation = bitmapValidation;
+        } catch (e: any) {
+          issues.push(`Failed to verify bitmap extension: ${e.message}`);
+        }
+      }
     }
   } catch (err: any) {
     issues.push(`Validation error: ${err.message}`);
@@ -316,6 +401,7 @@ export async function validatePoolCacheBatch(
   let poolsWithMissingCenter = 0;
   let poolsWithMissingArrays = 0;
   let poolsWithNoCacheEntry = 0;
+  let poolsWithInvalidBitmapExtension = 0;
   
   // Process in batches to avoid overwhelming RPC
   const BATCH_SIZE = 10;
@@ -336,7 +422,7 @@ export async function validatePoolCacheBatch(
         }
         
         const hasMissingCenter = result.issues.some(i => 
-          i.includes('Center tick array') || i.includes('CRITICAL')
+          i.includes('Center tick array') || i.includes('CRITICAL: No bin arrays')
         );
         if (hasMissingCenter) {
           poolsWithMissingCenter++;
@@ -347,6 +433,11 @@ export async function validatePoolCacheBatch(
         );
         if (hasMissingArrays && !hasMissingCenter) {
           poolsWithMissingArrays++;
+        }
+        
+        // Track bitmap extension issues (Meteora only)
+        if (result.bitmapExtensionValidation && !result.bitmapExtensionValidation.isValid) {
+          poolsWithInvalidBitmapExtension++;
         }
       }
     }
@@ -364,6 +455,7 @@ export async function validatePoolCacheBatch(
       poolsWithMissingCenter,
       poolsWithMissingArrays,
       poolsWithNoCacheEntry,
+      poolsWithInvalidBitmapExtension,
       durationMs,
     }
   });
@@ -375,6 +467,7 @@ export async function validatePoolCacheBatch(
     poolsWithMissingCenter,
     poolsWithMissingArrays,
     poolsWithNoCacheEntry,
+    poolsWithInvalidBitmapExtension,
     results,
     timestamp: Date.now(),
     durationMs,
@@ -528,5 +621,299 @@ export async function refreshInvalidPools(
   });
   
   return { refreshed, failed, errors };
+}
+
+/**
+ * Bitmap Extension Validation Result for a single pool
+ */
+export interface BitmapExtensionRefreshResult {
+  poolId: string;
+  previousValue: string | null;
+  newValue: string | null;
+  derivedPda: string;
+  pdaExistsOnChain: boolean;
+  wasUpdated: boolean;
+  issue?: string;
+}
+
+/**
+ * Batch result for bitmap extension validation
+ */
+export interface BitmapExtensionBatchResult {
+  totalPools: number;
+  poolsChecked: number;
+  poolsWithPdaOnChain: number;
+  poolsNeedingUpdate: number;
+  poolsUpdated: number;
+  poolsSkipped: number;
+  results: BitmapExtensionRefreshResult[];
+  timestamp: number;
+  durationMs: number;
+}
+
+/**
+ * Validate and refresh bitmap extensions for all Meteora DLMM pools.
+ * 
+ * This function:
+ * 1. Derives the correct bitmap extension PDA for each pool using "bitmap" seed
+ * 2. Checks on-chain if the PDA exists
+ * 3. Updates the pool cache and execution cache with the correct value
+ * 
+ * Can be called from a button in the frontend to fix stale bitmap extension cache.
+ */
+export async function validateAndRefreshBitmapExtensions(
+  connection: Connection,
+  options?: { 
+    limit?: number;
+    dryRun?: boolean;  // If true, don't update caches, just report
+  }
+): Promise<BitmapExtensionBatchResult> {
+  const startTime = Date.now();
+  const limit = options?.limit ?? 100;
+  const dryRun = options?.dryRun ?? false;
+  
+  const meteoraPools = peekMeteoraPools();
+  const pools = (meteoraPools?.clmm || []).slice(0, limit);
+  
+  const results: BitmapExtensionRefreshResult[] = [];
+  let poolsWithPdaOnChain = 0;
+  let poolsNeedingUpdate = 0;
+  let poolsUpdated = 0;
+  let poolsSkipped = 0;
+  
+  const programIdStr = METEORA_DLMM_PROGRAM.toBase58();
+  
+  // Derive all PDAs first
+  const poolsWithPda: Array<{ pool: any; poolPk: PublicKey; pda: PublicKey }> = [];
+  for (const pool of pools) {
+    try {
+      const poolPk = new PublicKey(pool.id);
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('bitmap'), poolPk.toBuffer()],
+        METEORA_DLMM_PROGRAM
+      );
+      poolsWithPda.push({ pool, poolPk, pda });
+    } catch (e) {
+      results.push({
+        poolId: pool.id,
+        previousValue: null,
+        newValue: null,
+        derivedPda: '',
+        pdaExistsOnChain: false,
+        wasUpdated: false,
+        issue: 'Failed to derive PDA',
+      });
+      poolsSkipped++;
+    }
+  }
+  
+  // Batch check which PDAs exist on-chain
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < poolsWithPda.length; i += BATCH_SIZE) {
+    const batch = poolsWithPda.slice(i, i + BATCH_SIZE);
+    const pdas = batch.map(p => p.pda);
+    
+    try {
+      const infos = await connection.getMultipleAccountsInfo(pdas);
+      
+      for (let j = 0; j < batch.length; j++) {
+        const { pool, pda } = batch[j];
+        const info = infos[j];
+        const pdaExistsOnChain = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
+        const derivedPdaStr = pda.toBase58();
+        
+        // Get current cached value
+        const cachedValue = pool.bin_array_bitmap_extension || null;
+        const stat = executionCache.getStatic(pool.id);
+        const statCachedValue = (stat as any)?.bin_array_bitmap_extension;
+        
+        const result: BitmapExtensionRefreshResult = {
+          poolId: pool.id,
+          previousValue: cachedValue || statCachedValue || null,
+          newValue: null,
+          derivedPda: derivedPdaStr,
+          pdaExistsOnChain,
+          wasUpdated: false,
+        };
+        
+        if (pdaExistsOnChain) {
+          poolsWithPdaOnChain++;
+          result.newValue = derivedPdaStr;
+          
+          // Check if update is needed
+          const needsUpdate = cachedValue !== derivedPdaStr || statCachedValue !== derivedPdaStr;
+          
+          if (needsUpdate) {
+            poolsNeedingUpdate++;
+            
+            if (!dryRun) {
+              // Update pool cache
+              pool.bin_array_bitmap_extension = derivedPdaStr;
+              
+              // Update execution cache
+              if (stat) {
+                executionCache.setStatic(pool.id, {
+                  ...stat,
+                  bin_array_bitmap_extension: derivedPdaStr,
+                });
+              }
+              
+              result.wasUpdated = true;
+              poolsUpdated++;
+              
+              logger.info('cache.bitmap_ext.updated', {
+                cat: 'cache',
+                ctx: {
+                  poolId: pool.id,
+                  previousValue: result.previousValue,
+                  newValue: derivedPdaStr,
+                }
+              });
+            } else {
+              result.issue = 'Would update (dry run)';
+            }
+          }
+        } else {
+          // PDA doesn't exist - program ID is the correct fallback
+          result.newValue = programIdStr;
+          
+          // Check if we need to update to program ID
+          const needsUpdate = cachedValue && cachedValue !== programIdStr && cachedValue !== derivedPdaStr;
+          
+          if (needsUpdate) {
+            poolsNeedingUpdate++;
+            
+            if (!dryRun) {
+              pool.bin_array_bitmap_extension = programIdStr;
+              
+              if (stat) {
+                executionCache.setStatic(pool.id, {
+                  ...stat,
+                  bin_array_bitmap_extension: programIdStr,
+                });
+              }
+              
+              result.wasUpdated = true;
+              poolsUpdated++;
+            } else {
+              result.issue = 'Would update to program ID (dry run)';
+            }
+          }
+        }
+        
+        results.push(result);
+      }
+    } catch (e: any) {
+      // If batch fails, mark all as skipped
+      for (const { pool, pda } of batch) {
+        results.push({
+          poolId: pool.id,
+          previousValue: pool.bin_array_bitmap_extension || null,
+          newValue: null,
+          derivedPda: pda.toBase58(),
+          pdaExistsOnChain: false,
+          wasUpdated: false,
+          issue: `RPC error: ${e.message}`,
+        });
+        poolsSkipped++;
+      }
+    }
+  }
+  
+  const durationMs = Date.now() - startTime;
+  
+  logger.info('cache.bitmap_ext.validation.complete', {
+    cat: 'cache',
+    ctx: {
+      totalPools: pools.length,
+      poolsChecked: results.length,
+      poolsWithPdaOnChain,
+      poolsNeedingUpdate,
+      poolsUpdated,
+      poolsSkipped,
+      dryRun,
+      durationMs,
+    }
+  });
+  
+  return {
+    totalPools: pools.length,
+    poolsChecked: results.length,
+    poolsWithPdaOnChain,
+    poolsNeedingUpdate,
+    poolsUpdated,
+    poolsSkipped,
+    results,
+    timestamp: Date.now(),
+    durationMs,
+  };
+}
+
+/**
+ * Validate and refresh a single pool's bitmap extension.
+ * Useful for just-in-time validation before a swap.
+ */
+export async function validatePoolBitmapExtension(
+  connection: Connection,
+  poolId: string
+): Promise<BitmapExtensionRefreshResult> {
+  const basePoolId = poolId.replace(/[#-]rev$/, '');
+  const programIdStr = METEORA_DLMM_PROGRAM.toBase58();
+  
+  try {
+    const poolPk = new PublicKey(basePoolId);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('bitmap'), poolPk.toBuffer()],
+      METEORA_DLMM_PROGRAM
+    );
+    const derivedPdaStr = pda.toBase58();
+    
+    // Check on-chain
+    const info = await connection.getAccountInfo(pda);
+    const pdaExistsOnChain = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
+    
+    // Get current cached value
+    const stat = executionCache.getStatic(basePoolId);
+    const previousValue = (stat as any)?.bin_array_bitmap_extension || null;
+    
+    const newValue = pdaExistsOnChain ? derivedPdaStr : programIdStr;
+    const needsUpdate = previousValue !== newValue;
+    
+    if (needsUpdate && stat) {
+      executionCache.setStatic(basePoolId, {
+        ...stat,
+        bin_array_bitmap_extension: newValue,
+      });
+      
+      logger.info('cache.bitmap_ext.single.updated', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId,
+          previousValue,
+          newValue,
+          pdaExistsOnChain,
+        }
+      });
+    }
+    
+    return {
+      poolId: basePoolId,
+      previousValue,
+      newValue,
+      derivedPda: derivedPdaStr,
+      pdaExistsOnChain,
+      wasUpdated: needsUpdate,
+    };
+  } catch (e: any) {
+    return {
+      poolId: basePoolId,
+      previousValue: null,
+      newValue: null,
+      derivedPda: '',
+      pdaExistsOnChain: false,
+      wasUpdated: false,
+      issue: `Error: ${e.message}`,
+    };
+  }
 }
 
