@@ -337,8 +337,8 @@ export const CONFIG = {
     // Enables saving filtered pools to disk on shutdown and loading on startup
     // This allows fast startup without re-fetching from APIs
     poolPersistence: {
-      // Enable pool persistence (save on shutdown, load on startup)
-      enabled: process.env.PERSIST_FILTERED_POOLS === 'true',
+      // Enable pool persistence (save on shutdown, load on startup) - enabled by default
+      enabled: process.env.PERSIST_FILTERED_POOLS !== 'false',
       // Load pools from snapshot on startup (default: true when persistence enabled)
       loadOnStartup: process.env.LOAD_POOLS_ON_STARTUP !== 'false',
       // Auto-start WebSocket subscriptions after loading (default: false - use retarget button)

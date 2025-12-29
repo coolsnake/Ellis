@@ -1224,10 +1224,24 @@ export function createRouterRouter(io: SocketIOServer): Router {
         });
       }
 
-      // Track input/output for logging - use local variables since ExecutionPlan doesn't have these fields
+      // Track input/output for logging
+      // CRITICAL: Do NOT overwrite amountInRaw if the resolver already set it!
+      // The resolver calculates the correct amount based on pool pricing.
+      // Only set it if the resolver didn't (e.g., amountInRaw is still undefined/0).
       const inputRaw = BigInt(amountIn);
       if (executionPlan.hops.length > 0) {
-        executionPlan.hops[0].amountInRaw = inputRaw;
+        const resolvedAmount = executionPlan.hops[0].amountInRaw;
+        if (!resolvedAmount || resolvedAmount === 0n) {
+          executionPlan.hops[0].amountInRaw = inputRaw;
+        }
+        // Log if resolver adjusted the amount
+        if (resolvedAmount && resolvedAmount !== inputRaw) {
+          logger.info('router.test-execute.amount_adjusted', {
+            cat: 'router',
+            requestedAmount: inputRaw.toString(),
+            resolvedAmount: resolvedAmount.toString(),
+          });
+        }
       }
       
       // Calculate expected output from the last hop
