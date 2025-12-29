@@ -755,16 +755,28 @@ async function extractDexAccounts(
           // Selected vaults
           selectedInputVault: inputVault,
           selectedOutputVault: outputVault,
-          // Tick arrays
+          // Tick arrays (stored)
           tickArrayCenter: hop.tickArrayCenter || 'missing',
           tickArrayLower: hop.tickArrayLower || 'missing',
           tickArrayUpper: hop.tickArrayUpper || 'missing',
           // Direction (using native ordering)
           isAtoB,
+          // Directional tick arrays (used in instruction)
+          tickArray0: hop.tickArrayCenter || 'missing',
+          tickArray1: (isAtoB ? hop.tickArrayLower : hop.tickArrayUpper) || 'missing',
+          tickArray2: (isAtoB ? hop.tickArrayLower : hop.tickArrayUpper) || 'missing',
           isAtoBSource: nativeMintA ? 'native' : 'canonical_fallback',
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
         });
+        
+        // CRITICAL: Tick arrays must be passed in DIRECTIONAL order for Raydium CLMM swapV2:
+        // - A→B (isAtoB=true, tick decreases): [center, lower, lower] (going DOWN)
+        // - B→A (isAtoB=false, tick increases): [center, upper, upper] (going UP)
+        // The third tick array is duplicated because lower-1/upper+1 may not exist on thin liquidity pools.
+        const tickArray0 = hop.tickArrayCenter;
+        const tickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
+        const tickArray2 = tickArray1; // Safe: duplicate second array (third may not exist)
         
         accounts.push(
           wallet,                                                              // 0: Payer (signer)
@@ -781,9 +793,9 @@ async function extractDexAccounts(
           inputMint,                                                           // 11: Input Token Mint
           outputMint,                                                          // 12: Output Token Mint
           exBitmapPda,                                                         // 13: Tick Array Bitmap Extension (exBitmap)
-          hop.tickArrayCenter ? new PublicKey(hop.tickArrayCenter) : poolId,  // 14: Tick Array Center
-          hop.tickArrayLower ? new PublicKey(hop.tickArrayLower) : poolId,    // 15: Tick Array Lower
-          hop.tickArrayUpper ? new PublicKey(hop.tickArrayUpper) : poolId,    // 16: Tick Array Upper
+          tickArray0 ? new PublicKey(tickArray0) : poolId,                     // 14: Tick Array 0 (center)
+          tickArray1 ? new PublicKey(tickArray1) : poolId,                     // 15: Tick Array 1 (directional: lower for A→B, upper for B→A)
+          tickArray2 ? new PublicKey(tickArray2) : poolId,                     // 16: Tick Array 2 (duplicate of 1)
           programIdKey,                                                        // 17: Raydium CLMM Program
         );
         break;
