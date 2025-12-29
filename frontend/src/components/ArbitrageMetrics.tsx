@@ -1148,9 +1148,21 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 <div 
                   key={snap.name}
                   className={`flex items-center justify-between p-2 rounded text-sm ${
-                    snap.isActive ? 'bg-purple-800/50 border border-purple-600' : 'bg-gray-800/50 hover:bg-gray-700/50'
+                    selectedSnapshots.has(snap.name) 
+                      ? 'bg-yellow-800/40 border border-yellow-600'
+                      : snap.isActive 
+                        ? 'bg-purple-800/50 border border-purple-600' 
+                        : 'bg-gray-800/50 hover:bg-gray-700/50'
                   }`}
                 >
+                  {/* Checkbox for merge selection */}
+                  <input
+                    type="checkbox"
+                    checked={selectedSnapshots.has(snap.name)}
+                    onChange={() => toggleSnapshotSelection(snap.name)}
+                    className="w-4 h-4 mr-2 accent-yellow-500 cursor-pointer"
+                    title="Select for merge"
+                  />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-medium truncate">{snap.name}</span>
@@ -1186,6 +1198,51 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           ) : (
             <div className="text-sm text-gray-400 text-center py-2">
               No saved snapshots. Save current pools to create one.
+            </div>
+          )}
+          
+          {/* Merge panel - shows when 2+ snapshots selected */}
+          {selectedSnapshots.size >= 2 && (
+            <div className="border border-yellow-700 rounded p-2 bg-yellow-900/20 space-y-2">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-yellow-300 font-medium">Merge {selectedSnapshots.size} snapshots:</span>
+                <select
+                  value={mergeMode}
+                  onChange={(e) => setMergeMode(e.target.value as 'union' | 'intersection')}
+                  className="px-2 py-1 text-xs bg-gray-800 border border-gray-600 rounded"
+                >
+                  <option value="union">Union (all pools, deduplicated)</option>
+                  <option value="intersection">Intersection (common pools only)</option>
+                </select>
+              </div>
+              <div className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  placeholder="Save merged result as... (optional)"
+                  value={mergeSaveName}
+                  onChange={(e) => setMergeSaveName(e.target.value)}
+                  className="flex-1 px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded focus:border-yellow-500 focus:outline-none"
+                />
+                <button
+                  className="px-3 py-1 text-sm bg-yellow-700 hover:bg-yellow-600 text-yellow-100 rounded disabled:opacity-50"
+                  disabled={snapshotLoading}
+                  onClick={mergeSelectedSnapshots}
+                >
+                  🔀 Merge
+                </button>
+                <button
+                  className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200"
+                  onClick={() => setSelectedSnapshots(new Set())}
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="text-xs text-yellow-400/70">
+                {mergeMode === 'union' 
+                  ? 'Combines all pools from selected snapshots, deduplicating by pool ID'
+                  : 'Keeps only pools that exist in ALL selected snapshots'
+                }
+              </div>
             </div>
           )}
           

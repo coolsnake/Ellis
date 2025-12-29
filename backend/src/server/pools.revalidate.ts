@@ -27,18 +27,23 @@ export interface RevalidationResult {
 export interface RevalidateOptions {
   dex?: 'orca' | 'raydium' | 'meteora';
   limit?: number;
+  /** Set to true to validate ALL pools in cache (overrides limit) */
+  validateAll?: boolean;
   concurrency?: number;
 }
 
 /**
  * Revalidate pools for a specific DEX
+ * @param options.limit - Max pools to validate. Use 0 for all pools. Default: 100
+ * @param options.validateAll - If true, validates ALL pools (overrides limit)
  */
 export async function revalidateDex(
   dex: 'orca' | 'raydium' | 'meteora',
-  options?: { limit?: number; concurrency?: number }
+  options?: { limit?: number; validateAll?: boolean; concurrency?: number }
 ): Promise<RevalidationResult> {
   const startTime = Date.now();
-  const limit = options?.limit ?? 100;
+  const validateAll = options?.validateAll || options?.limit === 0;
+  const limit = validateAll ? Infinity : (options?.limit ?? 100);
   const concurrency = options?.concurrency ?? 10;
   
   try {
@@ -48,7 +53,7 @@ export async function revalidateDex(
     
     const connection = getConnection();
     
-    // Validate pools
+    // Validate pools (limit: Infinity means all pools)
     const validation = await validatePoolCacheBatch(connection, dex, { limit });
     
     // Refresh invalid pools
@@ -89,12 +94,15 @@ export async function revalidateDex(
 
 /**
  * Revalidate all DEXes
+ * @param options.limit - Max pools per DEX to validate. Use 0 for all pools. Default: 50
+ * @param options.validateAll - If true, validates ALL pools (overrides limit)
  */
 export async function revalidateAllPools(
-  options?: { limit?: number; concurrency?: number }
+  options?: { limit?: number; validateAll?: boolean; concurrency?: number }
 ): Promise<RevalidationResult> {
   const startTime = Date.now();
-  const limit = options?.limit ?? 50;
+  const validateAll = options?.validateAll || options?.limit === 0;
+  const limit = validateAll ? Infinity : (options?.limit ?? 50);
   const concurrency = options?.concurrency ?? 10;
   
   try {
@@ -104,8 +112,11 @@ export async function revalidateAllPools(
     
     const connection = getConnection();
     
-    // Get health summary for all DEXes
-    const health = await getCacheHealthSummary(connection, { poolsPerDex: limit });
+    // Get health summary for all DEXes (limit: Infinity means all pools)
+    const health = await getCacheHealthSummary(connection, { 
+      poolsPerDex: limit, 
+      validateAll 
+    });
     
     // Collect all invalid pools
     const allInvalid = [

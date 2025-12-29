@@ -528,7 +528,9 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       
       const connection = getConnection();
       const dex = String(req.query.dex || 'all').toLowerCase();
-      const limit = Math.min(Math.max(1, parseInt(req.query.limit as string) || 20), 100);
+      // Use limit=0 or all=true to validate all pools
+      const validateAll = req.query.all === 'true' || req.query.limit === '0';
+      const limit = validateAll ? Infinity : Math.min(Math.max(1, parseInt(req.query.limit as string) || 20), 100);
       const poolId = req.query.poolId as string | undefined;
       
       // Single pool validation
@@ -545,7 +547,10 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       
       // Batch validation by DEX
       if (dex === 'all') {
-        const summary = await getCacheHealthSummary(connection, { poolsPerDex: limit });
+        const summary = await getCacheHealthSummary(connection, { 
+          poolsPerDex: validateAll ? Infinity : limit, 
+          validateAll 
+        });
         return res.json({ 
           success: true, 
           summary: {
@@ -627,13 +632,17 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       const connection = getConnection();
       
       const dex = (req.body?.dex || 'all').toLowerCase();
-      const limit = Math.min(Math.max(1, Number(req.body?.limit || 50)), 100);
+      const validateAll = req.body?.all === true || req.body?.limit === 0;
+      const limit = validateAll ? Infinity : Math.min(Math.max(1, Number(req.body?.limit || 50)), 100);
       
       // First, find invalid pools
       let invalidPools: any[] = [];
       
       if (dex === 'all') {
-        const summary = await getCacheHealthSummary(connection, { poolsPerDex: limit });
+        const summary = await getCacheHealthSummary(connection, { 
+          poolsPerDex: validateAll ? Infinity : limit, 
+          validateAll 
+        });
         invalidPools = [
           ...summary.orca.results.filter(r => !r.valid),
           ...summary.raydium.results.filter(r => !r.valid),

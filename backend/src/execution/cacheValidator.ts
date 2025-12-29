@@ -352,10 +352,35 @@ export async function validatePoolCache(
           } else {
             issues.push('Failed to derive tick arrays');
           }
-        } else {
-          issues.push('No tickArrays in hot cache');
-          if (currentTick === undefined) issues.push('Missing currentTickIndex');
-          if (!tickSpacing) issues.push('Missing tickSpacing');
+        } else if (currentTick === undefined || !tickSpacing) {
+          // Hot cache is missing tick data - try fetching fresh from chain
+          const freshResult = await fetchFreshTickDataAndValidate(connection, basePoolId, dex);
+          
+          if (freshResult?.tickArrays && freshResult.validation?.center?.exists) {
+            // Fresh data worked - update cache
+            executionCache.setHot(basePoolId, {
+              ...hot,
+              currentTickIndex: freshResult.currentTick,
+              tickSpacing: freshResult.tickSpacing,
+              tickArrays: freshResult.tickArrays,
+            });
+            result.tickArrayValidation = freshResult.validation;
+            result.cacheData = {
+              currentTick: freshResult.currentTick,
+              tickSpacing: freshResult.tickSpacing,
+            };
+            // Don't add issues - we fixed it with fresh data
+          } else if (freshResult) {
+            // Got fresh data but tick arrays don't exist
+            result.cacheData = {
+              currentTick: freshResult.currentTick,
+              tickSpacing: freshResult.tickSpacing,
+            };
+            issues.push('Center tick array does not exist on-chain (pool may have no liquidity)');
+          } else {
+            // Couldn't fetch pool data at all
+            issues.push('Failed to fetch pool data from chain');
+          }
         }
       } else {
         // Validate tick arrays exist on-chain
@@ -666,6 +691,8 @@ export async function validatePoolCache(
 
 /**
  * Batch validate multiple pools by DEX
+ * @param options.limit - Max pools to validate. Use 0 or Infinity for all pools. Default: all pools
+ * @param options.onlyClmm - Only validate CLMM pools (default true)
  */
 export async function validatePoolCacheBatch(
   connection: Connection,
@@ -673,20 +700,24 @@ export async function validatePoolCacheBatch(
   options?: { limit?: number; onlyClmm?: boolean }
 ): Promise<BatchValidationResult> {
   const startTime = Date.now();
-  const limit = options?.limit ?? 50;
+  // Default to all pools (no limit) - use 0 or Infinity explicitly for all
+  const limit = options?.limit === 0 || options?.limit === Infinity ? Infinity : (options?.limit ?? Infinity);
   
   // Get pools from the appropriate cache
   let pools: any[] = [];
   
   if (dex === 'orca') {
     const orcaPools = peekOrcaPools();
-    pools = (orcaPools?.clmm || []).slice(0, limit);
+    const allPools = orcaPools?.clmm || [];
+    pools = limit === Infinity ? allPools : allPools.slice(0, limit);
   } else if (dex === 'raydium') {
     const raydiumPools = peekRaydiumPools();
-    pools = (raydiumPools?.clmm || []).slice(0, limit);
+    const allPools = raydiumPools?.clmm || [];
+    pools = limit === Infinity ? allPools : allPools.slice(0, limit);
   } else if (dex === 'meteora') {
     const meteoraPools = peekMeteoraPools();
-    pools = (meteoraPools?.clmm || []).slice(0, limit);
+    const allPools = meteoraPools?.clmm || [];
+    pools = limit === Infinity ? allPools : allPools.slice(0, limit);
   }
   
   const results: PoolValidationResult[] = [];
@@ -777,10 +808,12 @@ export async function validatePoolCacheBatch(
 
 /**
  * Get a summary of cache health across all DEXes
+ * @param options.poolsPerDex - Max pools per DEX. Use 0 for all pools. Default: 20 (quick check)
+ * @param options.validateAll - If true, validates ALL pools (overrides poolsPerDex)
  */
 export async function getCacheHealthSummary(
   connection: Connection,
-  options?: { poolsPerDex?: number }
+  options?: { poolsPerDex?: number; validateAll?: boolean }
 ): Promise<{
   orca: BatchValidationResult;
   raydium: BatchValidationResult;
@@ -788,7 +821,8 @@ export async function getCacheHealthSummary(
   overallHealthPercent: number;
   timestamp: number;
 }> {
-  const poolsPerDex = options?.poolsPerDex ?? 20;
+  // If validateAll is true, use Infinity; otherwise use poolsPerDex or default to 20
+  const poolsPerDex = options?.validateAll ? Infinity : (options?.poolsPerDex ?? 20);
   
   const [orca, raydium, meteora] = await Promise.all([
     validatePoolCacheBatch(connection, 'orca', { limit: poolsPerDex }),
@@ -946,7 +980,12 @@ export async function refreshInvalidPools(
       } else {
         failed++;
         if (result.error) {
-          errors.push(`${result.poolId}: ${result.error}`);
+          // Mark pools with no liquidity separately - they're not "failures" in the error sense
+          const isNoLiquidity = result.error.includes('No tick arrays found on-chain') || 
+                               result.error.includes('no liquidity');
+          if (!isNoLiquidity) {
+            errors.push(`${result.poolId}: ${result.error}`);
+          }
         }
       }
     }
