@@ -632,6 +632,17 @@ export async function refreshInvalidPools(
           }
           
           if (validatedState) {
+            // Also populate static cache if missing (handles "No cache entry" case)
+            if (!executionCache.getStatic(pool.poolId)) {
+              executionCache.setStatic(pool.poolId, {
+                programId: validatedState.programId,
+                dex: pool.dex === 'orca' ? 'Orca' : pool.dex === 'raydium' ? 'Raydium' : 'Meteora',
+                pool_kind: 'clmm',
+                tick_spacing: validatedState.tickSpacing,
+                binStep: validatedState.binStep,
+              });
+            }
+            
             // Update cache with validated arrays
             if (validatedState.tickArrays) {
               const existing = executionCache.getHot(pool.poolId) || {};

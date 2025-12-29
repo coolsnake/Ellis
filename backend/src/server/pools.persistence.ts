@@ -16,12 +16,13 @@
 import { CONFIG } from '../utils/config.js';
 import { readJson, writeJson, joinPath, ensureDir, fileExists, listDir, deleteFile } from '../utils/fs.js';
 import { logger } from '../utils/logger.js';
-import type { PoolsPayload } from './pools/types.js';
+import type { PoolsPayload, ClmmPool } from './pools/types.js';
 import { 
   raydiumCache, orcaCache, meteoraCache, 
   metbalCache, pumpswapCache 
 } from './pools.cache.js';
 import { emit } from './realtime.js';
+import { executionCache } from '../execution/cache.js';
 
 export interface PoolsSnapshot {
   version: number;
@@ -229,6 +230,7 @@ export async function loadPoolsSnapshot(): Promise<PoolsSnapshot | null> {
 /**
  * Hydrate pool caches from loaded snapshot
  * Makes pools immediately available for graph building
+ * Also populates the execution cache with pool metadata
  */
 export function hydratePoolCaches(snapshot: PoolsSnapshot): {
   total: number;
@@ -237,29 +239,41 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
   meteora: number;
   meteoraBalanced: number;
   pumpswap: number;
+  executionCachePopulated: number;
 } {
   const now = Date.now();
   const savedAtMs = snapshot.savedAtMs || now;
+  let executionCachePopulated = 0;
   
   if (snapshot.raydium) {
     raydiumCache.data = snapshot.raydium;
     raydiumCache.ts = savedAtMs;
+    // Populate execution cache for Raydium pools
+    executionCachePopulated += populateExecutionCacheFromPools(snapshot.raydium, 'Raydium');
   }
   if (snapshot.orca) {
     orcaCache.data = snapshot.orca;
     orcaCache.ts = savedAtMs;
+    // Populate execution cache for Orca pools
+    executionCachePopulated += populateExecutionCacheFromPools(snapshot.orca, 'Orca');
   }
   if (snapshot.meteora) {
     meteoraCache.data = snapshot.meteora;
     meteoraCache.ts = savedAtMs;
+    // Populate execution cache for Meteora pools
+    executionCachePopulated += populateExecutionCacheFromPools(snapshot.meteora, 'Meteora');
   }
   if (snapshot.meteoraBalanced) {
     metbalCache.data = snapshot.meteoraBalanced;
     metbalCache.ts = savedAtMs;
+    // Populate execution cache for Meteora Balanced pools
+    executionCachePopulated += populateExecutionCacheFromPools(snapshot.meteoraBalanced, 'MeteoraBalanced');
   }
   if (snapshot.pumpswap) {
     pumpswapCache.data = snapshot.pumpswap;
     pumpswapCache.ts = savedAtMs;
+    // Populate execution cache for Pumpswap pools
+    executionCachePopulated += populateExecutionCacheFromPools(snapshot.pumpswap, 'Pumpswap');
   }
   
   const counts = {
@@ -269,6 +283,7 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
     meteoraBalanced: (snapshot.meteoraBalanced?.amm?.length || 0),
     pumpswap: (snapshot.pumpswap?.amm?.length || 0),
     total: 0,
+    executionCachePopulated,
   };
   counts.total = counts.raydium + counts.orca + counts.meteora + counts.meteoraBalanced + counts.pumpswap;
   
@@ -277,13 +292,149 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
   try {
     emit('log', { 
       level: 'info', 
-      message: `pools:caches hydrated ${counts.total} pools from snapshot`, 
+      message: `pools:caches hydrated ${counts.total} pools from snapshot (${executionCachePopulated} in execution cache)`, 
       timestamp: new Date().toISOString(), 
       context: { cat: 'pools', counts } 
     });
   } catch {}
   
   return counts;
+}
+
+/**
+ * Populate execution cache from pool data
+ * Extracts execution-critical fields from pool objects and stores in execution cache
+ */
+function populateExecutionCacheFromPools(
+  pools: PoolsPayload,
+  dex: 'Raydium' | 'Orca' | 'Meteora' | 'MeteoraBalanced' | 'Pumpswap'
+): number {
+  let populated = 0;
+  
+  // Program IDs by DEX
+  const programIds: Record<string, string> = {
+    'Raydium': 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
+    'Orca': 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
+    'Meteora': 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+    'MeteoraBalanced': 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',
+    'Pumpswap': '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+  };
+  
+  const programId = programIds[dex];
+  
+  // Process AMM pools
+  for (const pool of pools.amm || []) {
+    try {
+      const existing = executionCache.getStatic(pool.id) || {} as any;
+      const staticData: any = {
+        ...existing,
+        programId,
+        dex,
+        pool_kind: 'amm',
+        mint_a: pool.mint_a,
+        mint_b: pool.mint_b,
+        decimals_a: pool.decimals_a,
+        decimals_b: pool.decimals_b,
+      };
+      
+      // Store vault/account references
+      if (pool.account_a) staticData.account_a = pool.account_a;
+      if (pool.account_b) staticData.account_b = pool.account_b;
+      if ((pool as any).native_account_a) staticData.native_account_a = (pool as any).native_account_a;
+      if ((pool as any).native_account_b) staticData.native_account_b = (pool as any).native_account_b;
+      if ((pool as any).native_mint_a) staticData.native_mint_a = (pool as any).native_mint_a;
+      if ((pool as any).native_mint_b) staticData.native_mint_b = (pool as any).native_mint_b;
+      
+      executionCache.setStatic(pool.id, staticData);
+      populated++;
+    } catch {}
+  }
+  
+  // Process CLMM pools
+  for (const pool of pools.clmm || []) {
+    try {
+      const existing = executionCache.getStatic(pool.id) || {} as any;
+      const staticData: any = {
+        ...existing,
+        programId,
+        dex,
+        pool_kind: 'clmm',
+        mint_a: pool.mint_a,
+        mint_b: pool.mint_b,
+        decimals_a: pool.decimals_a,
+        decimals_b: pool.decimals_b,
+      };
+      
+      // Store CLMM-specific fields
+      if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+      if ((pool as any).bin_step) staticData.binStep = (pool as any).bin_step;
+      if (pool.account_a) staticData.account_a = pool.account_a;
+      if (pool.account_b) staticData.account_b = pool.account_b;
+      if ((pool as any).native_account_a) staticData.native_account_a = (pool as any).native_account_a;
+      if ((pool as any).native_account_b) staticData.native_account_b = (pool as any).native_account_b;
+      if ((pool as any).native_mint_a) staticData.native_mint_a = (pool as any).native_mint_a;
+      if ((pool as any).native_mint_b) staticData.native_mint_b = (pool as any).native_mint_b;
+      
+      // Raydium CLMM-specific
+      if ((pool as any).observation_state) staticData.observation_state = (pool as any).observation_state;
+      if ((pool as any).ex_bitmap) staticData.ex_bitmap = (pool as any).ex_bitmap;
+      
+      // Orca Whirlpool-specific
+      if ((pool as any).oracle) staticData.oracle = (pool as any).oracle;
+      if ((pool as any).token_vault_a) staticData.token_vault_a = (pool as any).token_vault_a;
+      if ((pool as any).token_vault_b) staticData.token_vault_b = (pool as any).token_vault_b;
+      
+      // Meteora DLMM-specific
+      if ((pool as any).bin_array_bitmap_extension) {
+        staticData.bin_array_bitmap_extension = (pool as any).bin_array_bitmap_extension;
+      }
+      if ((pool as any).token_program_a) staticData.token_program_a = (pool as any).token_program_a;
+      if ((pool as any).token_program_b) staticData.token_program_b = (pool as any).token_program_b;
+      
+      executionCache.setStatic(pool.id, staticData);
+      populated++;
+      
+      // Also populate hot cache with price/tick data if available
+      const hotData: any = {};
+      let hasHotData = false;
+      
+      if (pool.sqrt_price_x64 !== undefined) {
+        hotData.sqrtPriceX64 = BigInt(String(pool.sqrt_price_x64));
+        hasHotData = true;
+      }
+      if ((pool as any).tick_current !== undefined) {
+        hotData.currentTickIndex = (pool as any).tick_current;
+        hasHotData = true;
+      }
+      if ((pool as any).active_id !== undefined) {
+        hotData.activeId = (pool as any).active_id;
+        hasHotData = true;
+      }
+      if (pool.tick_spacing) {
+        hotData.tickSpacing = pool.tick_spacing;
+        hasHotData = true;
+      }
+      if ((pool as any).bin_step) {
+        hotData.binStep = (pool as any).bin_step;
+        hasHotData = true;
+      }
+      if (pool.liquidity !== undefined) {
+        hotData.liquidity = BigInt(String(pool.liquidity));
+        hasHotData = true;
+      }
+      if (pool.fee_bps !== undefined) {
+        hotData.feeRate = pool.fee_bps;
+        hasHotData = true;
+      }
+      
+      if (hasHotData) {
+        const existingHot = executionCache.getHot(pool.id) || {};
+        executionCache.setHot(pool.id, { ...existingHot, ...hotData });
+      }
+    } catch {}
+  }
+  
+  return populated;
 }
 
 /**
