@@ -655,10 +655,9 @@ async function fetchOrcaWhirlpoolPool(
     const startTickUpper = (realIndex + 1) * ticksInArray;   // offset +1
     
     const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-      const startTickBuffer = Buffer.alloc(4);
-      startTickBuffer.writeInt32LE(startTickIndex, 0);
+      // CRITICAL: Orca SDK encodes startTick as ASCII string, not binary i32
       const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+        [Buffer.from('tick_array'), poolPubkey.toBuffer(), Buffer.from(startTickIndex.toString())],
         ORCA_WHIRLPOOL_PROGRAM
       );
       return pda;
@@ -1657,10 +1656,9 @@ async function buildOrcaDexAccountsForRouter(
   const realIndex = Math.floor(pool.tickCurrentIndex / ticksInArray);
   
   const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-    const startTickBuffer = Buffer.alloc(4);
-    startTickBuffer.writeInt32LE(startTickIndex, 0);
+    // CRITICAL: Orca SDK encodes startTick as ASCII string, not binary i32
     const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('tick_array'), poolPubkey.toBuffer(), startTickBuffer],
+      [Buffer.from('tick_array'), poolPubkey.toBuffer(), Buffer.from(startTickIndex.toString())],
       ORCA_WHIRLPOOL_PROGRAM
     );
     return pda;

@@ -21,10 +21,9 @@ function deriveOrcaTickArrays(
   const realIndex = Math.floor(currentTickIndex / ticksInArray);
   
   const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-    const startTickBuffer = Buffer.alloc(4);
-    startTickBuffer.writeInt32LE(startTickIndex, 0);
+    // CRITICAL: Orca SDK encodes startTick as ASCII string, not binary i32
     const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('tick_array'), poolId.toBuffer(), startTickBuffer],
+      [Buffer.from('tick_array'), poolId.toBuffer(), Buffer.from(startTickIndex.toString())],
       ORCA_WHIRLPOOL_PROGRAM
     );
     return pda;

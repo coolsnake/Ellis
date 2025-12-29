@@ -2809,10 +2809,9 @@ export async function getOrcaPoolsGraphQL(force = false, opts?: { mints?: string
               const ticksInArray = ORCA_TICK_ARRAY_SIZE * Number(tickSpacing);
               const realIndex = Math.floor(Number(tickIndexNative) / ticksInArray);
               const deriveTickArrayPda = (startTickIndex: number): string => {
-                const startTickBuffer = Buffer.alloc(4);
-                startTickBuffer.writeInt32LE(startTickIndex, 0);
+                // CRITICAL: Orca SDK encodes startTick as ASCII string, not binary i32
                 const [pda] = PublicKey.findProgramAddressSync(
-                  [Buffer.from('tick_array'), poolPk.toBuffer(), startTickBuffer],
+                  [Buffer.from('tick_array'), poolPk.toBuffer(), Buffer.from(startTickIndex.toString())],
                   orcaProgramId
                 );
                 return pda.toBase58();

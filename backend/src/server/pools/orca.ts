@@ -589,10 +589,9 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                 const tickArrayPdas: Array<{ offset: number; pda: InstanceType<typeof PublicKey>; startTick: number }> = [];
                 for (let offset = -RANGE; offset <= RANGE; offset++) {
                   const startTick = (centerIdx + offset) * ticksInArray;
-                  const startTickBuffer = Buffer.alloc(4);
-                  startTickBuffer.writeInt32LE(startTick, 0);
+                  // CRITICAL: Orca SDK encodes startTick as ASCII string, not binary i32
                   const [pda] = PublicKey.findProgramAddressSync(
-                    [Buffer.from('tick_array'), poolPk.toBuffer(), startTickBuffer],
+                    [Buffer.from('tick_array'), poolPk.toBuffer(), Buffer.from(startTick.toString())],
                     WHIRLPOOL_PROGRAM_ID
                   );
                   tickArrayPdas.push({ offset, pda, startTick });
