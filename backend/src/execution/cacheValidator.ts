@@ -22,8 +22,71 @@ const RAYDIUM_TICK_ARRAY_SIZE = 60;
 const METEORA_BIN_ARRAY_SIZE = 70;
 
 /**
+ * Fetch fresh tick data from chain and validate tick arrays
+ * Used when cached tick data leads to non-existent tick arrays
+ */
+async function fetchFreshTickDataAndValidate(
+  connection: Connection,
+  poolId: string,
+  dex: 'orca' | 'raydium'
+): Promise<{
+  currentTick: number;
+  tickSpacing: number;
+  tickArrays?: { center: string; lower: string[]; upper: string[] };
+  validation?: TickArrayValidation;
+} | null> {
+  try {
+    const poolPk = new PublicKey(poolId);
+    const accountInfo = await connection.getAccountInfo(poolPk);
+    
+    if (!accountInfo || !accountInfo.data) {
+      return null;
+    }
+    
+    const data = accountInfo.data;
+    let currentTick: number;
+    let tickSpacing: number;
+    
+    if (dex === 'raydium') {
+      // Raydium CLMM layout offsets
+      if (data.length < 280) return null;
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      tickSpacing = view.getUint16(235, true);
+      currentTick = view.getInt32(269, true);
+    } else {
+      // Orca Whirlpool layout offsets
+      if (data.length < 280) return null;
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      // Skip 8 byte discriminator, 32 byte config, 1 byte bump
+      tickSpacing = view.getUint16(41, true);
+      // Skip to tickCurrentIndex at offset ~277
+      // Orca: discriminator(8) + config(32) + bump(1) + tickSpacing(2) + tickSpacingSeed(2) + feeRate(2) + protocolFeeRate(2) + liquidity(16) + sqrtPrice(16) + tickCurrentIndex(4)
+      currentTick = view.getInt32(8 + 32 + 1 + 2 + 2 + 2 + 2 + 16 + 16, true); // offset 81
+    }
+    
+    if (tickSpacing <= 0 || tickSpacing > 1000) {
+      return null;
+    }
+    
+    // Now derive and validate with fresh tick data
+    const derivedResult = await deriveAndValidateTickArrays(connection, poolId, currentTick, tickSpacing, dex);
+    
+    return {
+      currentTick,
+      tickSpacing,
+      tickArrays: derivedResult.tickArrays,
+      validation: derivedResult.validation,
+    };
+  } catch (e) {
+    logCatchError('fetchFreshTickDataAndValidate', e);
+    return null;
+  }
+}
+
+/**
  * Derive and validate tick arrays for a pool
  * Returns derived addresses and their on-chain validation status
+ * Uses SDK-based derivation for Raydium, manual for Orca
  */
 async function deriveAndValidateTickArrays(
   connection: Connection,
@@ -37,43 +100,49 @@ async function deriveAndValidateTickArrays(
 }> {
   try {
     const poolPk = new PublicKey(poolId);
-    const tickArraySize = dex === 'orca' ? ORCA_TICK_ARRAY_SIZE : RAYDIUM_TICK_ARRAY_SIZE;
-    const ticksInArray = tickArraySize * tickSpacing;
-    const realIndex = Math.floor(currentTick / ticksInArray);
     const programId = dex === 'orca' ? ORCA_WHIRLPOOL_PROGRAM : RAYDIUM_CLMM_PROGRAM;
     
-    // Derive tick array PDAs
-    const deriveTickArrayPda = (startTickIndex: number): PublicKey => {
-      if (dex === 'orca') {
-        // Orca uses ASCII string encoding
-        const [pda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('tick_array'), poolPk.toBuffer(), Buffer.from(startTickIndex.toString())],
-          programId
-        );
-        return pda;
-      } else {
-        // Raydium uses binary i32 LE encoding
-        const startTickBuffer = Buffer.alloc(4);
-        startTickBuffer.writeInt32LE(startTickIndex, 0);
-        const [pda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('tick_array'), poolPk.toBuffer(), startTickBuffer],
-          programId
-        );
-        return pda;
-      }
-    };
+    // Use the authoritative tick array derivation
+    const tickArraySize = dex === 'orca' ? ORCA_TICK_ARRAY_SIZE : RAYDIUM_TICK_ARRAY_SIZE;
+    const ticksInArray = tickArraySize * tickSpacing;
     
-    // Derive lower, center, upper tick arrays (and extras for coverage)
-    const centerStart = realIndex * ticksInArray;
-    const tickArrayPdas = [
-      { type: 'lower' as const, offset: -2, pda: deriveTickArrayPda((realIndex - 2) * ticksInArray) },
-      { type: 'lower' as const, offset: -1, pda: deriveTickArrayPda((realIndex - 1) * ticksInArray) },
-      { type: 'center' as const, offset: 0, pda: deriveTickArrayPda(centerStart) },
-      { type: 'upper' as const, offset: 1, pda: deriveTickArrayPda((realIndex + 1) * ticksInArray) },
-      { type: 'upper' as const, offset: 2, pda: deriveTickArrayPda((realIndex + 2) * ticksInArray) },
+    // Calculate center start using same formula as getTickArrayStartIndexByTick
+    const centerStart = Math.floor(currentTick / ticksInArray) * ticksInArray;
+    const delta = ticksInArray;
+    
+    // Calculate start indices for lower, center, upper arrays
+    const startIndices = [
+      { type: 'lower' as const, offset: -2, startIndex: centerStart - (2 * delta) },
+      { type: 'lower' as const, offset: -1, startIndex: centerStart - delta },
+      { type: 'center' as const, offset: 0, startIndex: centerStart },
+      { type: 'upper' as const, offset: 1, startIndex: centerStart + delta },
+      { type: 'upper' as const, offset: 2, startIndex: centerStart + (2 * delta) },
     ];
     
-    // Batch check existence
+    // Derive PDAs
+    let tickArrayPdas: Array<{ type: 'lower' | 'center' | 'upper'; offset: number; pda: PublicKey }>;
+    
+    if (dex === 'raydium') {
+      // Use SDK for Raydium (handles edge cases correctly)
+      const { deriveTickArrayPda } = await import('./raydiumTickArrays.js');
+      tickArrayPdas = await Promise.all(
+        startIndices.map(async ({ type, offset, startIndex }) => {
+          const pda = await deriveTickArrayPda(programId, poolPk, startIndex);
+          return { type, offset, pda };
+        })
+      );
+    } else {
+      // Manual derivation for Orca (ASCII string encoding)
+      tickArrayPdas = startIndices.map(({ type, offset, startIndex }) => {
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('tick_array'), poolPk.toBuffer(), Buffer.from(startIndex.toString())],
+          programId
+        );
+        return { type, offset, pda };
+      });
+    }
+    
+    // Batch check existence on-chain
     const pdaKeys = tickArrayPdas.map(p => p.pda);
     const infos = await connection.getMultipleAccountsInfo(pdaKeys);
     
@@ -246,7 +315,39 @@ export async function validatePoolCache(
               });
               // Don't add issues - the arrays are now valid
             } else {
-              issues.push('Derived center tick array does not exist on-chain');
+              // Cached tick might be stale - try fetching fresh from chain
+              const freshResult = await fetchFreshTickDataAndValidate(connection, basePoolId, dex);
+              
+              if (freshResult?.tickArrays && freshResult.validation?.center?.exists) {
+                // Fresh data worked - update cache
+                executionCache.setHot(basePoolId, {
+                  ...hot,
+                  currentTickIndex: freshResult.currentTick,
+                  tickSpacing: freshResult.tickSpacing,
+                  tickArrays: freshResult.tickArrays,
+                });
+                result.tickArrayValidation = freshResult.validation;
+                result.cacheData = {
+                  ...result.cacheData,
+                  currentTick: freshResult.currentTick,
+                  tickSpacing: freshResult.tickSpacing,
+                };
+                // Don't add issues - we fixed it with fresh data
+              } else {
+                // Even fresh data failed - pool might have no liquidity
+                logger.debug('cache.validation.tick_array_not_found', {
+                  cat: 'cache',
+                  ctx: {
+                    poolId: basePoolId,
+                    dex,
+                    cachedTick: currentTick,
+                    freshTick: freshResult?.currentTick,
+                    tickSpacing,
+                    centerAddress: derivedResult.validation?.center?.address?.slice(0, 12),
+                  }
+                });
+                issues.push('Center tick array does not exist on-chain (pool may have no liquidity)');
+              }
             }
           } else {
             issues.push('Failed to derive tick arrays');

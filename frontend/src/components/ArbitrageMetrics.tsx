@@ -576,6 +576,9 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [newSnapshotName, setNewSnapshotName] = React.useState<string>('');
   const [snapshotLoading, setSnapshotLoading] = React.useState<boolean>(false);
   const [showSnapshotPanel, setShowSnapshotPanel] = React.useState<boolean>(false);
+  const [selectedSnapshots, setSelectedSnapshots] = React.useState<Set<string>>(new Set());
+  const [mergeMode, setMergeMode] = React.useState<'union' | 'intersection'>('union');
+  const [mergeSaveName, setMergeSaveName] = React.useState<string>('');
   
   // DEX fetcher states
   const [fetcherStates, setFetcherStates] = React.useState<Record<string, FetcherState>>({
@@ -741,6 +744,58 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         alert(data.error || 'Failed to delete snapshot');
       }
     } catch {}
+  };
+
+  // Toggle snapshot selection for merge
+  const toggleSnapshotSelection = (name: string) => {
+    setSelectedSnapshots(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  };
+
+  // Merge selected snapshots
+  const mergeSelectedSnapshots = async () => {
+    if (selectedSnapshots.size < 2) {
+      alert('Select at least 2 snapshots to merge');
+      return;
+    }
+    setSnapshotLoading(true);
+    try {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const res = await fetch(`${apiBase}${ROUTES.pools.snapshotMerge}`, { 
+        method: 'POST', 
+        headers, 
+        body: JSON.stringify({ 
+          names: Array.from(selectedSnapshots),
+          mode: mergeMode,
+          saveTo: mergeSaveName.trim() || undefined,
+        }) 
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) {
+        setSelectedSnapshots(new Set());
+        setMergeSaveName('');
+        fetchSnapshots();
+        fetchMetrics();
+        alert(`Merged ${selectedSnapshots.size} snapshots (${mergeMode}) → ${data.poolCount} pools`);
+      } else {
+        alert(data.error || 'Failed to merge snapshots');
+      }
+    } catch {}
+    setSnapshotLoading(false);
   };
 
   const runCacheValidation = async (limit = 20) => {
