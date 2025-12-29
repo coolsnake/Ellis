@@ -793,44 +793,93 @@ async function extractDexAccounts(
         
         let directionalBinArrays: PublicKey[] = [];
         
-        // Derive 3 directional bin arrays based on activeId and swap direction
+        // Build 3 directional bin arrays based on activeId and swap direction
         // CRITICAL: Meteora swap2 traverses bin arrays starting from the active bin.
         // We MUST include the active bin array first, then arrays in the swap direction:
         // - X→Y: price goes DOWN → need arrays at activeIndex, activeIndex-1, activeIndex-2
         // - Y→X: price goes UP → need arrays at activeIndex, activeIndex+1, activeIndex+2
-        if (typeof activeId === 'number' && Number.isFinite(activeId)) {
-          // Always derive the full directional set from activeId
+        //
+        // IMPORTANT: Derived PDAs might not exist on-chain (no liquidity deposited there).
+        // Error 3007 = "AccountOwnedByWrongProgram" means the PDA is owned by System Program (uninitialized).
+        // We ONLY use derived arrays if they match known-good cached arrays.
+        // Otherwise, we fall back to cached arrays which are verified to exist.
+        
+        if (typeof activeId === 'number' && Number.isFinite(activeId) && (knownBinArrayLower || knownBinArrayUpper)) {
+          const BIN_ARRAY_SIZE = 70;
+          const activeIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
+          
+          // Derive directional bin arrays
           const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
-          directionalBinArrays = derived.arrays;
+          
+          // Build the set with ONLY known-good arrays
+          const knownLowerStr = knownBinArrayLower?.toBase58();
+          const knownUpperStr = knownBinArrayUpper?.toBase58();
+          const derivedStrs = derived.arrays.map(a => a.toBase58());
+          
+          // Check which derived arrays match known-good cached arrays
+          const derivedMatches = derivedStrs.map(d => d === knownLowerStr || d === knownUpperStr);
+          
+          // Get the set of known-good arrays we can use
+          const knownGoodArrays: PublicKey[] = [];
+          if (knownBinArrayLower) knownGoodArrays.push(knownBinArrayLower);
+          if (knownBinArrayUpper && knownUpperStr !== knownLowerStr) {
+            knownGoodArrays.push(knownBinArrayUpper);
+          }
+          
+          // Build the final array using ONLY known-good arrays
+          // Order them based on swap direction
+          directionalBinArrays = [];
+          
+          for (let i = 0; i < 3; i++) {
+            if (derivedMatches[i]) {
+              // This derived array matches a known-good one, safe to use
+              directionalBinArrays.push(derived.arrays[i]);
+            } else if (isXtoY) {
+              // X→Y: prefer lower arrays, fall back to any known-good
+              directionalBinArrays.push(knownBinArrayLower || knownBinArrayUpper!);
+            } else {
+              // Y→X: prefer upper arrays, fall back to any known-good
+              directionalBinArrays.push(knownBinArrayUpper || knownBinArrayLower!);
+            }
+          }
           
           // Log for debugging
-          logger.debug('routerTx.meteora.binArraysDerived', {
+          logger.debug('routerTx.meteora.binArraysBuilt', {
             cat: 'tx',
             ctx: {
               poolId: hop.poolId,
               activeId,
+              activeIndex,
               isXtoY,
-              activeIndex: derived.activeIndex,
-              derived: derived.arrays.map((a, i) => `${i}:${a.toBase58().slice(0, 8)}`),
-              knownLower: knownBinArrayLower?.toBase58().slice(0, 8),
-              knownUpper: knownBinArrayUpper?.toBase58().slice(0, 8),
+              derivedMatches,
+              knownGoodCount: knownGoodArrays.length,
+              final: directionalBinArrays.map((a, i) => `${i}:${a.toBase58().slice(0, 8)}`),
+              knownLower: knownLowerStr?.slice(0, 8),
+              knownUpper: knownUpperStr?.slice(0, 8),
             }
           });
-        } else if (knownBinArrayLower && knownBinArrayUpper) {
-          // NO activeId available - fallback to known arrays
-          // This is risky but better than nothing
+        } else if (knownBinArrayLower || knownBinArrayUpper) {
+          // NO activeId available - use only known-good cached arrays
+          // Use whichever arrays we have, duplicating if necessary
+          const primary = knownBinArrayLower || knownBinArrayUpper!;
+          const secondary = knownBinArrayUpper || knownBinArrayLower!;
+          
           if (isXtoY) {
-            directionalBinArrays = [knownBinArrayLower, knownBinArrayLower, knownBinArrayUpper];
+            // X→Y: prefer lower direction
+            directionalBinArrays = [primary, primary, secondary];
           } else {
-            directionalBinArrays = [knownBinArrayUpper, knownBinArrayUpper, knownBinArrayLower];
+            // Y→X: prefer upper direction
+            directionalBinArrays = [primary, secondary, secondary];
           }
           logger.warn('routerTx.meteora.noActiveId', {
             cat: 'tx',
             ctx: {
               poolId: hop.poolId,
               isXtoY,
-              knownLower: knownBinArrayLower.toBase58().slice(0, 8),
-              knownUpper: knownBinArrayUpper.toBase58().slice(0, 8),
+              hasLower: !!knownBinArrayLower,
+              hasUpper: !!knownBinArrayUpper,
+              knownLower: knownBinArrayLower?.toBase58().slice(0, 8),
+              knownUpper: knownBinArrayUpper?.toBase58().slice(0, 8),
             }
           });
         } else {
@@ -935,48 +984,12 @@ async function extractDexAccounts(
         // Derived bin arrays might not exist if the pool has sparse liquidity
         accounts.push(...directionalBinArrays);
         
-        // For single-hop route_swap (allowVariableAccounts=true), optionally add more bin arrays
-        // BUT only if they're from verified sources (not derived PDAs that might not exist)
-        if (opts?.allowVariableAccounts) {
-          try {
-            // Only add the other known array if it's not already included
-            const already = new Set(accounts.map((a) => a.toBase58()));
-            
-            // Add the other known array (lower if we used upper, upper if we used lower)
-            if (knownBinArrayLower && !already.has(knownBinArrayLower.toBase58())) {
-              accounts.push(knownBinArrayLower);
-              already.add(knownBinArrayLower.toBase58());
-            }
-            if (knownBinArrayUpper && !already.has(knownBinArrayUpper.toBase58())) {
-              accounts.push(knownBinArrayUpper);
-              already.add(knownBinArrayUpper.toBase58());
-            }
-            
-            // Only add additional bin arrays from cache if they're explicitly listed
-            // (not derived) and we haven't hit the limit
-            const maxBinArrays = 8; // Conservative limit
-            const cachedArrays = hotCache?.binArrays?.arrays;
-            
-            if (Array.isArray(cachedArrays) && cachedArrays.length > 0) {
-              const dirSorted = cachedArrays
-                .map((x: any) => ({ index: Number(x?.index), address: String(x?.address || '') }))
-                .filter((x: any) => Number.isFinite(x.index) && x.address && x.address.length > 30)
-                .sort((a: any, b: any) => (isXtoY ? (a.index - b.index) : (b.index - a.index)));
-
-              for (const it of dirSorted) {
-                try {
-                  const pk = new PublicKey(it.address);
-                  const b58 = pk.toBase58();
-                  if (already.has(b58)) continue;
-                  accounts.push(pk);
-                  already.add(b58);
-                  const binCount = accounts.length - 16;  // Bin arrays start at index 16
-                  if (binCount >= maxBinArrays) break;
-                } catch {}
-              }
-            }
-          } catch {}
-        }
+        // NOTE: We intentionally only use 3 bin arrays (the directional set).
+        // Previously we added up to 8 bin arrays from cache, but this caused errors:
+        // - Error 3007: Derived PDAs might not exist on-chain (owned by System Program)
+        // - Error 3005: Meteora tries to read ALL passed bin arrays, failing if any are bad
+        // Jupiter only uses 3 bin arrays in their successful swaps.
+        // If a swap needs more price range than 3 bin arrays cover, it's a liquidity issue.
         break;
 
       case DexType.Orca:
