@@ -2687,9 +2687,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const injected = await injectBinArrayMetas(ixResult, DLMM, connection, poolPk, programId, hop.poolId);
           
           // CRITICAL: Verify bin arrays were added - fail fast if they weren't
+          // NOTE: Meteora swap2 needs 14 fixed accounts + 1 program + bin arrays (no Memo)
           const totalAccounts = Array.isArray(ixResult.keys) ? ixResult.keys.length : 0;
-          if (totalAccounts < 16) {
-            const errorMsg = `Meteora swap missing bin arrays: only ${totalAccounts} accounts (need 16+)`;
+          if (totalAccounts < 15) {
+            const errorMsg = `Meteora swap missing bin arrays: only ${totalAccounts} accounts (need 15+)`;
             try {
               logger.error('meteora.dlmm.no_bin_arrays', {
                 cat: 'tx',
@@ -2711,7 +2712,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               ctx: { 
                 totalAccounts, 
                 injected,
-                binArraysPresent: totalAccounts >= 16
+                binArraysPresent: totalAccounts >= 15
               } 
             }); 
           } catch (e) { logCatchError('ix.build', e); }

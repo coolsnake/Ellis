@@ -450,8 +450,8 @@ async function buildDirectRouterTx(
             dexType,
             pool: hop.poolId,
             dexAccounts: dexAccounts.length,
-            // For Meteora, bin arrays are the "remaining accounts" after index 15 (program) => start at 16
-            meteoraBinArrays: dexType === DexType.Meteora ? Math.max(0, dexAccounts.length - 16) : undefined,
+            // For Meteora, bin arrays are the "remaining accounts" after index 14 (program) => start at 15
+            meteoraBinArrays: dexType === DexType.Meteora ? Math.max(0, dexAccounts.length - 15) : undefined,
             aToB,
           }
         });
@@ -736,7 +736,7 @@ async function extractDexAccounts(
         // Must match arb-router/programs/arb-router/src/dex/meteora.rs expected order:
         // 0: LBPair, 1: BitmapExt, 2-3: Reserves, 4-5: UserTokens, 6-7: Mints,
         // 8: Oracle, 9: HostFee, 10: User, 11: TokenXProgram, 12: TokenYProgram,
-        // 13: MemoProgram, 14: EventAuth, 15: Program, 16-18: BinArrays (directional)
+        // 13: EventAuth, 14: Program, 15-17: BinArrays (directional) - NO MemoProgram!
         const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
         
         // Get token programs from hop (set by resolver from pool cache)
@@ -923,7 +923,9 @@ async function extractDexAccounts(
           outputMint: hop.outputMint,
         });
         
-        // Add fixed accounts (0-15)
+        // Add fixed accounts (0-14) - matches Meteora swap2 instruction layout
+        // NOTE: Memo Program is NOT included - Meteora swap2 doesn't use it!
+        // Jupiter's successful swaps use exactly this layout.
         accounts.push(
           poolId,                                                              // 0: LB Pair
           hop.bitmapExtension 
@@ -940,9 +942,8 @@ async function extractDexAccounts(
           wallet,                                                              // 10: User (signer)
           tokenXProgram,                                                       // 11: Token X Program
           tokenYProgram,                                                       // 12: Token Y Program
-          MEMO_PROGRAM_ID,                                                     // 13: Memo Program
-          meteoraEventAuthority,                                               // 14: Event Authority (PDA)
-          programIdKey,                                                        // 15: Meteora DLMM Program
+          meteoraEventAuthority,                                               // 13: Event Authority (PDA)
+          programIdKey,                                                        // 14: Meteora DLMM Program
         );
         
         // Add 3 directional bin arrays (16-18)
@@ -986,7 +987,7 @@ async function extractDexAccounts(
                   if (already.has(b58)) continue;
                   accounts.push(pk);
                   already.add(b58);
-                  const binCount = accounts.length - 16;
+                  const binCount = accounts.length - 15;  // Bin arrays start at index 15
                   if (binCount >= maxBinArrays) break;
                 } catch {}
               }
@@ -1181,7 +1182,8 @@ async function extractDexAccounts(
   if (dexType === DexType.Meteora && opts?.allowVariableAccounts) {
     while (accounts.length < expected) {
       // Prefer padding with a valid bin array if we have one, otherwise fall back to pool ID.
-      const pad = accounts.length > 16 ? accounts[accounts.length - 1] : new PublicKey(hop.poolId.replace(/[#-]rev$/, ''));
+      // Bin arrays start at index 15 (after 15 fixed accounts: 0-14)
+      const pad = accounts.length > 15 ? accounts[accounts.length - 1] : new PublicKey(hop.poolId.replace(/[#-]rev$/, ''));
       accounts.push(pad);
     }
     return accounts;

@@ -90,6 +90,20 @@ export interface ExecutorConfig {
       safetyFactor: number;              // Default 0.85
     };
   };
+  // Flashloan settings - use flashloans when optimal size > wallet balance
+  flashloanSettings?: {
+    enabled: boolean;
+    // Prefer SOL or USDC flashloans (based on cycle start token)
+    preferredToken: 'SOL' | 'USDC' | 'auto';
+    // Minimum profit in USD to justify flashloan fee (covers 9 bps fee)
+    minProfitForFlashloan: number;   // Default: 0.50 USD
+    // Maximum flashloan amount in USD
+    maxFlashloanUsd: number;         // Default: 10000
+    // Include flashloan fee (9 bps) in profit calculation
+    accountForFee: boolean;          // Default: true
+    // Fallback to wallet balance if flashloan unavailable
+    fallbackToWallet: boolean;       // Default: true
+  };
 }
 
 interface ExecutionState {
@@ -435,7 +449,7 @@ export class ArbExecutor {
       return false;
     }
 
-    // Balance validation
+    // Balance validation (skip if flashloans enabled for flashloanable tokens)
     if (this.config.requireStartBalance !== false && this.walletPublicKey) {
       try {
         const { getBalances } = await import('../wallet/wallet.js');
@@ -444,29 +458,45 @@ export class ArbExecutor {
         
         if (startToken) {
           const SOL_MINT = 'So11111111111111111111111111111111111111112';
+          const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
           const balance = startToken === SOL_MINT 
             ? balances.sol 
             : (balances.tokens[startToken] || 0);
           const hasBalance = balance > 0;
           
-          if (!hasBalance) {
+          // Check if this token can use flashloans
+          const canUseFlashloan = this.config.flashloanSettings?.enabled && 
+            (startToken === SOL_MINT || startToken === USDC_MINT);
+          
+          if (!hasBalance && !canUseFlashloan) {
             logger.info('arb.executor.filtered', {
               cat: 'arb',
               reason: 'no_balance',
               path: pathStr,
               startToken: startToken.slice(0, 8) + '...',
               balance: 0,
+              flashloanEnabled: !!this.config.flashloanSettings?.enabled,
             });
             return false;
           }
           
-          // Log balance check passed
-          logger.info('arb.executor.balance_check_passed', {
-            cat: 'arb',
-            path: pathStr,
-            startToken: startToken.slice(0, 8) + '...',
-            balance,
-          });
+          // Log balance check
+          if (hasBalance) {
+            logger.info('arb.executor.balance_check_passed', {
+              cat: 'arb',
+              path: pathStr,
+              startToken: startToken.slice(0, 8) + '...',
+              balance,
+            });
+          } else {
+            logger.info('arb.executor.balance_check_flashloan_available', {
+              cat: 'arb',
+              path: pathStr,
+              startToken: startToken.slice(0, 8) + '...',
+              balance: 0,
+              flashloanAvailable: true,
+            });
+          }
         }
       } catch (e) {
         logger.warn('arb.executor.balance_check_failed', {
@@ -635,9 +665,19 @@ export class ArbExecutor {
       let built: ArbBuildResult;
       let execCfg: any;
       
+      // Track whether we're using flashloan mode
+      let useFlashloan = false;
+      let flashloanAmountUsd = 0;
+      
       try {
         // Calculate dynamic size based on opportunity characteristics
         const sizeUsd = await this.calculateDynamicSize(opp);
+        
+        // Check if flashloan is needed (optimal size > wallet balance)
+        const startToken = executionPath[0];
+        const flashloanCheck = await this.checkFlashloanNeeded(opp, sizeUsd, startToken);
+        useFlashloan = flashloanCheck.needed;
+        flashloanAmountUsd = flashloanCheck.flashloanAmountUsd;
         
         // Log what we're passing to the resolver
         logger.debug('arb.executor.resolving_plan', {
@@ -649,7 +689,15 @@ export class ArbExecutor {
           bottleneckUsd: opp.est_capacity ?? opp.min_edge_liquidity,
           profitBps: opp.net_bps ?? opp.profit_bps,
           dynamicSizingEnabled: !!this.config.dynamicSizing?.enabled,
+          flashloanNeeded: useFlashloan,
+          flashloanAmountUsd,
+          walletBalanceUsd: flashloanCheck.walletBalanceUsd,
+          flashloanReason: flashloanCheck.reason,
         });
+        
+        // If using flashloan, adjust size to use combined wallet + flashloan
+        const effectiveSizeUsd = useFlashloan ? sizeUsd : 
+          (flashloanCheck.walletBalanceUsd > 0 ? Math.min(sizeUsd, flashloanCheck.walletBalanceUsd) : sizeUsd);
         
         // Resolve execution plan - pass traceId for complete log correlation
         // Pass minProfitBps to enforce profitability at the final hop for arb cycles
@@ -658,7 +706,7 @@ export class ArbExecutor {
             path: executionPath,
             hopPoolIds: opp.hop_pool_ids || [],
             dexes: executionDexes,
-            sizeUsd,
+            sizeUsd: effectiveSizeUsd,
             slippageBps: this.config.slippageBps,
             traceId,
             minProfitBps: this.config.minProfitBps || 0,  // Enforce profitability for arb cycles
@@ -672,6 +720,19 @@ export class ArbExecutor {
 
         // Load execution config
         execCfg = await loadExecConfig();
+        
+        // Log flashloan status
+        if (useFlashloan) {
+          logger.info('arb.executor.flashloan.using', {
+            cat: 'arb',
+            traceId,
+            path: executionPath.join('->'),
+            flashloanAmountUsd,
+            walletBalanceUsd: flashloanCheck.walletBalanceUsd,
+            totalSizeUsd: sizeUsd,
+            estFeeUsd: flashloanAmountUsd * 0.0009,
+          });
+        }
       } catch (buildError: any) {
         // Log build/resolution failure to execute-attempts
         try {
@@ -742,6 +803,89 @@ export class ArbExecutor {
       
       // Use ALT addresses from built transaction, fallback to exec config
       const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
+      
+      // If flashloan is needed and mode is direct, use router's flashloan execution
+      if (useFlashloan && mode === 'direct') {
+        logger.info('arb.executor.flashloan.executing', {
+          cat: 'arb',
+          traceId,
+          path: pathStr,
+          flashloanAmountUsd,
+        });
+        
+        try {
+          const { buildRouterTransaction } = await import('./builder/routerTx.js');
+          const { ExecutionMode } = await import('../router/types.js');
+          const kp = await ensureWallet(CONFIG.walletPath);
+          
+          const routerResult = await buildRouterTransaction(plan, kp, {
+            mode: ExecutionMode.FlashLoan,
+            minProfit: 0n, // Already validated profitability
+          });
+          
+          if (!routerResult.usedRouter || routerResult.error) {
+            logger.warn('arb.executor.flashloan.router_failed', {
+              cat: 'arb',
+              traceId,
+              error: routerResult.error || 'Router not available',
+              fallbackToWallet: !!this.config.flashloanSettings?.fallbackToWallet,
+            });
+            
+            // Fallback to regular execution if configured
+            if (!this.config.flashloanSettings?.fallbackToWallet) {
+              throw new Error(`Flashloan failed: ${routerResult.error}`);
+            }
+            // Continue with regular execution below
+          } else {
+            // Execute flashloan transaction
+            const sendResult = await assembleAndSend(routerResult.instructions, {
+              computeUnitLimit: execCfg.computeUnitLimit,
+              computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+              lookupTableAddresses: altAddresses,
+              traceId,
+            });
+            signature = sendResult?.signature || null;
+            
+            // Log success
+            logger.info('arb.executor.flashloan.executed', {
+              cat: 'arb',
+              traceId,
+              path: pathStr,
+              signature: signature?.slice(0, 16),
+              flashloanAmountUsd,
+              usedFlashLoan: routerResult.usedFlashLoan,
+            });
+            
+            // Log to tx history
+            addTxRecord({
+              id: traceId,
+              timestamp: Date.now(),
+              event: signature ? 'send_ok' : 'send_err',
+              route: pathStr,
+              amount: flashloanAmountUsd,
+              profit_bps: opp.profit_bps,
+              tx: signature || undefined,
+              hop_dexes: executionDexes,
+              flashloan: true,
+            });
+            
+            this.state.successfulExecutions++;
+            await this.notifyExecuted(opp);
+            return;
+          }
+        } catch (flashErr: any) {
+          logger.error('arb.executor.flashloan.error', {
+            cat: 'arb',
+            traceId,
+            error: String(flashErr?.message || flashErr),
+          });
+          
+          if (!this.config.flashloanSettings?.fallbackToWallet) {
+            throw flashErr;
+          }
+          // Continue with regular execution below
+        }
+      }
       
       if (mode === 'simulate') {
         // Simulate only - pass traceId for log correlation
@@ -1315,6 +1459,152 @@ export class ArbExecutor {
     });
     
     return sizeUsd;
+  }
+
+  /**
+   * Check if flashloan should be used for this opportunity.
+   * Returns the flashloan amount needed, or 0 if flashloan not needed/available.
+   */
+  private async checkFlashloanNeeded(
+    opp: Opportunity,
+    sizeUsd: number,
+    startToken: string
+  ): Promise<{ needed: boolean; flashloanAmountUsd: number; walletBalanceUsd: number; reason?: string }> {
+    const flashCfg = this.config.flashloanSettings;
+    
+    // If flashloans disabled, not needed
+    if (!flashCfg?.enabled) {
+      return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd: 0, reason: 'disabled' };
+    }
+    
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    
+    // Check if start token is flashloanable (SOL or USDC)
+    const isFlashloanable = startToken === SOL_MINT || startToken === USDC_MINT;
+    if (!isFlashloanable) {
+      return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd: 0, reason: 'token_not_flashloanable' };
+    }
+    
+    // Get wallet balance for this token
+    let walletBalanceUsd = 0;
+    try {
+      if (this.walletPublicKey) {
+        const { getBalances } = await import('../wallet/wallet.js');
+        const { getPriceByMint } = await import('../server/priceStore.js');
+        const balances = await getBalances(this.walletPublicKey);
+        
+        const balance = startToken === SOL_MINT 
+          ? balances.sol 
+          : (balances.tokens[startToken] || 0);
+        
+        // Convert to USD
+        const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+        walletBalanceUsd = balance * price;
+      }
+    } catch (e) {
+      logger.warn('arb.executor.flashloan.balance_check_failed', {
+        cat: 'arb',
+        error: String((e as any)?.message || e),
+      });
+    }
+    
+    // If wallet has enough balance, no flashloan needed
+    if (walletBalanceUsd >= sizeUsd) {
+      return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd, reason: 'sufficient_balance' };
+    }
+    
+    // Calculate flashloan amount needed
+    const flashloanAmountUsd = sizeUsd - walletBalanceUsd;
+    
+    // Check minimum profit threshold (must cover flashloan fee + min profit)
+    const estProfitUsd = opp.est_profit_usd ?? (sizeUsd * (opp.profit_bps ?? 0) / 10000);
+    const flashloanFeeUsd = flashloanAmountUsd * 0.0009; // 9 bps fee
+    const netProfitAfterFee = estProfitUsd - (flashCfg.accountForFee ? flashloanFeeUsd : 0);
+    
+    if (netProfitAfterFee < (flashCfg.minProfitForFlashloan || 0.50)) {
+      if (flashCfg.fallbackToWallet && walletBalanceUsd > 0) {
+        return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd, reason: 'profit_too_low_fallback_wallet' };
+      }
+      return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd, reason: 'profit_too_low' };
+    }
+    
+    // Check max flashloan cap
+    if (flashloanAmountUsd > (flashCfg.maxFlashloanUsd || 10000)) {
+      if (flashCfg.fallbackToWallet && walletBalanceUsd > 0) {
+        return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd, reason: 'exceeds_max_fallback_wallet' };
+      }
+      return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd, reason: 'exceeds_max' };
+    }
+    
+    // Check if vault has funds available
+    const vaultAvailable = await this.checkVaultBalance(startToken, flashloanAmountUsd);
+    if (!vaultAvailable) {
+      if (flashCfg.fallbackToWallet && walletBalanceUsd > 0) {
+        return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd, reason: 'vault_insufficient_fallback_wallet' };
+      }
+      return { needed: false, flashloanAmountUsd: 0, walletBalanceUsd, reason: 'vault_insufficient' };
+    }
+    
+    return { needed: true, flashloanAmountUsd, walletBalanceUsd };
+  }
+
+  /**
+   * Check if vault has sufficient balance for flashloan
+   */
+  private async checkVaultBalance(mint: string, requiredUsd: number): Promise<boolean> {
+    try {
+      const { loadRouterConfig } = await import('../server/routerConfigStore.js');
+      const { deriveVaultPda, fetchVault } = await import('../router/sdk.js');
+      const { getConnection } = await import('../utils/connection.js');
+      const { getPriceByMint } = await import('../server/priceStore.js');
+      const { PublicKey } = await import('@solana/web3.js');
+      
+      const routerConfig = await loadRouterConfig();
+      if (!routerConfig.enabled || !routerConfig.vaultOwner) {
+        return false;
+      }
+      
+      const connection = getConnection();
+      const vaultOwner = new PublicKey(routerConfig.vaultOwner);
+      const mintPubkey = new PublicKey(mint);
+      
+      const [vaultAddress] = deriveVaultPda(vaultOwner, mintPubkey);
+      const vault = await fetchVault(connection, vaultAddress);
+      
+      if (!vault) {
+        return false;
+      }
+      
+      // Get price for conversion
+      const price = Number(getPriceByMint(mint)?.usdc ?? 0);
+      if (price <= 0) {
+        return false;
+      }
+      
+      // Calculate available balance in USD
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const decimals = mint === SOL_MINT ? 9 : 6;
+      const availableBalance = Number(vault.balance - vault.borrowedAmount) / Math.pow(10, decimals);
+      const availableUsd = availableBalance * price;
+      
+      logger.debug('arb.executor.flashloan.vault_check', {
+        cat: 'arb',
+        mint: mint.slice(0, 8) + '...',
+        availableBalance,
+        availableUsd,
+        requiredUsd,
+        sufficient: availableUsd >= requiredUsd,
+      });
+      
+      return availableUsd >= requiredUsd;
+    } catch (e) {
+      logger.warn('arb.executor.flashloan.vault_check_failed', {
+        cat: 'arb',
+        error: String((e as any)?.message || e),
+      });
+      return false;
+    }
   }
 
   private getOpportunityKey(opp: Opportunity): string {

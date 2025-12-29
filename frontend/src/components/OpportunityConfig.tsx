@@ -78,6 +78,25 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               if (typeof os.iterativeTolerance === 'number') set('optimal_tolerance', os.iterativeTolerance);
             }
           }
+          // Load flashloan settings
+          if (j.flashloanSettings) {
+            set('flashloan_enabled', !!j.flashloanSettings.enabled);
+            if (j.flashloanSettings.preferredToken) {
+              set('flashloan_preferred_token', j.flashloanSettings.preferredToken);
+            }
+            if (typeof j.flashloanSettings.minProfitForFlashloan === 'number') {
+              set('flashloan_min_profit', j.flashloanSettings.minProfitForFlashloan);
+            }
+            if (typeof j.flashloanSettings.maxFlashloanUsd === 'number') {
+              set('flashloan_max_usd', j.flashloanSettings.maxFlashloanUsd);
+            }
+            if (typeof j.flashloanSettings.accountForFee === 'boolean') {
+              set('flashloan_account_for_fee', j.flashloanSettings.accountForFee);
+            }
+            if (typeof j.flashloanSettings.fallbackToWallet === 'boolean') {
+              set('flashloan_fallback_wallet', j.flashloanSettings.fallbackToWallet);
+            }
+          }
         } 
       } catch {}
       // Load Jito config
@@ -166,6 +185,15 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                 iterativeTolerance: Number(det.optimal_tolerance) || 1.0,
                 safetyFactor: Number(det.optimal_safety_factor) || 0.85,
               },
+            },
+            // Flashloan settings
+            flashloanSettings: {
+              enabled: !!det.flashloan_enabled,
+              preferredToken: det.flashloan_preferred_token || 'auto',
+              minProfitForFlashloan: Number(det.flashloan_min_profit) || 0.50,
+              maxFlashloanUsd: Number(det.flashloan_max_usd) || 10000,
+              accountForFee: det.flashloan_account_for_fee !== false,
+              fallbackToWallet: det.flashloan_fallback_wallet !== false,
             },
           }) 
         }),
@@ -556,6 +584,130 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                 )}
               </div>
             )}
+          </div>
+
+          {/* Flashloan Settings Section */}
+          <div className="bg-gray-700 rounded p-4 border-2 border-blue-500/30">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-lg font-semibold text-white">Flashloan Boost</h3>
+              <label className="flex items-center gap-2 text-sm">
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4"
+                  checked={!!det.flashloan_enabled} 
+                  onChange={e=>set('flashloan_enabled', e.target.checked)} 
+                />
+                <span className="text-blue-400">Enabled</span>
+              </label>
+            </div>
+            
+            <p className="text-xs text-gray-400 mb-3">
+              Use flashloans when optimal trade size exceeds wallet balance.
+              Fee: <span className="text-amber-400 font-mono">9 bps (0.09%)</span> of borrowed amount.
+            </p>
+            
+            <div className={`space-y-4 ${!det.flashloan_enabled ? 'opacity-50 pointer-events-none' : ''}`}>
+              {/* Preferred Token */}
+              <div>
+                <label className="block mb-2 text-gray-300 text-sm font-medium">Flashloan Token</label>
+                <div className="flex gap-2">
+                  {[
+                    { value: 'auto', label: 'Auto', desc: 'Match cycle start' },
+                    { value: 'SOL', label: 'SOL', desc: 'Use SOL vault' },
+                    { value: 'USDC', label: 'USDC', desc: 'Use USDC vault' }
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => set('flashloan_preferred_token', opt.value)}
+                      disabled={!det.flashloan_enabled}
+                      className={`flex-1 p-2 rounded border text-sm transition-all ${
+                        (det.flashloan_preferred_token || 'auto') === opt.value
+                          ? 'bg-blue-600/30 border-blue-500 text-blue-300'
+                          : 'bg-gray-600 border-gray-500 text-gray-300 hover:border-gray-400'
+                      }`}
+                    >
+                      <div className="font-medium">{opt.label}</div>
+                      <div className="text-xs text-gray-400">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Thresholds */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block mb-1 text-gray-300 text-sm">
+                    Min Profit for Flashloan (USD)
+                    <span className="text-xs text-gray-500 ml-2">Must cover fee</span>
+                  </label>
+                  <input 
+                    type="number" 
+                    step="0.1"
+                    min="0"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                    value={det.flashloan_min_profit ?? 0.50} 
+                    onChange={e=>set('flashloan_min_profit', Number(e.target.value)||0)} 
+                    disabled={!det.flashloan_enabled}
+                  />
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-sm">
+                    Max Flashloan (USD)
+                    <span className="text-xs text-gray-500 ml-2">Cap on borrowed amount</span>
+                  </label>
+                  <input 
+                    type="number" 
+                    step="100"
+                    min="100"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                    value={det.flashloan_max_usd ?? 10000} 
+                    onChange={e=>set('flashloan_max_usd', Number(e.target.value)||10000)} 
+                    disabled={!det.flashloan_enabled}
+                  />
+                </div>
+              </div>
+
+              {/* Options */}
+              <div className="flex gap-4 flex-wrap">
+                <label className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4"
+                    checked={det.flashloan_account_for_fee !== false} 
+                    onChange={e=>set('flashloan_account_for_fee', e.target.checked)} 
+                    disabled={!det.flashloan_enabled}
+                  />
+                  <span className="text-gray-300 text-sm">Subtract fee from profit calc</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4"
+                    checked={det.flashloan_fallback_wallet !== false} 
+                    onChange={e=>set('flashloan_fallback_wallet', e.target.checked)} 
+                    disabled={!det.flashloan_enabled}
+                  />
+                  <span className="text-gray-300 text-sm">Fallback to wallet if unavailable</span>
+                </label>
+              </div>
+
+              {/* Fee example */}
+              {det.flashloan_enabled && (
+                <div className="p-3 bg-gray-800/50 rounded text-xs text-gray-400">
+                  <strong className="text-gray-300">Fee Examples (9 bps):</strong>
+                  <div className="grid grid-cols-4 gap-2 mt-2">
+                    {[100, 500, 1000, 5000].map(amt => (
+                      <div key={amt} className="bg-gray-700/50 p-2 rounded">
+                        <div className="text-gray-500">${amt} loan</div>
+                        <div className="text-amber-400 font-mono">
+                          ${(amt * 0.0009).toFixed(3)} fee
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Fixed Trade Size - shown as fallback when dynamic sizing is disabled */}
