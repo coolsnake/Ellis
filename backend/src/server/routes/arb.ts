@@ -78,14 +78,28 @@ export function createArbRouter(io: SocketIOServer): Router {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
       const r = await fetch(`${host}/config`).catch(() => null);
-      const remote = r ? await r.json().catch(() => ({})) : {};
+      
+      // If arb-rs returns an error (4xx/5xx), log and fallback to local config
+      if (r && !r.ok) {
+        const errText = await r.text().catch(() => '');
+        logger.warn('arb.config.get.arb_service_error', { 
+          cat: 'arb', 
+          status: r.status, 
+          error: errText.slice(0, 200) 
+        });
+      }
+      
+      const remote = (r && r.ok) ? await r.json().catch(() => ({})) : {};
       // Merge in locally saved UI-only fields (e.g., edge_allow)
       let local: any = {};
       try { local = await readJson('backend/config/arbConfig.json', {} as any); } catch {}
       const merged = { ...(remote || {}), ...(local || {}) };
-      res.status(r?.status || 200).json(merged);
-    } catch {
+      
+      // Always return 200 with merged config (use local as fallback)
+      res.status(200).json(merged);
+    } catch (e: any) {
       // Fallback: serve local file if arb service unavailable
+      logger.warn('arb.config.get.error', { cat: 'arb', error: String(e?.message || e) });
       try {
         const local = await readJson('backend/config/arbConfig.json', {} as any);
         return res.status(200).json(local || {});

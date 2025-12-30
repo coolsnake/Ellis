@@ -171,10 +171,15 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       // path pruning
       max_sol_stable_hops: toOptNum(det.max_sol_stable_hops),
       drop_stable_stable_hops: !!det.drop_stable_stable_hops,
-      stable_mints: String(det.stable_mints_csv || '')
-        .split(',').map(s => s.trim()).filter(Boolean),
+      // Only send stable_mints if there are actual values
+      ...((() => {
+        const mints = String(det.stable_mints_csv || '')
+          .split(',').map(s => s.trim()).filter(Boolean);
+        return mints.length > 0 ? { stable_mints: mints } : {};
+      })()),
     };
     try {
+      console.log('[OpportunityConfig] Saving arb config:', body);
       const [r1, r2, r3, r4] = await Promise.all([
         fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
         fetch(`${apiBase}${ROUTES.exec.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: execMode }) }),
