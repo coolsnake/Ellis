@@ -235,7 +235,25 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           }),
         }),
       ]);
-      if (!r1.ok || !r2.ok || !r3.ok || !r4.ok) throw new Error('Failed to save');
+      // Check each response and build detailed error message
+      const errors: string[] = [];
+      if (!r1.ok) {
+        const txt = await r1.text().catch(() => '');
+        errors.push(`arb/config: ${r1.status} ${txt.slice(0, 100)}`);
+      }
+      if (!r2.ok) {
+        const txt = await r2.text().catch(() => '');
+        errors.push(`exec/config: ${r2.status} ${txt.slice(0, 100)}`);
+      }
+      if (!r3.ok) {
+        const txt = await r3.text().catch(() => '');
+        errors.push(`executor/config: ${r3.status} ${txt.slice(0, 100)}`);
+      }
+      if (!r4.ok) {
+        const txt = await r4.text().catch(() => '');
+        errors.push(`jito/config: ${r4.status} ${txt.slice(0, 100)}`);
+      }
+      if (errors.length > 0) throw new Error(errors.join('; '));
       onClose();
     } catch (e: any) {
       setError(String(e?.message || e));
