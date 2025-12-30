@@ -674,14 +674,18 @@ async function buildDirectRouterTx(
       const minAmountOut = BigInt(hop.minOutRaw.toString());
       const dexAccounts = await extractDexAccounts(hop, dexType, wallet.publicKey, { allowVariableAccounts: true });
       try {
+        // Calculate bin array count: swap variant starts at 15, swap2 at 16
+        // We use 15 as base since swap is most common (standard SPL tokens)
+        const meteoraBinArrayCount = dexType === DexType.Meteora 
+          ? Math.max(0, dexAccounts.length - 15)  // swap: 15 fixed, swap2: 16 fixed
+          : undefined;
         logger.info('routerTx.direct.route_swap.prepared', {
           cat: 'tx',
           ctx: {
             dexType,
             pool: hop.poolId,
             dexAccounts: dexAccounts.length,
-            // For Meteora, bin arrays are the "remaining accounts" after index 15 (program) => start at 16
-            meteoraBinArrays: dexType === DexType.Meteora ? Math.max(0, dexAccounts.length - 16) : undefined,
+            meteoraBinArrays: meteoraBinArrayCount,
             aToB,
           }
         });
@@ -1221,13 +1225,23 @@ async function extractDexAccounts(
         const knownBinArrayUpper = hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : null;
         const knownBinArrayUpper2 = (hop as any).binArrayUpper2 ? new PublicKey((hop as any).binArrayUpper2) : null;
         
+        // Get binStep from hop or static cache to determine how many bin arrays needed
+        // Pools with smaller binStep need more bin arrays as each covers a smaller price range
+        // binStep 2 = ~0.02% per bin, binStep 15 = ~0.15% per bin (7.5x difference)
+        const binStep = (hop as any).binStep ?? (stat as any)?.bin_step ?? hotCache?.binStep;
+        const binStepNum = typeof binStep === 'string' ? parseInt(binStep, 10) : (binStep ?? 10);
+        
+        // Use 5 bin arrays for fine-grained pools (binStep <= 5), 3 for others
+        // This prevents error 3005 "Not enough account keys" when swap traverses multiple bin arrays
+        const neededBinArrayCount = binStepNum <= 5 ? 5 : 3;
+        
         let directionalBinArrays: PublicKey[] = [];
         
-        // Build 3 directional bin arrays based on activeId and swap direction
+        // Build N directional bin arrays based on activeId and swap direction
         // CRITICAL: Meteora swap2 traverses bin arrays starting from the active bin.
         // We MUST include the active bin array first, then arrays in the swap direction:
-        // - X→Y: price goes DOWN → need arrays at activeIndex, activeIndex-1, activeIndex-2
-        // - Y→X: price goes UP → need arrays at activeIndex, activeIndex+1, activeIndex+2
+        // - X→Y: price goes DOWN → need arrays at activeIndex, activeIndex-1, activeIndex-2, ...
+        // - Y→X: price goes UP → need arrays at activeIndex, activeIndex+1, activeIndex+2, ...
         //
         // IMPORTANT: Derived PDAs might not exist on-chain (no liquidity deposited there).
         // Error 3007 = "AccountOwnedByWrongProgram" means the PDA is owned by System Program (uninitialized).
@@ -1240,8 +1254,8 @@ async function extractDexAccounts(
           const BIN_ARRAY_SIZE = 70;
           const activeIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
           
-          // Derive directional bin arrays
-          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY);
+          // Derive directional bin arrays (use neededBinArrayCount for fine-grained pools)
+          const derived = deriveMeteoraBinArraysDirectional(poolId, activeId, isXtoY, neededBinArrayCount);
           
           // Build a set of ALL known-good arrays (from cache: active + ±2 neighbors)
           const knownActiveStr = knownBinArrayActive?.toBase58();
@@ -1266,20 +1280,20 @@ async function extractDexAccounts(
           // For each position, use derived if it matches known-good, else fallback
           directionalBinArrays = [];
           
-          for (let i = 0; i < 3; i++) {
+          // Build ordered list of fallback arrays based on direction
+          const orderedFallbacks = isXtoY
+            ? [knownBinArrayActive, knownBinArrayLower, knownBinArrayLower2, knownBinArrayUpper, knownBinArrayUpper2]
+            : [knownBinArrayActive, knownBinArrayUpper, knownBinArrayUpper2, knownBinArrayLower, knownBinArrayLower2];
+          const validFallbacks = orderedFallbacks.filter((arr): arr is PublicKey => arr !== null);
+          
+          for (let i = 0; i < neededBinArrayCount; i++) {
             if (derivedMatches[i]) {
               // This derived array matches a known-good one, safe to use
               directionalBinArrays.push(derived.arrays[i]);
-            } else if (isXtoY) {
-              // X→Y needs: active, lower, lower2. Fallback in order of priority.
-              directionalBinArrays.push(
-                knownBinArrayActive || knownBinArrayLower || knownBinArrayLower2 || knownBinArrayUpper || knownBinArrayUpper2!
-              );
             } else {
-              // Y→X needs: active, upper, upper2. Fallback in order of priority.
-              directionalBinArrays.push(
-                knownBinArrayActive || knownBinArrayUpper || knownBinArrayUpper2 || knownBinArrayLower || knownBinArrayLower2!
-              );
+              // Fallback: use known-good arrays, cycling through if needed
+              const fallbackIdx = Math.min(i, validFallbacks.length - 1);
+              directionalBinArrays.push(validFallbacks[fallbackIdx] || derived.arrays[i]);
             }
           }
           
@@ -1290,6 +1304,8 @@ async function extractDexAccounts(
               poolId: hop.poolId,
               activeId,
               activeIndex,
+              binStep: binStepNum,
+              neededBinArrayCount,
               isXtoY,
               derivedMatches,
               knownGoodCount: knownGoodSet.size,
@@ -1306,18 +1322,27 @@ async function extractDexAccounts(
           // Use whichever arrays we have, duplicating if necessary
           const primary = knownBinArrayActive || knownBinArrayLower || knownBinArrayUpper!;
           const secondary = knownBinArrayUpper || knownBinArrayLower || knownBinArrayActive!;
+          const tertiary = knownBinArrayLower2 || knownBinArrayUpper2 || secondary;
           
           if (isXtoY) {
-            // X→Y: prefer lower direction
-            directionalBinArrays = [primary, primary, secondary];
+            // X→Y: prefer lower direction - build array with needed count
+            directionalBinArrays = [primary];
+            while (directionalBinArrays.length < neededBinArrayCount) {
+              directionalBinArrays.push(directionalBinArrays.length === 1 ? primary : tertiary);
+            }
           } else {
-            // Y→X: prefer upper direction
-            directionalBinArrays = [primary, secondary, secondary];
+            // Y→X: prefer upper direction - build array with needed count
+            directionalBinArrays = [primary];
+            while (directionalBinArrays.length < neededBinArrayCount) {
+              directionalBinArrays.push(directionalBinArrays.length === 1 ? secondary : tertiary);
+            }
           }
           logger.warn('routerTx.meteora.noActiveId', {
             cat: 'tx',
             ctx: {
               poolId: hop.poolId,
+              binStep: binStepNum,
+              neededBinArrayCount,
               isXtoY,
               hasLower: !!knownBinArrayLower,
               hasUpper: !!knownBinArrayUpper,
@@ -1330,14 +1355,16 @@ async function extractDexAccounts(
           const fallbackArrays: PublicKey[] = [];
           if (knownBinArrayLower) fallbackArrays.push(knownBinArrayLower);
           if (knownBinArrayUpper) fallbackArrays.push(knownBinArrayUpper);
-          // Pad if needed
-          while (fallbackArrays.length < 3) {
+          if (knownBinArrayLower2) fallbackArrays.push(knownBinArrayLower2);
+          if (knownBinArrayUpper2) fallbackArrays.push(knownBinArrayUpper2);
+          // Pad if needed to reach neededBinArrayCount
+          while (fallbackArrays.length < neededBinArrayCount) {
             fallbackArrays.push(fallbackArrays.length > 0 ? fallbackArrays[fallbackArrays.length - 1] : poolId);
           }
-          directionalBinArrays = fallbackArrays;
+          directionalBinArrays = fallbackArrays.slice(0, neededBinArrayCount);
           logger.warn('routerTx.meteora.fallbackBinArrays', {
             cat: 'tx',
-            ctx: { poolId: hop.poolId, count: fallbackArrays.length }
+            ctx: { poolId: hop.poolId, count: directionalBinArrays.length, binStep: binStepNum }
           });
         }
         
@@ -1379,6 +1406,8 @@ async function extractDexAccounts(
           },
           // Bin array source tracking
           binArrays: {
+            binStep: binStepNum,
+            count: directionalBinArrays.length,
             knownLower: hop.binArrayLower?.slice(0, 8) || 'missing',
             knownUpper: hop.binArrayUpper?.slice(0, 8) || 'missing',
             usedDerivedActive: typeof activeId === 'number' && Number.isFinite(activeId),
@@ -1886,14 +1915,17 @@ function deriveRaydiumTickArrays(
 
 /**
  * Derive Meteora DLMM bin array PDAs from active bin ID
- * Returns 3 directional bin arrays based on swap direction:
- * - X→Y (isAtoB=true): active, active-1, active-2 (lower direction, price goes down)
- * - Y→X (isAtoB=false): active, active+1, active+2 (upper direction, price goes up)
+ * Returns N directional bin arrays based on swap direction:
+ * - X→Y (isAtoB=true): active, active-1, active-2, ... (lower direction, price goes down)
+ * - Y→X (isAtoB=false): active, active+1, active+2, ... (upper direction, price goes up)
+ * 
+ * @param count Number of bin arrays to derive (default: 3, use 5 for small binStep pools)
  */
 function deriveMeteoraBinArraysDirectional(
   poolId: PublicKey,
   activeId: number,
-  isAtoB: boolean
+  isAtoB: boolean,
+  count: number = 3
 ): { arrays: PublicKey[]; activeIndex: number } {
   // Derive bin array PDAs from active bin ID.
   // IMPORTANT: we must match the DLMM SDK PDA derivation for negative indexes.
@@ -1915,20 +1947,18 @@ function deriveMeteoraBinArraysDirectional(
     return pda;
   };
 
-  // Directional selection: 3 consecutive bin arrays in swap direction
+  // Directional selection: N consecutive bin arrays in swap direction
   // X→Y: price goes DOWN → need lower bin arrays (lower indices)
   // Y→X: price goes UP → need upper bin arrays (higher indices)
   const arrays: PublicKey[] = [];
-  if (isAtoB) {
-    // X→Y: active, active-1, active-2
-    arrays.push(deriveBinArrayPda(activeIndex));
-    arrays.push(deriveBinArrayPda(activeIndex - 1));
-    arrays.push(deriveBinArrayPda(activeIndex - 2));
-  } else {
-    // Y→X: active, active+1, active+2
-    arrays.push(deriveBinArrayPda(activeIndex));
-    arrays.push(deriveBinArrayPda(activeIndex + 1));
-    arrays.push(deriveBinArrayPda(activeIndex + 2));
+  for (let i = 0; i < count; i++) {
+    if (isAtoB) {
+      // X→Y: active, active-1, active-2, ...
+      arrays.push(deriveBinArrayPda(activeIndex - i));
+    } else {
+      // Y→X: active, active+1, active+2, ...
+      arrays.push(deriveBinArrayPda(activeIndex + i));
+    }
   }
 
   return { arrays, activeIndex };

@@ -18,21 +18,31 @@ use crate::constants::dex_programs::METEORA_DLMM;
 use crate::error::ArbRouterError;
 
 /// Minimum number of bin arrays to provide to Meteora DLMM swaps.
-/// For execute (multi-hop), we use 3 bin arrays directionally:
+/// Off-chain builder dynamically selects bin arrays based on:
 /// - Active bin array (where current price is)
-/// - 2 more bin arrays in the direction of price movement
-/// Off-chain builder selects these based on swap direction (X→Y = lower, Y→X = upper)
+/// - Additional arrays in the swap direction (X→Y = lower, Y→X = upper)
+/// 
+/// For pools with small bin_step (≤5), more bin arrays are needed:
+/// - bin_step 2: ~0.02% per bin, each bin array covers 70 bins = ~1.4% price range
+/// - bin_step 15: ~0.15% per bin, each bin array covers 70 bins = ~10.5% price range
+/// 
+/// The on-chain code accepts variable bin array counts (3-5+) via remaining accounts.
 pub const MIN_BIN_ARRAYS: usize = 3;
+
+/// Maximum bin arrays supported for fine-grained pools (bin_step ≤5)
+pub const MAX_BIN_ARRAYS: usize = 5;
 
 /// Number of accounts needed for Meteora DLMM `swap` (standard SPL tokens)
 /// 14 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays = 18 total
 /// Account layout: NO Memo Program, user tokens in INPUT/OUTPUT order
-pub const SWAP_ACCOUNTS_NEEDED: usize = 15 + MIN_BIN_ARRAYS; // 18 total
+/// Note: More accounts can be passed for fine-grained pools (up to 15 + MAX_BIN_ARRAYS)
+pub const SWAP_ACCOUNTS_NEEDED: usize = 15 + MIN_BIN_ARRAYS; // 18 total (min), 20 (max with 5 arrays)
 
 /// Number of accounts needed for Meteora DLMM `swap2` (Token-2022 compatible)
 /// 15 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays = 19 total
 /// Account layout: INCLUDES Memo Program at index 13, user tokens in X/Y order
-pub const SWAP2_ACCOUNTS_NEEDED: usize = 16 + MIN_BIN_ARRAYS; // 19 total
+/// Note: More accounts can be passed for fine-grained pools (up to 16 + MAX_BIN_ARRAYS)
+pub const SWAP2_ACCOUNTS_NEEDED: usize = 16 + MIN_BIN_ARRAYS; // 19 total (min), 21 (max with 5 arrays)
 
 /// Default accounts needed (swap for standard tokens)
 pub const ACCOUNTS_NEEDED: usize = SWAP_ACCOUNTS_NEEDED;
@@ -114,12 +124,13 @@ pub fn swap(
         min_amount_out,
     };
 
-    let (discriminator, fixed_count, _program_idx, bin_array_start) = if use_swap2 {
-        // swap2: 15 fixed + 1 program, bin arrays start at 16
-        (SWAP2_DISCRIMINATOR, 15usize, 15usize, 16usize)
+    let (discriminator, fixed_count, bin_array_start) = if use_swap2 {
+        // swap2: 16 fixed accounts (including program at index 15), bin arrays start at 16
+        (SWAP2_DISCRIMINATOR, 16usize, 16usize)
     } else {
-        // swap: 14 fixed + 1 program, bin arrays start at 15
-        (SWAP_DISCRIMINATOR, 14usize, 14usize, 15usize)
+        // swap: 15 fixed accounts (including program at index 14), bin arrays start at 15
+        // NOTE: The program account MUST be included in account_metas for Meteora's Anchor deserialization
+        (SWAP_DISCRIMINATOR, 15usize, 15usize)
     };
 
     // Build instruction data
