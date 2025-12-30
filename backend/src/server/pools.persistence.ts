@@ -510,7 +510,16 @@ export async function initializeFromSnapshot(): Promise<boolean> {
   // Optional: auto-revalidate on load
   if (cfg.revalidateOnLoad) {
     try {
-      logger.info('pools.persistence.auto_revalidate.start', { cat: 'pools' });
+      logger.info('pools.persistence.auto_revalidate.start', { 
+        cat: 'pools',
+        validateAll: true,
+        poolsInSnapshot: counts.total,
+        clmmPools: {
+          raydium: snapshot.raydium?.clmm?.length || 0,
+          orca: snapshot.orca?.clmm?.length || 0,
+          meteora: snapshot.meteora?.clmm?.length || 0,
+        }
+      });
       const { revalidateAllPools } = await import('./pools.revalidate.js');
       // Validate ALL pools in cache, not just a subset
       const result = await revalidateAllPools({ validateAll: true, concurrency: 10 });

@@ -755,20 +755,29 @@ export async function validatePoolCacheBatch(
   
   // Get pools from the appropriate cache
   let pools: any[] = [];
+  let totalInCache = 0;
   
   if (dex === 'orca') {
     const orcaPools = peekOrcaPools();
     const allPools = orcaPools?.clmm || [];
+    totalInCache = allPools.length;
     pools = limit === Infinity ? allPools : allPools.slice(0, limit);
   } else if (dex === 'raydium') {
     const raydiumPools = peekRaydiumPools();
     const allPools = raydiumPools?.clmm || [];
+    totalInCache = allPools.length;
     pools = limit === Infinity ? allPools : allPools.slice(0, limit);
   } else if (dex === 'meteora') {
     const meteoraPools = peekMeteoraPools();
     const allPools = meteoraPools?.clmm || [];
+    totalInCache = allPools.length;
     pools = limit === Infinity ? allPools : allPools.slice(0, limit);
   }
+  
+  logger.debug('cache.validation.batch.start', {
+    cat: 'cache',
+    ctx: { dex, totalInCache, poolsToValidate: pools.length, limit: limit === Infinity ? 'all' : limit }
+  });
   
   const results: PoolValidationResult[] = [];
   let validPools = 0;
@@ -866,7 +875,7 @@ export async function validatePoolCacheBatch(
 
 /**
  * Get a summary of cache health across all DEXes
- * @param options.poolsPerDex - Max pools per DEX. Use 0 for all pools. Default: 20 (quick check)
+ * @param options.poolsPerDex - Max pools per DEX. Omit or use 0 for all pools.
  * @param options.validateAll - If true, validates ALL pools (overrides poolsPerDex)
  */
 export async function getCacheHealthSummary(
@@ -879,8 +888,9 @@ export async function getCacheHealthSummary(
   overallHealthPercent: number;
   timestamp: number;
 }> {
-  // If validateAll is true, use Infinity; otherwise use poolsPerDex or default to 20
-  const poolsPerDex = options?.validateAll ? Infinity : (options?.poolsPerDex ?? 20);
+  // Default to validating ALL pools unless a specific limit is provided
+  const hasExplicitLimit = options?.poolsPerDex !== undefined && options.poolsPerDex > 0;
+  const poolsPerDex = options?.validateAll || !hasExplicitLimit ? Infinity : options!.poolsPerDex!;
   
   const [orca, raydium, meteora] = await Promise.all([
     validatePoolCacheBatch(connection, 'orca', { limit: poolsPerDex }),

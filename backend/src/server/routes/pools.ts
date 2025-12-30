@@ -317,12 +317,13 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
    */
   api.post('/arb/pools/revalidate', async (req, res) => {
     try {
-      const { dex, limit = 50, concurrency = 10, all = false } = req.body || {};
+      const { dex, limit, concurrency = 10, all } = req.body || {};
       const { revalidateDex, revalidateAllPools } = await import('../pools.revalidate.js');
       
-      // Use all=true or limit=0 to validate all pools
-      const validateAll = all === true || limit === 0;
-      const safeLimit = validateAll ? Infinity : Math.min(Math.max(1, Number(limit) || 50), 200);
+      // Default to validating ALL pools unless a specific limit is provided
+      const hasExplicitLimit = limit !== undefined && limit !== null;
+      const validateAll = all === true || limit === 0 || !hasExplicitLimit;
+      const safeLimit = validateAll ? Infinity : Math.min(Math.max(1, Number(limit) || 50), 500);
       const safeConcurrency = Math.min(Math.max(1, Number(concurrency) || 10), 20);
       
       let result;
@@ -530,9 +531,11 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       
       const connection = getConnection();
       const dex = String(req.query.dex || 'all').toLowerCase();
-      // Use limit=0 or all=true to validate all pools
-      const validateAll = req.query.all === 'true' || req.query.limit === '0';
-      const limit = validateAll ? Infinity : Math.min(Math.max(1, parseInt(req.query.limit as string) || 20), 100);
+      // Default to validating ALL pools unless a specific limit is provided
+      // Use limit=0 or all=true explicitly for all, or limit=N for specific limit
+      const hasExplicitLimit = req.query.limit !== undefined && req.query.limit !== '';
+      const validateAll = req.query.all === 'true' || req.query.limit === '0' || !hasExplicitLimit;
+      const limit = validateAll ? Infinity : Math.min(Math.max(1, parseInt(req.query.limit as string) || 50), 500);
       const poolId = req.query.poolId as string | undefined;
       
       // Single pool validation
