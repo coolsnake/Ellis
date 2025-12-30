@@ -1258,23 +1258,47 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
 
-                        // Canonicalize cycle labels by rotation only (preserve direction to keep hop arrays aligned)
-                        let canon = |v: &Vec<String>| -> Vec<String> {
+                        // Build anchor set for canonicalization based on current mode
+                        let anchor_set_for_canon: HashSet<String> = match s.config.start_mint_mode.as_str() {
+                            "sol_usdc" => {
+                                let mut set = HashSet::new();
+                                set.insert("So11111111111111111111111111111111111111112".to_string());
+                                set.insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string());
+                                set
+                            }
+                            "anchors" => s.config.anchor_mints.clone().unwrap_or_default().into_iter().collect(),
+                            _ => HashSet::new(), // "any" mode - no anchor preference
+                        };
+                        
+                        // Canonicalize cycle labels - prefer starting from anchor tokens, then lexicographic order
+                        let canon = |v: &Vec<String>, anchors: &HashSet<String>| -> Vec<String> {
                             if v.is_empty() {
                                 return v.clone();
                             }
                             let n = v.len();
                             let mut best_key: Option<String> = None;
                             let mut best_vec: Option<Vec<String>> = None;
+                            let mut best_is_anchor = false;
+                            
                             for i in 0..n {
                                 let mut r = Vec::with_capacity(n);
                                 for k in 0..n {
                                     r.push(v[(i + k) % n].clone());
                                 }
+                                let starts_with_anchor = anchors.contains(&r[0]);
                                 let key = r.join("->");
-                                if best_key.as_ref().map(|s| &key < s).unwrap_or(true) {
+                                
+                                // Prefer anchor starts, then lexicographic order within same anchor preference
+                                let is_better = match (starts_with_anchor, best_is_anchor) {
+                                    (true, false) => true,  // Anchor beats non-anchor
+                                    (false, true) => false, // Non-anchor loses to anchor
+                                    _ => best_key.as_ref().map(|s| &key < s).unwrap_or(true), // Same anchor status: lexicographic
+                                };
+                                
+                                if is_better {
                                     best_key = Some(key);
                                     best_vec = Some(r);
+                                    best_is_anchor = starts_with_anchor;
                                 }
                             }
                             best_vec.unwrap()
@@ -1327,7 +1351,7 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             };
-                        let canon_labels = canon(&labels);
+                        let canon_labels = canon(&labels, &anchor_set_for_canon);
                         tracing::debug!(path = %canon_labels.join("->"), profit_bps, "arb.detect.cycle.end");
                         // Align hop arrays with the rotated labels (no reversal)
                         rotate_to_start(&labels, &canon_labels, &mut hop_pool_ids);
