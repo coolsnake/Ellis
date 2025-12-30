@@ -483,7 +483,14 @@ export function calculateRepayAmount(borrowedAmount: bigint): bigint {
  * Get the MINIMUM number of accounts needed for a DEX swap.
  * These must match the on-chain ACCOUNTS_NEEDED constants in arb-router.
  * 
- * NOTE: Meteora supports two swap variants with different account counts:
+ * NOTE: Account counts can vary based on pool state and token types:
+ * 
+ * Raydium CLMM:
+ * - WITH exBitmap (18 accounts): 17 SDK accounts + 1 program ID (pools with wide tick ranges)
+ * - WITHOUT exBitmap (17 accounts): 16 SDK accounts + 1 program ID (most pools)
+ * The on-chain router auto-detects based on account count.
+ * 
+ * Meteora DLMM:
  * - swap (18 accounts): Standard SPL tokens, no Memo, input/output order
  * - swap2 (19 accounts): Token-2022 compatible, includes Memo, X/Y order
  * The on-chain router auto-detects based on account count.
@@ -491,7 +498,8 @@ export function calculateRepayAmount(borrowedAmount: bigint): bigint {
 export function getAccountsNeededForDex(dexType: DexType): number {
   switch (dexType) {
     case DexType.Raydium:
-      return 18; // Raydium CLMM: 17 SDK accounts + 1 program ID
+      // Return maximum (with exBitmap). Actual count determined by builder based on pool state.
+      return 18;
     case DexType.Meteora:
       // NOTE: Must match arb-router/programs/arb-router/src/dex/meteora.rs
       // swap: 14 fixed + 1 program + 3 bin arrays = 18 (standard SPL tokens)

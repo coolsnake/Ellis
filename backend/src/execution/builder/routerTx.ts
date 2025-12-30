@@ -710,12 +710,15 @@ async function extractDexAccounts(
           ? new PublicKey(hop.observationId)
           : deriveRaydiumObservationPda(poolId, programIdKey);
         
-        // Derive exBitmap (tick array bitmap extension) PDA - REQUIRED for pools with wide tick ranges
-        // Get from cache first (stat.ex_bitmap), otherwise derive
-        const exBitmapAddr = (hop as any).exBitmap || stat?.ex_bitmap;
-        const exBitmapPda = exBitmapAddr 
-          ? new PublicKey(exBitmapAddr)
-          : deriveRaydiumExBitmapPda(poolId, programIdKey);
+        // Check if exBitmap (tick array bitmap extension) exists
+        // The exBitmap is only needed for pools with wide tick ranges (many tick arrays)
+        // If ex_bitmap is in cache with a value, it exists. If it's falsy or 'none', it doesn't exist.
+        // We check hot cache first (set during validation), then static cache
+        const exBitmapFromCache = hot?.exBitmap || (hop as any).exBitmap || stat?.ex_bitmap;
+        const hasExBitmap = !!exBitmapFromCache && exBitmapFromCache !== 'none';
+        const exBitmapPda = hasExBitmap 
+          ? new PublicKey(exBitmapFromCache)
+          : deriveRaydiumExBitmapPda(poolId, programIdKey); // Still derive for reference but won't use if doesn't exist
         
         // CRITICAL: Use NATIVE account ordering for vault selection
         // Raydium CLMM passes input_vault and output_vault based on swap direction
@@ -736,8 +739,9 @@ async function extractDexAccounts(
           ammConfigSource: ammConfigAddr ? 'cache' : 'fallback',
           observation: observationState.toBase58(),
           observationSource: hop.observationId ? 'cache' : 'derived',
-          exBitmap: exBitmapPda.toBase58(),
-          exBitmapSource: exBitmapAddr ? 'cache' : 'derived',
+          exBitmap: hasExBitmap ? exBitmapPda.toBase58() : 'not_included',
+          exBitmapExists: hasExBitmap,
+          exBitmapSource: exBitmapFromCache ? 'cache' : 'none',
           // Native ordering (used for direction and vaults)
           nativeMintA: nativeMintA || 'missing',
           nativeMintB: nativeMintB || 'missing',
@@ -777,31 +781,51 @@ async function extractDexAccounts(
         // - A→B (isAtoB=true, tick decreases): [center, lower, upper] - lower first (primary direction)
         // - B→A (isAtoB=false, tick increases): [center, upper, lower] - upper first (primary direction)
         // All three tick arrays are passed; the program uses them based on swap traversal.
+        //
+        // Account layout depends on whether exBitmap exists:
+        // - WITH exBitmap (18 accounts): 0-12 fixed, 13 exBitmap, 14-16 tickArrays, 17 program
+        // - WITHOUT exBitmap (17 accounts): 0-12 fixed, 13-15 tickArrays, 16 program
         {
           const rayTickArray0 = hop.tickArrayCenter;
           const rayTickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
           const rayTickArray2 = isAtoB ? hop.tickArrayUpper : hop.tickArrayLower;
           
+          // Fixed accounts (0-12) - same for both layouts
           accounts.push(
             wallet,                                                              // 0: Payer (signer)
-            ammConfig,                                                           // 1: AMM Config (from cache or placeholder)
+            ammConfig,                                                           // 1: AMM Config
             poolId,                                                              // 2: Pool State
             userSourceAta,                                                       // 3: Input Token Account (user)
             userDestAta,                                                         // 4: Output Token Account (user)
-            new PublicKey(inputVault),                                           // 5: Input Vault (from canonical pairing)
-            new PublicKey(outputVault),                                          // 6: Output Vault (from canonical pairing)
-            observationState,                                                    // 7: Observation State (derived PDA)
+            new PublicKey(inputVault),                                           // 5: Input Vault
+            new PublicKey(outputVault),                                          // 6: Output Vault
+            observationState,                                                    // 7: Observation State
             TOKEN_PROGRAM_ID,                                                    // 8: Token Program
             TOKEN_2022_PROGRAM_ID,                                               // 9: Token-2022 Program
             MEMO_PROGRAM_ID,                                                     // 10: Memo Program
             inputMint,                                                           // 11: Input Token Mint
             outputMint,                                                          // 12: Output Token Mint
-            exBitmapPda,                                                         // 13: Tick Array Bitmap Extension (exBitmap)
-            rayTickArray0 ? new PublicKey(rayTickArray0) : poolId,               // 14: Tick Array 0 (center)
-            rayTickArray1 ? new PublicKey(rayTickArray1) : poolId,               // 15: Tick Array 1 (directional: lower for A→B, upper for B→A)
-            rayTickArray2 ? new PublicKey(rayTickArray2) : poolId,               // 16: Tick Array 2 (duplicate of 1)
-            programIdKey,                                                        // 17: Raydium CLMM Program
           );
+          
+          // Remaining accounts depend on whether exBitmap exists
+          if (hasExBitmap) {
+            // WITH exBitmap: 18 accounts total
+            accounts.push(
+              exBitmapPda,                                                       // 13: Tick Array Bitmap Extension
+              rayTickArray0 ? new PublicKey(rayTickArray0) : poolId,             // 14: Tick Array 0 (center)
+              rayTickArray1 ? new PublicKey(rayTickArray1) : poolId,             // 15: Tick Array 1
+              rayTickArray2 ? new PublicKey(rayTickArray2) : poolId,             // 16: Tick Array 2
+              programIdKey,                                                      // 17: Raydium CLMM Program
+            );
+          } else {
+            // WITHOUT exBitmap: 17 accounts total
+            accounts.push(
+              rayTickArray0 ? new PublicKey(rayTickArray0) : poolId,             // 13: Tick Array 0 (center)
+              rayTickArray1 ? new PublicKey(rayTickArray1) : poolId,             // 14: Tick Array 1
+              rayTickArray2 ? new PublicKey(rayTickArray2) : poolId,             // 15: Tick Array 2
+              programIdKey,                                                      // 16: Raydium CLMM Program
+            );
+          }
         }
         break;
 

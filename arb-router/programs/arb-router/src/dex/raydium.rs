@@ -5,18 +5,26 @@
 //!
 //! Raydium CLMM is a concentrated liquidity DEX similar to Uniswap V3.
 //! The DEX program ID is passed as the last account to support both devnet and mainnet.
+//!
+//! This module supports two account layouts:
+//! - WITH exBitmap (18 accounts): Pools with tick_array_bitmap_extension PDA initialized
+//! - WITHOUT exBitmap (17 accounts): Pools without exBitmap - tick arrays shift down by 1
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 
 use crate::error::ArbRouterError;
 
-/// Number of accounts needed for a Raydium CLMM swap
-pub const ACCOUNTS_NEEDED: usize = 18; // 17 SDK accounts + 1 Raydium program ID
+/// Number of accounts WITH exBitmap (18 accounts: 17 to Raydium + 1 program ID)
+pub const ACCOUNTS_NEEDED: usize = 18;
 
-/// Raydium CLMM Swap instruction discriminator
-/// swap instruction: [43, 4, 237, 11, 26, 201, 30, 98]
-const SWAP_DISCRIMINATOR: [u8; 8] = [43, 4, 237, 11, 26, 201, 30, 98];
+/// Number of accounts WITHOUT exBitmap (17 accounts: 16 to Raydium + 1 program ID)
+pub const ACCOUNTS_NEEDED_NO_EXBITMAP: usize = 17;
+
+/// Raydium CLMM swap_v2 instruction discriminator
+/// Note: The SDK calls this "swap" but it uses the swap_v2 discriminator
+/// sha256("global:swap_v2")[0..8] = [43, 4, 237, 11, 26, 201, 30, 98]
+const SWAP_V2_DISCRIMINATOR: [u8; 8] = [43, 4, 237, 11, 26, 201, 30, 98];
 
 /// Raydium CLMM swap parameters
 #[derive(AnchorSerialize, AnchorDeserialize)]
@@ -33,7 +41,9 @@ pub struct SwapParams {
 
 /// Execute a swap on Raydium CLMM
 ///
-/// Expected accounts (in order) - matching Raydium SDK order:
+/// Supports two account layouts based on whether exBitmap (tick_array_bitmap_extension) exists:
+///
+/// WITH exBitmap (18 accounts total, 17 to Raydium):
 /// 0. `[signer]` Payer
 /// 1. `[]` AMM Config
 /// 2. `[writable]` Pool State
@@ -45,28 +55,50 @@ pub struct SwapParams {
 /// 8. `[]` Token Program
 /// 9. `[]` Token-2022 Program
 /// 10. `[]` Memo Program
-/// 11. `[]` Input Token Mint (NOT writable)
-/// 12. `[]` Output Token Mint (NOT writable)
-/// 13. `[writable]` Tick Array Bitmap Extension (exBitmap PDA: ["exaccount", pool_id])
-/// 14. `[writable]` Tick Array Center
-/// 15. `[writable]` Tick Array Lower
-/// 16. `[writable]` Tick Array Upper
-/// 
-/// Note: Raydium CLMM Program ID is passed separately as the instruction's program_id
+/// 11. `[]` Input Token Mint
+/// 12. `[]` Output Token Mint
+/// 13. `[writable]` Tick Array Bitmap Extension (exBitmap)
+/// 14. `[writable]` Tick Array 0 (center)
+/// 15. `[writable]` Tick Array 1 (directional)
+/// 16. `[writable]` Tick Array 2 (directional)
+/// 17. `[]` Raydium CLMM Program ID
+///
+/// WITHOUT exBitmap (17 accounts total, 16 to Raydium):
+/// 0. `[signer]` Payer
+/// 1. `[]` AMM Config
+/// 2. `[writable]` Pool State
+/// 3. `[writable]` Input Token Account (user)
+/// 4. `[writable]` Output Token Account (user)
+/// 5. `[writable]` Input Vault
+/// 6. `[writable]` Output Vault
+/// 7. `[writable]` Observation State
+/// 8. `[]` Token Program
+/// 9. `[]` Token-2022 Program
+/// 10. `[]` Memo Program
+/// 11. `[]` Input Token Mint
+/// 12. `[]` Output Token Mint
+/// 13. `[writable]` Tick Array 0 (center)
+/// 14. `[writable]` Tick Array 1 (directional)
+/// 15. `[writable]` Tick Array 2 (directional)
+/// 16. `[]` Raydium CLMM Program ID
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
     _a_to_b: bool, // Direction is encoded in account ordering (input/output ATAs and vaults)
 ) -> Result<()> {
-    if accounts.len() < ACCOUNTS_NEEDED {
-        msg!("Raydium: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
+    // Detect layout based on account count
+    let has_exbitmap = accounts.len() >= ACCOUNTS_NEEDED;
+    let required = if has_exbitmap { ACCOUNTS_NEEDED } else { ACCOUNTS_NEEDED_NO_EXBITMAP };
+    
+    if accounts.len() < required {
+        msg!("Raydium: Insufficient accounts. Expected {} (exBitmap={}), got {}", 
+             required, has_exbitmap, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
     // Build the swap instruction data
     // Note: is_base_input = true means amount is the INPUT amount (what we're swapping in)
-    // This should always be true since we specify amount_in, regardless of swap direction
     let params = SwapParams {
         amount: amount_in,
         other_amount_threshold: min_amount_out,
@@ -75,21 +107,32 @@ pub fn swap(
     };
 
     let mut data = Vec::with_capacity(8 + 8 + 8 + 16 + 1);
-    data.extend_from_slice(&SWAP_DISCRIMINATOR);
+    data.extend_from_slice(&SWAP_V2_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
-    // Get the DEX program ID from the last account (index 17)
-    let dex_program_id = *accounts[ACCOUNTS_NEEDED - 1].key;
+    // Get the DEX program ID from the last account
+    let program_idx = required - 1;
+    let dex_program_id = *accounts[program_idx].key;
 
-    // Build account metas - only first 17 accounts go to Raydium (exclude program ID at index 17)
-    // Writable accounts based on SDK: 2, 3, 4, 5, 6, 7, 13, 14, 15, 16
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
+    // Build account metas - accounts to send to Raydium (exclude our program ID)
+    // Writable accounts:
+    // - WITH exBitmap: 2, 3, 4, 5, 6, 7, 13, 14, 15, 16
+    // - WITHOUT exBitmap: 2, 3, 4, 5, 6, 7, 13, 14, 15
+    let account_metas: Vec<AccountMeta> = accounts[..program_idx]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 0; // Only first account (payer) is signer
-            // Writable indices: 2, 3, 4, 5, 6, 7, 13, 14, 15, 16
-            let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 13 | 14 | 15 | 16);
+            
+            // Determine writable accounts based on layout
+            let is_writable = if has_exbitmap {
+                // WITH exBitmap: 2-7 (pool state, ATAs, vaults, observation), 13-16 (exBitmap + tickArrays)
+                matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 13 | 14 | 15 | 16)
+            } else {
+                // WITHOUT exBitmap: 2-7 (pool state, ATAs, vaults, observation), 13-15 (tickArrays only)
+                matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 13 | 14 | 15)
+            };
+            
             if is_signer {
                 AccountMeta::new(*acc.key, true)
             } else if is_writable {
@@ -106,11 +149,12 @@ pub fn swap(
         data,
     };
 
-    // Invoke the swap - include all accounts for CPI (including the program account)
-    let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
+    // Invoke the swap - include all accounts for CPI
+    let account_infos: Vec<AccountInfo> = accounts[..required].to_vec();
     invoke(&ix, &account_infos)?;
 
-    msg!("Raydium CLMM swap executed: {} in, min {} out", amount_in, min_amount_out);
+    msg!("Raydium CLMM swap executed: {} in, min {} out (exBitmap={})", 
+         amount_in, min_amount_out, has_exbitmap);
     Ok(())
 }
 
