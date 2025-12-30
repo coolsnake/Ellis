@@ -88,6 +88,153 @@ function toPublicKey(owner: any): PublicKey | null {
 }
 
 /**
+ * Manually decode Orca Whirlpool account data without SDK
+ * 
+ * Whirlpool account layout:
+ * - 8 bytes: discriminator
+ * - 32 bytes: whirlpoolsConfig (PublicKey)
+ * - 1 byte: whirlpoolBump
+ * - 2 bytes: tickSpacing (u16)
+ * - 2 bytes: tickSpacingSeed (u16)
+ * - 2 bytes: feeRate (u16)
+ * - 2 bytes: protocolFeeRate (u16)
+ * - 16 bytes: liquidity (u128)
+ * - 16 bytes: sqrtPrice (u128)
+ * - 4 bytes: tickCurrentIndex (i32)
+ * - 8 bytes: protocolFeeOwedA (u64)
+ * - 8 bytes: protocolFeeOwedB (u64)
+ * - 32 bytes: tokenMintA (PublicKey)
+ * - 32 bytes: tokenMintB (PublicKey)
+ * - 32 bytes: tokenVaultA (PublicKey)
+ * - 32 bytes: tokenVaultB (PublicKey)
+ * - 32 bytes: oracle (PublicKey)
+ */
+function decodeWhirlpoolManually(data: Buffer): {
+  tickSpacing: number;
+  feeRate: number;
+  liquidity: bigint;
+  sqrtPrice: bigint;
+  tickCurrentIndex: number;
+  tokenMintA: PublicKey;
+  tokenMintB: PublicKey;
+  tokenVaultA: PublicKey;
+  tokenVaultB: PublicKey;
+  oracle: PublicKey;
+} | null {
+  try {
+    // Minimum size check (discriminator + config + basic fields + mints + vaults)
+    if (data.length < 300) {
+      return null;
+    }
+
+    let offset = 8; // Skip discriminator
+    
+    // Skip whirlpoolsConfig (32 bytes)
+    offset += 32;
+    
+    // Skip whirlpoolBump (1 byte)
+    offset += 1;
+    
+    // tickSpacing (2 bytes, u16 LE)
+    const tickSpacing = data.readUInt16LE(offset);
+    offset += 2;
+    
+    // Skip tickSpacingSeed (2 bytes)
+    offset += 2;
+    
+    // feeRate (2 bytes, u16 LE) - in hundredths of a bip (1/1000000)
+    const feeRate = data.readUInt16LE(offset);
+    offset += 2;
+    
+    // Skip protocolFeeRate (2 bytes)
+    offset += 2;
+    
+    // liquidity (16 bytes, u128 LE)
+    const liquidityBuf = data.subarray(offset, offset + 16);
+    const liquidity = bufferToU128LE(liquidityBuf);
+    offset += 16;
+    
+    // sqrtPrice (16 bytes, u128 LE)
+    const sqrtPriceBuf = data.subarray(offset, offset + 16);
+    const sqrtPrice = bufferToU128LE(sqrtPriceBuf);
+    offset += 16;
+    
+    // tickCurrentIndex (4 bytes, i32 LE)
+    const tickCurrentIndex = data.readInt32LE(offset);
+    offset += 4;
+    
+    // Skip protocolFeeOwedA (8 bytes)
+    offset += 8;
+    
+    // Skip protocolFeeOwedB (8 bytes)
+    offset += 8;
+    
+    // tokenMintA (32 bytes)
+    const tokenMintA = new PublicKey(data.subarray(offset, offset + 32));
+    offset += 32;
+    
+    // tokenMintB (32 bytes)
+    const tokenMintB = new PublicKey(data.subarray(offset, offset + 32));
+    offset += 32;
+    
+    // tokenVaultA (32 bytes)
+    const tokenVaultA = new PublicKey(data.subarray(offset, offset + 32));
+    offset += 32;
+    
+    // tokenVaultB (32 bytes)
+    const tokenVaultB = new PublicKey(data.subarray(offset, offset + 32));
+    offset += 32;
+    
+    // Skip feeGrowthGlobalA (16 bytes)
+    offset += 16;
+    
+    // Skip feeGrowthGlobalB (16 bytes)
+    offset += 16;
+    
+    // Skip rewardLastUpdatedTimestamp (8 bytes)
+    offset += 8;
+    
+    // Skip rewardInfos (3 * 128 bytes = 384 bytes)
+    offset += 384;
+    
+    // oracle (32 bytes) - may be at different offset depending on version
+    // Try to read if there's enough data
+    let oracle: PublicKey;
+    if (data.length >= offset + 32) {
+      oracle = new PublicKey(data.subarray(offset, offset + 32));
+    } else {
+      oracle = PublicKey.default;
+    }
+    
+    return {
+      tickSpacing,
+      feeRate,
+      liquidity,
+      sqrtPrice,
+      tickCurrentIndex,
+      tokenMintA,
+      tokenMintB,
+      tokenVaultA,
+      tokenVaultB,
+      oracle,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Convert a 16-byte LE buffer to a BigInt (u128)
+ */
+function bufferToU128LE(buf: Buffer): bigint {
+  let result = 0n;
+  for (let i = 15; i >= 0; i--) {
+    result = (result << 8n) | BigInt(buf[i]);
+  }
+  return result;
+}
+
+/**
  * Decode Orca Whirlpool from account data using the SDK
  * 
  * IMPORTANT: ParsableWhirlpool.parse requires a full AccountInfo object with
@@ -101,61 +248,98 @@ export async function decodeOrcaWhirlpool(
   accountPubkey?: any
 ): Promise<{ parsed: any; mintA: string; mintB: string } | null> {
   try {
-    const sdk = await import('@orca-so/whirlpools-sdk').catch(() => null);
-    if (!sdk) {
-      logger.debug('orca.decoder.sdk_missing', { cat: 'pools' });
+    // First try SDK-based decoding
+    const sdk = await import('@orca-so/whirlpools-sdk').catch((err) => {
+      // Log at info level once to diagnose SDK issues on server
+      if (!(decodeOrcaWhirlpool as any)._sdkErrorLogged) {
+        (decodeOrcaWhirlpool as any)._sdkErrorLogged = true;
+        logger.info('orca.decoder.sdk_import_error', { 
+          error: String(err?.message || err),
+          stack: err?.stack?.split('\n').slice(0, 3).join(' | '),
+          cat: 'pools' 
+        });
+      }
       return null;
-    }
-
-    const { ParsableWhirlpool } = sdk as any;
+    });
     
-    // CRITICAL: Convert owner to PublicKey if it's a string
-    // The SDK expects owner to be a PublicKey object for validation
-    const ownerPubkey = toPublicKey(accountInfo.owner);
-    if (!ownerPubkey) {
-      logger.info('orca.decoder.invalid_owner', {
+    if (sdk) {
+      const { ParsableWhirlpool } = sdk as any;
+      
+      if (ParsableWhirlpool && typeof ParsableWhirlpool.parse === 'function') {
+        // CRITICAL: Convert owner to PublicKey if it's a string
+        const ownerPubkey = toPublicKey(accountInfo.owner);
+        if (ownerPubkey) {
+          const sdkAccountInfo = {
+            data: accountInfo.data,
+            executable: accountInfo.executable,
+            lamports: accountInfo.lamports,
+            owner: ownerPubkey,
+            rentEpoch: accountInfo.rentEpoch ?? 0,
+          };
+          
+          const parsed = ParsableWhirlpool.parse(accountPubkey, sdkAccountInfo);
+          
+          if (parsed) {
+            const mintA = parsed.tokenMintA?.toBase58?.() || '';
+            const mintB = parsed.tokenMintB?.toBase58?.() || '';
+            
+            if (mintA && mintB) {
+              return { parsed, mintA, mintB };
+            }
+          }
+        }
+      }
+    }
+    
+    // Fallback: Manual decoding without SDK
+    logger.debug('orca.decoder.using_manual_fallback', {
+      poolId: poolId.slice(0, 8) + '…',
+      cat: 'pools'
+    });
+    
+    const data = accountInfo.data;
+    const manualDecoded = decodeWhirlpoolManually(data);
+    
+    if (!manualDecoded) {
+      logger.info('orca.decoder.manual_decode_failed', {
         poolId: poolId.slice(0, 8) + '…',
-        ownerType: typeof accountInfo.owner,
+        dataLength: data?.length || 0,
         cat: 'pools'
       });
       return null;
     }
     
-    // Construct AccountInfo with proper PublicKey owner
-    const sdkAccountInfo = {
-      data: accountInfo.data,
-      executable: accountInfo.executable,
-      lamports: accountInfo.lamports,
-      owner: ownerPubkey,
-      rentEpoch: accountInfo.rentEpoch ?? 0,
-    };
-    
-    // ParsableWhirlpool.parse needs the pubkey and FULL account info
-    // The SDK validates that the account is owned by the Whirlpool program
-    const parsed = ParsableWhirlpool.parse(accountPubkey, sdkAccountInfo);
-    
-    if (!parsed) {
-      logger.info('orca.decoder.parse_null', {
-        poolId: poolId.slice(0, 8) + '…',
-        dataLength: accountInfo?.data?.length || 0,
-        owner: ownerPubkey.toBase58().slice(0, 8) + '…',
-        expectedOwner: ORCA_WHIRLPOOL_PROGRAM.slice(0, 8) + '…',
-        ownerMatches: ownerPubkey.toBase58() === ORCA_WHIRLPOOL_PROGRAM,
-        cat: 'pools'
-      });
-      return null;
-    }
-
-    const mintA = parsed.tokenMintA?.toBase58?.() || '';
-    const mintB = parsed.tokenMintB?.toBase58?.() || '';
+    const mintA = manualDecoded.tokenMintA.toBase58();
+    const mintB = manualDecoded.tokenMintB.toBase58();
     
     if (!mintA || !mintB) {
-      logger.debug('orca.decoder.missing_mints', {
+      logger.info('orca.decoder.missing_mints', {
         poolId: poolId.slice(0, 8) + '…',
         cat: 'pools'
       });
       return null;
     }
+    
+    // Create a parsed object compatible with the rest of the code
+    const parsed = {
+      sqrtPrice: manualDecoded.sqrtPrice,
+      liquidity: manualDecoded.liquidity,
+      tickSpacing: manualDecoded.tickSpacing,
+      tickCurrentIndex: manualDecoded.tickCurrentIndex,
+      feeRate: manualDecoded.feeRate,
+      tokenMintA: manualDecoded.tokenMintA,
+      tokenMintB: manualDecoded.tokenMintB,
+      tokenVaultA: manualDecoded.tokenVaultA,
+      tokenVaultB: manualDecoded.tokenVaultB,
+      oracle: manualDecoded.oracle,
+    };
+    
+    logger.debug('orca.decoder.manual_success', {
+      poolId: poolId.slice(0, 8) + '…',
+      mintA: mintA.slice(0, 8) + '…',
+      mintB: mintB.slice(0, 8) + '…',
+      cat: 'pools'
+    });
 
     return { parsed, mintA, mintB };
   } catch (e) {
