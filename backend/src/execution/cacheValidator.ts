@@ -10,6 +10,10 @@ import { executionCache } from './cache.js';
 import { logger } from '../utils/logger.js';
 import { logCatchError } from '../utils/errorHandler.js';
 import { peekRaydiumPools, peekOrcaPools, peekMeteoraPools } from '../server/pools.js';
+import { withRpcLimit } from '../utils/rpcLimiter.js';
+
+// RPC context for rate limiting
+const RPC_MODULE = 'cacheValidator';
 
 // Program IDs
 const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
@@ -37,7 +41,11 @@ async function fetchFreshTickDataAndValidate(
 } | null> {
   try {
     const poolPk = new PublicKey(poolId);
-    const accountInfo = await connection.getAccountInfo(poolPk);
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: RPC_MODULE, method: 'getAccountInfo:fetchTick' }
+    );
     
     if (!accountInfo || !accountInfo.data) {
       return null;
@@ -142,9 +150,13 @@ async function deriveAndValidateTickArrays(
       });
     }
     
-    // Batch check existence on-chain
+    // Batch check existence on-chain (rate limited)
     const pdaKeys = tickArrayPdas.map(p => p.pda);
-    const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+    const infos = await withRpcLimit(
+      () => connection.getMultipleAccountsInfo(pdaKeys),
+      Math.ceil(pdaKeys.length / 5), // Weight based on number of accounts
+      { module: RPC_MODULE, method: 'getMultipleAccountsInfo:tickArrays' }
+    );
     
     const lower: string[] = [];
     let center: string | undefined;
@@ -413,7 +425,11 @@ export async function validatePoolCache(
         }
         
         if (keysToCheck.length > 0) {
-          const infos = await connection.getMultipleAccountsInfo(keysToCheck);
+          const infos = await withRpcLimit(
+            () => connection.getMultipleAccountsInfo(keysToCheck),
+            Math.ceil(keysToCheck.length / 5),
+            { module: RPC_MODULE, method: 'getMultipleAccountsInfo:validateTickArrays' }
+          );
           const expectedOwner = dex === 'orca' ? ORCA_WHIRLPOOL_PROGRAM : RAYDIUM_CLMM_PROGRAM;
           
           const validation: TickArrayValidation = {
@@ -468,7 +484,11 @@ export async function validatePoolCache(
         if (derivedExBitmapPda) {
           try {
             const pdaPk = new PublicKey(derivedExBitmapPda);
-            const info = await connection.getAccountInfo(pdaPk);
+            const info = await withRpcLimit(
+              () => connection.getAccountInfo(pdaPk),
+              1,
+              { module: RPC_MODULE, method: 'getAccountInfo:exBitmap' }
+            );
             const pdaExistsOnChain = !!info && info.owner.equals(RAYDIUM_CLMM_PROGRAM);
             
             const exBitmapValidation: RaydiumExBitmapValidation = {
@@ -512,7 +532,11 @@ export async function validatePoolCache(
           // Try to fetch ammConfig from on-chain pool data
           try {
             const poolPk = new PublicKey(basePoolId);
-            const accountInfo = await connection.getAccountInfo(poolPk);
+            const accountInfo = await withRpcLimit(
+              () => connection.getAccountInfo(poolPk),
+              1,
+              { module: RPC_MODULE, method: 'getAccountInfo:ammConfig' }
+            );
             
             if (accountInfo?.data) {
               const { deriveRaydiumClmmCacheFields } = await import('../server/pools.derivation.js');
@@ -609,7 +633,11 @@ export async function validatePoolCache(
         }
         
         if (keysToCheck.length > 0) {
-          const infos = await connection.getMultipleAccountsInfo(keysToCheck);
+          const infos = await withRpcLimit(
+            () => connection.getMultipleAccountsInfo(keysToCheck),
+            Math.ceil(keysToCheck.length / 5),
+            { module: RPC_MODULE, method: 'getMultipleAccountsInfo:binArrays' }
+          );
           
           const validation: BinArrayValidation = {
             lower: null,
@@ -684,7 +712,11 @@ export async function validatePoolCache(
         // Check if the derived PDA exists on-chain
         try {
           const pdaPk = new PublicKey(derivedPda);
-          const info = await connection.getAccountInfo(pdaPk);
+          const info = await withRpcLimit(
+            () => connection.getAccountInfo(pdaPk),
+            1,
+            { module: RPC_MODULE, method: 'getAccountInfo:bitmapExtension' }
+          );
           const pdaExistsOnChain = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
           
           const bitmapValidation: BitmapExtensionValidation = {
@@ -789,12 +821,20 @@ export async function validatePoolCacheBatch(
   let poolsWithMissingAmmConfig = 0;         // Raydium - missing ammConfig
   
   // Process in batches to avoid overwhelming RPC
-  const BATCH_SIZE = 10;
+  // Reduced batch size and added delay between batches for rate limiting
+  const BATCH_SIZE = 5;
+  const BATCH_DELAY_MS = 100; // 100ms delay between batches
+  
   for (let i = 0; i < pools.length; i += BATCH_SIZE) {
     const batch = pools.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.all(
       batch.map(pool => validatePoolCache(connection, pool.id, dex))
     );
+    
+    // Add delay between batches to prevent RPC overload
+    if (i + BATCH_SIZE < pools.length) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+    }
     
     for (const result of batchResults) {
       results.push(result);
@@ -1167,7 +1207,11 @@ export async function validateAndRefreshBitmapExtensions(
     const pdas = batch.map(p => p.pda);
     
     try {
-      const infos = await connection.getMultipleAccountsInfo(pdas);
+      const infos = await withRpcLimit(
+        () => connection.getMultipleAccountsInfo(pdas),
+        Math.ceil(pdas.length / 5),
+        { module: RPC_MODULE, method: 'getMultipleAccountsInfo:bitmapBatch' }
+      );
       
       for (let j = 0; j < batch.length; j++) {
         const { pool, pda } = batch[j];
@@ -1322,7 +1366,11 @@ export async function validatePoolBitmapExtension(
     const derivedPdaStr = pda.toBase58();
     
     // Check on-chain
-    const info = await connection.getAccountInfo(pda);
+    const info = await withRpcLimit(
+      () => connection.getAccountInfo(pda),
+      1,
+      { module: RPC_MODULE, method: 'getAccountInfo:meteoraBitmapSingle' }
+    );
     const pdaExistsOnChain = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
     
     // Get current cached value
@@ -1459,7 +1507,11 @@ export async function validateAndRefreshRaydiumExBitmaps(
     const pdas = batch.map(p => p.pda);
     
     try {
-      const infos = await connection.getMultipleAccountsInfo(pdas);
+      const infos = await withRpcLimit(
+        () => connection.getMultipleAccountsInfo(pdas),
+        Math.ceil(pdas.length / 5),
+        { module: RPC_MODULE, method: 'getMultipleAccountsInfo:bitmapBatch' }
+      );
       
       for (let j = 0; j < batch.length; j++) {
         const { pool, pda } = batch[j];
@@ -1596,7 +1648,11 @@ export async function validatePoolRaydiumExBitmap(
     const derivedPdaStr = pda.toBase58();
     
     // Check on-chain
-    const info = await connection.getAccountInfo(pda);
+    const info = await withRpcLimit(
+      () => connection.getAccountInfo(pda),
+      1,
+      { module: RPC_MODULE, method: 'getAccountInfo:raydiumExBitmapSingle' }
+    );
     const pdaExistsOnChain = !!info && info.owner.equals(RAYDIUM_CLMM_PROGRAM);
     
     // Get current cached value
