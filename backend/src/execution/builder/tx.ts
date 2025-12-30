@@ -240,6 +240,11 @@ export async function buildDirectArbTx(
             tx.add(ix);
           }
           
+          // Set placeholder blockhash for size calculation only
+          // The actual blockhash will be set when the transaction is sent via assembleAndSend
+          tx.recentBlockhash = '11111111111111111111111111111111';
+          tx.feePayer = wallet.publicKey;
+          
           const sizeBytes = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).length;
           
           return {
