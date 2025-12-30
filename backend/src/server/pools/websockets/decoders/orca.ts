@@ -421,6 +421,17 @@ export async function handleOrcaUpdate(
     const sqrtRaw = anyToBigInt(parsed.sqrtPrice);
     const sqrt_price_x64 = sqrtRaw ? Number(sqrtRaw) : Number(parsed.sqrtPrice);
 
+    // Log parsed values for debugging
+    logger.info('orca.decoder.parsed_values', {
+      poolId: poolId.slice(0, 8) + '…',
+      mintA: mintA?.slice(0, 8) + '…',
+      mintB: mintB?.slice(0, 8) + '…',
+      sqrtRaw: sqrtRaw?.toString()?.slice(0, 20) + '…',
+      sqrtRawType: typeof sqrtRaw,
+      hasSqrtRaw: !!sqrtRaw,
+      cat: 'pools'
+    });
+
     // Get decimals for the NATIVE mint order
     let decA: number | undefined;
     let decB: number | undefined;
@@ -433,14 +444,28 @@ export async function handleOrcaUpdate(
       // Validate decimals against known tokens
       if (Number.isFinite(decA)) validateDecimalsForMint(mintA, decA!, poolId, 'Orca');
       if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Orca');
-    } catch {
+    } catch (decErr) {
+      logger.info('orca.decoder.decimals_error', {
+        poolId: poolId.slice(0, 8) + '…',
+        error: String((decErr as Error)?.message || decErr),
+        cat: 'pools'
+      });
       if (!Number.isFinite(decA)) decA = 9;
       if (!Number.isFinite(decB)) decB = 6;
     }
 
+    logger.info('orca.decoder.decimals_resolved', {
+      poolId: poolId.slice(0, 8) + '…',
+      decA,
+      decB,
+      cat: 'pools'
+    });
+
     // Process through price pipeline
     let processedPrice: ProcessedPriceResult | null = null;
-    if (Number.isFinite(decA) && Number.isFinite(decB) && sqrtRaw) {
+    const canProcessPrice = Number.isFinite(decA) && Number.isFinite(decB) && sqrtRaw;
+    
+    if (canProcessPrice) {
       processedPrice = processPriceThroughPipeline({
         mintA,
         mintB,
@@ -457,9 +482,18 @@ export async function handleOrcaUpdate(
           id: poolId,
           mintA: mintA?.slice(0, 8),
           mintB: mintB?.slice(0, 8),
+          sqrtRaw: sqrtRaw?.toString()?.slice(0, 20),
           cat: 'pools'
         });
       }
+    } else {
+      logger.info('orca.decoder.cannot_process_price', {
+        poolId: poolId.slice(0, 8) + '…',
+        hasDecA: Number.isFinite(decA),
+        hasDecB: Number.isFinite(decB),
+        hasSqrtRaw: !!sqrtRaw,
+        cat: 'pools'
+      });
     }
 
     if (!processedPrice) {
