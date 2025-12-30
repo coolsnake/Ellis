@@ -159,8 +159,12 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       // Start mint mode: "any", "sol_usdc", or "anchors"
       start_mint_mode: det.start_mint_mode || 'any',
       // Custom anchor mints (used when start_mint_mode is "anchors")
-      anchor_mints: String(det.anchor_mints_csv || '')
-        .split(',').map(s => s.trim()).filter(Boolean),
+      // Only send if there are actual mints configured
+      ...((() => {
+        const mints = String(det.anchor_mints_csv || '')
+          .split(',').map(s => s.trim()).filter(Boolean);
+        return mints.length > 0 ? { anchor_mints: mints } : {};
+      })()),
       filtered_node_ratio: toOptNum(det.filtered_node_ratio),
       filtered_expand_hops: toOptNum(det.filtered_expand_hops),
       periodic_full_ms: toOptNum(det.periodic_full_ms),
