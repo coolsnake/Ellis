@@ -169,7 +169,12 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       filtered_expand_hops: toOptNum(det.filtered_expand_hops),
       periodic_full_ms: toOptNum(det.periodic_full_ms),
       // path pruning
-      max_sol_stable_hops: toOptNum(det.max_sol_stable_hops),
+      // Don't send max_sol_stable_hops if it's a huge number (usize::MAX from Rust loses precision in JS)
+      ...((() => {
+        const val = toOptNum(det.max_sol_stable_hops);
+        // Only send if it's a reasonable value (not usize::MAX which gets corrupted by JS float precision)
+        return val !== undefined && val < 1000000 ? { max_sol_stable_hops: val } : {};
+      })()),
       drop_stable_stable_hops: !!det.drop_stable_stable_hops,
       // Only send stable_mints if there are actual values
       ...((() => {

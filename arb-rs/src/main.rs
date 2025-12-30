@@ -4580,12 +4580,10 @@ fn default_config() -> ArbConfig {
             .map(|v| v != "false")
             .unwrap_or(true),
         // Pruning defaults
-        max_sol_stable_hops: Some(
-            std::env::var("ARB_MAX_SOL_STABLE_HOPS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(usize::MAX),
-        ),
+        // Use None to indicate unlimited (avoids JS float precision issues with usize::MAX)
+        max_sol_stable_hops: std::env::var("ARB_MAX_SOL_STABLE_HOPS")
+            .ok()
+            .and_then(|s| s.parse().ok()),
         drop_stable_stable_hops: std::env::var("ARB_DROP_STABLE_STABLE_HOPS")
             .ok()
             .map(|v| v != "false")
