@@ -6,7 +6,7 @@
  */
 
 import { PublicKey, TransactionInstruction, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, createCloseAccountInstruction } from '@solana/spl-token';
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, createCloseAccountInstruction, createAssociatedTokenAccountInstruction } from '@solana/spl-token';
 import BN from 'bn.js';
 import type { ExecutionPlan, DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
@@ -285,6 +285,62 @@ async function buildFlashLoanArbTx(
     const inputTokenProgram = plan.hops[0].inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
     const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
 
+    // ==========================================================================
+    // CRITICAL: Create ATAs for all tokens before flash loan instructions
+    // The router expects token accounts to exist.
+    // ==========================================================================
+    const connection = getConnection();
+    const atasToCreate: { mint: PublicKey; tokenProgram: PublicKey }[] = [];
+    
+    // Input/output token ATA (same for arb cycles)
+    atasToCreate.push({ mint: inputMint, tokenProgram: inputTokenProgram });
+    
+    // Intermediate token ATAs for multi-hop routes
+    for (let i = 0; i < plan.hops.length - 1; i++) {
+      const hop = plan.hops[i];
+      const intermediateMint = new PublicKey(hop.outputMint);
+      const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022' 
+        ? TOKEN_2022_PROGRAM_ID 
+        : TOKEN_PROGRAM_ID;
+      
+      // Skip if same as input (shouldn't happen in well-formed plan)
+      if (hop.outputMint !== plan.hops[0].inputMint) {
+        atasToCreate.push({ mint: intermediateMint, tokenProgram: intermediateTokenProgram });
+      }
+    }
+    
+    // Check which ATAs need to be created (batch account info fetch)
+    const ataAddresses = atasToCreate.map(({ mint, tokenProgram }) => 
+      getAssociatedTokenAddressSync(mint, wallet.publicKey, false, tokenProgram)
+    );
+    
+    const ataInfos = await connection.getMultipleAccountsInfo(ataAddresses);
+    
+    let atasCreated = 0;
+    for (let i = 0; i < atasToCreate.length; i++) {
+      if (!ataInfos[i]) {
+        const { mint, tokenProgram } = atasToCreate[i];
+        instructions.push(
+          createAssociatedTokenAccountInstruction(
+            wallet.publicKey, // payer
+            ataAddresses[i],   // ata
+            wallet.publicKey, // owner
+            mint,             // mint
+            tokenProgram      // token program
+          )
+        );
+        atasCreated++;
+      }
+    }
+    
+    if (atasCreated > 0) {
+      logger.info('routerTx.flashLoan.atas.created', {
+        cat: 'tx',
+        atasCreated,
+        totalChecked: atasToCreate.length,
+      });
+    }
+
     // 1. Flash borrow
     instructions.push(
       buildFlashBorrowIx(
@@ -429,6 +485,74 @@ async function buildDirectRouterTx(
       const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet.publicKey, false, TOKEN_PROGRAM_ID);
       const lastHop = plan.hops[plan.hops.length - 1];
       lastHop.userDestAta = wsolAta.toBase58();
+    }
+
+    // ==========================================================================
+    // CRITICAL: Create ATAs for all tokens before router instructions
+    // The router expects token accounts to exist. Unlike local builders that
+    // handle this inline, we must explicitly create them.
+    // ==========================================================================
+    const connection = getConnection();
+    const atasToCreate: { mint: PublicKey; tokenProgram: PublicKey }[] = [];
+    
+    // Input token ATA (skip if SOL since we handle WSOL wrapping above)
+    if (!inputIsSol) {
+      atasToCreate.push({ mint: inputMint, tokenProgram: inputTokenProgram });
+    }
+    
+    // Output token ATA
+    const outputMintPubkey = new PublicKey(outputMint);
+    const outputTokenProgram = plan.hops[plan.hops.length - 1].outputTokenProgram === 'token-2022' 
+      ? TOKEN_2022_PROGRAM_ID 
+      : TOKEN_PROGRAM_ID;
+    if (!outputIsSol) {
+      atasToCreate.push({ mint: outputMintPubkey, tokenProgram: outputTokenProgram });
+    }
+    
+    // Intermediate token ATAs for multi-hop routes
+    for (let i = 0; i < plan.hops.length - 1; i++) {
+      const hop = plan.hops[i];
+      const intermediateMint = new PublicKey(hop.outputMint);
+      const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022' 
+        ? TOKEN_2022_PROGRAM_ID 
+        : TOKEN_PROGRAM_ID;
+      
+      // Skip if it's SOL (handled as WSOL)
+      if (!isSolMint(hop.outputMint)) {
+        atasToCreate.push({ mint: intermediateMint, tokenProgram: intermediateTokenProgram });
+      }
+    }
+    
+    // Check which ATAs need to be created (batch account info fetch)
+    const ataAddresses = atasToCreate.map(({ mint, tokenProgram }) => 
+      getAssociatedTokenAddressSync(mint, wallet.publicKey, false, tokenProgram)
+    );
+    
+    const ataInfos = await connection.getMultipleAccountsInfo(ataAddresses);
+    
+    let atasCreated = 0;
+    for (let i = 0; i < atasToCreate.length; i++) {
+      if (!ataInfos[i]) {
+        const { mint, tokenProgram } = atasToCreate[i];
+        instructions.push(
+          createAssociatedTokenAccountInstruction(
+            wallet.publicKey, // payer
+            ataAddresses[i],   // ata
+            wallet.publicKey, // owner
+            mint,             // mint
+            tokenProgram      // token program
+          )
+        );
+        atasCreated++;
+      }
+    }
+    
+    if (atasCreated > 0) {
+      logger.info('routerTx.direct.atas.created', {
+        cat: 'tx',
+        atasCreated,
+        totalChecked: atasToCreate.length,
+      });
     }
 
     // Single-hop optimization: use route_swap so Meteora can include variable bin arrays.

@@ -249,7 +249,25 @@ export async function buildDirectArbTx(
             usedRouter: true,
             usedFlashLoan: result.usedFlashLoan,
           };
+        } else {
+          // Router build failed - log why and fall through to local build
+          logger.warn('tx.build.router_build_failed', {
+            cat: 'tx',
+            traceId,
+            usedRouter: result.usedRouter,
+            instructionCount: result.instructions.length,
+            error: result.error || 'No instructions generated',
+          });
         }
+      } else {
+        // Router not configured - log and fall through to local build
+        logger.warn('tx.build.router_not_configured', {
+          cat: 'tx',
+          traceId,
+          routerEnabled: routerConfig.enabled,
+          hasProgramId: !!routerConfig.programId,
+          hint: 'Enable router in Router Config panel and deploy the router program',
+        });
       }
       // Fall through to normal build if router not available
     } catch (routerErr: any) {
