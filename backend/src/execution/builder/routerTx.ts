@@ -846,7 +846,9 @@ async function extractDexAccounts(
             expectedProgramId: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
           });
         }
-        break;
+        // CRITICAL: Return early for Raydium to avoid padding by getAccountsNeededForDex
+        // which always returns 18, but we intentionally use 17 when exBitmap doesn't exist
+        return accounts;
 
       case DexType.Meteora:
         // Meteora DLMM: Supports two swap variants based on token type:
