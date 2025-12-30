@@ -356,15 +356,38 @@ async function buildFlashLoanArbTx(
     // 2. Execute swaps (using execute instruction for multi-hop, now with validated accounts)
     const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteSteps(plan.hops, wallet.publicKey);
     
-    instructions.push(
-      buildExecuteIx(
-        wallet.publicKey,
-        userTokenAccount,
-        { steps, accountsPerStep, minProfit, initialBalances },
-        dexAccounts,
-        programId
-      )
+    // DIAGNOSTIC: Log the exact values being passed to buildExecuteIx
+    logger.info('routerTx.flashLoan.execute.params', {
+      cat: 'tx',
+      ctx: {
+        user: wallet.publicKey.toBase58(),
+        userTokenAccount: userTokenAccount.toBase58(),
+        stepsCount: steps.length,
+        dexAccountsCount: dexAccounts.length,
+      },
+    });
+    
+    const executeIx = buildExecuteIx(
+      wallet.publicKey,
+      userTokenAccount,
+      { steps, accountsPerStep, minProfit, initialBalances },
+      dexAccounts,
+      programId
     );
+    
+    // DIAGNOSTIC: Verify the instruction keys are in correct order
+    logger.info('routerTx.flashLoan.execute.keys', {
+      cat: 'tx',
+      ctx: {
+        keyCount: executeIx.keys.length,
+        key0_user: executeIx.keys[0]?.pubkey?.toBase58?.() || 'unknown',
+        key0_isSigner: executeIx.keys[0]?.isSigner,
+        key1_userToken: executeIx.keys[1]?.pubkey?.toBase58?.() || 'unknown',
+        key1_isSigner: executeIx.keys[1]?.isSigner,
+      },
+    });
+    
+    instructions.push(executeIx);
 
     // 3. Flash repay
     const repayAmount = calculateRepayAmount(borrowAmount);
@@ -456,6 +479,21 @@ async function buildDirectRouterTx(
     const outputMint = plan.hops[plan.hops.length - 1].outputMint;
     const inputTokenProgram = plan.hops[0].inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
     let userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
+    
+    // DIAGNOSTIC: Log wallet and userTokenAccount at initialization
+    logger.info('routerTx.direct.init', {
+      cat: 'tx',
+      ctx: {
+        walletPublicKey: wallet.publicKey.toBase58(),
+        inputMint: inputMint.toBase58(),
+        userTokenAccount: userTokenAccount.toBase58(),
+        inputTokenProgram: inputTokenProgram.toBase58(),
+        // Verify they're different
+        walletEqualsUserToken: wallet.publicKey.toBase58() === userTokenAccount.toBase58(),
+        // Verify wallet doesn't look like a PDA (most PDAs are off-curve)
+        walletIsOnCurve: PublicKey.isOnCurve(wallet.publicKey.toBytes()),
+      },
+    });
     
     // Track if we need to wrap/unwrap SOL
     const inputIsSol = isSolMint(plan.hops[0].inputMint);
@@ -593,15 +631,78 @@ async function buildDirectRouterTx(
     } else {
       // Multi-hop: execute supports dynamic amount propagation across steps
       const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteSteps(plan.hops, wallet.publicKey);
-      instructions.push(
-        buildExecuteIx(
-          wallet.publicKey,
-          userTokenAccount,
-          { steps, accountsPerStep, minProfit, initialBalances },
-          dexAccounts,
-          programId
-        )
+      
+      // DIAGNOSTIC: Log the exact values being passed to buildExecuteIx
+      // CRITICAL: Verify wallet.publicKey !== userTokenAccount (they must be different)
+      const walletPubkey = wallet.publicKey.toBase58();
+      const userTokenPubkey = userTokenAccount.toBase58();
+      const areSwapped = walletPubkey === userTokenPubkey;
+      
+      logger.info('routerTx.direct.execute.params', {
+        cat: 'tx',
+        ctx: {
+          user: walletPubkey,
+          userTokenAccount: userTokenPubkey,
+          areSwapped, // CRITICAL: should always be false
+          stepsCount: steps.length,
+          dexAccountsCount: dexAccounts.length,
+          programId: programId.toBase58(),
+        },
+      });
+      
+      if (areSwapped) {
+        logger.error('routerTx.direct.execute.CRITICAL_BUG', {
+          cat: 'tx',
+          error: 'wallet.publicKey equals userTokenAccount! This is a bug.',
+          user: walletPubkey,
+          userTokenAccount: userTokenPubkey,
+        });
+      }
+      
+      const executeIx = buildExecuteIx(
+        wallet.publicKey,
+        userTokenAccount,
+        { steps, accountsPerStep, minProfit, initialBalances },
+        dexAccounts,
+        programId
       );
+      
+      // DIAGNOSTIC: Verify the instruction keys are in correct order
+      // Expected: key0 = wallet (signer, NOT writable), key1 = userTokenAccount (NOT signer, writable)
+      const key0MatchesWallet = executeIx.keys[0]?.pubkey?.toBase58?.() === walletPubkey;
+      const key1MatchesToken = executeIx.keys[1]?.pubkey?.toBase58?.() === userTokenPubkey;
+      
+      logger.info('routerTx.direct.execute.keys', {
+        cat: 'tx',
+        ctx: {
+          keyCount: executeIx.keys.length,
+          key0_value: executeIx.keys[0]?.pubkey?.toBase58?.() || 'unknown',
+          key0_isSigner: executeIx.keys[0]?.isSigner,
+          key0_isWritable: executeIx.keys[0]?.isWritable,
+          key0_matchesWallet: key0MatchesWallet, // Should be true
+          key1_value: executeIx.keys[1]?.pubkey?.toBase58?.() || 'unknown',
+          key1_isSigner: executeIx.keys[1]?.isSigner,
+          key1_isWritable: executeIx.keys[1]?.isWritable,
+          key1_matchesToken: key1MatchesToken, // Should be true
+          expectedKey0IsSigner: true,
+          expectedKey0IsWritable: false,
+          expectedKey1IsSigner: false,
+          expectedKey1IsWritable: true,
+        },
+      });
+      
+      if (!key0MatchesWallet || !key1MatchesToken) {
+        logger.error('routerTx.direct.execute.KEYS_MISMATCH', {
+          cat: 'tx',
+          error: 'Instruction keys do not match expected values!',
+          key0: executeIx.keys[0]?.pubkey?.toBase58?.(),
+          expectedKey0: walletPubkey,
+          key1: executeIx.keys[1]?.pubkey?.toBase58?.(),
+          expectedKey1: userTokenPubkey,
+        });
+      }
+      
+      instructions.push(executeIx);
     }
     
     // Unwrap WSOL → SOL if output is native SOL

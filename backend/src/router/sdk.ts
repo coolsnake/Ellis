@@ -440,6 +440,14 @@ export function buildExecuteIx(
     initialBalancesVec,
   ]);
 
+  // DIAGNOSTIC: Log the parameters received
+  console.log('[SDK] buildExecuteIx called with:', {
+    user: user?.toBase58?.() || 'invalid',
+    userTokenAccount: userTokenAccount?.toBase58?.() || 'invalid',
+    programId: programId?.toBase58?.() || 'invalid',
+    dexAccountsCount: allDexAccounts?.length || 0,
+  });
+  
   const keys = [
     { pubkey: user, isSigner: true, isWritable: false },
     { pubkey: userTokenAccount, isSigner: false, isWritable: true },
@@ -451,6 +459,31 @@ export function buildExecuteIx(
       isWritable: true,
     })),
   ];
+
+  // DIAGNOSTIC: Verify keys[0] matches user and keys[1] matches userTokenAccount
+  const key0MatchesUser = keys[0]?.pubkey?.equals?.(user) ?? false;
+  const key1MatchesUserToken = keys[1]?.pubkey?.equals?.(userTokenAccount) ?? false;
+  
+  console.log('[SDK] buildExecuteIx keys built:', {
+    keys0_pubkey: keys[0]?.pubkey?.toBase58?.() || 'invalid',
+    keys0_isSigner: keys[0]?.isSigner,
+    keys0_isWritable: keys[0]?.isWritable,
+    keys0_matchesUser: key0MatchesUser,
+    keys1_pubkey: keys[1]?.pubkey?.toBase58?.() || 'invalid',
+    keys1_isSigner: keys[1]?.isSigner,
+    keys1_isWritable: keys[1]?.isWritable,
+    keys1_matchesUserToken: key1MatchesUserToken,
+  });
+
+  // CRITICAL: Verify the keys are in correct order before returning
+  if (!key0MatchesUser || !key1MatchesUserToken) {
+    console.error('[SDK] CRITICAL: buildExecuteIx keys order is WRONG!', {
+      expected_key0: user?.toBase58?.(),
+      actual_key0: keys[0]?.pubkey?.toBase58?.(),
+      expected_key1: userTokenAccount?.toBase58?.(),
+      actual_key1: keys[1]?.pubkey?.toBase58?.(),
+    });
+  }
 
   return new TransactionInstruction({
     programId,

@@ -1081,6 +1081,49 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
         } as any,
       });
     } catch {}
+    
+    // DIAGNOSTIC: Log router instruction accounts if present
+    try {
+      const routerProgramId = '2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw';
+      for (let i = 0; i < realIxs.length; i++) {
+        const ix = realIxs[i];
+        if (ix?.programId?.toBase58?.() === routerProgramId) {
+          const key0Pubkey = ix.keys[0]?.pubkey?.toBase58?.() || 'unknown';
+          const key0MatchesPayer = key0Pubkey === kp.publicKey.toBase58();
+          
+          logger.info('tx.send.router_ix_debug', {
+            cat: 'tx',
+            ctx: {
+              txId,
+              ixIndex: i,
+              payerKey: kp.publicKey.toBase58(),
+              key0: key0Pubkey,
+              key0_isSigner: ix.keys[0]?.isSigner,
+              key0_isWritable: ix.keys[0]?.isWritable,
+              key1: ix.keys[1]?.pubkey?.toBase58?.() || 'unknown',
+              key1_isSigner: ix.keys[1]?.isSigner,
+              key1_isWritable: ix.keys[1]?.isWritable,
+              key0_matchesPayer: key0MatchesPayer,
+            } as any,
+          });
+          
+          // CRITICAL: If key0 (user) doesn't match the signing wallet, the transaction will fail!
+          if (!key0MatchesPayer) {
+            logger.error('tx.send.router_ix_WALLET_MISMATCH', {
+              cat: 'tx',
+              ctx: {
+                txId,
+                ixIndex: i,
+                error: 'Router Execute instruction key0 (user) does not match signing wallet!',
+                key0_user: key0Pubkey,
+                signingWallet: kp.publicKey.toBase58(),
+                key0_isSigner: ix.keys[0]?.isSigner,
+              } as any,
+            });
+          }
+        }
+      }
+    } catch {}
   } catch (error: any) {
     const errorMsg = String(error?.message || error);
     // Check if it's a size/encoding-related error

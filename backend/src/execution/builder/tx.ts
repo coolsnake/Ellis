@@ -215,6 +215,7 @@ export async function buildDirectArbTx(
               traceId,
               usedFlashLoan: result.usedFlashLoan,
               ixCount: result.instructions.length,
+              walletUsedForBuild: wallet.publicKey.toBase58(), // DIAGNOSTIC: verify wallet consistency
             },
           });
           
