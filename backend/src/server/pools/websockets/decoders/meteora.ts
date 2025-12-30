@@ -478,7 +478,37 @@ export async function handleMeteoraUpdate(
     const liquidityRaw = anyToBigInt(state?.liquidity ?? 0);
     const liquidity = liquidityRaw ? Number(liquidityRaw) : Number(state?.liquidity ?? 0);
     const sqrtPriceRaw = anyToBigInt(state?.sqrtPriceX64 ?? state?.sqrt_price_x64 ?? 0);
-    const feeBps = Number(state?.tradeFeeRate ?? state?.feeRate ?? state?.fee_rate ?? state?.fees ?? 0);
+    
+    // CRITICAL: Meteora DLMM pools may store fee in nested parameters structure.
+    // The SDK-decoded state may not have tradeFeeRate/feeRate fields.
+    // Fallback to cached fee_bps from HTTP fetch or execution cache to preserve correct fees.
+    // Also try Meteora-specific field names: parameters.baseFactor, baseFee, etc.
+    let feeBps = Number(
+      state?.tradeFeeRate ?? 
+      state?.feeRate ?? 
+      state?.fee_rate ?? 
+      state?.fees ??
+      state?.baseFee ??
+      state?.parameters?.baseFactor ??
+      0
+    );
+    if (!Number.isFinite(feeBps) || feeBps <= 0) {
+      // Try to get cached fee from pool cache
+      const cachedPools = meteoraCache.data;
+      const existingPool = cachedPools?.clmm?.find(p => p.id === poolId);
+      if (existingPool?.fee_bps && existingPool.fee_bps > 0) {
+        feeBps = existingPool.fee_bps;
+      } else {
+        // Try execution cache as fallback
+        try {
+          const { executionCache } = await import('../../../../execution/cache.js');
+          const hotData = executionCache.getHot(poolId);
+          if (hotData?.feeRate && hotData.feeRate > 0) {
+            feeBps = hotData.feeRate;
+          }
+        } catch {}
+      }
+    }
 
     // Check for derived account (vault) confusion
     if (derivedAccountToPool.has(poolId)) {

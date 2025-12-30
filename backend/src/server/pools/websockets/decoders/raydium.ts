@@ -117,7 +117,28 @@ export async function decodeRaydiumClmmPool(
     const liqRaw = anyToBigInt(state.liquidity ?? 0);
     const liq = Number(state.liquidity ?? 0);
     const tick = Number(state.tickSpacing ?? state.tick_spacing ?? 0);
-    const fee = Number(state.tradeFeeRate ?? state.feeRate ?? state.fee_rate ?? 0);
+    
+    // CRITICAL: Raydium CLMM pools store fee in ammConfig account, not pool state.
+    // The SDK-decoded state.tradeFeeRate is often 0/undefined.
+    // Fallback to cached fee_bps from HTTP fetch or execution cache to preserve correct fees.
+    let fee = Number(state.tradeFeeRate ?? state.feeRate ?? state.fee_rate ?? 0);
+    if (!Number.isFinite(fee) || fee <= 0) {
+      // Try to get cached fee from pool cache
+      const cachedPools = raydiumCache.data;
+      const existingPool = cachedPools?.clmm?.find(p => p.id === poolId);
+      if (existingPool?.fee_bps && existingPool.fee_bps > 0) {
+        fee = existingPool.fee_bps;
+      } else {
+        // Try execution cache as fallback
+        try {
+          const { executionCache } = await import('../../../../execution/cache.js');
+          const hotData = executionCache.getHot(poolId);
+          if (hotData?.feeRate && hotData.feeRate > 0) {
+            fee = hotData.feeRate;
+          }
+        } catch {}
+      }
+    }
 
     if (tick <= 0) return null;
 
@@ -200,7 +221,25 @@ export async function decodeRaydiumAmmPool(
     const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? state.baseReserve.toString() : (state.baseReserve || 0));
     const rB = Number((state.quoteReserve || state.reserveB || state.vaultB || 0).toString ? state.quoteReserve.toString() : (state.quoteReserve || 0));
     const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
-    const fee = Number(state.tradeFeeRate || state.feeRate || 0);
+    
+    // Fallback to cached fee_bps if on-chain extraction fails
+    let fee = Number(state.tradeFeeRate || state.feeRate || 0);
+    if (!Number.isFinite(fee) || fee <= 0) {
+      const cachedPools = raydiumCache.data;
+      const existingPool = cachedPools?.amm?.find(p => p.id === poolId);
+      if (existingPool?.fee_bps && existingPool.fee_bps > 0) {
+        fee = existingPool.fee_bps;
+      } else {
+        // Try execution cache as fallback
+        try {
+          const { executionCache } = await import('../../../../execution/cache.js');
+          const hotData = executionCache.getHot(poolId);
+          if (hotData?.feeRate && hotData.feeRate > 0) {
+            fee = hotData.feeRate;
+          }
+        } catch {}
+      }
+    }
 
     // Check for derived account (vault) confusion
     if (derivedAccountToPool?.has(poolId)) {

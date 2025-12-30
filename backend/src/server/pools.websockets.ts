@@ -10,6 +10,7 @@ import { canonicalizePools } from './pools/canonical.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
 import { raydiumCache, orcaCache, meteoraCache, metbalCache, pumpswapCache, vaultBalanceCache, findPoolInCache } from './pools.cache.js';
 import { diffNormalizedPools, parseTokenAccountAmount, toB58Any } from './pools.utils.js';
+import { executionCache } from '../execution/cache.js';
 import { deriveOrcaFeeBps } from './pools/orca.js';
 import { deriveRaydiumClmmCacheFields, deriveMeteoraBinArrayAddresses } from './pools.derivation.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './pools/precision.js';
@@ -1198,7 +1199,23 @@ function runWebsocketRefreshLoop(): void {
                         const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
                         // Skip adding to CLMM list if tickSpacing is invalid (must be > 0 for valid CLMM pools)
                         if (tick > 0) {
-                        const fee = Number((state as any).tradeFeeRate ?? (state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                        // CRITICAL: Raydium CLMM pools store fee in ammConfig account, not pool state.
+                        // Fallback to cached fee_bps from HTTP fetch or execution cache.
+                        let fee = Number((state as any).tradeFeeRate ?? (state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                        if (!Number.isFinite(fee) || fee <= 0) {
+                          const cachedPools = raydiumCache.data;
+                          const existingPool = cachedPools?.clmm?.find(p => p.id === pk58);
+                          if (existingPool?.fee_bps && existingPool.fee_bps > 0) {
+                            fee = existingPool.fee_bps;
+                          } else {
+                            try {
+                              const hotData = executionCache.getHot(pk58);
+                              if (hotData?.feeRate && hotData.feeRate > 0) {
+                                fee = hotData.feeRate;
+                              }
+                            } catch {}
+                          }
+                        }
                         
                         // CRITICAL VALIDATION: Ensure this is actually a pool account, not a vault
                         // Pools must have valid mints, and the account address should NOT be in derivedAccountToPool
@@ -1512,7 +1529,24 @@ function runWebsocketRefreshLoop(): void {
                           throw new Error('vault account cannot be decoded as pool');
                         }
                         
-                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase, decimals_a: decA, decimals_b: decB } as any;
+                        // Fallback to cached fee_bps if on-chain extraction fails
+                        let ammFee = Number((state as any).tradeFeeRate || (state as any).feeRate || 0);
+                        if (!Number.isFinite(ammFee) || ammFee <= 0) {
+                          const cachedPools = raydiumCache.data;
+                          const existingPool = cachedPools?.amm?.find(p => p.id === pk58);
+                          if (existingPool?.fee_bps && existingPool.fee_bps > 0) {
+                            ammFee = existingPool.fee_bps;
+                          } else {
+                            try {
+                              const hotData = executionCache.getHot(pk58);
+                              if (hotData?.feeRate && hotData.feeRate > 0) {
+                                ammFee = hotData.feeRate;
+                              }
+                            } catch {}
+                          }
+                        }
+                        
+                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: ammFee, price_a_per_b, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase, decimals_a: decA, decimals_b: decB } as any;
                         
                         // Validate decoded pool before applying
                         const validation = validateDecodedPool('raydium', item, pk58);
@@ -2140,7 +2174,32 @@ function runWebsocketRefreshLoop(): void {
                     const liquidityRaw = anyToBigInt((state as any)?.liquidity ?? 0);
                     const liquidity = liquidityRaw ? Number(liquidityRaw) : Number((state as any)?.liquidity ?? 0);
                     const sqrtPriceRaw = anyToBigInt((state as any)?.sqrtPriceX64 ?? (state as any)?.sqrt_price_x64 ?? 0);
-                    const feeBps = Number((state as any)?.tradeFeeRate ?? (state as any)?.feeRate ?? (state as any)?.fee_rate ?? (state as any)?.fees ?? 0);
+                    
+                    // CRITICAL: Meteora DLMM pools may store fee in nested parameters structure.
+                    // Fallback to cached fee_bps from HTTP fetch or execution cache.
+                    let feeBps = Number(
+                      (state as any)?.tradeFeeRate ?? 
+                      (state as any)?.feeRate ?? 
+                      (state as any)?.fee_rate ?? 
+                      (state as any)?.fees ??
+                      (state as any)?.baseFee ??
+                      (state as any)?.parameters?.baseFactor ??
+                      0
+                    );
+                    if (!Number.isFinite(feeBps) || feeBps <= 0) {
+                      const cachedPools = meteoraCache.data;
+                      const existingPool = cachedPools?.clmm?.find(p => p.id === poolId);
+                      if (existingPool?.fee_bps && existingPool.fee_bps > 0) {
+                        feeBps = existingPool.fee_bps;
+                      } else {
+                        try {
+                          const hotData = executionCache.getHot(poolId);
+                          if (hotData?.feeRate && hotData.feeRate > 0) {
+                            feeBps = hotData.feeRate;
+                          }
+                        } catch {}
+                      }
+                    }
                     
                     // CRITICAL VALIDATION: Ensure this is actually a pool account, not a reserve/bin array
                     const isKnownDerivedAccount = derivedAccountToPool.has(poolId);
