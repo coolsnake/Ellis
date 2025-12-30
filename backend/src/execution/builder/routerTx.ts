@@ -830,6 +830,21 @@ async function extractDexAccounts(
               programIdKey,                                                      // 16: Raydium CLMM Program
             );
           }
+          
+          // Debug logging to verify account positions
+          logger.info('routerTx.raydium.finalAccounts', {
+            cat: 'tx',
+            poolId: hop.poolId,
+            totalAccounts: accounts.length,
+            hasExBitmap,
+            // Log the last few accounts to verify program ID position
+            account13: accounts[13]?.toBase58(),
+            account14: accounts[14]?.toBase58(),
+            account15: accounts[15]?.toBase58(),
+            account16: accounts[16]?.toBase58(),
+            account17: accounts[17]?.toBase58(),
+            expectedProgramId: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
+          });
         }
         break;
 
