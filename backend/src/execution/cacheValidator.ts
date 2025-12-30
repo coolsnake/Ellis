@@ -7,6 +7,7 @@
 
 import { Connection, PublicKey } from '@solana/web3.js';
 import { executionCache } from './cache.js';
+import { setClmmStatic, getClmmStatic } from './clmmCache.js';
 import { logger } from '../utils/logger.js';
 import { logCatchError } from '../utils/errorHandler.js';
 import { peekRaydiumPools, peekOrcaPools, peekMeteoraPools, peekPumpswapPools, peekMeteoraBalancedPools } from '../server/pools.js';
@@ -89,6 +90,215 @@ async function fetchFreshTickDataAndValidate(
   } catch (e) {
     logCatchError('fetchFreshTickDataAndValidate', e);
     return null;
+  }
+}
+
+/**
+ * Fetch fresh bin data from chain and validate bin arrays for Meteora DLMM
+ * Used to ensure we're deriving bin arrays from the current activeId, not stale cache
+ */
+async function fetchFreshBinDataAndValidate(
+  connection: Connection,
+  poolId: string
+): Promise<{
+  activeId: number;
+  binStep: number;
+  binArrays?: { 
+    lower?: string; 
+    upper?: string; 
+    active?: string;
+    arrays: Array<{ index: number; address: string }>;
+  };
+  validation?: BinArrayValidation;
+} | null> {
+  try {
+    const poolPk = new PublicKey(poolId);
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: RPC_MODULE, method: 'getAccountInfo:fetchBin' }
+    );
+    
+    if (!accountInfo || !accountInfo.data) {
+      return null;
+    }
+    
+    const data = accountInfo.data;
+    
+    // Meteora DLMM layout offsets (based on LbPair struct)
+    // discriminator(8) + parameters(32) + vParameters(32) + bumpSeed(1) + binStepSeed(2) + 
+    // pairType(1) + activeId(4) + binStep(2) + ...
+    // Active ID is at offset ~76 (after parameters block)
+    if (data.length < 120) return null;
+    
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    
+    // Extract activeId (i32 at approximate offset)
+    // Based on Meteora SDK: activeId is stored as i32
+    let activeId: number;
+    let binStep: number;
+    
+    try {
+      // Try using Meteora SDK for accurate decoding
+      const meteoraSdk = await import('@meteora-ag/dlmm');
+      const lbPairLayout = (meteoraSdk as any).LBPAIR_LAYOUT || 
+                           (meteoraSdk as any).LbPairLayout ||
+                           (meteoraSdk as any).default?.LBPAIR_LAYOUT;
+      
+      if (lbPairLayout?.decode) {
+        const decoded = lbPairLayout.decode(data);
+        activeId = Number(decoded.activeId ?? decoded.active_id ?? 0);
+        binStep = Number(decoded.binStep ?? decoded.bin_step ?? 0);
+      } else {
+        // Manual extraction based on known offsets
+        // Meteora LbPair layout: discriminator(8) + parameters(StaticParameters ~32) + vParameters(VariableParameters ~32)
+        // Then: bumpSeed(1) + binStepSeed(2) + pairType(1) + activeId(4) + binStep(2)
+        // Approximate offset for activeId: 8 + 32 + 32 + 1 + 2 + 1 = 76
+        activeId = view.getInt32(76, true);
+        binStep = view.getUint16(80, true);
+      }
+    } catch {
+      // Fallback to manual extraction
+      activeId = view.getInt32(76, true);
+      binStep = view.getUint16(80, true);
+    }
+    
+    if (binStep <= 0 || binStep > 10000) {
+      // Try alternative offset - layout might differ
+      // Some versions: activeId at offset 72
+      activeId = view.getInt32(72, true);
+      binStep = view.getUint16(76, true);
+      
+      if (binStep <= 0 || binStep > 10000) {
+        logger.debug('cache.validation.meteora.invalid_bin_step', {
+          cat: 'cache',
+          ctx: { poolId: poolId.slice(0, 8), binStep }
+        });
+        return null;
+      }
+    }
+    
+    // Now derive and validate bin arrays
+    const derivedResult = await deriveAndValidateBinArrays(connection, poolId, activeId);
+    
+    return {
+      activeId,
+      binStep,
+      binArrays: derivedResult.binArrays,
+      validation: derivedResult.validation,
+    };
+  } catch (e) {
+    logCatchError('fetchFreshBinDataAndValidate', e);
+    return null;
+  }
+}
+
+/**
+ * Derive and validate bin arrays for a Meteora DLMM pool
+ * Returns derived addresses and their on-chain validation status
+ */
+async function deriveAndValidateBinArrays(
+  connection: Connection,
+  poolId: string,
+  activeId: number
+): Promise<{
+  binArrays?: { 
+    lower?: string; 
+    upper?: string; 
+    active?: string;
+    arrays: Array<{ index: number; address: string }>;
+  };
+  validation?: BinArrayValidation;
+}> {
+  try {
+    const poolPk = new PublicKey(poolId);
+    
+    // Calculate bin array index from activeId
+    const activeBinArrayIdx = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
+    
+    // Derive PDAs for surrounding bin arrays (active-2, active-1, active, active+1, active+2)
+    const RANGE = 2;
+    const binArrayPdas: Array<{ index: number; pda: PublicKey }> = [];
+    
+    for (let i = -RANGE; i <= RANGE; i++) {
+      const binArrayIdx = activeBinArrayIdx + i;
+      try {
+        // Meteora bin array PDA: seeds = ["bin_array", pool, bin_array_index as i64 LE]
+        const indexBuffer = Buffer.alloc(8);
+        // Write as signed 64-bit little-endian
+        const bigIdx = BigInt(binArrayIdx);
+        indexBuffer.writeBigInt64LE(bigIdx, 0);
+        
+        const [pda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('bin_array'), poolPk.toBuffer(), indexBuffer],
+          METEORA_DLMM_PROGRAM
+        );
+        binArrayPdas.push({ index: binArrayIdx, pda });
+      } catch (e) {
+        // Skip invalid indices
+      }
+    }
+    
+    if (binArrayPdas.length === 0) {
+      return {};
+    }
+    
+    // Batch check existence on-chain
+    const pdaKeys = binArrayPdas.map(p => p.pda);
+    const infos = await withRpcLimit(
+      () => connection.getMultipleAccountsInfo(pdaKeys),
+      Math.ceil(pdaKeys.length / 5),
+      { module: RPC_MODULE, method: 'getMultipleAccountsInfo:binArrays' }
+    );
+    
+    const arrays: Array<{ index: number; address: string }> = [];
+    let lower: string | undefined;
+    let upper: string | undefined;
+    let active: string | undefined;
+    const validation: BinArrayValidation = { lower: null, upper: null, active: null };
+    
+    for (let i = 0; i < binArrayPdas.length; i++) {
+      const { index, pda } = binArrayPdas[i];
+      const info = infos[i];
+      const exists = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
+      const addr = pda.toBase58();
+      
+      if (exists) {
+        arrays.push({ index, address: addr });
+        
+        if (index === activeBinArrayIdx) {
+          active = addr;
+          validation.active = { address: addr, exists: true };
+        } else if (index === activeBinArrayIdx - 1) {
+          lower = addr;
+          validation.lower = { address: addr, exists: true };
+        } else if (index === activeBinArrayIdx + 1) {
+          upper = addr;
+          validation.upper = { address: addr, exists: true };
+        }
+      } else {
+        if (index === activeBinArrayIdx && !validation.active) {
+          validation.active = { address: addr, exists: false };
+        } else if (index === activeBinArrayIdx - 1 && !validation.lower) {
+          validation.lower = { address: addr, exists: false };
+        } else if (index === activeBinArrayIdx + 1 && !validation.upper) {
+          validation.upper = { address: addr, exists: false };
+        }
+      }
+    }
+    
+    return {
+      binArrays: {
+        lower,
+        upper,
+        active,
+        arrays,
+      },
+      validation,
+    };
+  } catch (e) {
+    logCatchError('deriveAndValidateBinArrays', e);
+    return {};
   }
 }
 
@@ -330,166 +540,159 @@ export async function validatePoolCache(
   
   try {
     if (dex === 'orca' || dex === 'raydium') {
-      const tickArrays = hot?.tickArrays;
-      const currentTick = hot?.currentTickIndex;
-      const tickSpacing = hot?.tickSpacing || stat?.tickSpacing || (stat as any)?.tick_spacing;
+      // ALWAYS fetch fresh tick data from chain first
+      // This prevents using stale cached tick values that could lead to wrong tick arrays
+      const freshResult = await fetchFreshTickDataAndValidate(connection, basePoolId, dex);
       
-      result.cacheData = {
-        currentTick,
-        tickSpacing,
-      };
-      
-      if (!tickArrays) {
-        // Try to derive and validate tick arrays if we have the required data
-        if (currentTick !== undefined && tickSpacing && tickSpacing > 0) {
-          // Derive tick arrays and validate on-chain
-          const derivedResult = await deriveAndValidateTickArrays(
-            connection, 
-            basePoolId, 
-            currentTick, 
-            tickSpacing, 
-            dex
-          );
+      if (freshResult) {
+        const { currentTick, tickSpacing, tickArrays, validation } = freshResult;
+        
+        result.cacheData = {
+          currentTick,
+          tickSpacing,
+        };
+        result.tickArrayValidation = validation;
+        
+        if (tickArrays && validation?.center?.exists) {
+          // Successfully validated with fresh data - update all caches
           
-          if (derivedResult.tickArrays) {
-            result.tickArrayValidation = derivedResult.validation;
-            
-            if (derivedResult.validation?.center?.exists) {
-              // Successfully derived and validated - update cache
-              executionCache.setHot(basePoolId, {
-                ...hot,
-                currentTickIndex: currentTick,
+          // Update hot cache with fresh tick and arrays
+          const existingHot = executionCache.getHot(basePoolId) || {};
+          executionCache.setHot(basePoolId, {
+            ...existingHot,
+            currentTickIndex: currentTick,
+            tickSpacing,
+            tickArrays,
+          });
+          
+          // Also update static cache tick arrays for consistency
+          const existingStat = executionCache.getStatic(basePoolId) || {};
+          executionCache.setStatic(basePoolId, {
+            ...existingStat,
+            tick_spacing: tickSpacing,
+            tickArrayLower: Array.isArray(tickArrays.lower) ? tickArrays.lower[0] : tickArrays.lower,
+            tickArrayCenter: tickArrays.center,
+            tickArrayUpper: Array.isArray(tickArrays.upper) ? tickArrays.upper[0] : tickArrays.upper,
+          });
+          
+          // For Raydium, also update the dedicated CLMM cache
+          if (dex === 'raydium') {
+            const existingClmm = getClmmStatic(basePoolId);
+            if (existingClmm) {
+              setClmmStatic(basePoolId, {
+                ...existingClmm,
                 tickSpacing,
-                tickArrays: derivedResult.tickArrays,
+                tickArrays: {
+                  center: tickArrays.center,
+                  lower: tickArrays.lower,
+                  upper: tickArrays.upper,
+                },
+                lastUpdateMs: Date.now(),
               });
-              // Don't add issues - the arrays are now valid
-            } else {
-              // Cached tick might be stale - try fetching fresh from chain
-              const freshResult = await fetchFreshTickDataAndValidate(connection, basePoolId, dex);
-              
-              if (freshResult?.tickArrays && freshResult.validation?.center?.exists) {
-                // Fresh data worked - update cache
-                executionCache.setHot(basePoolId, {
-                  ...hot,
-                  currentTickIndex: freshResult.currentTick,
-                  tickSpacing: freshResult.tickSpacing,
-                  tickArrays: freshResult.tickArrays,
-                });
-                result.tickArrayValidation = freshResult.validation;
-                result.cacheData = {
-                  ...result.cacheData,
-                  currentTick: freshResult.currentTick,
-                  tickSpacing: freshResult.tickSpacing,
-                };
-                // Don't add issues - we fixed it with fresh data
-              } else {
-                // Even fresh data failed - pool might have no liquidity
-                logger.debug('cache.validation.tick_array_not_found', {
-                  cat: 'cache',
-                  ctx: {
-                    poolId: basePoolId,
-                    dex,
-                    cachedTick: currentTick,
-                    freshTick: freshResult?.currentTick,
-                    tickSpacing,
-                    centerAddress: derivedResult.validation?.center?.address?.slice(0, 12),
-                  }
-                });
-                issues.push('Center tick array does not exist on-chain (pool may have no liquidity)');
-              }
             }
-          } else {
-            issues.push('Failed to derive tick arrays');
           }
-        } else if (currentTick === undefined || !tickSpacing) {
-          // Hot cache is missing tick data - try fetching fresh from chain
-          const freshResult = await fetchFreshTickDataAndValidate(connection, basePoolId, dex);
           
-          if (freshResult?.tickArrays && freshResult.validation?.center?.exists) {
-            // Fresh data worked - update cache
-            executionCache.setHot(basePoolId, {
-              ...hot,
-              currentTickIndex: freshResult.currentTick,
-              tickSpacing: freshResult.tickSpacing,
-              tickArrays: freshResult.tickArrays,
-            });
-            result.tickArrayValidation = freshResult.validation;
-            result.cacheData = {
-              currentTick: freshResult.currentTick,
-              tickSpacing: freshResult.tickSpacing,
-            };
-            // Don't add issues - we fixed it with fresh data
-          } else if (freshResult) {
-            // Got fresh data but tick arrays don't exist
-            result.cacheData = {
-              currentTick: freshResult.currentTick,
-              tickSpacing: freshResult.tickSpacing,
-            };
-            issues.push('Center tick array does not exist on-chain (pool may have no liquidity)');
-          } else {
-            // Couldn't fetch pool data at all
-            issues.push('Failed to fetch pool data from chain');
-          }
+          logger.debug('cache.validation.fresh_tick_success', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8),
+              dex,
+              currentTick,
+              tickSpacing,
+              center: tickArrays.center?.slice(0, 12),
+              lowerCount: Array.isArray(tickArrays.lower) ? tickArrays.lower.length : (tickArrays.lower ? 1 : 0),
+              upperCount: Array.isArray(tickArrays.upper) ? tickArrays.upper.length : (tickArrays.upper ? 1 : 0),
+            }
+          });
+          
+          // No issues - arrays are valid
+        } else if (tickArrays) {
+          // Arrays derived but center doesn't exist on-chain
+          logger.debug('cache.validation.tick_array_not_found', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8),
+              dex,
+              freshTick: currentTick,
+              tickSpacing,
+              centerAddress: validation?.center?.address?.slice(0, 12),
+            }
+          });
+          issues.push('Center tick array does not exist on-chain (pool may have no liquidity)');
+        } else {
+          issues.push('Failed to derive tick arrays from fresh chain data');
         }
       } else {
-        // Validate tick arrays exist on-chain
-        const lower = Array.isArray(tickArrays.lower) ? tickArrays.lower[0] : tickArrays.lower;
-        const center = tickArrays.center;
-        const upper = Array.isArray(tickArrays.upper) ? tickArrays.upper[0] : tickArrays.upper;
+        // Couldn't fetch fresh pool data - fall back to cached data as last resort
+        const cachedTick = hot?.currentTickIndex;
+        const cachedSpacing = hot?.tickSpacing || stat?.tickSpacing || (stat as any)?.tick_spacing;
         
-        const keysToCheck: PublicKey[] = [];
-        const keyMap: { type: 'lower' | 'center' | 'upper'; address: string }[] = [];
+        result.cacheData = {
+          currentTick: cachedTick,
+          tickSpacing: cachedSpacing,
+        };
         
-        if (lower) {
-          try {
-            keysToCheck.push(new PublicKey(lower));
-            keyMap.push({ type: 'lower', address: lower });
-          } catch { issues.push('Invalid lower tick array address'); }
-        }
-        if (center) {
-          try {
-            keysToCheck.push(new PublicKey(center));
-            keyMap.push({ type: 'center', address: center });
-          } catch { issues.push('Invalid center tick array address'); }
-        }
-        if (upper) {
-          try {
-            keysToCheck.push(new PublicKey(upper));
-            keyMap.push({ type: 'upper', address: upper });
-          } catch { issues.push('Invalid upper tick array address'); }
-        }
+        issues.push('Failed to fetch fresh pool data from chain');
         
-        if (keysToCheck.length > 0) {
-          const infos = await withRpcLimit(
-            () => connection.getMultipleAccountsInfo(keysToCheck),
-            Math.ceil(keysToCheck.length / 5),
-            { module: RPC_MODULE, method: 'getMultipleAccountsInfo:validateTickArrays' }
-          );
-          const expectedOwner = dex === 'orca' ? ORCA_WHIRLPOOL_PROGRAM : RAYDIUM_CLMM_PROGRAM;
+        // Attempt validation with cached data if available (better than nothing)
+        if (hot?.tickArrays) {
+          const tickArrays = hot.tickArrays;
+          const lower = Array.isArray(tickArrays.lower) ? tickArrays.lower[0] : tickArrays.lower;
+          const center = tickArrays.center;
+          const upper = Array.isArray(tickArrays.upper) ? tickArrays.upper[0] : tickArrays.upper;
           
-          const validation: TickArrayValidation = {
-            lower: null,
-            center: null,
-            upper: null,
-          };
+          const keysToCheck: PublicKey[] = [];
+          const keyMap: { type: 'lower' | 'center' | 'upper'; address: string }[] = [];
           
-          for (let i = 0; i < keyMap.length; i++) {
-            const { type, address } = keyMap[i];
-            const info = infos[i];
-            const exists = !!info && info.owner.equals(expectedOwner);
-            
-            validation[type] = { address, exists };
-            
-            if (!exists) {
-              issues.push(`${type} tick array does not exist on-chain`);
-            }
+          if (lower) {
+            try {
+              keysToCheck.push(new PublicKey(lower));
+              keyMap.push({ type: 'lower', address: lower });
+            } catch { issues.push('Invalid lower tick array address'); }
+          }
+          if (center) {
+            try {
+              keysToCheck.push(new PublicKey(center));
+              keyMap.push({ type: 'center', address: center });
+            } catch { issues.push('Invalid center tick array address'); }
+          }
+          if (upper) {
+            try {
+              keysToCheck.push(new PublicKey(upper));
+              keyMap.push({ type: 'upper', address: upper });
+            } catch { issues.push('Invalid upper tick array address'); }
           }
           
-          result.tickArrayValidation = validation;
-          
-          // Center is critical - if it doesn't exist, the pool can't be traded
-          if (!validation.center?.exists) {
-            issues.push('CRITICAL: Center tick array missing - pool cannot be traded');
+          if (keysToCheck.length > 0) {
+            const infos = await withRpcLimit(
+              () => connection.getMultipleAccountsInfo(keysToCheck),
+              Math.ceil(keysToCheck.length / 5),
+              { module: RPC_MODULE, method: 'getMultipleAccountsInfo:validateTickArrays' }
+            );
+            const expectedOwner = dex === 'orca' ? ORCA_WHIRLPOOL_PROGRAM : RAYDIUM_CLMM_PROGRAM;
+            
+            const validation: TickArrayValidation = {
+              lower: null,
+              center: null,
+              upper: null,
+            };
+            
+            for (let i = 0; i < keyMap.length; i++) {
+              const { type, address } = keyMap[i];
+              const info = infos[i];
+              const exists = !!info && info.owner.equals(expectedOwner);
+              
+              validation[type] = { address, exists };
+              
+              if (!exists) {
+                issues.push(`${type} tick array does not exist on-chain (using cached data)`);
+              }
+            }
+            
+            result.tickArrayValidation = validation;
+            
+            // Warn that we're using potentially stale cached data
+            issues.push('WARNING: Using cached tick data - arrays may be stale');
           }
         }
       }
@@ -613,109 +816,149 @@ export async function validatePoolCache(
         }
       }
     } else if (dex === 'meteora') {
-      const binArrays = hot?.binArrays as any;
-      const activeId = hot?.activeId;
-      const binStep = hot?.binStep || stat?.binStep;
+      // ALWAYS fetch fresh bin data from chain first
+      // This prevents using stale cached activeId that could lead to wrong bin arrays
+      const freshResult = await fetchFreshBinDataAndValidate(connection, basePoolId);
       
-      result.cacheData = {
-        activeId,
-        binStep,
-      };
-      
-      if (!binArrays) {
-        issues.push('No binArrays in hot cache');
+      if (freshResult) {
+        const { activeId, binStep, binArrays, validation } = freshResult;
         
-        if (activeId !== undefined) {
-          issues.push('Could derive bin arrays from activeId');
+        result.cacheData = {
+          activeId,
+          binStep,
+        };
+        result.binArrayValidation = validation;
+        
+        // Check if at least one bin array exists
+        const hasAnyBinArray = 
+          validation?.lower?.exists || 
+          validation?.upper?.exists || 
+          validation?.active?.exists ||
+          (binArrays?.arrays && binArrays.arrays.length > 0);
+        
+        if (hasAnyBinArray && binArrays) {
+          // Successfully validated with fresh data - update all caches
+          
+          // Update hot cache with fresh activeId and arrays
+          const existingHot = executionCache.getHot(basePoolId) || {};
+          const activeBinArrayIdx = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
+          
+          executionCache.setHot(basePoolId, {
+            ...existingHot,
+            activeId,
+            binStep,
+            binArrays: {
+              lower: binArrays.lower,
+              upper: binArrays.upper,
+              active: binArrays.active,
+              arrays: binArrays.arrays,
+              range: binArrays.arrays.length > 0 ? {
+                lower: Math.min(...binArrays.arrays.map(a => a.index)),
+                upper: Math.max(...binArrays.arrays.map(a => a.index)),
+              } : undefined,
+            },
+          });
+          
+          // Also update static cache for consistency
+          const existingStat = executionCache.getStatic(basePoolId) || {};
+          executionCache.setStatic(basePoolId, {
+            ...existingStat,
+            binStep,
+            bin_array_lower: binArrays.lower,
+            bin_array_upper: binArrays.upper,
+          });
+          
+          logger.debug('cache.validation.fresh_bin_success', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8),
+              dex: 'meteora',
+              activeId,
+              binStep,
+              activeBinArrayIdx,
+              arrayCount: binArrays.arrays?.length || 0,
+            }
+          });
+          
+          // No issues - arrays are valid
         } else {
-          issues.push('Missing activeId');
+          // No bin arrays exist on-chain
+          logger.debug('cache.validation.bin_array_not_found', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8),
+              dex: 'meteora',
+              freshActiveId: activeId,
+              binStep,
+            }
+          });
+          issues.push('No bin arrays exist on-chain (pool may have no liquidity)');
         }
       } else {
-        // Validate bin arrays exist on-chain
-        const keysToCheck: PublicKey[] = [];
-        const keyMap: { type: 'lower' | 'upper' | 'active'; address: string }[] = [];
+        // Couldn't fetch fresh pool data - fall back to cached data as last resort
+        const cachedActiveId = hot?.activeId;
+        const cachedBinStep = hot?.binStep || stat?.binStep;
         
-        if (binArrays.lower) {
-          try {
-            keysToCheck.push(new PublicKey(binArrays.lower));
-            keyMap.push({ type: 'lower', address: binArrays.lower });
-          } catch { issues.push('Invalid lower bin array address'); }
-        }
-        if (binArrays.upper) {
-          try {
-            keysToCheck.push(new PublicKey(binArrays.upper));
-            keyMap.push({ type: 'upper', address: binArrays.upper });
-          } catch { issues.push('Invalid upper bin array address'); }
-        }
-        if (binArrays.active) {
-          try {
-            keysToCheck.push(new PublicKey(binArrays.active));
-            keyMap.push({ type: 'active', address: binArrays.active });
-          } catch { issues.push('Invalid active bin array address'); }
-        }
+        result.cacheData = {
+          activeId: cachedActiveId,
+          binStep: cachedBinStep,
+        };
         
-        // Also check the arrays field if present
-        const allArrays: Array<{ index: number; address: string; exists: boolean }> = [];
-        if (Array.isArray(binArrays.arrays)) {
-          for (const arr of binArrays.arrays) {
-            if (arr && arr.address) {
-              try {
-                keysToCheck.push(new PublicKey(arr.address));
-                allArrays.push({ index: arr.index, address: arr.address, exists: false });
-              } catch {}
-            }
+        issues.push('Failed to fetch fresh pool data from chain');
+        
+        // Attempt validation with cached data if available (better than nothing)
+        if (hot?.binArrays) {
+          const binArrays = hot.binArrays as any;
+          const keysToCheck: PublicKey[] = [];
+          const keyMap: { type: 'lower' | 'upper' | 'active'; address: string }[] = [];
+          
+          if (binArrays.lower) {
+            try {
+              keysToCheck.push(new PublicKey(binArrays.lower));
+              keyMap.push({ type: 'lower', address: binArrays.lower });
+            } catch { issues.push('Invalid lower bin array address'); }
           }
-        }
-        
-        if (keysToCheck.length > 0) {
-          const infos = await withRpcLimit(
-            () => connection.getMultipleAccountsInfo(keysToCheck),
-            Math.ceil(keysToCheck.length / 5),
-            { module: RPC_MODULE, method: 'getMultipleAccountsInfo:binArrays' }
-          );
+          if (binArrays.upper) {
+            try {
+              keysToCheck.push(new PublicKey(binArrays.upper));
+              keyMap.push({ type: 'upper', address: binArrays.upper });
+            } catch { issues.push('Invalid upper bin array address'); }
+          }
+          if (binArrays.active) {
+            try {
+              keysToCheck.push(new PublicKey(binArrays.active));
+              keyMap.push({ type: 'active', address: binArrays.active });
+            } catch { issues.push('Invalid active bin array address'); }
+          }
           
-          const validation: BinArrayValidation = {
-            lower: null,
-            upper: null,
-            active: null,
-          };
-          
-          let infoIdx = 0;
-          for (const { type, address } of keyMap) {
-            const info = infos[infoIdx++];
-            const exists = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
-            validation[type] = { address, exists };
+          if (keysToCheck.length > 0) {
+            const infos = await withRpcLimit(
+              () => connection.getMultipleAccountsInfo(keysToCheck),
+              Math.ceil(keysToCheck.length / 5),
+              { module: RPC_MODULE, method: 'getMultipleAccountsInfo:binArrays' }
+            );
             
-            if (!exists) {
-              issues.push(`${type} bin array does not exist on-chain`);
+            const validation: BinArrayValidation = {
+              lower: null,
+              upper: null,
+              active: null,
+            };
+            
+            for (let i = 0; i < keyMap.length; i++) {
+              const { type, address } = keyMap[i];
+              const info = infos[i];
+              const exists = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
+              validation[type] = { address, exists };
+              
+              if (!exists) {
+                issues.push(`${type} bin array does not exist on-chain (using cached data)`);
+              }
             }
-          }
-          
-          // Check allArrays
-          for (const arr of allArrays) {
-            const info = infos[infoIdx++];
-            arr.exists = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
-          }
-          
-          if (allArrays.length > 0) {
-            validation.allArrays = allArrays;
-            const existingCount = allArrays.filter(a => a.exists).length;
-            if (existingCount === 0) {
-              issues.push('CRITICAL: No bin arrays exist on-chain');
-            }
-          }
-          
-          result.binArrayValidation = validation;
-          
-          // At least one bin array must exist
-          const hasAnyBinArray = 
-            validation.lower?.exists || 
-            validation.upper?.exists || 
-            validation.active?.exists ||
-            allArrays.some(a => a.exists);
-          
-          if (!hasAnyBinArray) {
-            issues.push('CRITICAL: No bin arrays exist - pool cannot be traded');
+            
+            result.binArrayValidation = validation;
+            
+            // Warn that we're using potentially stale cached data
+            issues.push('WARNING: Using cached bin data - arrays may be stale');
           }
         }
       }
