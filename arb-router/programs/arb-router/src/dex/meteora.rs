@@ -109,8 +109,8 @@ pub struct SwapParams {
 /// Memo Program ID used to detect swap2 variant
 /// MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr in bytes
 const MEMO_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
-    5, 74, 83, 80, 248, 93, 200, 130, 214, 20, 165, 86, 114, 120, 138, 41,
-    109, 223, 30, 171, 171, 208, 166, 6, 120, 136, 73, 50, 244, 238, 246, 237
+    5, 74, 83, 90, 153, 41, 33, 6, 77, 36, 232, 113, 96, 218, 56, 124,
+    124, 53, 181, 221, 188, 146, 187, 129, 228, 31, 168, 64, 65, 5, 68, 141
 ]);
 
 pub fn swap(

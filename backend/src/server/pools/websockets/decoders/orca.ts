@@ -178,10 +178,24 @@ export async function handleOrcaUpdate(
   try {
     wsDecodeStats.orca.attempts += 1;
     
+    // Log entry for debugging
+    logger.info('orca.decoder.handleUpdate.entry', {
+      poolId: poolId.slice(0, 8) + '…',
+      hasData: !!info?.data,
+      dataLength: info?.data?.length || 0,
+      hasOwner: !!info?.owner,
+      ownerType: typeof info?.owner,
+      cat: 'pools'
+    });
+    
     // Ensure data is a Buffer for later use
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
     
     if (!data || data.length === 0) {
+      logger.info('orca.decoder.no_data', {
+        poolId: poolId.slice(0, 8) + '…',
+        cat: 'pools'
+      });
       return { success: false, error: 'no_data', skipped: true };
     }
 
@@ -196,7 +210,21 @@ export async function handleOrcaUpdate(
     };
 
     // Decode the pool - pass full AccountInfo, not just data buffer
+    logger.info('orca.decoder.calling_decode', {
+      poolId: poolId.slice(0, 8) + '…',
+      dataLength: data.length,
+      hasAccountPubkey: !!accountPubkey,
+      cat: 'pools'
+    });
+    
     const decoded = await decodeOrcaWhirlpool(normalizedInfo, poolId, accountPubkey);
+    
+    logger.info('orca.decoder.decode_result', {
+      poolId: poolId.slice(0, 8) + '…',
+      success: !!decoded,
+      cat: 'pools'
+    });
+    
     if (!decoded) {
       wsDecodeStats.orca.failures += 1;
       return { success: false, error: 'decode_failed', skipped: true };
