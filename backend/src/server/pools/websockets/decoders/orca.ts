@@ -6,6 +6,7 @@
  * Orca uses the Whirlpools SDK for parsing pool account data.
  */
 
+import { PublicKey } from '@solana/web3.js';
 import { logger } from '../../../../utils/logger.js';
 import { logCatchError, logCatchDebug } from '../../../../utils/errorHandler.js';
 import { anyToBigInt } from '../../precision.js';
@@ -67,11 +68,32 @@ async function scheduleDexApply(source: 'orca', baseline: PoolsPayload): Promise
 }
 
 /**
+ * Convert owner to PublicKey if it's a string
+ */
+function toPublicKey(owner: any): PublicKey | null {
+  if (!owner) return null;
+  if (owner instanceof PublicKey) return owner;
+  if (typeof owner === 'string') {
+    try {
+      return new PublicKey(owner);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof owner?.toBase58 === 'function') {
+    // Already a PublicKey-like object
+    return owner as PublicKey;
+  }
+  return null;
+}
+
+/**
  * Decode Orca Whirlpool from account data using the SDK
  * 
  * IMPORTANT: ParsableWhirlpool.parse requires a full AccountInfo object with
- * data, owner, executable, and lamports fields. Passing only { data } will
- * cause the SDK to return null because it validates the owner field.
+ * data, owner, executable, and lamports fields. The owner MUST be a PublicKey
+ * object, not a string. The SDK validates that the account is owned by the
+ * Whirlpool program.
  */
 export async function decodeOrcaWhirlpool(
   accountInfo: AccountInfo,
@@ -87,17 +109,38 @@ export async function decodeOrcaWhirlpool(
 
     const { ParsableWhirlpool } = sdk as any;
     
+    // CRITICAL: Convert owner to PublicKey if it's a string
+    // The SDK expects owner to be a PublicKey object for validation
+    const ownerPubkey = toPublicKey(accountInfo.owner);
+    if (!ownerPubkey) {
+      logger.info('orca.decoder.invalid_owner', {
+        poolId: poolId.slice(0, 8) + '…',
+        ownerType: typeof accountInfo.owner,
+        cat: 'pools'
+      });
+      return null;
+    }
+    
+    // Construct AccountInfo with proper PublicKey owner
+    const sdkAccountInfo = {
+      data: accountInfo.data,
+      executable: accountInfo.executable,
+      lamports: accountInfo.lamports,
+      owner: ownerPubkey,
+      rentEpoch: accountInfo.rentEpoch ?? 0,
+    };
+    
     // ParsableWhirlpool.parse needs the pubkey and FULL account info
     // The SDK validates that the account is owned by the Whirlpool program
-    // Passing only { data } will cause parse to return null
-    const parsed = ParsableWhirlpool.parse(accountPubkey, accountInfo);
+    const parsed = ParsableWhirlpool.parse(accountPubkey, sdkAccountInfo);
     
     if (!parsed) {
-      logger.debug('orca.decoder.parse_null', {
+      logger.info('orca.decoder.parse_null', {
         poolId: poolId.slice(0, 8) + '…',
         dataLength: accountInfo?.data?.length || 0,
-        hasOwner: !!accountInfo?.owner,
-        owner: typeof accountInfo?.owner === 'string' ? accountInfo.owner.slice(0, 8) + '…' : 'non-string',
+        owner: ownerPubkey.toBase58().slice(0, 8) + '…',
+        expectedOwner: ORCA_WHIRLPOOL_PROGRAM.slice(0, 8) + '…',
+        ownerMatches: ownerPubkey.toBase58() === ORCA_WHIRLPOOL_PROGRAM,
         cat: 'pools'
       });
       return null;

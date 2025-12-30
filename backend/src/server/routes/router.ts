@@ -1277,79 +1277,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
       }
 
       // Build transaction instructions array
-      const allInstructions: typeof txResult.instructions = [];
-      
-      // CRITICAL: Create user token accounts before execute instruction
-      // The router's execute instruction expects user_token_account to exist
-      const inputMint = new PublicKey(executionPlan.hops[0].inputMint);
-      const outputMint = new PublicKey(executionPlan.hops[executionPlan.hops.length - 1].outputMint);
-      
-      // Use the token program from the hop metadata (supports Token-2022)
-      const inputTokenProgram = executionPlan.hops[0].inputTokenProgram === 'token-2022' 
-        ? TOKEN_2022_PROGRAM_ID 
-        : TOKEN_PROGRAM_ID;
-      const outputTokenProgram = executionPlan.hops[executionPlan.hops.length - 1].outputTokenProgram === 'token-2022' 
-        ? TOKEN_2022_PROGRAM_ID 
-        : TOKEN_PROGRAM_ID;
-      
-      const userInputAta = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
-      const userOutputAta = getAssociatedTokenAddressSync(outputMint, wallet.publicKey, false, outputTokenProgram);
-      
-      // Check if accounts exist and create if needed
-      const [inputAtaInfo, outputAtaInfo] = await Promise.all([
-        connection.getAccountInfo(userInputAta),
-        connection.getAccountInfo(userOutputAta),
-      ]);
-      
-      if (!inputAtaInfo) {
-        allInstructions.push(createAssociatedTokenAccountInstruction(
-          wallet.publicKey, // payer
-          userInputAta,     // ata
-          wallet.publicKey, // owner
-          inputMint,        // mint
-          inputTokenProgram // token program
-        ));
-      }
-      
-      if (!outputAtaInfo) {
-        allInstructions.push(createAssociatedTokenAccountInstruction(
-          wallet.publicKey, // payer
-          userOutputAta,    // ata
-          wallet.publicKey, // owner
-          outputMint,       // mint
-          outputTokenProgram // token program
-        ));
-      }
-      
-      // For multi-hop, also create intermediate token accounts
-      for (let i = 0; i < executionPlan.hops.length - 1; i++) {
-        const hop = executionPlan.hops[i];
-        const intermediateMint = new PublicKey(hop.outputMint);
-        const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022' 
-          ? TOKEN_2022_PROGRAM_ID 
-          : TOKEN_PROGRAM_ID;
-        
-        const intermediateAta = getAssociatedTokenAddressSync(
-          intermediateMint, 
-          wallet.publicKey, 
-          false, 
-          intermediateTokenProgram
-        );
-        const intermediateAtaInfo = await connection.getAccountInfo(intermediateAta);
-        
-        if (!intermediateAtaInfo) {
-          allInstructions.push(createAssociatedTokenAccountInstruction(
-            wallet.publicKey,
-            intermediateAta,
-            wallet.publicKey,
-            intermediateMint,
-            intermediateTokenProgram
-          ));
-        }
-      }
-      
-      // Add the router instructions
-      allInstructions.push(...txResult.instructions);
+      // NOTE: buildRouterTransaction already handles ATA creation internally,
+      // so we just use its instructions directly (no duplicate ATA creation here)
+      const allInstructions = [...txResult.instructions];
 
       // Get recent blockhash
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');

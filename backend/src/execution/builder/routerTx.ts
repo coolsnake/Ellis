@@ -310,23 +310,56 @@ async function buildFlashLoanArbTx(
     }
     
     // Check which ATAs need to be created (batch account info fetch)
+    // CRITICAL: Also verify the actual token program from mint accounts to avoid
+    // "Provided owner is not allowed" errors when cache has stale token program info
     const ataAddresses = atasToCreate.map(({ mint, tokenProgram }) => 
       getAssociatedTokenAddressSync(mint, wallet.publicKey, false, tokenProgram)
     );
     
-    const ataInfos = await connection.getMultipleAccountsInfo(ataAddresses);
+    // Fetch both ATA infos and mint infos in parallel for verification
+    const mintAddressesFlash = atasToCreate.map(({ mint }) => mint);
+    const [ataInfos, mintInfosFlash] = await Promise.all([
+      connection.getMultipleAccountsInfo(ataAddresses),
+      connection.getMultipleAccountsInfo(mintAddressesFlash),
+    ]);
     
     let atasCreated = 0;
     for (let i = 0; i < atasToCreate.length; i++) {
       if (!ataInfos[i]) {
-        const { mint, tokenProgram } = atasToCreate[i];
+        const { mint } = atasToCreate[i];
+        
+        // CRITICAL: Determine actual token program from mint account owner
+        let actualTokenProgram = atasToCreate[i].tokenProgram;
+        const mintInfo = mintInfosFlash[i];
+        if (mintInfo?.owner) {
+          const mintOwner = mintInfo.owner.toBase58();
+          if (mintOwner === TOKEN_2022_PROGRAM_ID.toBase58()) {
+            actualTokenProgram = TOKEN_2022_PROGRAM_ID;
+          } else if (mintOwner === TOKEN_PROGRAM_ID.toBase58()) {
+            actualTokenProgram = TOKEN_PROGRAM_ID;
+          }
+          
+          // Log if there's a mismatch between cached and actual token program
+          if (!actualTokenProgram.equals(atasToCreate[i].tokenProgram)) {
+            logger.warn('routerTx.flashLoan.atas.tokenProgram_mismatch', {
+              cat: 'tx',
+              mint: mint.toBase58(),
+              cached: atasToCreate[i].tokenProgram.toBase58(),
+              actual: actualTokenProgram.toBase58(),
+            });
+          }
+        }
+        
+        // Re-derive ATA with verified token program
+        const verifiedAtaAddress = getAssociatedTokenAddressSync(mint, wallet.publicKey, false, actualTokenProgram);
+        
         instructions.push(
           createAssociatedTokenAccountInstruction(
             wallet.publicKey, // payer
-            ataAddresses[i],   // ata
+            verifiedAtaAddress, // ata (re-derived with correct token program)
             wallet.publicKey, // owner
             mint,             // mint
-            tokenProgram      // token program
+            actualTokenProgram // verified token program
           )
         );
         atasCreated++;
@@ -562,23 +595,57 @@ async function buildDirectRouterTx(
     }
     
     // Check which ATAs need to be created (batch account info fetch)
+    // CRITICAL: Also verify the actual token program from mint accounts to avoid
+    // "Provided owner is not allowed" errors when cache has stale token program info
     const ataAddresses = atasToCreate.map(({ mint, tokenProgram }) => 
       getAssociatedTokenAddressSync(mint, wallet.publicKey, false, tokenProgram)
     );
     
-    const ataInfos = await connection.getMultipleAccountsInfo(ataAddresses);
+    // Fetch both ATA infos and mint infos in parallel for verification
+    const mintAddresses = atasToCreate.map(({ mint }) => mint);
+    const [ataInfos, mintInfos] = await Promise.all([
+      connection.getMultipleAccountsInfo(ataAddresses),
+      connection.getMultipleAccountsInfo(mintAddresses),
+    ]);
     
     let atasCreated = 0;
     for (let i = 0; i < atasToCreate.length; i++) {
       if (!ataInfos[i]) {
-        const { mint, tokenProgram } = atasToCreate[i];
+        const { mint } = atasToCreate[i];
+        
+        // CRITICAL: Determine actual token program from mint account owner
+        // This prevents "Provided owner is not allowed" errors when cached token program is wrong
+        let actualTokenProgram = atasToCreate[i].tokenProgram;
+        const mintInfo = mintInfos[i];
+        if (mintInfo?.owner) {
+          const mintOwner = mintInfo.owner.toBase58();
+          if (mintOwner === TOKEN_2022_PROGRAM_ID.toBase58()) {
+            actualTokenProgram = TOKEN_2022_PROGRAM_ID;
+          } else if (mintOwner === TOKEN_PROGRAM_ID.toBase58()) {
+            actualTokenProgram = TOKEN_PROGRAM_ID;
+          }
+          
+          // Log if there's a mismatch between cached and actual token program
+          if (!actualTokenProgram.equals(atasToCreate[i].tokenProgram)) {
+            logger.warn('routerTx.direct.atas.tokenProgram_mismatch', {
+              cat: 'tx',
+              mint: mint.toBase58(),
+              cached: atasToCreate[i].tokenProgram.toBase58(),
+              actual: actualTokenProgram.toBase58(),
+            });
+          }
+        }
+        
+        // Re-derive ATA with verified token program
+        const verifiedAtaAddress = getAssociatedTokenAddressSync(mint, wallet.publicKey, false, actualTokenProgram);
+        
         instructions.push(
           createAssociatedTokenAccountInstruction(
             wallet.publicKey, // payer
-            ataAddresses[i],   // ata
+            verifiedAtaAddress, // ata (re-derived with correct token program)
             wallet.publicKey, // owner
             mint,             // mint
-            tokenProgram      // token program
+            actualTokenProgram // verified token program
           )
         );
         atasCreated++;
