@@ -436,6 +436,14 @@ export interface RaydiumExBitmapValidation {
   issue?: string;
 }
 
+export interface FeeValidation {
+  feeBps: number | null;
+  isValid: boolean;
+  isZero: boolean;
+  source: 'pool_cache' | 'execution_cache' | 'none';
+  issue?: string;
+}
+
 export interface PoolValidationResult {
   poolId: string;
   dex: 'orca' | 'raydium' | 'meteora';
@@ -446,6 +454,7 @@ export interface PoolValidationResult {
   binArrayValidation?: BinArrayValidation;
   bitmapExtensionValidation?: BitmapExtensionValidation;  // Meteora bitmap extension
   exBitmapValidation?: RaydiumExBitmapValidation;          // Raydium tick array bitmap extension
+  feeValidation?: FeeValidation;                          // Fee BPS validation
   issues: string[];
   valid: boolean;
   // Additional cache data for debugging
@@ -457,6 +466,7 @@ export interface PoolValidationResult {
     bitmapExtension?: string;  // Meteora
     exBitmap?: string;         // Raydium
     ammConfig?: string;        // Raydium - required for swaps
+    feeBps?: number;           // Fee in basis points
   };
 }
 
@@ -470,6 +480,8 @@ export interface BatchValidationResult {
   poolsWithInvalidBitmapExtension: number;  // Meteora
   poolsWithInvalidExBitmap: number;          // Raydium
   poolsWithMissingAmmConfig: number;         // Raydium - missing ammConfig
+  poolsWithZeroFee: number;                  // Pools with 0 fee BPS (likely incorrect)
+  poolsWithMissingFee: number;               // Pools with no fee in cache
   results: PoolValidationResult[];
   timestamp: number;
   durationMs: number;
@@ -1045,6 +1057,76 @@ export async function validatePoolCache(
     logCatchError('cacheValidator', err);
   }
   
+  // === Fee BPS Validation ===
+  // Validate that fee_bps is present and non-zero
+  // Zero fees are likely incorrect for Raydium/Meteora (fee is in separate account or nested structure)
+  try {
+    let feeBps: number | null = null;
+    let feeSource: 'pool_cache' | 'execution_cache' | 'none' = 'none';
+    
+    // Check execution cache hot data first (most current)
+    if (hot?.feeRate != null && Number.isFinite(hot.feeRate)) {
+      feeBps = hot.feeRate;
+      feeSource = 'execution_cache';
+    }
+    
+    // Check pool caches if not found
+    if (feeBps === null || feeBps === 0) {
+      let poolCacheFee: number | undefined;
+      if (dex === 'orca') {
+        const orcaPools = peekOrcaPools();
+        poolCacheFee = orcaPools?.clmm?.find(p => p.id === basePoolId)?.fee_bps;
+      } else if (dex === 'raydium') {
+        const raydiumPools = peekRaydiumPools();
+        poolCacheFee = raydiumPools?.clmm?.find(p => p.id === basePoolId)?.fee_bps ?? 
+                       raydiumPools?.amm?.find(p => p.id === basePoolId)?.fee_bps;
+      } else if (dex === 'meteora') {
+        const meteoraPools = peekMeteoraPools();
+        poolCacheFee = meteoraPools?.clmm?.find(p => p.id === basePoolId)?.fee_bps;
+      }
+      
+      if (poolCacheFee != null && Number.isFinite(poolCacheFee)) {
+        feeBps = poolCacheFee;
+        feeSource = 'pool_cache';
+      }
+    }
+    
+    const isZero = feeBps === 0;
+    const isValid = feeBps !== null && Number.isFinite(feeBps) && feeBps > 0 && feeBps <= 10000;
+    
+    result.feeValidation = {
+      feeBps,
+      isValid,
+      isZero,
+      source: feeSource,
+      issue: isZero ? 'Fee is 0 (likely incorrect for CLMM pools)' : 
+             feeBps === null ? 'No fee found in cache' :
+             !isValid ? `Invalid fee value: ${feeBps}` : undefined,
+    };
+    
+    // Add fee info to cache data
+    if (result.cacheData && feeBps !== null) {
+      result.cacheData.feeBps = feeBps;
+    }
+    
+    // Log warning for zero/missing fees (don't fail validation, just warn)
+    if (isZero || feeBps === null) {
+      logger.warn('cache.validation.fee_issue', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId.slice(0, 8) + '…',
+          dex,
+          feeBps,
+          source: feeSource,
+          issue: result.feeValidation.issue,
+        }
+      });
+    }
+  } catch (e) {
+    // Don't fail validation for fee check errors
+    logCatchError('cacheValidator.feeValidation', e);
+  }
+  
   result.valid = issues.length === 0;
   return result;
 }
@@ -1097,6 +1179,8 @@ export async function validatePoolCacheBatch(
   let poolsWithInvalidBitmapExtension = 0;  // Meteora
   let poolsWithInvalidExBitmap = 0;          // Raydium
   let poolsWithMissingAmmConfig = 0;         // Raydium - missing ammConfig
+  let poolsWithZeroFee = 0;                  // Pools with 0 fee BPS
+  let poolsWithMissingFee = 0;               // Pools with no fee in cache
   
   // Process in batches to avoid overwhelming RPC
   // Reduced batch size and added delay between batches for rate limiting
@@ -1153,6 +1237,15 @@ export async function validatePoolCacheBatch(
           poolsWithMissingAmmConfig++;
         }
       }
+      
+      // Track fee issues (for all pools, not just invalid ones)
+      if (result.feeValidation) {
+        if (result.feeValidation.isZero) {
+          poolsWithZeroFee++;
+        } else if (result.feeValidation.feeBps === null) {
+          poolsWithMissingFee++;
+        }
+      }
     }
   }
   
@@ -1171,6 +1264,8 @@ export async function validatePoolCacheBatch(
       poolsWithInvalidBitmapExtension,
       poolsWithInvalidExBitmap,
       poolsWithMissingAmmConfig,
+      poolsWithZeroFee,
+      poolsWithMissingFee,
       durationMs,
     }
   });
@@ -1185,6 +1280,8 @@ export async function validatePoolCacheBatch(
     poolsWithInvalidBitmapExtension,
     poolsWithInvalidExBitmap,
     poolsWithMissingAmmConfig,
+    poolsWithZeroFee,
+    poolsWithMissingFee,
     results,
     timestamp: Date.now(),
     durationMs,

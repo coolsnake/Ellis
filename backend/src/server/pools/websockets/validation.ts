@@ -99,6 +99,28 @@ export function validateDecodedPool(
       reasons.push('invalid_fee');
       try { wsValidationStats[dex].invalidFee += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }
+    // Warn about zero fees for Raydium/Meteora (these DEXes store fees elsewhere)
+    // Don't fail validation, just log a warning for monitoring
+    if (pool.fee_bps === 0 && (dex === 'raydium' || dex === 'meteora')) {
+      try {
+        logger.warn(`${dex}.ws.zero_fee_warning`, {
+          poolId: poolId.slice(0, 8) + '…',
+          fee_bps: pool.fee_bps,
+          hint: dex === 'raydium' ? 'Fee may be in ammConfig account' : 'Fee may be in parameters structure',
+          cat: 'pools'
+        });
+      } catch (e) { logCatchError('pools.ws.validation', e); }
+    }
+  } else {
+    // Fee is missing entirely
+    if (dex === 'raydium' || dex === 'meteora') {
+      try {
+        logger.debug(`${dex}.ws.missing_fee`, {
+          poolId: poolId.slice(0, 8) + '…',
+          cat: 'pools'
+        });
+      } catch (e) { logCatchError('pools.ws.validation', e); }
+    }
   }
   
   // Validate tick spacing for CLMM
