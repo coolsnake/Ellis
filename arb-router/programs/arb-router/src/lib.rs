@@ -651,18 +651,18 @@ fn get_accounts_needed_for_dex(dex_type: &DexType) -> usize {
 /// Get the index of the user's input token account within the DEX accounts array
 /// This is needed for dynamic amount propagation (reading balance when amount_in == 0)
 /// 
-/// Note: Some DEXes (like Meteora) use X/Y ordering for accounts, not input/output.
-/// The `a_to_b` parameter indicates swap direction to pick the correct account.
-/// The `accounts_count` parameter helps distinguish instruction variants (e.g. swap vs swap_v2).
+/// The `a_to_b` parameter indicates swap direction to pick the correct account for DEXes
+/// that use A/B ordering. The `accounts_count` helps distinguish instruction variants.
 fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool, accounts_count: usize) -> usize {
     match dex_type {
         // Raydium CLMM: position 3 (Input Token Account)
         DexType::Raydium => 3,
-        // Meteora DLMM: accounts are in X/Y order, NOT input/output order!
-        // Position 4 = userTokenX, Position 5 = userTokenY
-        // X→Y (a_to_b=true): input is X at position 4
-        // Y→X (a_to_b=false): input is Y at position 5
-        DexType::Meteora => if a_to_b { 4 } else { 5 },
+        // Meteora DLMM: accounts are in Input/Output order!
+        // Position 4 = User Token In (INPUT - always the source of swapped tokens)
+        // Position 5 = User Token Out (OUTPUT - always the destination)
+        // The transaction builder places the correct token at each position based on direction.
+        // We always read from position 4 regardless of a_to_b.
+        DexType::Meteora => 4,
         // Orca Whirlpool: accounts are in A/B order
         // - swap (12 accounts): Token Owner Account A is at position 3
         // - swap_v2 (16 accounts): Token Owner Account A is at position 7
