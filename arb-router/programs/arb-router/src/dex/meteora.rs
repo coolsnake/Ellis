@@ -106,16 +106,24 @@ pub struct SwapParams {
 /// 14. `[]` Event Authority
 /// 15. `[]` Meteora DLMM Program (for CPI invoke)
 /// 16+. `[writable]` Bin Arrays (remaining accounts)
+/// Memo Program ID used to detect swap2 variant
+const MEMO_PROGRAM_ID: Pubkey = anchor_lang::solana_program::pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
 ) -> Result<()> {
-    // Determine which instruction variant to use based on account count
-    let use_swap2 = accounts.len() >= SWAP2_ACCOUNTS_NEEDED;
+    // Determine which instruction variant to use based on account at index 13:
+    // - swap: index 13 = Event Authority (NOT Memo Program)
+    // - swap2: index 13 = Memo Program
+    // We can't use account count alone because variable bin arrays (3-5) overlap the counts.
+    let use_swap2 = accounts.len() > 13 && accounts[13].key == &MEMO_PROGRAM_ID;
     
-    if !use_swap2 && accounts.len() < SWAP_ACCOUNTS_NEEDED {
-        msg!("Meteora: Insufficient accounts. Expected at least {}, got {}", SWAP_ACCOUNTS_NEEDED, accounts.len());
+    let min_accounts = if use_swap2 { SWAP2_ACCOUNTS_NEEDED } else { SWAP_ACCOUNTS_NEEDED };
+    if accounts.len() < min_accounts {
+        msg!("Meteora: Insufficient accounts. Expected at least {} (swap2={}), got {}", 
+             min_accounts, use_swap2, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
