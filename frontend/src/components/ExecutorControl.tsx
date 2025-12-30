@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { ROUTES } from '../utils/routes';
 
 type ExecutorStatus = {
@@ -12,6 +12,20 @@ type ExecutorStatus = {
     maxHops?: number;
     cooldownMs: number;
     maxExecutionsPerMinute?: number;
+    // Dynamic sizing
+    dynamicSizing?: {
+      enabled: boolean;
+      minSizeUsd: number;
+      maxSizeUsd: number;
+      method: string;
+    };
+    // Flashloan
+    flashloanSettings?: {
+      enabled: boolean;
+      preferredToken?: string;
+    };
+    // Router
+    useRouter?: boolean;
   };
   state?: {
     inFlight: number;
@@ -24,6 +38,12 @@ type ExecutorStatus = {
   error?: string;
 };
 
+type JitoConfig = {
+  enabled: boolean;
+  tipMode?: string;
+  tipShare?: number;
+};
+
 type ExecutorControlProps = {
   apiBase: string;
   socket?: any;
@@ -31,9 +51,16 @@ type ExecutorControlProps = {
 
 export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socket }) => {
   const [status, setStatus] = useState<ExecutorStatus | null>(null);
+  const [jitoConfig, setJitoConfig] = useState<JitoConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  
+  // Editable fields
+  const [editMinProfit, setEditMinProfit] = useState<number | null>(null);
+  const [editSlippage, setEditSlippage] = useState<number | null>(null);
+  const [editSizeUsd, setEditSizeUsd] = useState<number | null>(null);
 
   const fetchStatus = async () => {
     try {
@@ -46,11 +73,51 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
     }
   };
 
+  const fetchJitoConfig = async () => {
+    try {
+      const response = await fetch(`${apiBase}/arb/jito/config`);
+      if (response.ok) {
+        const data = await response.json();
+        setJitoConfig(data);
+      }
+    } catch {}
+  };
+
+  const updateConfig = useCallback(async (updates: Record<string, any>) => {
+    setSaving(true);
+    try {
+      const response = await fetch(`${apiBase}/arb/executor/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      if (!response.ok) throw new Error('Failed to update config');
+      await fetchStatus();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }, [apiBase]);
+
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 3000); // Poll every 3 seconds
+    fetchJitoConfig();
+    const interval = setInterval(() => {
+      fetchStatus();
+      fetchJitoConfig();
+    }, 3000); // Poll every 3 seconds
     return () => clearInterval(interval);
   }, [apiBase]);
+
+  // Reset edit values when status changes
+  useEffect(() => {
+    if (status?.config) {
+      setEditMinProfit(status.config.minProfitBps);
+      setEditSlippage(status.config.slippageBps ?? 50);
+      setEditSizeUsd(status.config.sizeUsd ?? 100);
+    }
+  }, [status?.config?.minProfitBps, status?.config?.slippageBps, status?.config?.sizeUsd]);
 
   // Listen for execution events via socket
   useEffect(() => {
@@ -231,21 +298,87 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
 
       {/* Expanded Details */}
       {expanded && status?.running && (
-        <div className="mt-3 p-2 bg-black/20 rounded text-xs space-y-2">
+        <div className="mt-3 p-2 bg-black/20 rounded text-xs space-y-3">
+          {/* Feature Badges */}
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            <span className={`px-2 py-0.5 rounded text-xs ${jitoConfig?.enabled ? 'bg-orange-600/30 text-orange-300' : 'bg-gray-700 text-gray-500'}`}>
+              Jito {jitoConfig?.enabled ? '✓' : '✗'}
+            </span>
+            <span className={`px-2 py-0.5 rounded text-xs ${status.config.dynamicSizing?.enabled ? 'bg-emerald-600/30 text-emerald-300' : 'bg-gray-700 text-gray-500'}`}>
+              Dynamic Size {status.config.dynamicSizing?.enabled ? '✓' : '✗'}
+            </span>
+            <span className={`px-2 py-0.5 rounded text-xs ${status.config.flashloanSettings?.enabled ? 'bg-blue-600/30 text-blue-300' : 'bg-gray-700 text-gray-500'}`}>
+              Flashloan {status.config.flashloanSettings?.enabled ? '✓' : '✗'}
+            </span>
+            <span className={`px-2 py-0.5 rounded text-xs ${status.config.useRouter ? 'bg-purple-600/30 text-purple-300' : 'bg-gray-700 text-gray-500'}`}>
+              Router {status.config.useRouter ? '✓' : '✗'}
+            </span>
+          </div>
+
           <div className="font-semibold mb-2">Configuration</div>
-          <div className="grid grid-cols-2 gap-2">
+          
+          {/* Editable Fields */}
+          <div className="grid grid-cols-3 gap-2">
             <div>
-              <span className="opacity-70">Min Profit:</span>{' '}
-              <span className="font-mono">{(status.config.minProfitBps / 100).toFixed(2)}%</span>
+              <label className="block opacity-70 mb-1">Min Profit (bps)</label>
+              <input
+                type="number"
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                value={editMinProfit ?? status.config.minProfitBps}
+                onChange={(e) => setEditMinProfit(Number(e.target.value))}
+                onBlur={() => {
+                  if (editMinProfit !== null && editMinProfit !== status.config.minProfitBps) {
+                    updateConfig({ minProfitBps: editMinProfit });
+                  }
+                }}
+                disabled={saving}
+              />
+              <div className="text-gray-500 mt-0.5">{((editMinProfit ?? status.config.minProfitBps) / 100).toFixed(2)}%</div>
             </div>
             <div>
-              <span className="opacity-70">Trade Size:</span>{' '}
-              <span className="font-mono">${status.config.sizeUsd || 'N/A'}</span>
+              <label className="block opacity-70 mb-1">Slippage (bps)</label>
+              <input
+                type="number"
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                value={editSlippage ?? (status.config.slippageBps ?? 50)}
+                onChange={(e) => setEditSlippage(Number(e.target.value))}
+                onBlur={() => {
+                  if (editSlippage !== null && editSlippage !== status.config.slippageBps) {
+                    updateConfig({ slippageBps: editSlippage });
+                  }
+                }}
+                disabled={saving}
+              />
+              <div className="text-gray-500 mt-0.5">{((editSlippage ?? status.config.slippageBps ?? 50) / 100).toFixed(2)}%</div>
             </div>
             <div>
-              <span className="opacity-70">Slippage:</span>{' '}
-              <span className="font-mono">{((status.config.slippageBps || 50) / 100).toFixed(2)}%</span>
+              <label className="block opacity-70 mb-1">
+                Trade Size ($)
+                {status.config.dynamicSizing?.enabled && <span className="text-emerald-400 ml-1">(dynamic)</span>}
+              </label>
+              <input
+                type="number"
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                value={editSizeUsd ?? (status.config.sizeUsd ?? 100)}
+                onChange={(e) => setEditSizeUsd(Number(e.target.value))}
+                onBlur={() => {
+                  if (editSizeUsd !== null && editSizeUsd !== status.config.sizeUsd) {
+                    updateConfig({ sizeUsd: editSizeUsd });
+                  }
+                }}
+                disabled={saving || status.config.dynamicSizing?.enabled}
+                title={status.config.dynamicSizing?.enabled ? 'Disabled when dynamic sizing is enabled' : ''}
+              />
+              {status.config.dynamicSizing?.enabled && (
+                <div className="text-emerald-400 mt-0.5">
+                  ${status.config.dynamicSizing.minSizeUsd}-${status.config.dynamicSizing.maxSizeUsd}
+                </div>
+              )}
             </div>
+          </div>
+
+          {/* Read-only Fields */}
+          <div className="grid grid-cols-3 gap-2 mt-2">
             <div>
               <span className="opacity-70">Max Concurrent:</span>{' '}
               <span className="font-mono">{status.config.maxConcurrentExecutions}</span>
@@ -259,6 +392,28 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
               <span className="font-mono">{status.config.maxExecutionsPerMinute || 'N/A'}</span>
             </div>
           </div>
+
+          {/* Dynamic Sizing Details */}
+          {status.config.dynamicSizing?.enabled && (
+            <div className="mt-2 p-2 bg-emerald-900/20 border border-emerald-700/30 rounded">
+              <span className="text-emerald-400 font-medium">Dynamic Sizing:</span>{' '}
+              <span className="text-gray-300">{status.config.dynamicSizing.method}</span>
+              <span className="text-gray-500 ml-2">
+                (${status.config.dynamicSizing.minSizeUsd} - ${status.config.dynamicSizing.maxSizeUsd})
+              </span>
+            </div>
+          )}
+
+          {/* Jito Details */}
+          {jitoConfig?.enabled && (
+            <div className="mt-2 p-2 bg-orange-900/20 border border-orange-700/30 rounded">
+              <span className="text-orange-400 font-medium">Jito Tips:</span>{' '}
+              <span className="text-gray-300">{jitoConfig.tipMode || 'auto'}</span>
+              {jitoConfig.tipShare && (
+                <span className="text-gray-500 ml-2">({(jitoConfig.tipShare * 100).toFixed(0)}% share)</span>
+              )}
+            </div>
+          )}
 
           {status.state && (
             <>
@@ -282,6 +437,10 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
                 </div>
               </div>
             </>
+          )}
+
+          {saving && (
+            <div className="text-center text-yellow-400 text-xs mt-2">Saving...</div>
           )}
         </div>
       )}
