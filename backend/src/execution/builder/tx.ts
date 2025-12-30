@@ -246,7 +246,38 @@ export async function buildDirectArbTx(
           tx.recentBlockhash = '11111111111111111111111111111111';
           tx.feePayer = wallet.publicKey;
           
+          // DIAGNOSTIC: Check tx.instructions BEFORE serialize
+          const routerProgramId = '2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw';
+          for (let i = 0; i < tx.instructions.length; i++) {
+            const ix = tx.instructions[i];
+            if (ix?.programId?.toBase58?.() === routerProgramId) {
+              console.log('[buildDirectArbTx] BEFORE serialize - router ix:', {
+                ixIndex: i,
+                keyCount: ix?.keys?.length || 0,
+                key0: ix?.keys?.[0]?.pubkey?.toBase58?.() || 'unknown',
+                key0_isSigner: ix?.keys?.[0]?.isSigner,
+                key1: ix?.keys?.[1]?.pubkey?.toBase58?.() || 'unknown',
+                key1_isSigner: ix?.keys?.[1]?.isSigner,
+              });
+            }
+          }
+          
           const sizeBytes = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).length;
+          
+          // DIAGNOSTIC: Check tx.instructions AFTER serialize
+          for (let i = 0; i < tx.instructions.length; i++) {
+            const ix = tx.instructions[i];
+            if (ix?.programId?.toBase58?.() === routerProgramId) {
+              console.log('[buildDirectArbTx] AFTER serialize - router ix:', {
+                ixIndex: i,
+                keyCount: ix?.keys?.length || 0,
+                key0: ix?.keys?.[0]?.pubkey?.toBase58?.() || 'unknown',
+                key0_isSigner: ix?.keys?.[0]?.isSigner,
+                key1: ix?.keys?.[1]?.pubkey?.toBase58?.() || 'unknown',
+                key1_isSigner: ix?.keys?.[1]?.isSigner,
+              });
+            }
+          }
           
           return {
             tx,

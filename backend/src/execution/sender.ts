@@ -193,6 +193,20 @@ function toInstruction(ix: any): TransactionInstruction | null {
       ?? undefined;
     if (!pidLike) return null;
     const programId = normalizePk(pidLike);
+    
+    // DIAGNOSTIC: Log router instruction deserialization
+    const routerProgramId = '2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw';
+    const isRouterIx = programId?.toBase58?.() === routerProgramId || pidLike === routerProgramId;
+    if (isRouterIx) {
+      console.log('[toInstruction] Router ix received:', {
+        keysLikeIsArray: Array.isArray(keysLike),
+        keysLikeLength: keysLike?.length || 0,
+        keysLike0: keysLike?.[0],
+        keysLike1: keysLike?.[1],
+        keysLike2: keysLike?.[2],
+      });
+    }
+    
     let keyArr: any[] = [];
     try {
       if (Array.isArray(keysLike)) keyArr = keysLike;
@@ -203,11 +217,35 @@ function toInstruction(ix: any): TransactionInstruction | null {
         if (vals.length && (vals[0] as any) && ((vals[0] as any).pubkey || (vals[0] as any).pubKey || (vals[0] as any).address)) keyArr = vals as any[];
       }
     } catch {}
+    
+    // DIAGNOSTIC: Log keyArr for router instruction
+    if (isRouterIx) {
+      console.log('[toInstruction] Router ix keyArr:', {
+        keyArrLength: keyArr.length,
+        keyArr0: keyArr[0],
+        keyArr0Pubkey: keyArr[0]?.pubkey,
+        keyArr1: keyArr[1],
+        keyArr1Pubkey: keyArr[1]?.pubkey,
+      });
+    }
+    
     const keys = keyArr.map((k: any) => ({
       pubkey: normalizePk(k?.pubkey ?? k?.pubKey ?? k?.address),
       isSigner: !!k?.isSigner,
       isWritable: !!k?.isWritable,
     }));
+    
+    // DIAGNOSTIC: Log final keys for router instruction
+    if (isRouterIx) {
+      console.log('[toInstruction] Router ix final keys:', {
+        keysLength: keys.length,
+        key0: keys[0]?.pubkey?.toBase58?.() || 'unknown',
+        key0_isSigner: keys[0]?.isSigner,
+        key1: keys[1]?.pubkey?.toBase58?.() || 'unknown',
+        key1_isSigner: keys[1]?.isSigner,
+      });
+    }
+    
     let data: Buffer = Buffer.alloc(0);
     try {
       const raw = (ix as any).data;
