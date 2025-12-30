@@ -697,9 +697,21 @@ export class ArbExecutor {
           flashloanReason: flashloanCheck.reason,
         });
         
-        // If using flashloan, adjust size to use combined wallet + flashloan
-        const effectiveSizeUsd = useFlashloan ? sizeUsd : 
-          (flashloanCheck.walletBalanceUsd > 0 ? Math.min(sizeUsd, flashloanCheck.walletBalanceUsd) : sizeUsd);
+        // For flashloanable tokens (SOL/USDC): if not using flashloan but wallet has less,
+        // cap to wallet balance. For non-flashloanable tokens, size is already capped
+        // in calculateDynamicSize.
+        let effectiveSizeUsd = sizeUsd;
+        if (!useFlashloan && flashloanCheck.walletBalanceUsd > 0 && flashloanCheck.walletBalanceUsd < sizeUsd) {
+          effectiveSizeUsd = flashloanCheck.walletBalanceUsd;
+          logger.debug('arb.executor.sizing.capped_to_wallet', {
+            cat: 'arb',
+            traceId,
+            originalSize: sizeUsd,
+            walletBalanceUsd: flashloanCheck.walletBalanceUsd,
+            effectiveSize: effectiveSizeUsd,
+            reason: flashloanCheck.reason,
+          });
+        }
         
         // Resolve execution plan - pass traceId for complete log correlation
         // Pass minProfitBps to enforce profitability at the final hop for arb cycles
@@ -1379,8 +1391,66 @@ export class ArbExecutor {
     const maxSize = dynamicCfg.maxSizeUsd || this.config.sizeUsd || 200;
     const method = dynamicCfg.method || 'heuristic';
     
+    // Get start token and check wallet balance constraints
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const startToken = opp.path[0];
+    const isFlashloanable = startToken === SOL_MINT || startToken === USDC_MINT;
+    const flashloanEnabled = this.config.flashloanSettings?.enabled ?? false;
+    
+    // Get wallet balance for non-flashloanable tokens to cap sizing
+    let walletBalanceUsd = Infinity; // Default to no cap
+    if (!isFlashloanable || !flashloanEnabled) {
+      try {
+        if (this.walletPublicKey) {
+          const { getBalances } = await import('../wallet/wallet.js');
+          const { getPriceByMint } = await import('../server/priceStore.js');
+          const balances = await getBalances(this.walletPublicKey);
+          
+          const balance = startToken === SOL_MINT 
+            ? balances.sol 
+            : (balances.tokens[startToken] || 0);
+          
+          const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+          walletBalanceUsd = balance * price;
+          
+          if (walletBalanceUsd <= 0) {
+            logger.warn('arb.executor.sizing.no_wallet_balance', {
+              cat: 'arb',
+              path: opp.path.join('->'),
+              startToken: startToken.slice(0, 8) + '...',
+              balance,
+              price,
+              isFlashloanable,
+            });
+            // Can't trade if no balance and no flashloan available
+            return 0;
+          }
+          
+          logger.debug('arb.executor.sizing.wallet_constraint', {
+            cat: 'arb',
+            path: opp.path.join('->'),
+            startToken: startToken.slice(0, 8) + '...',
+            walletBalanceUsd,
+            isFlashloanable,
+            flashloanEnabled,
+          });
+        }
+      } catch (e) {
+        logger.warn('arb.executor.sizing.balance_check_failed', {
+          cat: 'arb',
+          error: String((e as any)?.message || e),
+        });
+        // Conservative: if we can't check balance, use minimum size
+        walletBalanceUsd = minSize;
+      }
+    }
+    
     // Get bottleneck liquidity (USD)
     const bottleneckUsd = opp.est_capacity ?? opp.min_edge_liquidity ?? 0;
+    
+    // Calculate uncapped optimal/heuristic size
+    let sizeUsd = 0;
     
     // For optimal methods, try to use the analytical/iterative calculator
     if (method === 'optimal_analytical' || method === 'optimal_iterative') {
@@ -1396,6 +1466,7 @@ export class ArbExecutor {
         );
         
         if (result.optimalSizeUsd > 0 && result.expectedProfitUsd > 0) {
+          sizeUsd = result.optimalSizeUsd;
           logger.debug('arb.executor.sizing.optimal', {
             cat: 'arb',
             path: opp.path.join('->'),
@@ -1405,15 +1476,14 @@ export class ArbExecutor {
             grossProfit: result.breakdown.grossProfitUsd,
             slippageCost: result.breakdown.slippageCostUsd,
           });
-          return result.optimalSizeUsd;
+        } else {
+          // Fall through to heuristic if optimal calculation fails
+          logger.debug('arb.executor.sizing.optimal_fallback', {
+            cat: 'arb',
+            path: opp.path.join('->'),
+            reason: 'zero_size_or_profit',
+          });
         }
-        
-        // Fall through to heuristic if optimal calculation fails
-        logger.debug('arb.executor.sizing.optimal_fallback', {
-          cat: 'arb',
-          path: opp.path.join('->'),
-          reason: 'zero_size_or_profit',
-        });
       } catch (e: any) {
         logger.warn('arb.executor.sizing.optimal_error', {
           cat: 'arb',
@@ -1424,44 +1494,57 @@ export class ArbExecutor {
       }
     }
     
-    // Heuristic method (default fallback)
-    const baseFraction = dynamicCfg.bottleneckFraction || 0.10;
-    
-    if (bottleneckUsd <= 0) {
-      // No liquidity info - use minimum safe size
-      logger.debug('arb.executor.sizing.no_liquidity', {
-        cat: 'arb',
-        path: opp.path.join('->'),
-        fallbackSize: minSize,
-      });
-      return minSize;
-    }
-    
-    // Base size: fraction of bottleneck liquidity
-    let sizeUsd = bottleneckUsd * baseFraction;
-    
-    // Optional: Scale based on profit margin
-    // Higher profit = can afford more slippage = larger size
-    if (dynamicCfg.profitScaling) {
-      const profitBps = opp.net_bps ?? opp.profit_bps;
+    // Heuristic method (default fallback if optimal didn't produce a result)
+    if (sizeUsd === 0) {
+      const baseFraction = dynamicCfg.bottleneckFraction || 0.10;
       
-      // Scaling factor: 0.5x at 10bps profit, 1.0x at 50bps, 1.5x at 100bps+
-      // This is conservative - we size down when margins are thin
-      const profitMultiplier = Math.min(1.5, Math.max(0.5, profitBps / 50));
-      sizeUsd *= profitMultiplier;
+      if (bottleneckUsd <= 0) {
+        // No liquidity info - use minimum safe size
+        logger.debug('arb.executor.sizing.no_liquidity', {
+          cat: 'arb',
+          path: opp.path.join('->'),
+          fallbackSize: minSize,
+        });
+        sizeUsd = minSize;
+      } else {
+        // Base size: fraction of bottleneck liquidity
+        sizeUsd = bottleneckUsd * baseFraction;
+        
+        // Optional: Scale based on profit margin
+        // Higher profit = can afford more slippage = larger size
+        if (dynamicCfg.profitScaling) {
+          const profitBps = opp.net_bps ?? opp.profit_bps;
+          
+          // Scaling factor: 0.5x at 10bps profit, 1.0x at 50bps, 1.5x at 100bps+
+          // This is conservative - we size down when margins are thin
+          const profitMultiplier = Math.min(1.5, Math.max(0.5, profitBps / 50));
+          sizeUsd *= profitMultiplier;
+        }
+      }
     }
     
     // Clamp to configured bounds
     sizeUsd = Math.max(minSize, Math.min(maxSize, sizeUsd));
     
-    logger.debug('arb.executor.sizing.heuristic', {
+    // CRITICAL: For non-flashloanable tokens, cap to wallet balance
+    // For flashloanable tokens with flashloan enabled, let it exceed (flashloan logic handles it)
+    const originalSize = sizeUsd;
+    if (!isFlashloanable || !flashloanEnabled) {
+      sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
+    }
+    
+    logger.debug('arb.executor.sizing.final', {
       cat: 'arb',
       path: opp.path.join('->'),
-      method: 'heuristic',
+      method: method,
+      uncappedSize: originalSize,
+      walletBalanceUsd: walletBalanceUsd === Infinity ? 'unlimited' : walletBalanceUsd,
+      finalSize: sizeUsd,
+      cappedByWallet: sizeUsd < originalSize,
+      isFlashloanable,
+      flashloanEnabled,
       bottleneckUsd,
-      baseFraction,
       profitBps: opp.net_bps ?? opp.profit_bps,
-      calculatedSize: sizeUsd,
     });
     
     return sizeUsd;

@@ -109,7 +109,7 @@ function toPublicKey(owner: any): PublicKey | null {
  * - 32 bytes: tokenVaultB (PublicKey)
  * - 32 bytes: oracle (PublicKey)
  */
-function decodeWhirlpoolManually(data: Buffer): {
+function decodeWhirlpoolManually(data: Buffer | Uint8Array): {
   tickSpacing: number;
   feeRate: number;
   liquidity: bigint;
