@@ -686,13 +686,17 @@ async function extractDexAccounts(
       ? (hop.inputMint === nativeMintA) 
       : (hop.inputMint === poolMintA);
 
+    // Get hot cache for additional pool state (tick arrays, exBitmap, etc.)
+    const hot = executionCache.getHot(hop.poolId.replace(/[#-]rev$/, ''));
+    
     switch (dexType) {
       case DexType.Raydium:
-        // Raydium CLMM: 18 accounts (matches arb-router/src/dex/raydium.rs)
+        // Raydium CLMM: variable accounts (17 or 18) based on exBitmap presence
         // 0: Payer, 1: AmmConfig, 2: Pool, 3: UserInputToken, 4: UserOutputToken,
         // 5: InputVault, 6: OutputVault, 7: Observation, 8: TokenProgram, 9: Token2022Program,
-        // 10: MemoProgram, 11: InputMint, 12: OutputMint, 13: Oracle/exBitmap,
-        // 14: TickArrayCenter, 15: TickArrayLower, 16: TickArrayUpper, 17: RaydiumProgram
+        // 10: MemoProgram, 11: InputMint, 12: OutputMint, 
+        // WITH exBitmap: 13: exBitmap, 14-16: TickArrays, 17: Program (18 total)
+        // WITHOUT exBitmap: 13-15: TickArrays, 16: Program (17 total)
         
         // Get ammConfig from hop or cache - CRITICAL: cannot be derived, must come from pool data
         const ammConfigAddr = hop.ammConfig || stat?.amm_config;
@@ -714,7 +718,7 @@ async function extractDexAccounts(
         // The exBitmap is only needed for pools with wide tick ranges (many tick arrays)
         // If ex_bitmap is in cache with a value, it exists. If it's falsy or 'none', it doesn't exist.
         // We check hot cache first (set during validation), then static cache
-        const exBitmapFromCache = hot?.exBitmap || (hop as any).exBitmap || stat?.ex_bitmap;
+        const exBitmapFromCache = (hot as any)?.exBitmap || (hop as any).exBitmap || stat?.ex_bitmap;
         const hasExBitmap = !!exBitmapFromCache && exBitmapFromCache !== 'none';
         const exBitmapPda = hasExBitmap 
           ? new PublicKey(exBitmapFromCache)
