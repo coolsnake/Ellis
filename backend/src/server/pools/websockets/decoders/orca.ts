@@ -68,9 +68,13 @@ async function scheduleDexApply(source: 'orca', baseline: PoolsPayload): Promise
 
 /**
  * Decode Orca Whirlpool from account data using the SDK
+ * 
+ * IMPORTANT: ParsableWhirlpool.parse requires a full AccountInfo object with
+ * data, owner, executable, and lamports fields. Passing only { data } will
+ * cause the SDK to return null because it validates the owner field.
  */
 export async function decodeOrcaWhirlpool(
-  data: Buffer,
+  accountInfo: AccountInfo,
   poolId: string,
   accountPubkey?: any
 ): Promise<{ parsed: any; mintA: string; mintB: string } | null> {
@@ -83,14 +87,17 @@ export async function decodeOrcaWhirlpool(
 
     const { ParsableWhirlpool } = sdk as any;
     
-    // ParsableWhirlpool.parse needs the pubkey and account info
-    const info = { data };
-    const parsed = ParsableWhirlpool.parse(accountPubkey, info);
+    // ParsableWhirlpool.parse needs the pubkey and FULL account info
+    // The SDK validates that the account is owned by the Whirlpool program
+    // Passing only { data } will cause parse to return null
+    const parsed = ParsableWhirlpool.parse(accountPubkey, accountInfo);
     
     if (!parsed) {
       logger.debug('orca.decoder.parse_null', {
         poolId: poolId.slice(0, 8) + '…',
-        dataLength: data?.length || 0,
+        dataLength: accountInfo?.data?.length || 0,
+        hasOwner: !!accountInfo?.owner,
+        owner: typeof accountInfo?.owner === 'string' ? accountInfo.owner.slice(0, 8) + '…' : 'non-string',
         cat: 'pools'
       });
       return null;
@@ -128,14 +135,25 @@ export async function handleOrcaUpdate(
   try {
     wsDecodeStats.orca.attempts += 1;
     
+    // Ensure data is a Buffer for later use
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
     
     if (!data || data.length === 0) {
       return { success: false, error: 'no_data', skipped: true };
     }
 
-    // Decode the pool
-    const decoded = await decodeOrcaWhirlpool(data, poolId, accountPubkey);
+    // Create a normalized AccountInfo with Buffer data for the SDK
+    // CRITICAL: Pass the full AccountInfo (including owner) to the decoder
+    // The Orca SDK validates that the account is owned by the Whirlpool program
+    const normalizedInfo: AccountInfo = {
+      data,
+      executable: info.executable ?? false,
+      lamports: info.lamports ?? 0,
+      owner: info.owner,
+    };
+
+    // Decode the pool - pass full AccountInfo, not just data buffer
+    const decoded = await decodeOrcaWhirlpool(normalizedInfo, poolId, accountPubkey);
     if (!decoded) {
       wsDecodeStats.orca.failures += 1;
       return { success: false, error: 'decode_failed', skipped: true };

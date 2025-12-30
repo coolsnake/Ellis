@@ -303,6 +303,8 @@ function sanitizeInstructionKeys(ix: TransactionInstruction): void {
       'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',
       // Meteora AMM V2
       'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG',
+      // Arb Router - CRITICAL: must preserve account order for on-chain program
+      '2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw',
     ]);
     
     // Also check config-based program IDs
