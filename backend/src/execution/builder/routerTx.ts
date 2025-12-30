@@ -765,7 +765,7 @@ async function extractDexAccounts(
           directionalTickArrays: {
             array0: hop.tickArrayCenter || 'missing',
             array1: (isAtoB ? hop.tickArrayLower : hop.tickArrayUpper) || 'missing',
-            array2: (isAtoB ? hop.tickArrayLower : hop.tickArrayUpper) || 'missing',
+            array2: (isAtoB ? hop.tickArrayUpper : hop.tickArrayLower) || 'missing',
             direction: isAtoB ? 'A→B (down)' : 'B→A (up)',
           },
           isAtoBSource: nativeMintA ? 'native' : 'canonical_fallback',
@@ -774,13 +774,13 @@ async function extractDexAccounts(
         });
         
         // CRITICAL: Tick arrays must be passed in DIRECTIONAL order for Raydium CLMM swapV2:
-        // - A→B (isAtoB=true, tick decreases): [center, lower, lower] (going DOWN)
-        // - B→A (isAtoB=false, tick increases): [center, upper, upper] (going UP)
-        // The third tick array is duplicated because lower-1/upper+1 may not exist on thin liquidity pools.
+        // - A→B (isAtoB=true, tick decreases): [center, lower, upper] - lower first (primary direction)
+        // - B→A (isAtoB=false, tick increases): [center, upper, lower] - upper first (primary direction)
+        // All three tick arrays are passed; the program uses them based on swap traversal.
         {
           const rayTickArray0 = hop.tickArrayCenter;
           const rayTickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
-          const rayTickArray2 = rayTickArray1; // Safe: duplicate second array (third may not exist)
+          const rayTickArray2 = isAtoB ? hop.tickArrayUpper : hop.tickArrayLower;
           
           accounts.push(
             wallet,                                                              // 0: Payer (signer)
