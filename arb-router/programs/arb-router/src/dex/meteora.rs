@@ -107,7 +107,11 @@ pub struct SwapParams {
 /// 15. `[]` Meteora DLMM Program (for CPI invoke)
 /// 16+. `[writable]` Bin Arrays (remaining accounts)
 /// Memo Program ID used to detect swap2 variant
-const MEMO_PROGRAM_ID: Pubkey = anchor_lang::solana_program::pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+/// MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr in bytes
+const MEMO_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
+    5, 74, 83, 80, 248, 93, 200, 130, 214, 20, 165, 86, 114, 120, 138, 41,
+    109, 223, 30, 171, 171, 208, 166, 6, 120, 136, 73, 50, 244, 238, 246, 237
+]);
 
 pub fn swap(
     accounts: &[AccountInfo],

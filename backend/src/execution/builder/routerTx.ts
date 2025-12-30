@@ -1157,12 +1157,17 @@ async function extractDexAccounts(
         //   0-14: 15 fixed accounts (includes Memo at 13), user tokens in X/Y order
         //   15: Program, 16+: BinArrays
         //
-        // On-chain router auto-detects based on account count (18 vs 19).
+        // On-chain router auto-detects based on Memo Program at index 13.
         const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
         
         // Get token programs from hop (set by resolver from pool cache)
-        const tokenXProgram = tokenProgramLabelToKey((hop as any).tokenProgramA);
-        const tokenYProgram = tokenProgramLabelToKey((hop as any).tokenProgramB);
+        // CRITICAL: token_program_a/b are in CANONICAL order, but Meteora needs NATIVE X/Y order
+        // When was_swapped is true, native X = canonical B and native Y = canonical A
+        const wasSwapped = (stat as any)?.was_swapped === 'true' || (stat as any)?.was_swapped === true;
+        const canonicalProgramA = tokenProgramLabelToKey((hop as any).tokenProgramA);
+        const canonicalProgramB = tokenProgramLabelToKey((hop as any).tokenProgramB);
+        const tokenXProgram = wasSwapped ? canonicalProgramB : canonicalProgramA;
+        const tokenYProgram = wasSwapped ? canonicalProgramA : canonicalProgramB;
         
         // Detect if we need swap2 (Token-2022) or can use swap (standard SPL)
         const isToken2022X = tokenXProgram.equals(TOKEN_2022_PROGRAM_ID);
