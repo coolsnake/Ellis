@@ -109,7 +109,7 @@ function toPublicKey(owner: any): PublicKey | null {
  * - 32 bytes: tokenVaultB (PublicKey)
  * - 32 bytes: oracle (PublicKey)
  */
-function decodeWhirlpoolManually(data: Buffer | Uint8Array): {
+function decodeWhirlpoolManually(inputData: Buffer | Uint8Array): {
   tickSpacing: number;
   feeRate: number;
   liquidity: bigint;
@@ -122,6 +122,9 @@ function decodeWhirlpoolManually(data: Buffer | Uint8Array): {
   oracle: PublicKey;
 } | null {
   try {
+    // Ensure we have a proper Node.js Buffer with all methods
+    const data = Buffer.from(inputData);
+    
     // Minimum size check (discriminator + config + basic fields + mints + vaults)
     if (data.length < 300) {
       return null;
@@ -226,7 +229,7 @@ function decodeWhirlpoolManually(data: Buffer | Uint8Array): {
 /**
  * Convert a 16-byte LE buffer to a BigInt (u128)
  */
-function bufferToU128LE(buf: Buffer): bigint {
+function bufferToU128LE(buf: Buffer | Uint8Array): bigint {
   let result = 0n;
   for (let i = 15; i >= 0; i--) {
     result = (result << 8n) | BigInt(buf[i]);
