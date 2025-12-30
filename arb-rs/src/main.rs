@@ -77,10 +77,15 @@ struct ArbConfig {
     stable_mints: Option<Vec<String>>,
     // When true, apply 10^k magnitude calibration on ingest (backend already calibrates)
     calibrate_magnitude_on_ingest: bool,
-    // When true, only detect cycles that start from anchor tokens (SOL, USDC, etc.)
-    anchor_start_mode: bool,
-    // List of anchor mints to use as cycle starting points
+    // Start mint mode for cycle detection: "any" (default), "sol_usdc", or "anchors"
+    #[serde(default = "default_start_mint_mode")]
+    start_mint_mode: String,
+    // List of anchor mints to use as cycle starting points (used when start_mint_mode is "anchors")
     anchor_mints: Option<Vec<String>>,
+}
+
+fn default_start_mint_mode() -> String {
+    "any".to_string()
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -867,56 +872,71 @@ async fn main() -> anyhow::Result<()> {
                         "arb.detect.scope"
                     );
                     // Run detection
-                    let cycles = if s.config.anchor_start_mode {
-                        use std::collections::HashSet;
-                        let anchor_set: HashSet<String> = s.config.anchor_mints
-                            .clone()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .collect();
-                        if anchor_set.is_empty() {
-                            // Fallback to default anchors if none configured
-                            let mut defaults = HashSet::new();
-                            defaults.insert("So11111111111111111111111111111111111111112".to_string()); // SOL
-                            defaults.insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()); // USDC
-                            detect_negative_cycles_from_anchors(&s.graph, &defaults, max_hops)
-                        } else {
-                            detect_negative_cycles_from_anchors(&s.graph, &anchor_set, max_hops)
+                    let cycles = match s.config.start_mint_mode.as_str() {
+                        "sol_usdc" => {
+                            // SOL & USDC only mode - hardcoded anchors
+                            use std::collections::HashSet;
+                            let mut sol_usdc_set = HashSet::new();
+                            sol_usdc_set.insert("So11111111111111111111111111111111111111112".to_string()); // SOL
+                            sol_usdc_set.insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()); // USDC
+                            detect_negative_cycles_from_anchors(&s.graph, &sol_usdc_set, max_hops)
                         }
-                    } else if use_filtered {
-                        // Run both BF and SPFA for filtered detection if run_dual_algo is enabled
-                        if s.config.run_dual_algo {
-                            let mut combined = detect_negative_cycles_spfa_filtered(&s.graph, &affected_nodes, max_hops);
-                            let bf_cycles = detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops);
-                            // Dedupe by node sequence
-                            let existing: std::collections::HashSet<Vec<usize>> = combined.iter().map(|c| c.nodes.clone()).collect();
-                            for c in bf_cycles {
-                                if !existing.contains(&c.nodes) {
-                                    combined.push(c);
+                        "anchors" => {
+                            // Custom anchors mode - use configured anchor_mints
+                            use std::collections::HashSet;
+                            let anchor_set: HashSet<String> = s.config.anchor_mints
+                                .clone()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .collect();
+                            if anchor_set.is_empty() {
+                                // Fallback to SOL + USDC if no anchors configured
+                                let mut defaults = HashSet::new();
+                                defaults.insert("So11111111111111111111111111111111111111112".to_string());
+                                defaults.insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string());
+                                detect_negative_cycles_from_anchors(&s.graph, &defaults, max_hops)
+                            } else {
+                                detect_negative_cycles_from_anchors(&s.graph, &anchor_set, max_hops)
+                            }
+                        }
+                        _ => {
+                            // "any" mode or unknown - full graph scan (existing behavior)
+                            if use_filtered {
+                                // Run both BF and SPFA for filtered detection if run_dual_algo is enabled
+                                if s.config.run_dual_algo {
+                                    let mut combined = detect_negative_cycles_spfa_filtered(&s.graph, &affected_nodes, max_hops);
+                                    let bf_cycles = detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops);
+                                    // Dedupe by node sequence
+                                    let existing: std::collections::HashSet<Vec<usize>> = combined.iter().map(|c| c.nodes.clone()).collect();
+                                    for c in bf_cycles {
+                                        if !existing.contains(&c.nodes) {
+                                            combined.push(c);
+                                        }
+                                    }
+                                    combined
+                                } else if s.config.use_spfa {
+                                    detect_negative_cycles_spfa_filtered(&s.graph, &affected_nodes, max_hops)
+                                } else {
+                                    detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops)
+                                }
+                            } else {
+                                // Run both BF and SPFA on full graph if run_dual_algo is enabled
+                                if s.config.run_dual_algo {
+                                    let mut combined = detect_negative_cycles_spfa(&s.graph, max_hops);
+                                    let bf_cycles = detect_negative_cycles(&s.graph, max_hops);
+                                    let existing: std::collections::HashSet<Vec<usize>> = combined.iter().map(|c| c.nodes.clone()).collect();
+                                    for c in bf_cycles {
+                                        if !existing.contains(&c.nodes) {
+                                            combined.push(c);
+                                        }
+                                    }
+                                    combined
+                                } else if s.config.use_spfa {
+                                    detect_negative_cycles_spfa(&s.graph, max_hops)
+                                } else {
+                                    detect_negative_cycles(&s.graph, max_hops)
                                 }
                             }
-                            combined
-                        } else if s.config.use_spfa {
-                            detect_negative_cycles_spfa_filtered(&s.graph, &affected_nodes, max_hops)
-                        } else {
-                            detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops)
-                        }
-                    } else {
-                        // Run both BF and SPFA on full graph if run_dual_algo is enabled
-                        if s.config.run_dual_algo {
-                            let mut combined = detect_negative_cycles_spfa(&s.graph, max_hops);
-                            let bf_cycles = detect_negative_cycles(&s.graph, max_hops);
-                            let existing: std::collections::HashSet<Vec<usize>> = combined.iter().map(|c| c.nodes.clone()).collect();
-                            for c in bf_cycles {
-                                if !existing.contains(&c.nodes) {
-                                    combined.push(c);
-                                }
-                            }
-                            combined
-                        } else if s.config.use_spfa {
-                            detect_negative_cycles_spfa(&s.graph, max_hops)
-                        } else {
-                            detect_negative_cycles(&s.graph, max_hops)
                         }
                     };
                     let cycles_count = cycles.len();
@@ -4298,7 +4318,10 @@ struct ConfigReq {
     drop_stable_stable_hops: Option<bool>,
     stable_mints: Option<Vec<String>>,
     calibrate_magnitude_on_ingest: Option<bool>,
+    // Legacy field - kept for backward compatibility
     anchor_start_mode: Option<bool>,
+    // NEW: String-based start mint mode: "any", "sol_usdc", or "anchors"
+    start_mint_mode: Option<String>,
     anchor_mints: Option<Vec<String>>,
 }
 
@@ -4447,8 +4470,19 @@ async fn set_config(
     if let Some(v) = cfg.calibrate_magnitude_on_ingest {
         s.config.calibrate_magnitude_on_ingest = v;
     }
+    // Handle legacy anchor_start_mode (convert to start_mint_mode)
     if let Some(v) = cfg.anchor_start_mode {
-        s.config.anchor_start_mode = v;
+        s.config.start_mint_mode = if v { "anchors".to_string() } else { "any".to_string() };
+    }
+    // Prefer new start_mint_mode if provided
+    if let Some(v) = cfg.start_mint_mode {
+        let valid_modes = ["any", "sol_usdc", "anchors"];
+        if valid_modes.contains(&v.as_str()) {
+            s.config.start_mint_mode = v;
+        } else {
+            tracing::warn!(target = "arb_rs", "Invalid start_mint_mode: {}, using 'any'", v);
+            s.config.start_mint_mode = "any".to_string();
+        }
     }
     if let Some(v) = cfg.anchor_mints {
         s.config.anchor_mints = Some(v);
@@ -4561,10 +4595,17 @@ fn default_config() -> ArbConfig {
             .ok()
             .map(|v| v == "true")
             .unwrap_or(false),
-        anchor_start_mode: std::env::var("ARB_ANCHOR_START_MODE")
-            .ok()
-            .map(|v| v == "true")
-            .unwrap_or(false),
+        // Start mint mode: "any", "sol_usdc", or "anchors"
+        // Also supports legacy ARB_ANCHOR_START_MODE=true -> "anchors"
+        start_mint_mode: {
+            let legacy = std::env::var("ARB_ANCHOR_START_MODE")
+                .ok()
+                .map(|v| v == "true")
+                .unwrap_or(false);
+            std::env::var("ARB_START_MINT_MODE")
+                .ok()
+                .unwrap_or_else(|| if legacy { "anchors".to_string() } else { "any".to_string() })
+        },
         anchor_mints: Some(vec![
             "So11111111111111111111111111111111111111112".to_string(), // SOL
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC

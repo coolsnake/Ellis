@@ -544,3 +544,5 @@ backend/config/walletHistory.json
 package-lock.json
 backend/package-lock.json
 idls.json
+arb-rs/Cargo.lock
+arb-rs/target/.rustc_info.json

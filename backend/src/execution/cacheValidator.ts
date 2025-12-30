@@ -9,8 +9,9 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { executionCache } from './cache.js';
 import { logger } from '../utils/logger.js';
 import { logCatchError } from '../utils/errorHandler.js';
-import { peekRaydiumPools, peekOrcaPools, peekMeteoraPools } from '../server/pools.js';
+import { peekRaydiumPools, peekOrcaPools, peekMeteoraPools, peekPumpswapPools, peekMeteoraBalancedPools } from '../server/pools.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
+import { resolveManyDecimals } from '../server/pools/decimals.js';
 
 // RPC context for rate limiting
 const RPC_MODULE = 'cacheValidator';
@@ -262,6 +263,40 @@ export interface BatchValidationResult {
   results: PoolValidationResult[];
   timestamp: number;
   durationMs: number;
+}
+
+// === DECIMAL VALIDATION TYPES ===
+
+export type DecimalSource = 'pool' | 'cache' | 'jupiter' | 'rpc' | 'fallback';
+
+export interface DecimalValidationResult {
+  poolId: string;
+  dex: 'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+  valid: boolean;
+  issues: string[];
+  // Before validation
+  hadDecimalsA: boolean;
+  hadDecimalsB: boolean;
+  // After validation
+  decimalsA?: number;
+  decimalsB?: number;
+  // Resolution source
+  sourceA?: DecimalSource;
+  sourceB?: DecimalSource;
+  wasUpdated: boolean;
+}
+
+export interface DecimalBatchValidationResult {
+  dex: string;
+  totalPools: number;
+  poolsValidated: number;
+  poolsWithMissingDecimals: number;
+  poolsUpdated: number;
+  poolsStillMissing: number;
+  uniqueMintsResolved: number;
+  timestamp: number;
+  durationMs: number;
+  results: DecimalValidationResult[];
 }
 
 /**
@@ -1704,5 +1739,343 @@ export async function validatePoolRaydiumExBitmap(
       issue: `Error: ${e.message}`,
     };
   }
+}
+
+// === DECIMAL VALIDATION FUNCTIONS ===
+
+/**
+ * Get pools for a specific DEX from cache
+ */
+function getPoolsForDex(dex: 'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'meteora_balanced'): any[] {
+  switch (dex) {
+    case 'orca':
+      return peekOrcaPools()?.clmm || [];
+    case 'raydium': {
+      const raydium = peekRaydiumPools();
+      return [...(raydium?.clmm || []), ...(raydium?.amm || [])];
+    }
+    case 'meteora':
+      return peekMeteoraPools()?.clmm || [];
+    case 'pumpswap':
+      return peekPumpswapPools()?.amm || [];
+    case 'meteora_balanced':
+      return peekMeteoraBalancedPools()?.amm || [];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Validate and update decimals for a single pool
+ * Handles was_swapped orientation correctly
+ */
+function validateAndUpdatePoolDecimals(
+  pool: any,
+  decimalMap: Map<string, number>,
+  dex: 'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'meteora_balanced',
+  dryRun: boolean
+): DecimalValidationResult {
+  const issues: string[] = [];
+  const result: DecimalValidationResult = {
+    poolId: pool.id,
+    dex,
+    valid: false,
+    issues,
+    hadDecimalsA: Number.isFinite(pool.decimals_a),
+    hadDecimalsB: Number.isFinite(pool.decimals_b),
+    wasUpdated: false,
+  };
+  
+  // Get mints in CANONICAL order (mint_a, mint_b)
+  const mintA = pool.mint_a;
+  const mintB = pool.mint_b;
+  
+  if (!mintA || !mintB) {
+    issues.push('Missing mint_a or mint_b');
+    return result;
+  }
+  
+  // Get mints in NATIVE order (before swapping)
+  const nativeMintA = pool.native_mint_a || mintA;
+  const nativeMintB = pool.native_mint_b || mintB;
+  const wasSwapped = pool.was_swapped === true;
+  
+  // Resolve decimals for canonical mints
+  let decimalsA: number | undefined = pool.decimals_a;
+  let decimalsB: number | undefined = pool.decimals_b;
+  let sourceA: DecimalSource | undefined;
+  let sourceB: DecimalSource | undefined;
+  
+  // If already have decimals in pool, use them
+  if (Number.isFinite(decimalsA)) {
+    sourceA = 'pool';
+  } else {
+    // Try to resolve from map using canonical mint
+    const resolved = decimalMap.get(mintA);
+    if (Number.isFinite(resolved)) {
+      decimalsA = resolved;
+      sourceA = 'jupiter';
+    }
+  }
+  
+  if (Number.isFinite(decimalsB)) {
+    sourceB = 'pool';
+  } else {
+    const resolved = decimalMap.get(mintB);
+    if (Number.isFinite(resolved)) {
+      decimalsB = resolved;
+      sourceB = 'jupiter';
+    }
+  }
+  
+  // Fallback: try native mints if canonical failed and they differ
+  if (!Number.isFinite(decimalsA) && wasSwapped && nativeMintB && nativeMintB !== mintA) {
+    // If swapped, canonical mintA came from native mintB
+    const resolved = decimalMap.get(nativeMintB);
+    if (Number.isFinite(resolved)) {
+      decimalsA = resolved;
+      sourceA = 'jupiter';
+    }
+  }
+  
+  if (!Number.isFinite(decimalsB) && wasSwapped && nativeMintA && nativeMintA !== mintB) {
+    // If swapped, canonical mintB came from native mintA
+    const resolved = decimalMap.get(nativeMintA);
+    if (Number.isFinite(resolved)) {
+      decimalsB = resolved;
+      sourceB = 'jupiter';
+    }
+  }
+  
+  // Final fallback: use defaults based on common patterns
+  if (!Number.isFinite(decimalsA)) {
+    decimalsA = 9; // Default for unknown token A (often SOL or similar)
+    sourceA = 'fallback';
+    issues.push(`decimals_a fallback to 9 for mint ${mintA?.slice(0, 8)}…`);
+  }
+  
+  if (!Number.isFinite(decimalsB)) {
+    decimalsB = 6; // Default for unknown token B (often stablecoin)
+    sourceB = 'fallback';
+    issues.push(`decimals_b fallback to 6 for mint ${mintB?.slice(0, 8)}…`);
+  }
+  
+  result.decimalsA = decimalsA;
+  result.decimalsB = decimalsB;
+  result.sourceA = sourceA;
+  result.sourceB = sourceB;
+  
+  // Update pool if needed (unless dry run)
+  const needsUpdate = !result.hadDecimalsA || !result.hadDecimalsB;
+  if (needsUpdate && !dryRun) {
+    // Update pool object
+    pool.decimals_a = decimalsA;
+    pool.decimals_b = decimalsB;
+    
+    // Also update native decimals if we have native mints
+    if (pool.native_mint_a && pool.native_mint_b) {
+      if (wasSwapped) {
+        pool.native_decimals_a = decimalsB; // Swapped: native A = canonical B
+        pool.native_decimals_b = decimalsA; // Swapped: native B = canonical A
+      } else {
+        pool.native_decimals_a = decimalsA;
+        pool.native_decimals_b = decimalsB;
+      }
+    }
+    
+    // Update execution cache static entry
+    const stat = executionCache.getStatic(pool.id);
+    if (stat) {
+      executionCache.setStatic(pool.id, {
+        ...stat,
+        decimals_a: decimalsA,
+        decimals_b: decimalsB,
+        native_decimals_a: wasSwapped ? decimalsB : decimalsA,
+        native_decimals_b: wasSwapped ? decimalsA : decimalsB,
+      });
+    }
+    
+    result.wasUpdated = true;
+    
+    logger.debug('cache.decimals.pool_updated', {
+      cat: 'cache',
+      ctx: {
+        poolId: pool.id,
+        dex,
+        decimalsA,
+        decimalsB,
+        sourceA,
+        sourceB,
+        wasSwapped,
+      }
+    });
+  }
+  
+  // Valid only if we have real decimals (not fallback)
+  result.valid = sourceA !== 'fallback' && sourceB !== 'fallback';
+  
+  return result;
+}
+
+/**
+ * Validate and resolve decimals for all pools of a DEX
+ * 
+ * This function:
+ * 1. Collects all unique mints from pools
+ * 2. Batch resolves decimals from Jupiter/RPC
+ * 3. Updates pools with missing decimals (respecting was_swapped orientation)
+ * 4. Updates execution cache static entries
+ */
+export async function validateAndRefreshPoolDecimals(
+  connection: Connection,
+  dex: 'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'meteora_balanced',
+  options?: {
+    dryRun?: boolean;
+    limit?: number;
+  }
+): Promise<DecimalBatchValidationResult> {
+  const startTime = Date.now();
+  const dryRun = options?.dryRun ?? false;
+  
+  // Get pools from cache
+  const allPools = getPoolsForDex(dex);
+  const limit = options?.limit ?? allPools.length;
+  const poolsToProcess = allPools.slice(0, limit);
+  
+  logger.info('cache.decimals.validation.start', {
+    cat: 'cache',
+    ctx: { 
+      dex, 
+      totalPools: allPools.length, 
+      poolsToValidate: poolsToProcess.length, 
+      limit: limit === allPools.length ? 'all' : limit,
+      dryRun 
+    }
+  });
+  
+  // Collect unique mints
+  const mintSet = new Set<string>();
+  for (const pool of poolsToProcess) {
+    if (pool.mint_a) mintSet.add(pool.mint_a);
+    if (pool.mint_b) mintSet.add(pool.mint_b);
+    if (pool.native_mint_a) mintSet.add(pool.native_mint_a);
+    if (pool.native_mint_b) mintSet.add(pool.native_mint_b);
+  }
+  
+  // Batch resolve all decimals upfront
+  const mintArray = Array.from(mintSet);
+  let decimalMap: Map<string, number>;
+  
+  try {
+    decimalMap = await resolveManyDecimals(mintArray, { 
+      normalizeMode: true,
+      batchSize: 100,
+    });
+    
+    logger.info('cache.decimals.batch_resolved', {
+      cat: 'cache',
+      ctx: {
+        dex,
+        uniqueMints: mintArray.length,
+        resolved: decimalMap.size,
+      }
+    });
+  } catch (e: any) {
+    logger.warn('cache.decimals.batch_resolve_failed', {
+      cat: 'cache',
+      ctx: {
+        dex,
+        error: e.message,
+      }
+    });
+    decimalMap = new Map();
+  }
+  
+  const results: DecimalValidationResult[] = [];
+  let poolsWithMissing = 0;
+  let poolsUpdated = 0;
+  let poolsStillMissing = 0;
+  
+  for (const pool of poolsToProcess) {
+    const result = validateAndUpdatePoolDecimals(pool, decimalMap, dex, dryRun);
+    results.push(result);
+    
+    if (!result.hadDecimalsA || !result.hadDecimalsB) {
+      poolsWithMissing++;
+    }
+    if (result.wasUpdated) {
+      poolsUpdated++;
+    }
+    if (!result.valid) {
+      poolsStillMissing++;
+    }
+  }
+  
+  const durationMs = Date.now() - startTime;
+  
+  logger.info('cache.decimals.validation.complete', {
+    cat: 'cache',
+    ctx: {
+      dex,
+      totalPools: allPools.length,
+      poolsValidated: poolsToProcess.length,
+      poolsWithMissingDecimals: poolsWithMissing,
+      poolsUpdated,
+      poolsStillMissing,
+      uniqueMintsResolved: decimalMap.size,
+      durationMs,
+      dryRun,
+    }
+  });
+  
+  return {
+    dex,
+    totalPools: allPools.length,
+    poolsValidated: poolsToProcess.length,
+    poolsWithMissingDecimals: poolsWithMissing,
+    poolsUpdated,
+    poolsStillMissing,
+    uniqueMintsResolved: decimalMap.size,
+    timestamp: Date.now(),
+    durationMs,
+    results,
+  };
+}
+
+/**
+ * Validate and refresh decimals for all DEXes
+ */
+export async function validateAndRefreshAllDecimals(
+  connection: Connection,
+  options?: {
+    dryRun?: boolean;
+    limit?: number;
+  }
+): Promise<{ 
+  results: Record<string, DecimalBatchValidationResult>;
+  totalDurationMs: number;
+}> {
+  const startTime = Date.now();
+  const dexes: Array<'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'meteora_balanced'> = [
+    'orca', 'raydium', 'meteora', 'pumpswap', 'meteora_balanced'
+  ];
+  
+  const results: Record<string, DecimalBatchValidationResult> = {};
+  
+  for (const dex of dexes) {
+    try {
+      results[dex] = await validateAndRefreshPoolDecimals(connection, dex, options);
+    } catch (e: any) {
+      logger.warn('cache.decimals.dex_failed', {
+        cat: 'cache',
+        ctx: { dex, error: e.message }
+      });
+    }
+  }
+  
+  return {
+    results,
+    totalDurationMs: Date.now() - startTime,
+  };
 }
 

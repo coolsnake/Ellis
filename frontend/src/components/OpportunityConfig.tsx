@@ -23,7 +23,17 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
 
   useEffect(() => {
     (async () => {
-      try { const r = await fetch(`${apiBase}${ROUTES.arb.config}`); if (r.ok) setDet(await r.json()); } catch {}
+      try { 
+        const r = await fetch(`${apiBase}${ROUTES.arb.config}`); 
+        if (r.ok) {
+          const j = await r.json();
+          // Pre-format anchor_mints as CSV for the input field
+          const anchorMintsCsv = Array.isArray(j.anchor_mints) 
+            ? j.anchor_mints.join(', ') 
+            : '';
+          setDet({ ...j, anchor_mints_csv: anchorMintsCsv });
+        }
+      } catch {}
       try { const r = await fetch(`${apiBase}${ROUTES.exec.config}`); if (r.ok) { const j = await r.json(); setExecMode((j?.mode === 'direct') ? 'direct' : 'simulate'); } } catch {}
       try { 
         const r = await fetch(`${apiBase}/arb/executor/config`); 
@@ -146,7 +156,11 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       est_priority_fee_per_hop_lamports: toOptNum(det.est_priority_fee_per_hop_lamports),
       // cadence/perf
       filtered_detect_enable: !!det.filtered_detect_enable,
-      anchor_start_mode: !!det.anchor_start_mode,
+      // Start mint mode: "any", "sol_usdc", or "anchors"
+      start_mint_mode: det.start_mint_mode || 'any',
+      // Custom anchor mints (used when start_mint_mode is "anchors")
+      anchor_mints: String(det.anchor_mints_csv || '')
+        .split(',').map(s => s.trim()).filter(Boolean),
       filtered_node_ratio: toOptNum(det.filtered_node_ratio),
       filtered_expand_hops: toOptNum(det.filtered_expand_hops),
       periodic_full_ms: toOptNum(det.periodic_full_ms),
@@ -275,10 +289,54 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             <h3 className="text-lg font-semibold text-white mb-3">Cadence & Performance</h3>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!det.filtered_detect_enable} onChange={e=>set('filtered_detect_enable', e.target.checked)} />Enable filtered detection</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={!!det.anchor_start_mode} onChange={e=>set('anchor_start_mode', e.target.checked)} />Start cycles from anchors only</label>
+              
+              {/* Start Mint Mode dropdown */}
+              <div className="md:col-span-2">
+                <label className="block mb-1 text-gray-300">Cycle Start Mode</label>
+                <select 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1"
+                  value={det.start_mint_mode || 'any'}
+                  onChange={e=>set('start_mint_mode', e.target.value)}
+                >
+                  <option value="any">Any mint (full scan)</option>
+                  <option value="sol_usdc">SOL & USDC only</option>
+                  <option value="anchors">Custom anchors</option>
+                </select>
+              </div>
+              
               <div><label className="block mb-1 text-gray-300">Node ratio</label><input type="number" step={0.01} className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.filtered_node_ratio ?? ''} onChange={e=>set('filtered_node_ratio', Number(e.target.value)||0)} /></div>
               <div><label className="block mb-1 text-gray-300">Expand hops</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.filtered_expand_hops ?? ''} onChange={e=>set('filtered_expand_hops', Number(e.target.value)||0)} /></div>
               <div><label className="block mb-1 text-gray-300">Periodic full (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.periodic_full_ms ?? ''} onChange={e=>set('periodic_full_ms', Number(e.target.value)||0)} /></div>
+              
+              {/* Custom anchors input - only shown when "anchors" mode selected */}
+              {det.start_mint_mode === 'anchors' && (
+                <div className="md:col-span-4">
+                  <label className="block mb-1 text-gray-300">
+                    Anchor Mints (comma-separated)
+                    <span className="text-xs text-gray-500 ml-2">Cycles will only start from these tokens</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 font-mono text-xs" 
+                    placeholder="So11111111111111111111111111111111111111112, EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+                    value={det.anchor_mints_csv ?? (Array.isArray(det.anchor_mints) ? det.anchor_mints.join(', ') : '')} 
+                    onChange={e=>set('anchor_mints_csv', e.target.value)} 
+                  />
+                </div>
+              )}
+            </div>
+            
+            {/* Mode explanation */}
+            <div className="mt-3 text-xs text-gray-400">
+              {(det.start_mint_mode || 'any') === 'any' && (
+                <span><strong>Full scan:</strong> Detects cycles starting from any token. More comprehensive but slower.</span>
+              )}
+              {det.start_mint_mode === 'sol_usdc' && (
+                <span><strong>SOL & USDC:</strong> Only detects cycles that start from SOL or USDC. Faster, focuses on high-liquidity paths.</span>
+              )}
+              {det.start_mint_mode === 'anchors' && (
+                <span><strong>Custom anchors:</strong> Only detects cycles starting from specified tokens. Configure anchors above.</span>
+              )}
             </div>
           </div>
 

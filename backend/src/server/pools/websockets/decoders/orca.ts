@@ -366,7 +366,7 @@ export async function handleOrcaUpdate(
     wsDecodeStats.orca.attempts += 1;
     
     // Log entry for debugging
-    logger.info('orca.decoder.handleUpdate.entry', {
+    logger.debug('orca.decoder.handleUpdate.entry', {
       poolId: poolId.slice(0, 8) + '…',
       hasData: !!info?.data,
       dataLength: info?.data?.length || 0,
@@ -397,20 +397,7 @@ export async function handleOrcaUpdate(
     };
 
     // Decode the pool - pass full AccountInfo, not just data buffer
-    logger.info('orca.decoder.calling_decode', {
-      poolId: poolId.slice(0, 8) + '…',
-      dataLength: data.length,
-      hasAccountPubkey: !!accountPubkey,
-      cat: 'pools'
-    });
-    
     const decoded = await decodeOrcaWhirlpool(normalizedInfo, poolId, accountPubkey);
-    
-    logger.info('orca.decoder.decode_result', {
-      poolId: poolId.slice(0, 8) + '…',
-      success: !!decoded,
-      cat: 'pools'
-    });
     
     if (!decoded) {
       wsDecodeStats.orca.failures += 1;
@@ -422,12 +409,10 @@ export async function handleOrcaUpdate(
     const sqrt_price_x64 = sqrtRaw ? Number(sqrtRaw) : Number(parsed.sqrtPrice);
 
     // Log parsed values for debugging
-    logger.info('orca.decoder.parsed_values', {
+    logger.debug('orca.decoder.parsed_values', {
       poolId: poolId.slice(0, 8) + '…',
       mintA: mintA?.slice(0, 8) + '…',
       mintB: mintB?.slice(0, 8) + '…',
-      sqrtRaw: sqrtRaw?.toString()?.slice(0, 20) + '…',
-      sqrtRawType: typeof sqrtRaw,
       hasSqrtRaw: !!sqrtRaw,
       cat: 'pools'
     });
@@ -445,16 +430,33 @@ export async function handleOrcaUpdate(
       if (Number.isFinite(decA)) validateDecimalsForMint(mintA, decA!, poolId, 'Orca');
       if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Orca');
     } catch (decErr) {
-      logger.info('orca.decoder.decimals_error', {
+      logger.debug('orca.decoder.decimals_error', {
         poolId: poolId.slice(0, 8) + '…',
         error: String((decErr as Error)?.message || decErr),
         cat: 'pools'
       });
-      if (!Number.isFinite(decA)) decA = 9;
-      if (!Number.isFinite(decB)) decB = 6;
     }
 
-    logger.info('orca.decoder.decimals_resolved', {
+    // Fallback to defaults if decimals not resolved (moved outside catch block)
+    // This ensures we use fallbacks even when resolveDecimals returns undefined (not an error)
+    if (!Number.isFinite(decA)) {
+      logger.debug('orca.decoder.decimals_fallback_a', { 
+        poolId: poolId.slice(0, 8) + '…', 
+        mintA: mintA?.slice(0, 8) + '…', 
+        cat: 'pools' 
+      });
+      decA = 9;
+    }
+    if (!Number.isFinite(decB)) {
+      logger.debug('orca.decoder.decimals_fallback_b', { 
+        poolId: poolId.slice(0, 8) + '…', 
+        mintB: mintB?.slice(0, 8) + '…', 
+        cat: 'pools' 
+      });
+      decB = 6;
+    }
+
+    logger.debug('orca.decoder.decimals_resolved', {
       poolId: poolId.slice(0, 8) + '…',
       decA,
       decB,
@@ -487,7 +489,7 @@ export async function handleOrcaUpdate(
         });
       }
     } else {
-      logger.info('orca.decoder.cannot_process_price', {
+      logger.debug('orca.decoder.cannot_process_price', {
         poolId: poolId.slice(0, 8) + '…',
         hasDecA: Number.isFinite(decA),
         hasDecB: Number.isFinite(decB),

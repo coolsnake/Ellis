@@ -1496,7 +1496,10 @@ async function extractDexAccounts(
         // - Error 3007: Derived PDAs might not exist on-chain (owned by System Program)
         // - Error 3005: Meteora tries to read ALL passed bin arrays, failing if any are bad
         // Jupiter and other successful swaps use 2-3 bin arrays typically.
-        break
+        
+        // CRITICAL: Return early for Meteora to avoid truncation by getAccountsNeededForDex
+        // which only returns 18 (swap), but swap2 needs 19 accounts
+        return accounts;
 
       case DexType.Orca:
         // Orca Whirlpool supports two swap variants:
