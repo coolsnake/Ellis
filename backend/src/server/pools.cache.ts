@@ -68,3 +68,84 @@ export function peekOrcaPools(): PoolsPayload { return orcaCache.data || { amm: 
 export function peekMeteoraPools(): PoolsPayload { return meteoraCache.data || { amm: [], clmm: [] }; }
 export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.data || { amm: [], clmm: [] }; }
 export function peekPumpswapPools(): PoolsPayload { return pumpswapCache.data || { amm: [], clmm: [] }; }
+
+/**
+ * Update pool objects in cache with validated tick/activeId data.
+ * This ensures snapshots save fresh data, not stale cached values.
+ * 
+ * @param updates - Array of pool updates with fresh tick/activeId values
+ * @returns Number of pools updated
+ */
+export function updatePoolCacheFromValidation(
+  updates: Array<{
+    poolId: string;
+    dex: 'orca' | 'raydium' | 'meteora';
+    currentTick?: number;
+    activeId?: number;
+    tickSpacing?: number;
+    binStep?: number;
+    tickArrayLower?: string;
+    tickArrayCenter?: string;
+    tickArrayUpper?: string;
+    binArrayLower?: string;
+    binArrayUpper?: string;
+  }>
+): { updated: number; byDex: Record<string, number> } {
+  let updated = 0;
+  const byDex: Record<string, number> = { orca: 0, raydium: 0, meteora: 0 };
+  
+  for (const update of updates) {
+    const { poolId, dex, currentTick, activeId, tickSpacing, binStep,
+            tickArrayLower, tickArrayCenter, tickArrayUpper,
+            binArrayLower, binArrayUpper } = update;
+    
+    let cache: { data: PoolsPayload | null } | null = null;
+    
+    if (dex === 'orca') cache = orcaCache;
+    else if (dex === 'raydium') cache = raydiumCache;
+    else if (dex === 'meteora') cache = meteoraCache;
+    
+    if (!cache?.data?.clmm) continue;
+    
+    const pool = cache.data.clmm.find(p => p.id === poolId);
+    if (!pool) continue;
+    
+    let poolUpdated = false;
+    
+    // Update tick/activeId
+    if (dex === 'meteora' && activeId !== undefined) {
+      (pool as any).active_id = activeId;
+      poolUpdated = true;
+    } else if ((dex === 'orca' || dex === 'raydium') && currentTick !== undefined) {
+      (pool as any).tick_current = currentTick;
+      (pool as any).tick_current_index = currentTick;
+      poolUpdated = true;
+    }
+    
+    // Update tick spacing / bin step
+    if (tickSpacing !== undefined) {
+      pool.tick_spacing = tickSpacing;
+    }
+    if (dex === 'meteora' && binStep !== undefined) {
+      (pool as any).bin_step = binStep;
+    }
+    
+    // Update tick arrays (Orca/Raydium)
+    if (tickArrayLower !== undefined) (pool as any).tick_array_lower = tickArrayLower;
+    if (tickArrayCenter !== undefined) (pool as any).tick_array_center = tickArrayCenter;
+    if (tickArrayUpper !== undefined) (pool as any).tick_array_upper = tickArrayUpper;
+    
+    // Update bin arrays (Meteora)
+    if (binArrayLower !== undefined) (pool as any).bin_array_lower = binArrayLower;
+    if (binArrayUpper !== undefined) (pool as any).bin_array_upper = binArrayUpper;
+    
+    // Update timestamp
+    if (poolUpdated) {
+      pool.updated_ms = Date.now();
+      updated++;
+      byDex[dex]++;
+    }
+  }
+  
+  return { updated, byDex };
+}

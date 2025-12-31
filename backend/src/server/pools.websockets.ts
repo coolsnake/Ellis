@@ -472,6 +472,179 @@ export function clearBitmapEligibilityTracking(): void {
   clearPoolEligibilityTracking();
 }
 
+/**
+ * Update pool eligibility state from cache validation results.
+ * Call this after validatePoolCache to sync eligibility tracking with validated data.
+ * 
+ * @param poolId - The pool's public key
+ * @param dex - The DEX type
+ * @param validationResult - The eligibility data from validation
+ * @returns Object indicating if state was updated and what changed
+ */
+export function updateEligibilityFromValidation(
+  poolId: string,
+  dex: DexType,
+  validationResult: {
+    tickOrBin?: number;
+    tickSpacing?: number;
+    hasExtension: boolean;
+    isEligibleForTrading: boolean;
+    arrayIndex?: number;
+  }
+): { updated: boolean; changed: boolean; previousEligible?: boolean } {
+  const { tickOrBin, tickSpacing, hasExtension, isEligibleForTrading, arrayIndex } = validationResult;
+  
+  const existingState = poolEligibility.get(poolId);
+  const previousEligible = existingState?.currentlyEligible;
+  
+  // Calculate array index if not provided
+  const finalArrayIndex = arrayIndex ?? (tickOrBin !== undefined 
+    ? calculateArrayIndex(tickOrBin, dex, tickSpacing) 
+    : 0);
+  
+  // Update the state
+  poolEligibility.set(poolId, {
+    dex,
+    hasExtension,
+    currentlyEligible: isEligibleForTrading,
+    lastTickOrBin: tickOrBin ?? existingState?.lastTickOrBin ?? 0,
+    lastArrayIndex: finalArrayIndex,
+    tickSpacing,
+  });
+  
+  const changed = previousEligible !== undefined && previousEligible !== isEligibleForTrading;
+  
+  if (changed) {
+    logger.info(`${dex}.eligibility.validation_updated`, {
+      poolId: poolId.slice(0, 8) + '…',
+      tickOrBin,
+      arrayIndex: finalArrayIndex,
+      eligible: isEligibleForTrading,
+      previouslyEligible: previousEligible,
+      hasExtension,
+      cat: 'pools'
+    });
+    
+    // Trigger callback if registered
+    if (onPoolEligibilityChange) {
+      try {
+        onPoolEligibilityChange(poolId, dex, isEligibleForTrading, finalArrayIndex);
+      } catch (e) {
+        logger.warn(`${dex}.eligibility.validation_callback_error`, {
+          poolId: poolId.slice(0, 8) + '…',
+          error: String((e as any)?.message || e),
+          cat: 'pools'
+        });
+      }
+    }
+  }
+  
+  return { updated: true, changed, previousEligible };
+}
+
+/**
+ * Bulk update pool eligibility from batch validation results.
+ * 
+ * @param results - Array of validation results from validatePoolCacheBatch
+ * @returns Summary of updates
+ */
+export function updateEligibilityFromBatchValidation(
+  results: Array<{
+    poolId: string;
+    dex: 'orca' | 'raydium' | 'meteora';
+    // Meteora
+    bitmapExtensionValidation?: {
+      pdaExistsOnChain: boolean;
+      isEligibleForTrading?: boolean;
+      binArrayIndex?: number;
+    };
+    // Raydium
+    exBitmapValidation?: {
+      pdaExistsOnChain: boolean;
+      isEligibleForTrading?: boolean;
+      tickArrayIndex?: number;
+    };
+    // Orca
+    orcaTickEligibility?: {
+      centerArrayExists: boolean;
+      isEligibleForTrading: boolean;
+      tickArrayIndex?: number;
+    };
+    cacheData?: {
+      currentTick?: number;
+      activeId?: number;
+      tickSpacing?: number;
+      binStep?: number;
+    };
+  }>
+): { updated: number; changed: number; byDex: Record<DexType, { updated: number; changed: number }> } {
+  let updated = 0;
+  let changed = 0;
+  const byDex: Record<DexType, { updated: number; changed: number }> = {
+    meteora: { updated: 0, changed: 0 },
+    raydium: { updated: 0, changed: 0 },
+    orca: { updated: 0, changed: 0 },
+  };
+  
+  for (const result of results) {
+    const { poolId, dex, bitmapExtensionValidation, exBitmapValidation, orcaTickEligibility, cacheData } = result;
+    
+    let validationData: {
+      tickOrBin?: number;
+      tickSpacing?: number;
+      hasExtension: boolean;
+      isEligibleForTrading: boolean;
+      arrayIndex?: number;
+    } | null = null;
+    
+    if (dex === 'meteora' && bitmapExtensionValidation?.isEligibleForTrading !== undefined) {
+      validationData = {
+        tickOrBin: cacheData?.activeId,
+        hasExtension: bitmapExtensionValidation.pdaExistsOnChain,
+        isEligibleForTrading: bitmapExtensionValidation.isEligibleForTrading,
+        arrayIndex: bitmapExtensionValidation.binArrayIndex,
+      };
+    } else if (dex === 'raydium' && exBitmapValidation?.isEligibleForTrading !== undefined) {
+      validationData = {
+        tickOrBin: cacheData?.currentTick,
+        tickSpacing: cacheData?.tickSpacing,
+        hasExtension: exBitmapValidation.pdaExistsOnChain,
+        isEligibleForTrading: exBitmapValidation.isEligibleForTrading,
+        arrayIndex: exBitmapValidation.tickArrayIndex,
+      };
+    } else if (dex === 'orca' && orcaTickEligibility) {
+      validationData = {
+        tickOrBin: cacheData?.currentTick,
+        tickSpacing: cacheData?.tickSpacing,
+        hasExtension: orcaTickEligibility.centerArrayExists,
+        isEligibleForTrading: orcaTickEligibility.isEligibleForTrading,
+        arrayIndex: orcaTickEligibility.tickArrayIndex,
+      };
+    }
+    
+    if (validationData) {
+      const updateResult = updateEligibilityFromValidation(poolId, dex, validationData);
+      if (updateResult.updated) {
+        updated++;
+        byDex[dex].updated++;
+      }
+      if (updateResult.changed) {
+        changed++;
+        byDex[dex].changed++;
+      }
+    }
+  }
+  
+  logger.info('eligibility.batch_validation_update', {
+    updated,
+    changed,
+    byDex,
+    cat: 'pools'
+  });
+  
+  return { updated, changed, byDex };
+}
+
 // ============================================================================
 // End Pool Eligibility Tracking
 // ============================================================================

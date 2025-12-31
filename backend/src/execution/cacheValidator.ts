@@ -11,8 +11,10 @@ import { setClmmStatic, getClmmStatic } from './clmmCache.js';
 import { logger } from '../utils/logger.js';
 import { logCatchError } from '../utils/errorHandler.js';
 import { peekRaydiumPools, peekOrcaPools, peekMeteoraPools, peekPumpswapPools, peekMeteoraBalancedPools } from '../server/pools.js';
+import { updatePoolCacheFromValidation } from '../server/pools.cache.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { resolveManyDecimals } from '../server/pools/decimals.js';
+import { updateEligibilityFromBatchValidation } from '../server/pools.websockets.js';
 
 // RPC context for rate limiting
 const RPC_MODULE = 'cacheValidator';
@@ -1738,6 +1740,42 @@ export async function validatePoolCacheBatch(
       poolsNeedingArrayRederivation,
       durationMs,
     }
+  });
+  
+  // Update eligibility tracking state with validated data
+  const eligibilityUpdate = updateEligibilityFromBatchValidation(results);
+  
+  logger.info('cache.validation.eligibility_synced', {
+    cat: 'cache',
+    dex,
+    ...eligibilityUpdate,
+  });
+  
+  // Update pool cache objects with validated tick/activeId data
+  // This ensures snapshots save fresh data when persisted
+  const poolCacheUpdates = results
+    .filter(r => r.cacheData && (r.cacheData.currentTick !== undefined || r.cacheData.activeId !== undefined))
+    .map(r => ({
+      poolId: r.poolId,
+      dex: r.dex,
+      currentTick: r.cacheData?.currentTick,
+      activeId: r.cacheData?.activeId,
+      tickSpacing: r.cacheData?.tickSpacing,
+      binStep: r.cacheData?.binStep,
+      // Include tick/bin arrays from validation results
+      tickArrayLower: r.tickArrayValidation?.lower?.address,
+      tickArrayCenter: r.tickArrayValidation?.center?.address,
+      tickArrayUpper: r.tickArrayValidation?.upper?.address,
+      binArrayLower: r.binArrayValidation?.lower?.address,
+      binArrayUpper: r.binArrayValidation?.upper?.address,
+    }));
+  
+  const poolCacheUpdate = updatePoolCacheFromValidation(poolCacheUpdates);
+  
+  logger.info('cache.validation.pool_cache_synced', {
+    cat: 'cache',
+    dex,
+    ...poolCacheUpdate,
   });
   
   return {
