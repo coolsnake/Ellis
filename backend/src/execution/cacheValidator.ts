@@ -955,6 +955,7 @@ export async function validatePoolCache(
           // No issues - arrays are valid
         } else if (tickArrays) {
           // Arrays derived but center doesn't exist on-chain
+          // STILL update the hot cache with fresh tick data, but clear invalid arrays
           logger.debug('cache.validation.tick_array_not_found', {
             cat: 'cache',
             ctx: {
@@ -963,8 +964,77 @@ export async function validatePoolCache(
               freshTick: currentTick,
               tickSpacing,
               centerAddress: validation?.center?.address?.slice(0, 12),
+              lowerExists: validation?.lower?.exists,
+              upperExists: validation?.upper?.exists,
             }
           });
+          
+          // Update hot cache with fresh tick but ONLY include arrays that exist on-chain
+          const existingHot = executionCache.getHot(basePoolId) || {};
+          const validatedArrays: {
+            center?: string;
+            lower?: string | string[];
+            upper?: string | string[];
+          } = {};
+          
+          // Only include arrays that actually exist on-chain
+          if (validation?.center?.exists && tickArrays.center) {
+            validatedArrays.center = tickArrays.center;
+          }
+          if (validation?.lower?.exists && tickArrays.lower) {
+            validatedArrays.lower = tickArrays.lower;
+          }
+          if (validation?.upper?.exists && tickArrays.upper) {
+            validatedArrays.upper = tickArrays.upper;
+          }
+          
+          executionCache.setHot(basePoolId, {
+            ...existingHot,
+            currentTickIndex: currentTick,
+            tickSpacing,
+            // Set tickArrays to only contain existing arrays, or undefined if none exist
+            tickArrays: Object.keys(validatedArrays).length > 0 ? validatedArrays as any : undefined,
+          });
+          
+          // Update static cache - clear arrays that don't exist
+          const existingStat = executionCache.getStatic(basePoolId) || {};
+          executionCache.setStatic(basePoolId, {
+            ...existingStat,
+            tick_spacing: tickSpacing,
+            tickArrayLower: validation?.lower?.exists 
+              ? (Array.isArray(tickArrays.lower) ? tickArrays.lower[0] : tickArrays.lower)
+              : undefined,
+            tickArrayCenter: validation?.center?.exists ? tickArrays.center : undefined,
+            tickArrayUpper: validation?.upper?.exists
+              ? (Array.isArray(tickArrays.upper) ? tickArrays.upper[0] : tickArrays.upper)
+              : undefined,
+          });
+          
+          // For Raydium, also update the CLMM cache
+          if (dex === 'raydium') {
+            const existingClmm = getClmmStatic(basePoolId);
+            if (existingClmm) {
+              setClmmStatic(basePoolId, {
+                ...existingClmm,
+                tickSpacing,
+                tickArrays: Object.keys(validatedArrays).length > 0 ? validatedArrays as any : undefined,
+                lastUpdateMs: Date.now(),
+              });
+            }
+          }
+          
+          logger.info('cache.validation.tick_array_cleared_stale', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8),
+              dex,
+              freshTick: currentTick,
+              centerExists: validation?.center?.exists,
+              lowerExists: validation?.lower?.exists,
+              upperExists: validation?.upper?.exists,
+            }
+          });
+          
           issues.push('Center tick array does not exist on-chain (pool may have no liquidity)');
         } else {
           issues.push('Failed to derive tick arrays from fresh chain data');
@@ -1296,6 +1366,7 @@ export async function validatePoolCache(
           // No issues - arrays are valid
         } else {
           // No bin arrays exist on-chain
+          // STILL update the hot cache with fresh activeId, but clear invalid arrays
           logger.debug('cache.validation.bin_array_not_found', {
             cat: 'cache',
             ctx: {
@@ -1303,8 +1374,65 @@ export async function validatePoolCache(
               dex: 'meteora',
               freshActiveId: activeId,
               binStep,
+              lowerExists: validation?.lower?.exists,
+              upperExists: validation?.upper?.exists,
+              activeExists: validation?.active?.exists,
             }
           });
+          
+          // Update hot cache with fresh activeId but ONLY include arrays that exist on-chain
+          const existingHot = executionCache.getHot(basePoolId) || {};
+          const validatedBinArrays: {
+            lower?: string;
+            upper?: string;
+            active?: string;
+            arrays?: any[];
+          } = {};
+          
+          // Only include arrays that actually exist on-chain
+          if (validation?.lower?.exists && binArrays?.lower) {
+            validatedBinArrays.lower = binArrays.lower;
+          }
+          if (validation?.upper?.exists && binArrays?.upper) {
+            validatedBinArrays.upper = binArrays.upper;
+          }
+          if (validation?.active?.exists && binArrays?.active) {
+            validatedBinArrays.active = binArrays.active;
+          }
+          if (binArrays?.arrays && binArrays.arrays.length > 0) {
+            // Filter to only existing arrays
+            validatedBinArrays.arrays = binArrays.arrays.filter((a: any) => a.exists !== false);
+          }
+          
+          executionCache.setHot(basePoolId, {
+            ...existingHot,
+            activeId,
+            binStep,
+            // Set binArrays to only contain existing arrays, or undefined if none exist
+            binArrays: Object.keys(validatedBinArrays).length > 0 ? validatedBinArrays as any : undefined,
+          });
+          
+          // Update static cache - clear arrays that don't exist
+          const existingStat = executionCache.getStatic(basePoolId) || {};
+          executionCache.setStatic(basePoolId, {
+            ...existingStat,
+            binStep,
+            bin_array_lower: validation?.lower?.exists ? binArrays?.lower : undefined,
+            bin_array_upper: validation?.upper?.exists ? binArrays?.upper : undefined,
+          });
+          
+          logger.info('cache.validation.bin_array_cleared_stale', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8),
+              dex: 'meteora',
+              freshActiveId: activeId,
+              lowerExists: validation?.lower?.exists,
+              upperExists: validation?.upper?.exists,
+              activeExists: validation?.active?.exists,
+            }
+          });
+          
           issues.push('No bin arrays exist on-chain (pool may have no liquidity)');
         }
       } else {
@@ -1753,6 +1881,7 @@ export async function validatePoolCacheBatch(
   
   // Update pool cache objects with validated tick/activeId data
   // This ensures snapshots save fresh data when persisted
+  // ONLY include arrays that actually exist on-chain
   const poolCacheUpdates = results
     .filter(r => r.cacheData && (r.cacheData.currentTick !== undefined || r.cacheData.activeId !== undefined))
     .map(r => ({
@@ -1762,12 +1891,12 @@ export async function validatePoolCacheBatch(
       activeId: r.cacheData?.activeId,
       tickSpacing: r.cacheData?.tickSpacing,
       binStep: r.cacheData?.binStep,
-      // Include tick/bin arrays from validation results
-      tickArrayLower: r.tickArrayValidation?.lower?.address,
-      tickArrayCenter: r.tickArrayValidation?.center?.address,
-      tickArrayUpper: r.tickArrayValidation?.upper?.address,
-      binArrayLower: r.binArrayValidation?.lower?.address,
-      binArrayUpper: r.binArrayValidation?.upper?.address,
+      // ONLY include tick/bin arrays that exist on-chain (validated)
+      tickArrayLower: r.tickArrayValidation?.lower?.exists ? r.tickArrayValidation.lower.address : undefined,
+      tickArrayCenter: r.tickArrayValidation?.center?.exists ? r.tickArrayValidation.center.address : undefined,
+      tickArrayUpper: r.tickArrayValidation?.upper?.exists ? r.tickArrayValidation.upper.address : undefined,
+      binArrayLower: r.binArrayValidation?.lower?.exists ? r.binArrayValidation.lower.address : undefined,
+      binArrayUpper: r.binArrayValidation?.upper?.exists ? r.binArrayValidation.upper.address : undefined,
     }));
   
   const poolCacheUpdate = updatePoolCacheFromValidation(poolCacheUpdates);

@@ -1024,10 +1024,18 @@ async function extractDexAccounts(
         // Raydium CLMM passes input_vault and output_vault based on swap direction
         // native_account_a is paired with native_mint_a (token_vault_0 with token_mint_0)
         // Select vault based on which native mint matches input/output
-        const inputVault = (hop.inputMint === nativeMintA)
+        // MUST use same fallback logic as isAtoB direction check!
+        const inputIsNativeA = nativeMintA 
+          ? (hop.inputMint === nativeMintA)
+          : (hop.inputMint === poolMintA);  // Fall back to canonical if native missing
+        const outputIsNativeA = nativeMintA
+          ? (hop.outputMint === nativeMintA)
+          : (hop.outputMint === poolMintA);  // Fall back to canonical if native missing
+        
+        const inputVault = inputIsNativeA
           ? (nativeAccountA || hop.vaultA || poolAccountA || hop.poolId)
           : (nativeAccountB || hop.vaultB || poolAccountB || hop.poolId);
-        const outputVault = (hop.outputMint === nativeMintA)
+        const outputVault = outputIsNativeA
           ? (nativeAccountA || hop.vaultA || poolAccountA || hop.poolId)
           : (nativeAccountB || hop.vaultB || poolAccountB || hop.poolId);
         
@@ -1047,6 +1055,12 @@ async function extractDexAccounts(
           nativeMintB: nativeMintB || 'missing',
           nativeAccountA: nativeAccountA || 'missing',
           nativeAccountB: nativeAccountB || 'missing',
+          // Vault selection logic
+          inputIsNativeA,
+          outputIsNativeA,
+          selectedInputVaultSource: inputIsNativeA ? 'vaultA' : 'vaultB',
+          selectedOutputVaultSource: outputIsNativeA ? 'vaultA' : 'vaultB',
+          vaultSelectionUsedFallback: !nativeMintA,
           // Canonical ordering (may be swapped)
           canonicalMintA: poolMintA || 'missing',
           canonicalMintB: poolMintB || 'missing',

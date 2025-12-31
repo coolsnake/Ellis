@@ -245,6 +245,15 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
   const savedAtMs = snapshot.savedAtMs || now;
   let executionCachePopulated = 0;
   
+  // CRITICAL: Clear execution cache before populating from snapshot
+  // This prevents stale data from previous runs persisting
+  try {
+    executionCache.clear();
+    logger.debug('pools.hydrate.execution_cache_cleared', { cat: 'pools' });
+  } catch (e) {
+    logger.warn('pools.hydrate.execution_cache_clear_failed', { error: String(e), cat: 'pools' });
+  }
+  
   if (snapshot.raydium) {
     raydiumCache.data = snapshot.raydium;
     raydiumCache.ts = savedAtMs;
@@ -382,13 +391,21 @@ function populateExecutionCacheFromPools(
       
       // Tick arrays (Raydium CLMM and Orca Whirlpool) - CRITICAL for swap execution
       // These should be validated arrays from pool fetch or websocket updates
-      if ((pool as any).tick_array_lower) staticData.tickArrayLower = (pool as any).tick_array_lower;
-      if ((pool as any).tick_array_center) staticData.tickArrayCenter = (pool as any).tick_array_center;
-      if ((pool as any).tick_array_upper) staticData.tickArrayUpper = (pool as any).tick_array_upper;
-      // Alternative field names (from different sources)
-      if ((pool as any).tickArrayLower) staticData.tickArrayLower = (pool as any).tickArrayLower;
-      if ((pool as any).tickArrayCenter) staticData.tickArrayCenter = (pool as any).tickArrayCenter;
-      if ((pool as any).tickArrayUpper) staticData.tickArrayUpper = (pool as any).tickArrayUpper;
+      // Note: null means "explicitly cleared/non-existent", undefined means "unknown"
+      const poolTickArrayLower = (pool as any).tick_array_lower ?? (pool as any).tickArrayLower;
+      const poolTickArrayCenter = (pool as any).tick_array_center ?? (pool as any).tickArrayCenter;
+      const poolTickArrayUpper = (pool as any).tick_array_upper ?? (pool as any).tickArrayUpper;
+      
+      // Only set if we have a real value (not null = explicitly cleared)
+      if (poolTickArrayLower && poolTickArrayLower !== null) {
+        staticData.tickArrayLower = poolTickArrayLower;
+      }
+      if (poolTickArrayCenter && poolTickArrayCenter !== null) {
+        staticData.tickArrayCenter = poolTickArrayCenter;
+      }
+      if (poolTickArrayUpper && poolTickArrayUpper !== null) {
+        staticData.tickArrayUpper = poolTickArrayUpper;
+      }
       
       // Orca Whirlpool-specific
       if ((pool as any).oracle) staticData.oracle = (pool as any).oracle;
@@ -401,6 +418,16 @@ function populateExecutionCacheFromPools(
       }
       if ((pool as any).token_program_a) staticData.token_program_a = (pool as any).token_program_a;
       if ((pool as any).token_program_b) staticData.token_program_b = (pool as any).token_program_b;
+      
+      // Meteora bin arrays - only set if not null (null = explicitly cleared)
+      const binArrayLower = (pool as any).bin_array_lower;
+      const binArrayUpper = (pool as any).bin_array_upper;
+      if (binArrayLower && binArrayLower !== null) {
+        staticData.bin_array_lower = binArrayLower;
+      }
+      if (binArrayUpper && binArrayUpper !== null) {
+        staticData.bin_array_upper = binArrayUpper;
+      }
       
       executionCache.setStatic(pool.id, staticData);
       populated++;
@@ -440,16 +467,31 @@ function populateExecutionCacheFromPools(
       
       // Tick arrays for hot cache - CRITICAL for swap execution
       // Check multiple possible field names from different sources
-      const tickArrayLower = (pool as any).tick_array_lower || (pool as any).tickArrayLower;
-      const tickArrayCenter = (pool as any).tick_array_center || (pool as any).tickArrayCenter;
-      const tickArrayUpper = (pool as any).tick_array_upper || (pool as any).tickArrayUpper;
+      // Note: null means "explicitly cleared/non-existent", don't include in cache
+      const tickArrayLower = (pool as any).tick_array_lower ?? (pool as any).tickArrayLower;
+      const tickArrayCenter = (pool as any).tick_array_center ?? (pool as any).tickArrayCenter;
+      const tickArrayUpper = (pool as any).tick_array_upper ?? (pool as any).tickArrayUpper;
       
-      if (tickArrayCenter) {
+      // Only set tick arrays if center exists and is not null (explicitly cleared)
+      if (tickArrayCenter && tickArrayCenter !== null) {
         // Store in format expected by resolvers: { center: string, lower: string[], upper: string[] }
         hotData.tickArrays = {
           center: tickArrayCenter,
-          lower: tickArrayLower ? [tickArrayLower] : [],
-          upper: tickArrayUpper ? [tickArrayUpper] : [],
+          // Only include lower/upper if they exist and are not null
+          lower: (tickArrayLower && tickArrayLower !== null) ? [tickArrayLower] : undefined,
+          upper: (tickArrayUpper && tickArrayUpper !== null) ? [tickArrayUpper] : undefined,
+        };
+        hasHotData = true;
+      }
+      
+      // Meteora bin arrays for hot cache
+      // Note: null means "explicitly cleared/non-existent", don't include in cache
+      const binArrayLower = (pool as any).bin_array_lower;
+      const binArrayUpper = (pool as any).bin_array_upper;
+      if ((binArrayLower && binArrayLower !== null) || (binArrayUpper && binArrayUpper !== null)) {
+        hotData.binArrays = {
+          lower: (binArrayLower && binArrayLower !== null) ? binArrayLower : undefined,
+          upper: (binArrayUpper && binArrayUpper !== null) ? binArrayUpper : undefined,
         };
         hasHotData = true;
       }

@@ -130,14 +130,22 @@ export function updatePoolCacheFromValidation(
       (pool as any).bin_step = binStep;
     }
     
-    // Update tick arrays (Orca/Raydium)
-    if (tickArrayLower !== undefined) (pool as any).tick_array_lower = tickArrayLower;
-    if (tickArrayCenter !== undefined) (pool as any).tick_array_center = tickArrayCenter;
-    if (tickArrayUpper !== undefined) (pool as any).tick_array_upper = tickArrayUpper;
+    // Update tick arrays (Orca/Raydium) - ALWAYS update to clear stale data
+    // Use null (not undefined) so values serialize to JSON and don't get lost on save/load
+    if (dex === 'orca' || dex === 'raydium') {
+      // Set to the validated value, or null to explicitly clear non-existent arrays
+      (pool as any).tick_array_lower = tickArrayLower ?? null;
+      (pool as any).tick_array_center = tickArrayCenter ?? null;
+      (pool as any).tick_array_upper = tickArrayUpper ?? null;
+      poolUpdated = true;
+    }
     
-    // Update bin arrays (Meteora)
-    if (binArrayLower !== undefined) (pool as any).bin_array_lower = binArrayLower;
-    if (binArrayUpper !== undefined) (pool as any).bin_array_upper = binArrayUpper;
+    // Update bin arrays (Meteora) - ALWAYS update to clear stale data
+    if (dex === 'meteora') {
+      (pool as any).bin_array_lower = binArrayLower ?? null;
+      (pool as any).bin_array_upper = binArrayUpper ?? null;
+      poolUpdated = true;
+    }
     
     // Update timestamp
     if (poolUpdated) {
