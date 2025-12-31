@@ -481,8 +481,8 @@ export async function handleMeteoraUpdate(
     
     // CRITICAL: Meteora DLMM pools may store fee in nested parameters structure.
     // The SDK-decoded state may not have tradeFeeRate/feeRate fields.
+    // Fee values may be in PPM (parts per million) - need to convert to BPS.
     // Fallback to cached fee_bps from HTTP fetch or execution cache to preserve correct fees.
-    // Also try Meteora-specific field names: parameters.baseFactor, baseFee, etc.
     let feeBps = Number(
       state?.tradeFeeRate ?? 
       state?.feeRate ?? 
@@ -492,6 +492,14 @@ export async function handleMeteoraUpdate(
       state?.parameters?.baseFactor ??
       0
     );
+    
+    // Convert from PPM to BPS if value appears to be in PPM format
+    // PPM values are typically > 10000 for any fee (since 10000 BPS = 100%)
+    // Values like 12500 PPM = 125 BPS = 1.25% fee
+    if (Number.isFinite(feeBps) && feeBps > 10000) {
+      feeBps = Math.round(feeBps / 100);
+    }
+    
     if (!Number.isFinite(feeBps) || feeBps <= 0) {
       // Try to get cached fee from pool cache
       const cachedPools = meteoraCache.data;

@@ -1200,8 +1200,15 @@ function runWebsocketRefreshLoop(): void {
                         // Skip adding to CLMM list if tickSpacing is invalid (must be > 0 for valid CLMM pools)
                         if (tick > 0) {
                         // CRITICAL: Raydium CLMM pools store fee in ammConfig account, not pool state.
+                        // Fee values may be in PPM (parts per million) - need to convert to BPS.
                         // Fallback to cached fee_bps from HTTP fetch or execution cache.
                         let fee = Number((state as any).tradeFeeRate ?? (state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                        
+                        // Convert from PPM to BPS if value appears to be in PPM format
+                        if (Number.isFinite(fee) && fee > 10000) {
+                          fee = Math.round(fee / 100);
+                        }
+                        
                         if (!Number.isFinite(fee) || fee <= 0) {
                           const cachedPools = raydiumCache.data;
                           const existingPool = cachedPools?.clmm?.find(p => p.id === pk58);
@@ -1530,7 +1537,14 @@ function runWebsocketRefreshLoop(): void {
                         }
                         
                         // Fallback to cached fee_bps if on-chain extraction fails
+                        // Fee values may be in PPM (parts per million) - need to convert to BPS.
                         let ammFee = Number((state as any).tradeFeeRate || (state as any).feeRate || 0);
+                        
+                        // Convert from PPM to BPS if value appears to be in PPM format
+                        if (Number.isFinite(ammFee) && ammFee > 10000) {
+                          ammFee = Math.round(ammFee / 100);
+                        }
+                        
                         if (!Number.isFinite(ammFee) || ammFee <= 0) {
                           const cachedPools = raydiumCache.data;
                           const existingPool = cachedPools?.amm?.find(p => p.id === pk58);
@@ -2176,6 +2190,7 @@ function runWebsocketRefreshLoop(): void {
                     const sqrtPriceRaw = anyToBigInt((state as any)?.sqrtPriceX64 ?? (state as any)?.sqrt_price_x64 ?? 0);
                     
                     // CRITICAL: Meteora DLMM pools may store fee in nested parameters structure.
+                    // Fee values may be in PPM (parts per million) - need to convert to BPS.
                     // Fallback to cached fee_bps from HTTP fetch or execution cache.
                     let feeBps = Number(
                       (state as any)?.tradeFeeRate ?? 
@@ -2186,6 +2201,14 @@ function runWebsocketRefreshLoop(): void {
                       (state as any)?.parameters?.baseFactor ??
                       0
                     );
+                    
+                    // Convert from PPM to BPS if value appears to be in PPM format
+                    // PPM values are typically > 10000 for any fee (since 10000 BPS = 100%)
+                    // Values like 12500 PPM = 125 BPS = 1.25% fee
+                    if (Number.isFinite(feeBps) && feeBps > 10000) {
+                      feeBps = Math.round(feeBps / 100);
+                    }
+                    
                     if (!Number.isFinite(feeBps) || feeBps <= 0) {
                       const cachedPools = meteoraCache.data;
                       const existingPool = cachedPools?.clmm?.find(p => p.id === poolId);

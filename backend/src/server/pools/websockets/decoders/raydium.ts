@@ -120,8 +120,16 @@ export async function decodeRaydiumClmmPool(
     
     // CRITICAL: Raydium CLMM pools store fee in ammConfig account, not pool state.
     // The SDK-decoded state.tradeFeeRate is often 0/undefined.
+    // Fee values may be in PPM (parts per million) - need to convert to BPS.
     // Fallback to cached fee_bps from HTTP fetch or execution cache to preserve correct fees.
     let fee = Number(state.tradeFeeRate ?? state.feeRate ?? state.fee_rate ?? 0);
+    
+    // Convert from PPM to BPS if value appears to be in PPM format
+    // PPM values are typically > 10000 for any fee (since 10000 BPS = 100%)
+    if (Number.isFinite(fee) && fee > 10000) {
+      fee = Math.round(fee / 100);
+    }
+    
     if (!Number.isFinite(fee) || fee <= 0) {
       // Try to get cached fee from pool cache
       const cachedPools = raydiumCache.data;
@@ -223,7 +231,14 @@ export async function decodeRaydiumAmmPool(
     const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
     
     // Fallback to cached fee_bps if on-chain extraction fails
+    // Fee values may be in PPM (parts per million) - need to convert to BPS.
     let fee = Number(state.tradeFeeRate || state.feeRate || 0);
+    
+    // Convert from PPM to BPS if value appears to be in PPM format
+    if (Number.isFinite(fee) && fee > 10000) {
+      fee = Math.round(fee / 100);
+    }
+    
     if (!Number.isFinite(fee) || fee <= 0) {
       const cachedPools = raydiumCache.data;
       const existingPool = cachedPools?.amm?.find(p => p.id === poolId);
