@@ -786,7 +786,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
 
   const rawPoolId = String(hop.poolId || '');
   if (!rawPoolId) return 0n;
-  const isRev = /[#-]rev$/.test(rawPoolId);
+  const isRevFromSuffix = /[#-]rev$/.test(rawPoolId);
   const baseId = rawPoolId.replace(/[#-]rev$/, '');
   const pool = (pools.clmm || []).find((x: any) => String(x?.id || '') === baseId);
   
@@ -798,7 +798,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           ctx: {
             poolId: hop.poolId,
             baseId,
-            isRev,
+            isRevFromSuffix,
             availablePoolIds: (pools.clmm || []).slice(0, 5).map((x: any) => x?.id),
           }
         });
@@ -806,6 +806,39 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
     } catch (e) { logCatchError('resolver.quotes', e); }
     return 0n;
   }
+
+  // CRITICAL: Determine swap direction from ACTUAL MINTS, not pool ID suffix
+  // The pool ID suffix is just a hint; the hop's inputMint/outputMint are authoritative
+  const poolMintA = String((pool as any)?.mint_a || '');
+  const poolMintB = String((pool as any)?.mint_b || '');
+  
+  // Determine swap direction in canonical terms (A/B as stored in pool)
+  const swappingAtoB = hop.inputMint === poolMintA && hop.outputMint === poolMintB;
+  const swappingBtoA = hop.inputMint === poolMintB && hop.outputMint === poolMintA;
+  
+  // Validate that hop mints match pool mints
+  if (!swappingAtoB && !swappingBtoA) {
+    try {
+      import('../../utils/logger.js').then(({ logger }) => {
+        logger.warn('raydium.clmm.quote.mint_mismatch', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            hopInputMint: hop.inputMint,
+            hopOutputMint: hop.outputMint,
+            poolMintA,
+            poolMintB,
+            isRevFromSuffix,
+          }
+        });
+      });
+    } catch (e) { logCatchError('resolver.quotes', e); }
+    return 0n; // Return 0 if mints don't match
+  }
+  
+  // Use actual swap direction determined from mint matching
+  // swappingBtoA means we're going from B to A, which is the "reverse" direction
+  const isRev = swappingBtoA;
 
   let ratio = extractClmmPriceRatio(pool, isRev);
   
@@ -871,6 +904,8 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
   }
   const { numerator: priceNumerator, denominator: priceDenominator } = ratio;
 
+  // For decimals: if swapping A->B, input is A decimals, output is B decimals
+  // If swapping B->A (isRev), input is B decimals, output is A decimals
   const decInCandidate =
     typeof hop.inputDecimals === 'number' && Number.isFinite(hop.inputDecimals)
       ? hop.inputDecimals
@@ -883,6 +918,27 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
       : (isRev
           ? Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA)
           : Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB));
+          
+  try {
+    import('../../utils/logger.js').then(({ logger }) => {
+      logger.info('raydium.clmm.quote.direction', {
+        cat: 'tx',
+        ctx: {
+          poolId: hop.poolId,
+          hopInputMint: hop.inputMint?.slice(0, 8) + '…',
+          hopOutputMint: hop.outputMint?.slice(0, 8) + '…',
+          poolMintA: poolMintA.slice(0, 8) + '…',
+          poolMintB: poolMintB.slice(0, 8) + '…',
+          swappingAtoB,
+          swappingBtoA,
+          isRev,
+          isRevFromSuffix,
+          decInCandidate,
+          decOutCandidate,
+        }
+      });
+    });
+  } catch (e) { logCatchError('resolver.quotes', e); }
 
   const scaleIn = decimalScale(decInCandidate);
   const scaleOut = decimalScale(decOutCandidate);
@@ -1024,6 +1080,8 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           amountInRaw: amountInRaw.toString(),
           out: out.toString(),
           success: out > 0n,
+          direction: isRev ? 'B→A (reverse)' : 'A→B (forward)',
+          isRevFromSuffix,
           calculation: {
             priceNumerator: priceNumerator.toString(),
             priceDenominator: priceDenominator.toString(),
