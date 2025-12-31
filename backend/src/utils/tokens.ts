@@ -5,7 +5,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getMint } from '@solana/spl-token';
 
 export type TokenMap = Record<string, { mint: string; decimals: number }>;
-export type JupToken = { address: string; name: string; symbol: string; decimals: number; usdPrice?: number };
+export type JupToken = { address: string; name: string; symbol: string; decimals: number; tokenProgram?: string; usdPrice?: number };
 type EnrichDecimalsOptions = {
   logger?: any;
   batchSize?: number;

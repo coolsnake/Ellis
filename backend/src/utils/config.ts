@@ -46,6 +46,7 @@ export const CONFIG = {
   watchlistPath: process.env.WATCHLIST_PATH || resolve(CONFIG_DIR, 'watchlist.json'),
   tokensPath: process.env.TOKENS_PATH || resolve(CONFIG_DIR, 'tokens.json'),
   jupTokensPath: (process.env.JUP_TOKENS_PATH as any) || resolve(CONFIG_DIR, 'jupTokens.json'),
+  mergedTokensPath: (process.env.MERGED_TOKENS_PATH as any) || resolve(BACKEND_ROOT, '..', 'soldocs/JupMergedTokens.json'),
   strategyListPath: (process.env.STRATEGIES_PATH as any) || resolve(CONFIG_DIR, 'strategies.json'),
   walletTokensPath: (process.env.WALLET_TOKENS_PATH as any) || resolve(CONFIG_DIR, 'walletTokens.json'),
   walletHistoryPath: (process.env.WALLET_HISTORY_PATH as any) || resolve(CONFIG_DIR, 'walletHistory.json'),

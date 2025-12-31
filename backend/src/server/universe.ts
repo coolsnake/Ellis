@@ -4,7 +4,7 @@ import { jupiterLimiter } from '../jupiter/rateLimiter.js';
 
 export type PoolsPayload = { amm: Array<{ mint_a: string; mint_b: string }>; clmm: Array<{ mint_a: string; mint_b: string }> };
 
-export type UniverseMode = 'intersection' | 'union' | 'jupiter' | 'jupiterTop' | 'watchlist' | 'minpools';
+export type UniverseMode = 'intersection' | 'union' | 'jupiter' | 'jupiterTop' | 'watchlist' | 'minpools' | 'mergedTokens';
 
 const SOL = 'So11111111111111111111111111111111111111112';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -28,6 +28,19 @@ export async function getJupiterTokenSet(): Promise<Set<string>> {
     const { loadJupiterTokenMap } = await import('../utils/tokens.js');
     const map = await loadJupiterTokenMap();
     return new Set(Object.keys(map || {}));
+  } catch {
+    return new Set();
+  }
+}
+
+export async function getMergedTokenSet(): Promise<Set<string>> {
+  try {
+    const tokens = await readJson<Array<{ address: string }>>(CONFIG.mergedTokensPath, []);
+    const set = new Set<string>();
+    for (const t of (tokens || [])) {
+      if (t?.address) set.add(t.address);
+    }
+    return set;
   } catch {
     return new Set();
   }
@@ -252,6 +265,20 @@ export async function computeTokenUniverse(mode?: UniverseMode): Promise<Set<str
   
   if (selected === 'jupiter') {
     const s = await getJupiterTokenSet(); if (includeAnchors) { for (const m of anchors) s.add(m); } return s;
+  }
+  if (selected === 'mergedTokens') {
+    const s = await getMergedTokenSet();
+    if (s.size === 0) {
+      try {
+        const { logger } = await import('../utils/logger.js');
+        logger.warn('universe.merged_tokens.empty_fallback_to_jupiter', { cat: 'universe' });
+      } catch {}
+      const fallback = await getJupiterTokenSet();
+      if (includeAnchors) { for (const m of anchors) fallback.add(m); }
+      return fallback;
+    }
+    if (includeAnchors) { for (const m of anchors) s.add(m); }
+    return s;
   }
   if (selected === 'jupiterTop') {
     const s = await getJupiterTopTokenSet();

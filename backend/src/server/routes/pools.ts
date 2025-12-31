@@ -203,13 +203,14 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
 
   api.get('/arb/pools/universe/diagnostics', async (_req, res) => {
     try {
-      const { getSourceTokenSet, getWatchlistTokenSet, getJupiterTokenSet, computeTokenUniverse } = await import('../universe.js');
+      const { getSourceTokenSet, getWatchlistTokenSet, getJupiterTokenSet, getMergedTokenSet, computeTokenUniverse } = await import('../universe.js');
       const ray = await getSourceTokenSet('raydium');
       const orc = await getSourceTokenSet('orca');
       const wl = await getWatchlistTokenSet();
       const jup = await getJupiterTokenSet();
+      const merged = await getMergedTokenSet();
       const uni = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-      res.json({ raydium: ray.size, orca: orc.size, watchlist: wl.size, jupiter: jup.size, universe: uni.size });
+      res.json({ raydium: ray.size, orca: orc.size, watchlist: wl.size, jupiter: jup.size, mergedTokens: merged.size, universe: uni.size });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
     }
