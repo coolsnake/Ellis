@@ -802,6 +802,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                   <option value="union">union</option>
                   <option value="minpools">minpools</option>
                   <option value="jupiterTop">jupiterTop</option>
+                  <option value="mergedTokens">mergedTokens</option>
                 </select>
               </div>
               <div>
@@ -813,6 +814,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                   <option value="intersection">intersection</option>
                   <option value="union">union</option>
                   <option value="jupiterTop">jupiterTop</option>
+                  <option value="mergedTokens">mergedTokens</option>
                 </select>
               </div>
               <div className="md:col-span-1">
