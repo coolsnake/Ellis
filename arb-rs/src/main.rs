@@ -308,7 +308,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let state = Arc::new(RwLock::new(AppState {
-        config: default_config(),
+        config: load_config(),
         opportunities: Vec::new(),
         rejected_opportunities: Vec::new(),
         rejected_opportunities_updated_ms: 0,
@@ -4938,6 +4938,20 @@ async fn persist_config(cfg: &ArbConfig) -> anyhow::Result<()> {
     let data = serde_json::to_string_pretty(cfg)?;
     tokio::fs::write(path, data).await?;
     Ok(())
+}
+
+/// Load config from persisted JSON file, falling back to defaults if not found or invalid
+fn load_config() -> ArbConfig {
+    let path = std::env::var("ARB_CONFIG_PATH").unwrap_or_else(|_| "arb-config.json".into());
+    match std::fs::read_to_string(&path) {
+        Ok(data) => {
+            match serde_json::from_str::<ArbConfig>(&data) {
+                Ok(cfg) => cfg,
+                Err(_) => default_config(),
+            }
+        }
+        Err(_) => default_config(),
+    }
 }
 
 async fn metrics_json(State(state): State<Arc<RwLock<AppState>>>) -> Json<Metrics> {
