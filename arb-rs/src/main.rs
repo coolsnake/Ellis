@@ -34,6 +34,7 @@ const REJECTED_DEBUG_LIMIT: usize = 15;
 const REJECTED_DEBUG_TTL_MS: u64 = 30_000;
 
 #[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(default)] // Use Default for any missing fields during deserialization
 struct ArbConfig {
     enabled: bool,
     min_profit_bps: i64,
@@ -4946,8 +4947,19 @@ fn load_config() -> ArbConfig {
     match std::fs::read_to_string(&path) {
         Ok(data) => {
             match serde_json::from_str::<ArbConfig>(&data) {
-                Ok(cfg) => cfg,
-                Err(_) => default_config(),
+                Ok(cfg) => {
+                    // Validate that critical fields have reasonable values
+                    // If the file was from a different config system, use defaults
+                    if cfg.opportunity_ttl_ms == 0 || cfg.max_idle_ms == 0 {
+                        eprintln!("[arb-rs] Config file appears invalid (missing critical fields), using defaults");
+                        return default_config();
+                    }
+                    cfg
+                }
+                Err(e) => {
+                    eprintln!("[arb-rs] Failed to parse config file: {}, using defaults", e);
+                    default_config()
+                }
             }
         }
         Err(_) => default_config(),
