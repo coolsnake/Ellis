@@ -57,92 +57,139 @@ const derivedAccountToPool: Map<string, { poolId: string; accountType: 'vault' |
 const poolsWithDerivedAccounts: Set<string> = new Set();
 
 // ============================================================================
-// Bitmap Extension Eligibility Tracking
+// Pool Eligibility Tracking (Multi-DEX)
 // ============================================================================
-// Tracks Meteora pools that don't have bitmap extensions initialized.
-// For these pools, we need to monitor activeId updates to determine if
-// they can be traded (activeId within safe range) or should be excluded.
+// Tracks pool eligibility based on tick/bin position and bitmap extension status.
+// Pools may become ineligible if:
+// - Meteora: activeId is outside ±512 bin array range and no bitmap extension
+// - Raydium: currentTick is outside default range and no exBitmap extension
+// - Orca: tick array for current tick doesn't exist (less common)
 
-interface BitmapEligibilityState {
-  hasBitmapExtension: boolean;  // Does the PDA exist on-chain?
-  currentlyEligible: boolean;   // Is the pool tradeable right now?
-  lastActiveId?: number;        // Last known activeId
-  lastBinArrayIndex?: number;   // Last calculated bin array index
+type DexType = 'meteora' | 'raydium' | 'orca';
+
+interface PoolEligibilityState {
+  dex: DexType;
+  hasExtension: boolean;        // bitmap/exBitmap extension exists on-chain
+  currentlyEligible: boolean;   // Can we trade this pool right now?
+  lastTickOrBin?: number;       // Last known tick/activeId
+  lastArrayIndex?: number;      // Last calculated array index
+  tickSpacing?: number;         // For Raydium/Orca tick array calculation
 }
 
-/** Pools being watched for bitmap eligibility changes */
-const meteoraBitmapEligibility: Map<string, BitmapEligibilityState> = new Map();
+// DEX-specific constants
+const RAYDIUM_CLMM_PROGRAM_ID = 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
+const ORCA_WHIRLPOOL_PROGRAM_ID = 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
+const RAYDIUM_TICK_ARRAY_SIZE = 60;
+const ORCA_TICK_ARRAY_SIZE = 88;
 
-/** Callback for when a pool's eligibility changes */
-let onBitmapEligibilityChange: ((poolId: string, eligible: boolean, binArrayIndex: number) => void) | null = null;
+// Bitmap/exBitmap extension ranges (default internal bitmap coverage)
+// Beyond these ranges, the extension account is required
+const EXTENSION_RANGE = 512;  // ±512 array indices for all DEXes
+
+/** Pools being watched for eligibility changes */
+const poolEligibility: Map<string, PoolEligibilityState> = new Map();
+
+/** Callback for when any pool's eligibility changes */
+let onPoolEligibilityChange: ((poolId: string, dex: DexType, eligible: boolean, arrayIndex: number) => void) | null = null;
 
 /**
- * Register a callback for bitmap eligibility changes.
+ * Register a callback for pool eligibility changes.
  * Called when a pool transitions between eligible/ineligible states.
  */
-export function setOnBitmapEligibilityChange(
-  callback: (poolId: string, eligible: boolean, binArrayIndex: number) => void
+export function setOnPoolEligibilityChange(
+  callback: (poolId: string, dex: DexType, eligible: boolean, arrayIndex: number) => void
 ): void {
-  onBitmapEligibilityChange = callback;
+  onPoolEligibilityChange = callback;
+}
+
+// Legacy alias for backward compatibility
+export function setOnBitmapEligibilityChange(
+  callback: (poolId: string, eligible: boolean, arrayIndex: number) => void
+): void {
+  onPoolEligibilityChange = (poolId, _dex, eligible, arrayIndex) => callback(poolId, eligible, arrayIndex);
 }
 
 /**
- * Check if activeId is in the safe range (no bitmap extension required)
+ * Calculate array index from tick/bin position
  */
-function isActiveIdInSafeRange(activeId: number): boolean {
-  const binArrayIndex = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
-  return binArrayIndex >= -METEORA_BIN_BITMAP_SIZE && binArrayIndex < METEORA_BIN_BITMAP_SIZE;
+function calculateArrayIndex(tickOrBin: number, dex: DexType, tickSpacing?: number): number {
+  switch (dex) {
+    case 'meteora':
+      return Math.floor(tickOrBin / METEORA_BIN_ARRAY_SIZE);
+    case 'raydium': {
+      const spacing = tickSpacing || 1;
+      const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * spacing;
+      return Math.floor(tickOrBin / ticksInArray);
+    }
+    case 'orca': {
+      const spacing = tickSpacing || 1;
+      const ticksInArray = ORCA_TICK_ARRAY_SIZE * spacing;
+      return Math.floor(tickOrBin / ticksInArray);
+    }
+    default:
+      return 0;
+  }
 }
 
 /**
- * Register a Meteora pool for bitmap eligibility tracking.
- * Call this at startup or when pools are fetched.
+ * Check if tick/bin position is in safe range (no extension required)
+ */
+function isInSafeRange(arrayIndex: number): boolean {
+  return arrayIndex >= -EXTENSION_RANGE && arrayIndex < EXTENSION_RANGE;
+}
+
+/**
+ * Register a pool for eligibility tracking.
+ * Works for Meteora, Raydium, and Orca CLMM pools.
  * 
  * @param poolId - The pool's public key
- * @param activeId - Current active bin ID
- * @param hasBitmapExtension - Whether bitmap extension PDA exists on-chain
+ * @param dex - The DEX type
+ * @param tickOrBin - Current tick (Raydium/Orca) or activeId (Meteora)
+ * @param hasExtension - Whether bitmap/exBitmap extension exists on-chain
+ * @param tickSpacing - Tick spacing for Raydium/Orca (not needed for Meteora)
  */
-export function registerPoolForBitmapWatch(
-  poolId: string, 
-  activeId: number, 
-  hasBitmapExtension: boolean
+export function registerPoolForEligibilityWatch(
+  poolId: string,
+  dex: DexType,
+  tickOrBin: number,
+  hasExtension: boolean,
+  tickSpacing?: number
 ): void {
-  if (hasBitmapExtension) {
-    // Pool has bitmap extension - always eligible, no need to watch
-    // But we still track it so isPoolBitmapEligible returns correct value
-    meteoraBitmapEligibility.set(poolId, {
-      hasBitmapExtension: true,
-      currentlyEligible: true,
-      lastActiveId: activeId,
-    });
-    return;
-  }
+  const arrayIndex = calculateArrayIndex(tickOrBin, dex, tickSpacing);
+  const currentlyEligible = hasExtension || isInSafeRange(arrayIndex);
   
-  const binArrayIndex = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
-  const currentlyEligible = isActiveIdInSafeRange(activeId);
-  
-  meteoraBitmapEligibility.set(poolId, {
-    hasBitmapExtension: false,
+  poolEligibility.set(poolId, {
+    dex,
+    hasExtension,
     currentlyEligible,
-    lastActiveId: activeId,
-    lastBinArrayIndex: binArrayIndex,
+    lastTickOrBin: tickOrBin,
+    lastArrayIndex: arrayIndex,
+    tickSpacing,
   });
   
-  // Log initial state for pools without bitmap extension
-  if (!currentlyEligible) {
-    logger.info('meteora.bitmap.pool_ineligible', {
+  // Log initial state for pools without extension that are ineligible
+  if (!hasExtension && !currentlyEligible) {
+    logger.info(`${dex}.eligibility.pool_ineligible`, {
       poolId: poolId.slice(0, 8) + '…',
-      activeId,
-      binArrayIndex,
-      reason: 'no_bitmap_extension_and_out_of_range',
+      tickOrBin,
+      arrayIndex,
+      reason: 'no_extension_and_out_of_range',
       cat: 'pools'
     });
   }
 }
 
+// Legacy Meteora-specific alias for backward compatibility
+export function registerPoolForBitmapWatch(
+  poolId: string, 
+  activeId: number, 
+  hasBitmapExtension: boolean
+): void {
+  registerPoolForEligibilityWatch(poolId, 'meteora', activeId, hasBitmapExtension);
+}
+
 /**
- * Bulk register pools for bitmap eligibility tracking.
- * More efficient for startup when processing many pools.
+ * Bulk register Meteora pools for eligibility tracking.
  */
 export function registerPoolsForBitmapWatch(
   pools: Array<{ id: string; active_id?: number; activeId?: number; bin_array_bitmap_extension?: string }>
@@ -155,19 +202,18 @@ export function registerPoolsForBitmapWatch(
     if (activeId === undefined) continue;
     
     const bitmapExt = pool.bin_array_bitmap_extension;
-    // Has bitmap extension if value exists and is NOT the program ID
     const hasBitmapExtension = !!bitmapExt && bitmapExt !== METEORA_DEFAULT_PROGRAM_ID;
     
-    registerPoolForBitmapWatch(pool.id, activeId, hasBitmapExtension);
+    registerPoolForEligibilityWatch(pool.id, 'meteora', activeId, hasBitmapExtension);
     registered++;
     
-    const state = meteoraBitmapEligibility.get(pool.id);
+    const state = poolEligibility.get(pool.id);
     if (state && !state.currentlyEligible) {
       ineligible++;
     }
   }
   
-  logger.info('meteora.bitmap.bulk_register', {
+  logger.info('meteora.eligibility.bulk_register', {
     registered,
     ineligible,
     cat: 'pools'
@@ -177,55 +223,129 @@ export function registerPoolsForBitmapWatch(
 }
 
 /**
- * Handle an activeId update for a pool.
+ * Bulk register Raydium CLMM pools for eligibility tracking.
+ */
+export function registerRaydiumPoolsForEligibility(
+  pools: Array<{ id: string; tick_current?: number; currentTick?: number; tick_spacing?: number; ex_bitmap?: string }>
+): { registered: number; ineligible: number } {
+  let registered = 0;
+  let ineligible = 0;
+  
+  for (const pool of pools) {
+    const currentTick = pool.tick_current ?? pool.currentTick;
+    if (currentTick === undefined) continue;
+    
+    const exBitmap = pool.ex_bitmap;
+    const hasExBitmap = !!exBitmap && exBitmap !== RAYDIUM_CLMM_PROGRAM_ID;
+    const tickSpacing = pool.tick_spacing || 1;
+    
+    registerPoolForEligibilityWatch(pool.id, 'raydium', currentTick, hasExBitmap, tickSpacing);
+    registered++;
+    
+    const state = poolEligibility.get(pool.id);
+    if (state && !state.currentlyEligible) {
+      ineligible++;
+    }
+  }
+  
+  logger.info('raydium.eligibility.bulk_register', {
+    registered,
+    ineligible,
+    cat: 'pools'
+  });
+  
+  return { registered, ineligible };
+}
+
+/**
+ * Bulk register Orca Whirlpool pools for eligibility tracking.
+ * Note: Orca doesn't have a bitmap extension, so hasExtension is based on
+ * whether tick arrays exist. For simplicity, we assume they exist unless
+ * explicitly told otherwise.
+ */
+export function registerOrcaPoolsForEligibility(
+  pools: Array<{ id: string; tick_current?: number; currentTick?: number; tick_spacing?: number; hasTickArrays?: boolean }>
+): { registered: number; ineligible: number } {
+  let registered = 0;
+  let ineligible = 0;
+  
+  for (const pool of pools) {
+    const currentTick = pool.tick_current ?? pool.currentTick;
+    if (currentTick === undefined) continue;
+    
+    // Orca doesn't have exBitmap - eligibility is based on tick array existence
+    // For now, assume tick arrays exist (hasExtension = true equivalent)
+    // This can be refined with actual tick array existence checks
+    const hasTickArrays = pool.hasTickArrays !== false;
+    const tickSpacing = pool.tick_spacing || 1;
+    
+    registerPoolForEligibilityWatch(pool.id, 'orca', currentTick, hasTickArrays, tickSpacing);
+    registered++;
+    
+    const state = poolEligibility.get(pool.id);
+    if (state && !state.currentlyEligible) {
+      ineligible++;
+    }
+  }
+  
+  logger.info('orca.eligibility.bulk_register', {
+    registered,
+    ineligible,
+    cat: 'pools'
+  });
+  
+  return { registered, ineligible };
+}
+
+/**
+ * Handle a tick/bin update for any DEX pool.
  * Checks if eligibility changed and triggers callback if so.
  * 
  * @param poolId - The pool's public key
- * @param newActiveId - The new active bin ID
+ * @param newTickOrBin - New tick (Raydium/Orca) or activeId (Meteora)
  * @returns Object indicating if eligibility changed, or null if pool not tracked
  */
-export function onMeteorActiveIdUpdate(
-  poolId: string, 
-  newActiveId: number
-): { changed: boolean; eligible: boolean; binArrayIndex: number } | null {
-  const state = meteoraBitmapEligibility.get(poolId);
-  if (!state) {
-    // Pool not tracked - might have bitmap extension or not registered
-    return null;
+export function onPoolTickUpdate(
+  poolId: string,
+  newTickOrBin: number
+): { changed: boolean; eligible: boolean; arrayIndex: number; dex: DexType } | null {
+  const state = poolEligibility.get(poolId);
+  if (!state) return null;
+  
+  // Pools with extension are always eligible
+  if (state.hasExtension) {
+    state.lastTickOrBin = newTickOrBin;
+    const arrayIndex = calculateArrayIndex(newTickOrBin, state.dex, state.tickSpacing);
+    state.lastArrayIndex = arrayIndex;
+    return { changed: false, eligible: true, arrayIndex, dex: state.dex };
   }
   
-  // Pools with bitmap extension are always eligible
-  if (state.hasBitmapExtension) {
-    state.lastActiveId = newActiveId;
-    return { changed: false, eligible: true, binArrayIndex: Math.floor(newActiveId / METEORA_BIN_ARRAY_SIZE) };
-  }
-  
-  const binArrayIndex = Math.floor(newActiveId / METEORA_BIN_ARRAY_SIZE);
-  const nowEligible = isActiveIdInSafeRange(newActiveId);
+  const arrayIndex = calculateArrayIndex(newTickOrBin, state.dex, state.tickSpacing);
+  const nowEligible = isInSafeRange(arrayIndex);
   const changed = nowEligible !== state.currentlyEligible;
   
   // Update state
-  state.lastActiveId = newActiveId;
-  state.lastBinArrayIndex = binArrayIndex;
+  state.lastTickOrBin = newTickOrBin;
+  state.lastArrayIndex = arrayIndex;
   
   if (changed) {
     state.currentlyEligible = nowEligible;
     
-    logger.info('meteora.bitmap.eligibility_changed', {
+    logger.info(`${state.dex}.eligibility.changed`, {
       poolId: poolId.slice(0, 8) + '…',
-      activeId: newActiveId,
-      binArrayIndex,
+      tickOrBin: newTickOrBin,
+      arrayIndex,
       eligible: nowEligible,
       previouslyEligible: !nowEligible,
       cat: 'pools'
     });
     
     // Trigger callback if registered
-    if (onBitmapEligibilityChange) {
+    if (onPoolEligibilityChange) {
       try {
-        onBitmapEligibilityChange(poolId, nowEligible, binArrayIndex);
+        onPoolEligibilityChange(poolId, state.dex, nowEligible, arrayIndex);
       } catch (e) {
-        logger.warn('meteora.bitmap.callback_error', {
+        logger.warn(`${state.dex}.eligibility.callback_error`, {
           poolId: poolId.slice(0, 8) + '…',
           error: String((e as any)?.message || e),
           cat: 'pools'
@@ -234,25 +354,94 @@ export function onMeteorActiveIdUpdate(
     }
   }
   
-  return { changed, eligible: nowEligible, binArrayIndex };
+  return { changed, eligible: nowEligible, arrayIndex, dex: state.dex };
+}
+
+// Legacy Meteora-specific alias for backward compatibility
+export function onMeteorActiveIdUpdate(
+  poolId: string,
+  newActiveId: number
+): { changed: boolean; eligible: boolean; binArrayIndex: number } | null {
+  const result = onPoolTickUpdate(poolId, newActiveId);
+  if (!result) return null;
+  return { changed: result.changed, eligible: result.eligible, binArrayIndex: result.arrayIndex };
 }
 
 /**
- * Check if a Meteora pool is currently eligible for trading.
- * Use this in your graph/detector to filter pools.
+ * Check if a pool is currently eligible for trading.
+ * Works for all DEX types.
  * 
  * @param poolId - The pool's public key
  * @returns true if eligible, false if not, undefined if not tracked
  */
-export function isPoolBitmapEligible(poolId: string): boolean | undefined {
-  const state = meteoraBitmapEligibility.get(poolId);
-  if (!state) return undefined;  // Not tracked
+export function isPoolEligible(poolId: string): boolean | undefined {
+  const state = poolEligibility.get(poolId);
+  if (!state) return undefined;
   return state.currentlyEligible;
 }
 
+// Legacy alias for backward compatibility
+export function isPoolBitmapEligible(poolId: string): boolean | undefined {
+  return isPoolEligible(poolId);
+}
+
 /**
- * Get bitmap eligibility stats for monitoring/debugging.
+ * Get the DEX type for a tracked pool
  */
+export function getPoolDex(poolId: string): DexType | undefined {
+  return poolEligibility.get(poolId)?.dex;
+}
+
+/**
+ * Get eligibility stats for monitoring/debugging.
+ * Returns stats broken down by DEX.
+ */
+export function getPoolEligibilityStats(): {
+  total: number;
+  byDex: Record<DexType, {
+    tracked: number;
+    withExtension: number;
+    withoutExtension: number;
+    eligible: number;
+    ineligible: number;
+  }>;
+} {
+  const stats: Record<DexType, {
+    tracked: number;
+    withExtension: number;
+    withoutExtension: number;
+    eligible: number;
+    ineligible: number;
+  }> = {
+    meteora: { tracked: 0, withExtension: 0, withoutExtension: 0, eligible: 0, ineligible: 0 },
+    raydium: { tracked: 0, withExtension: 0, withoutExtension: 0, eligible: 0, ineligible: 0 },
+    orca: { tracked: 0, withExtension: 0, withoutExtension: 0, eligible: 0, ineligible: 0 },
+  };
+  
+  for (const state of poolEligibility.values()) {
+    const dexStats = stats[state.dex];
+    dexStats.tracked++;
+    
+    if (state.hasExtension) {
+      dexStats.withExtension++;
+      dexStats.eligible++;
+    } else {
+      dexStats.withoutExtension++;
+      if (state.currentlyEligible) {
+        dexStats.eligible++;
+      } else {
+        dexStats.ineligible++;
+      }
+    }
+  }
+  
+  return {
+    total: poolEligibility.size,
+    byDex: stats,
+  };
+}
+
+// Legacy alias for backward compatibility
 export function getBitmapEligibilityStats(): {
   tracked: number;
   withBitmapExtension: number;
@@ -260,43 +449,31 @@ export function getBitmapEligibilityStats(): {
   currentlyEligible: number;
   currentlyIneligible: number;
 } {
-  let withBitmapExtension = 0;
-  let withoutBitmapExtension = 0;
-  let currentlyEligible = 0;
-  let currentlyIneligible = 0;
-  
-  for (const state of meteoraBitmapEligibility.values()) {
-    if (state.hasBitmapExtension) {
-      withBitmapExtension++;
-      currentlyEligible++;
-    } else {
-      withoutBitmapExtension++;
-      if (state.currentlyEligible) {
-        currentlyEligible++;
-      } else {
-        currentlyIneligible++;
-      }
-    }
-  }
-  
+  const stats = getPoolEligibilityStats();
+  const meteora = stats.byDex.meteora;
   return {
-    tracked: meteoraBitmapEligibility.size,
-    withBitmapExtension,
-    withoutBitmapExtension,
-    currentlyEligible,
-    currentlyIneligible,
+    tracked: meteora.tracked,
+    withBitmapExtension: meteora.withExtension,
+    withoutBitmapExtension: meteora.withoutExtension,
+    currentlyEligible: meteora.eligible,
+    currentlyIneligible: meteora.ineligible,
   };
 }
 
 /**
- * Clear all bitmap eligibility tracking (e.g., on pool refresh)
+ * Clear all eligibility tracking (e.g., on pool refresh)
  */
+export function clearPoolEligibilityTracking(): void {
+  poolEligibility.clear();
+}
+
+// Legacy alias
 export function clearBitmapEligibilityTracking(): void {
-  meteoraBitmapEligibility.clear();
+  clearPoolEligibilityTracking();
 }
 
 // ============================================================================
-// End Bitmap Extension Eligibility Tracking
+// End Pool Eligibility Tracking
 // ============================================================================
 
 export function isMeteoraBinArraySubscribed(address: string): boolean {

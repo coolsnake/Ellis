@@ -2163,6 +2163,23 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
       logger.info('raydium.fetch normalized', { amm: norm.amm.length, clmm: norm.clmm.length, ms: Date.now() - t0, cat: 'raydium', canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
       try { emit('log', { level: 'info', message: `arb:pools raydium.fetch ok amm=${norm.amm.length} clmm=${norm.clmm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
 
+      // Register Raydium CLMM pools for eligibility tracking
+      // This enables reactive filtering when tick moves in/out of safe range
+      try {
+        const { registerRaydiumPoolsForEligibility } = await import('./pools.websockets.js');
+        const eligibilityStats = registerRaydiumPoolsForEligibility(norm.clmm || []);
+        logger.info('raydium.eligibility.registered', {
+          cat: 'pools',
+          ctx: eligibilityStats
+        });
+      } catch (eligibilityErr) {
+        // Non-fatal - log and continue
+        logger.debug('raydium.eligibility.register_failed', {
+          cat: 'pools',
+          ctx: { error: String((eligibilityErr as any)?.message || eligibilityErr) }
+        });
+      }
+
       const prev = raydiumCache.data;
       raydiumCache.data = norm;
       raydiumCache.ts = Date.now();
@@ -2493,6 +2510,23 @@ export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFil
       poolsMetrics.orca.lastMs = Date.now();
       poolsMetrics.orca.lastAmm = (data.amm || []).length;
       poolsMetrics.orca.lastClmm = (data.clmm || []).length;
+      
+      // Register Orca pools for eligibility tracking
+      // This enables reactive filtering when tick moves in/out of safe range
+      try {
+        const { registerOrcaPoolsForEligibility } = await import('./pools.websockets.js');
+        const eligibilityStats = registerOrcaPoolsForEligibility(data.clmm || []);
+        logger.info('orca.eligibility.registered', {
+          cat: 'pools',
+          ctx: eligibilityStats
+        });
+      } catch (eligibilityErr) {
+        // Non-fatal - log and continue
+        logger.debug('orca.eligibility.register_failed', {
+          cat: 'pools',
+          ctx: { error: String((eligibilityErr as any)?.message || eligibilityErr) }
+        });
+      }
       // Emit socket event when normalized cache changes
       try {
         const prevAmm = prev?.amm?.length || 0;

@@ -721,6 +721,26 @@ export interface RaydiumExBitmapValidation {
   pdaExistsOnChain: boolean;
   isValid: boolean;
   issue?: string;
+  /** Does the current tick require an exBitmap extension? (tick array index outside ±512) */
+  tickRequiresExBitmap?: boolean;
+  /** The calculated tick array index from currentTick */
+  tickArrayIndex?: number;
+  /** Can we trade this pool right now? True if exBitmap exists OR tick doesn't require it */
+  isEligibleForTrading?: boolean;
+}
+
+export interface OrcaTickEligibility {
+  /** Current tick from pool state */
+  currentTick?: number;
+  /** Tick spacing for array index calculation */
+  tickSpacing?: number;
+  /** The calculated tick array index */
+  tickArrayIndex?: number;
+  /** Does center tick array exist on-chain? */
+  centerArrayExists: boolean;
+  /** Can we trade this pool right now? True if center tick array exists */
+  isEligibleForTrading: boolean;
+  issue?: string;
 }
 
 export interface FeeValidation {
@@ -743,6 +763,7 @@ export interface PoolValidationResult {
   binArrayValidation?: BinArrayValidation;
   bitmapExtensionValidation?: BitmapExtensionValidation;  // Meteora bitmap extension
   exBitmapValidation?: RaydiumExBitmapValidation;          // Raydium tick array bitmap extension
+  orcaTickEligibility?: OrcaTickEligibility;               // Orca tick array eligibility
   feeValidation?: FeeValidation;                          // Fee BPS validation
   issues: string[];
   valid: boolean;
@@ -769,6 +790,8 @@ export interface BatchValidationResult {
   poolsWithInvalidBitmapExtension: number;  // Meteora
   poolsIneligibleDueToBitmapRange: number;  // Meteora - activeId outside ±512 bin array range with no bitmap ext
   poolsWithInvalidExBitmap: number;          // Raydium
+  poolsIneligibleDueToExBitmapRange: number; // Raydium - tick outside ±512 array range with no exBitmap
+  poolsIneligibleDueToTickArray: number;     // Orca - center tick array doesn't exist
   poolsWithMissingAmmConfig: number;         // Raydium - missing ammConfig
   poolsWithZeroFee: number;                  // Pools with 0 fee BPS (likely incorrect)
   poolsWithMissingFee: number;               // Pools with no fee in cache
@@ -1079,6 +1102,27 @@ export async function validatePoolCache(
               }
             }
             
+            // Calculate eligibility based on current tick and exBitmap existence
+            const raydiumTickSpacing = result.cacheData?.tickSpacing || 1;
+            const raydiumCurrentTick = result.cacheData?.currentTick;
+            if (raydiumCurrentTick !== undefined) {
+              const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * raydiumTickSpacing;
+              const tickArrayIndex = Math.floor(raydiumCurrentTick / ticksInArray);
+              const RAYDIUM_BITMAP_RANGE = 512; // ±512 tick array indices
+              const tickRequiresExBitmap = tickArrayIndex < -RAYDIUM_BITMAP_RANGE || tickArrayIndex >= RAYDIUM_BITMAP_RANGE;
+              const isEligibleForTrading = pdaExistsOnChain || !tickRequiresExBitmap;
+              
+              exBitmapValidation.tickRequiresExBitmap = tickRequiresExBitmap;
+              exBitmapValidation.tickArrayIndex = tickArrayIndex;
+              exBitmapValidation.isEligibleForTrading = isEligibleForTrading;
+              
+              if (!isEligibleForTrading) {
+                const ineligibleIssue = `Pool ineligible: tick array index ${tickArrayIndex} requires exBitmap but none exists`;
+                exBitmapValidation.issue = ineligibleIssue;
+                issues.push(ineligibleIssue);
+              }
+            }
+            
             result.exBitmapValidation = exBitmapValidation;
           } catch (e: any) {
             issues.push(`Failed to verify ex_bitmap: ${e.message}`);
@@ -1136,6 +1180,35 @@ export async function validatePoolCache(
         if (!cachedAmmConfig) {
           issues.push('Missing ammConfig - required for swap transactions');
         }
+      }
+      
+      // Add Orca eligibility validation based on center tick array existence
+      if (dex === 'orca') {
+        const orcaCurrentTick = result.cacheData?.currentTick;
+        const orcaTickSpacing = result.cacheData?.tickSpacing || 1;
+        const centerArrayExists = result.tickArrayValidation?.center?.exists ?? false;
+        
+        // Calculate tick array index for tracking
+        let tickArrayIndex: number | undefined;
+        if (orcaCurrentTick !== undefined) {
+          const ticksInArray = ORCA_TICK_ARRAY_SIZE * orcaTickSpacing;
+          tickArrayIndex = Math.floor(orcaCurrentTick / ticksInArray);
+        }
+        
+        const orcaEligibility: OrcaTickEligibility = {
+          currentTick: orcaCurrentTick,
+          tickSpacing: orcaTickSpacing,
+          tickArrayIndex,
+          centerArrayExists,
+          isEligibleForTrading: centerArrayExists,
+        };
+        
+        if (!centerArrayExists) {
+          orcaEligibility.issue = 'Pool ineligible: center tick array does not exist on-chain';
+          // Note: this issue is already added above in the tick array validation
+        }
+        
+        result.orcaTickEligibility = orcaEligibility;
       }
     } else if (dex === 'meteora') {
       // ALWAYS fetch fresh bin data from chain first
@@ -1534,6 +1607,8 @@ export async function validatePoolCacheBatch(
   let poolsWithInvalidBitmapExtension = 0;  // Meteora
   let poolsIneligibleDueToBitmapRange = 0;  // Meteora - activeId outside ±512 bin array range
   let poolsWithInvalidExBitmap = 0;          // Raydium
+  let poolsIneligibleDueToExBitmapRange = 0; // Raydium - tick outside ±512 array range with no exBitmap
+  let poolsIneligibleDueToTickArray = 0;     // Orca - center tick array doesn't exist
   let poolsWithMissingAmmConfig = 0;         // Raydium - missing ammConfig
   let poolsWithZeroFee = 0;                  // Pools with 0 fee BPS
   let poolsWithMissingFee = 0;               // Pools with no fee in cache
@@ -1597,6 +1672,16 @@ export async function validatePoolCacheBatch(
           poolsWithInvalidExBitmap++;
         }
         
+        // Track pools ineligible due to exBitmap range (Raydium only)
+        if (result.exBitmapValidation?.isEligibleForTrading === false) {
+          poolsIneligibleDueToExBitmapRange++;
+        }
+        
+        // Track pools ineligible due to tick array (Orca only)
+        if (result.orcaTickEligibility?.isEligibleForTrading === false) {
+          poolsIneligibleDueToTickArray++;
+        }
+        
         // Track missing ammConfig (Raydium only)
         if (result.dex === 'raydium' && result.issues?.some(i => i.includes('ammConfig'))) {
           poolsWithMissingAmmConfig++;
@@ -1642,6 +1727,8 @@ export async function validatePoolCacheBatch(
       poolsWithInvalidBitmapExtension,
       poolsIneligibleDueToBitmapRange,
       poolsWithInvalidExBitmap,
+      poolsIneligibleDueToExBitmapRange,
+      poolsIneligibleDueToTickArray,
       poolsWithMissingAmmConfig,
       poolsWithZeroFee,
       poolsWithMissingFee,
@@ -1663,6 +1750,8 @@ export async function validatePoolCacheBatch(
     poolsWithInvalidBitmapExtension,
     poolsIneligibleDueToBitmapRange,
     poolsWithInvalidExBitmap,
+    poolsIneligibleDueToExBitmapRange,
+    poolsIneligibleDueToTickArray,
     poolsWithMissingAmmConfig,
     poolsWithZeroFee,
     poolsWithMissingFee,

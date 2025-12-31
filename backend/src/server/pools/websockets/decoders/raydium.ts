@@ -19,6 +19,8 @@ import { deriveRaydiumClmmCacheFields } from '../../../pools.derivation.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
+// Import pool eligibility tracking for reactive pool filtering
+import { onPoolTickUpdate } from '../../../pools.websockets.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -549,6 +551,17 @@ async function handleClmmUpdate(
           ...(derived?.tickArrays || {}),
         },
       });
+      
+      // Check pool eligibility on tick update
+      // This enables reactive pool filtering when tick moves in/out of safe range
+      if (derived?.tickCurrent !== undefined) {
+        try {
+          onPoolTickUpdate(poolId, derived.tickCurrent);
+        } catch (eligibilityErr) {
+          // Non-fatal - log and continue
+          logCatchDebug('raydium.eligibility_check', eligibilityErr);
+        }
+      }
     }
   } catch (cacheErr) {
     logCatchDebug('raydium.clmm.cache_update', cacheErr, { pool: poolId.slice(0, 8) + '…' });
