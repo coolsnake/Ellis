@@ -32,13 +32,19 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   if (stat?.ex_bitmap && !(hop as any).exBitmap) (hop as any).exBitmap = stat.ex_bitmap;
 
   // Load from hot cache for tick arrays (like Orca resolver)
-  // This is critical because tick arrays are cached here during quote phase
+  // CRITICAL: Hot cache contains validated data from cacheValidator - PREFER over existing hop values
   const hot = executionCache.getHot(hop.poolId.replace(/[#-]rev$/, ''));
   if (hot?.tickArrays) {
     // Handle arrays for lower/upper (take first element), string for center
-    hop.tickArrayLower = (Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower) || hop.tickArrayLower;
-    hop.tickArrayCenter = hot.tickArrays.center || hop.tickArrayCenter;
-    hop.tickArrayUpper = (Array.isArray(hot.tickArrays.upper) ? hot.tickArrays.upper[0] : hot.tickArrays.upper) || hop.tickArrayUpper;
+    // PREFER hot cache over existing hop values to ensure validated data is used
+    const hotLower = Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower;
+    const hotCenter = hot.tickArrays.center;
+    const hotUpper = Array.isArray(hot.tickArrays.upper) ? hot.tickArrays.upper[0] : hot.tickArrays.upper;
+    
+    // Use validated hot cache values, only fall back to hop if hot cache is undefined
+    if (hotLower) hop.tickArrayLower = hotLower;
+    if (hotCenter) hop.tickArrayCenter = hotCenter;
+    if (hotUpper) hop.tickArrayUpper = hotUpper;
     
     try {
       logger.info('raydium.clmm.resolver.tick_arrays_from_hot_cache', {
@@ -63,14 +69,18 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
     hop.oracle = hop.oracle || cached.oracle;
     hop.vaultA = hop.vaultA || cached.vaultA;
     hop.vaultB = hop.vaultB || cached.vaultB;
-    hop.tickArrayCenter = hop.tickArrayCenter || cached.tickArrays.center;
+    
+    // PREFER CLMM cache over existing hop values for tick arrays (validated data)
+    if (cached.tickArrays.center) {
+      hop.tickArrayCenter = cached.tickArrays.center;
+    }
     
     // Handle both single values and arrays from clmmCache
     if (cached.tickArrays.lower) {
       if (typeof cached.tickArrays.lower === 'string') {
-        hop.tickArrayLower = hop.tickArrayLower || cached.tickArrays.lower;
+        hop.tickArrayLower = cached.tickArrays.lower;
       } else if (Array.isArray(cached.tickArrays.lower) && cached.tickArrays.lower.length > 0) {
-        hop.tickArrayLower = hop.tickArrayLower || cached.tickArrays.lower[0];
+        hop.tickArrayLower = cached.tickArrays.lower[0];
         // Store full array for builder
         (hop as any).tickArrayLowerList = cached.tickArrays.lower;
       }
@@ -78,9 +88,9 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
     
     if (cached.tickArrays.upper) {
       if (typeof cached.tickArrays.upper === 'string') {
-        hop.tickArrayUpper = hop.tickArrayUpper || cached.tickArrays.upper;
+        hop.tickArrayUpper = cached.tickArrays.upper;
       } else if (Array.isArray(cached.tickArrays.upper) && cached.tickArrays.upper.length > 0) {
-        hop.tickArrayUpper = hop.tickArrayUpper || cached.tickArrays.upper[0];
+        hop.tickArrayUpper = cached.tickArrays.upper[0];
         // Store full array for builder
         (hop as any).tickArrayUpperList = cached.tickArrays.upper;
       }

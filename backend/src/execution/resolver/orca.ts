@@ -39,9 +39,15 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
   let poolTickIndexNative: number | undefined;
   if (hot?.tickArrays) {
     // Handle arrays for lower/upper (take first element), string for center
-    hop.tickArrayLower = (Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower) || hop.tickArrayLower;
-    hop.tickArrayCenter = hot.tickArrays.center || hop.tickArrayCenter;
-    hop.tickArrayUpper = (Array.isArray(hot.tickArrays.upper) ? hot.tickArrays.upper[0] : hot.tickArrays.upper) || hop.tickArrayUpper;
+    // PREFER hot cache over existing hop values to ensure validated data is used
+    const hotLower = Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower;
+    const hotCenter = hot.tickArrays.center;
+    const hotUpper = Array.isArray(hot.tickArrays.upper) ? hot.tickArrays.upper[0] : hot.tickArrays.upper;
+    
+    // Use validated hot cache values, only fall back to hop if hot cache is undefined
+    if (hotLower) hop.tickArrayLower = hotLower;
+    if (hotCenter) hop.tickArrayCenter = hotCenter;
+    if (hotUpper) hop.tickArrayUpper = hotUpper;
     
     try {
       logger.info('orca.resolver.tick_arrays_from_cache', {

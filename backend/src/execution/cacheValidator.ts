@@ -923,20 +923,19 @@ export async function validatePoolCache(
           });
           
           // For Raydium, also update the dedicated CLMM cache
+          // ALWAYS create/update entry, not just if it already exists
           if (dex === 'raydium') {
-            const existingClmm = getClmmStatic(basePoolId);
-            if (existingClmm) {
-              setClmmStatic(basePoolId, {
-                ...existingClmm,
-                tickSpacing,
-                tickArrays: {
-                  center: tickArrays.center,
-                  lower: tickArrays.lower,
-                  upper: tickArrays.upper,
-                },
-                lastUpdateMs: Date.now(),
-              });
-            }
+            const existingClmm = getClmmStatic(basePoolId) || {};
+            setClmmStatic(basePoolId, {
+              ...existingClmm,
+              tickSpacing,
+              tickArrays: {
+                center: tickArrays.center,
+                lower: tickArrays.lower,
+                upper: tickArrays.upper,
+              },
+              lastUpdateMs: Date.now(),
+            });
           }
           
           logger.debug('cache.validation.fresh_tick_success', {
@@ -1011,16 +1010,15 @@ export async function validatePoolCache(
           });
           
           // For Raydium, also update the CLMM cache
+          // ALWAYS create/update entry, not just if it already exists
           if (dex === 'raydium') {
-            const existingClmm = getClmmStatic(basePoolId);
-            if (existingClmm) {
-              setClmmStatic(basePoolId, {
-                ...existingClmm,
-                tickSpacing,
-                tickArrays: Object.keys(validatedArrays).length > 0 ? validatedArrays as any : undefined,
-                lastUpdateMs: Date.now(),
-              });
-            }
+            const existingClmm = getClmmStatic(basePoolId) || {};
+            setClmmStatic(basePoolId, {
+              ...existingClmm,
+              tickSpacing,
+              tickArrays: Object.keys(validatedArrays).length > 0 ? validatedArrays as any : undefined,
+              lastUpdateMs: Date.now(),
+            });
           }
           
           logger.info('cache.validation.tick_array_cleared_stale', {
