@@ -420,13 +420,13 @@ function populateExecutionCacheFromPools(
       if ((pool as any).token_program_b) staticData.token_program_b = (pool as any).token_program_b;
       
       // Meteora bin arrays - only set if not null (null = explicitly cleared)
-      const binArrayLower = (pool as any).bin_array_lower;
-      const binArrayUpper = (pool as any).bin_array_upper;
-      if (binArrayLower && binArrayLower !== null) {
-        staticData.bin_array_lower = binArrayLower;
+      const poolBinArrayLower = (pool as any).bin_array_lower;
+      const poolBinArrayUpper = (pool as any).bin_array_upper;
+      if (poolBinArrayLower && poolBinArrayLower !== null) {
+        staticData.bin_array_lower = poolBinArrayLower;
       }
-      if (binArrayUpper && binArrayUpper !== null) {
-        staticData.bin_array_upper = binArrayUpper;
+      if (poolBinArrayUpper && poolBinArrayUpper !== null) {
+        staticData.bin_array_upper = poolBinArrayUpper;
       }
       
       executionCache.setStatic(pool.id, staticData);
