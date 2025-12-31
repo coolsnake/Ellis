@@ -3028,6 +3028,23 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
             }
           });
         } catch {}
+        
+        // Register pools for bitmap eligibility tracking
+        // This enables reactive filtering when activeId moves in/out of safe range
+        try {
+          const { registerPoolsForBitmapWatch } = await import('./pools.websockets.js');
+          const bitmapStats = registerPoolsForBitmapWatch(norm.clmm || []);
+          logger.info('meteora.bitmap_eligibility.registered', {
+            cat: 'pools',
+            ctx: bitmapStats
+          });
+        } catch (bitmapErr) {
+          // Non-fatal - log and continue
+          logger.debug('meteora.bitmap_eligibility.register_failed', {
+            cat: 'pools',
+            ctx: { error: String((bitmapErr as any)?.message || bitmapErr) }
+          });
+        }
       } catch (e: any) {
         try {
           logger.warn('meteora.execution_cache.population.failed', {

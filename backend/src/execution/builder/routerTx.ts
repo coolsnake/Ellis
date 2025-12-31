@@ -1186,12 +1186,36 @@ async function extractDexAccounts(
         const meteoraNativeMintB = stat?.native_mint_b;
         
         // reserveX pairs with tokenXMint (native ordering, not canonical)
-        const reserveX = hop.reserveX || meteoraNativeReserveX || meteoraNativeAccountA || hop.vaultA || hop.poolId;
-        const reserveY = hop.reserveY || meteoraNativeReserveY || meteoraNativeAccountB || hop.vaultB || hop.poolId;
+        // CRITICAL: When native reserves are not available, use was_swapped to correct the canonical fallback
+        // When wasSwapped is true: native X = canonical B, native Y = canonical A
+        const canonicalVaultX = wasSwapped ? hop.vaultB : hop.vaultA;
+        const canonicalVaultY = wasSwapped ? hop.vaultA : hop.vaultB;
+        const reserveX = hop.reserveX || meteoraNativeReserveX || meteoraNativeAccountA || canonicalVaultX || hop.poolId;
+        const reserveY = hop.reserveY || meteoraNativeReserveY || meteoraNativeAccountB || canonicalVaultY || hop.poolId;
         
         // Token X/Y mints must also be native ordering
-        const tokenXMint = meteoraNativeMintA || poolMintA;
-        const tokenYMint = meteoraNativeMintB || poolMintB;
+        // CRITICAL: When native_mint_a/b are not available, use was_swapped to correct the canonical fallback
+        // When wasSwapped is true: native X = canonical B, native Y = canonical A
+        // This matches the token program logic above (lines 1169-1170)
+        const tokenXMint = meteoraNativeMintA || (wasSwapped ? poolMintB : poolMintA);
+        const tokenYMint = meteoraNativeMintB || (wasSwapped ? poolMintA : poolMintB);
+        
+        // Warn if we're using canonical fallback (native ordering is preferred)
+        if (!meteoraNativeMintA || !meteoraNativeMintB) {
+          logger.warn('routerTx.meteora.native_mints_missing', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              wasSwapped,
+              fallbackMintX: tokenXMint || 'unknown',
+              fallbackMintY: tokenYMint || 'unknown',
+              hasCacheNativeA: !!meteoraNativeMintA,
+              hasCacheNativeB: !!meteoraNativeMintB,
+              canonicalMintA: poolMintA || 'unknown',
+              canonicalMintB: poolMintB || 'unknown',
+            },
+          });
+        }
         
         // Recalculate isAtoB using native mint ordering for Meteora
         // X->Y means inputMint matches tokenXMint (native mint A)

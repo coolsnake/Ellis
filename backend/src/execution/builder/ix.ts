@@ -2513,16 +2513,24 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       poolTokenProgramLabelA = staticData?.token_program_a;
       poolTokenProgramLabelB = staticData?.token_program_b;
       if (staticData?.mint_a && staticData?.mint_b) {
-        tokenXMintPk = toPublicKey(staticData.mint_a);
-        tokenYMintPk = toPublicKey(staticData.mint_b);
+        // CRITICAL: Use NATIVE ordering (tokenX/tokenY) for Meteora DLMM swap direction
+        // native_mint_a/b are the on-chain values, mint_a/b are canonicalized (may be swapped)
+        // Fallback to canonical if native not available (older cache entries)
+        const nativeMintA = staticData.native_mint_a || staticData.mint_a;
+        const nativeMintB = staticData.native_mint_b || staticData.mint_b;
+        tokenXMintPk = toPublicKey(nativeMintA);
+        tokenYMintPk = toPublicKey(nativeMintB);
         
         try {
           logger.debug('meteora.dlmm.mints_from_cache', {
             cat: 'tx',
             ctx: {
               pool: hop.poolId.slice(0, 8) + '…',
-              mintX: staticData.mint_a,
-              mintY: staticData.mint_b,
+              mintX: nativeMintA,
+              mintY: nativeMintB,
+              canonicalMintA: staticData.mint_a,
+              canonicalMintB: staticData.mint_b,
+              usingNative: !!(staticData.native_mint_a && staticData.native_mint_b),
               source: 'execution_cache',
               rpcCallAvoided: true
             }

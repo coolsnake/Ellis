@@ -44,6 +44,7 @@ import {
 
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const METEORA_BIN_BITMAP_SIZE = 512;
+const METEORA_BIN_ARRAY_SIZE = 70; // Bins per bin array
 type MeteoraBinTracker = {
   indexes: Set<number>;
   accounts: Map<string, { id: number; index: number }>;
@@ -54,6 +55,249 @@ const meteoraBinTrackers: Map<string, MeteoraBinTracker> = new Map();
 const meteoraBinAccountToPool: Map<string, string> = new Map();
 const derivedAccountToPool: Map<string, { poolId: string; accountType: 'vault' | 'reserve' | 'tick_array' | 'oracle' | 'observation' }> = new Map();
 const poolsWithDerivedAccounts: Set<string> = new Set();
+
+// ============================================================================
+// Bitmap Extension Eligibility Tracking
+// ============================================================================
+// Tracks Meteora pools that don't have bitmap extensions initialized.
+// For these pools, we need to monitor activeId updates to determine if
+// they can be traded (activeId within safe range) or should be excluded.
+
+interface BitmapEligibilityState {
+  hasBitmapExtension: boolean;  // Does the PDA exist on-chain?
+  currentlyEligible: boolean;   // Is the pool tradeable right now?
+  lastActiveId?: number;        // Last known activeId
+  lastBinArrayIndex?: number;   // Last calculated bin array index
+}
+
+/** Pools being watched for bitmap eligibility changes */
+const meteoraBitmapEligibility: Map<string, BitmapEligibilityState> = new Map();
+
+/** Callback for when a pool's eligibility changes */
+let onBitmapEligibilityChange: ((poolId: string, eligible: boolean, binArrayIndex: number) => void) | null = null;
+
+/**
+ * Register a callback for bitmap eligibility changes.
+ * Called when a pool transitions between eligible/ineligible states.
+ */
+export function setOnBitmapEligibilityChange(
+  callback: (poolId: string, eligible: boolean, binArrayIndex: number) => void
+): void {
+  onBitmapEligibilityChange = callback;
+}
+
+/**
+ * Check if activeId is in the safe range (no bitmap extension required)
+ */
+function isActiveIdInSafeRange(activeId: number): boolean {
+  const binArrayIndex = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
+  return binArrayIndex >= -METEORA_BIN_BITMAP_SIZE && binArrayIndex < METEORA_BIN_BITMAP_SIZE;
+}
+
+/**
+ * Register a Meteora pool for bitmap eligibility tracking.
+ * Call this at startup or when pools are fetched.
+ * 
+ * @param poolId - The pool's public key
+ * @param activeId - Current active bin ID
+ * @param hasBitmapExtension - Whether bitmap extension PDA exists on-chain
+ */
+export function registerPoolForBitmapWatch(
+  poolId: string, 
+  activeId: number, 
+  hasBitmapExtension: boolean
+): void {
+  if (hasBitmapExtension) {
+    // Pool has bitmap extension - always eligible, no need to watch
+    // But we still track it so isPoolBitmapEligible returns correct value
+    meteoraBitmapEligibility.set(poolId, {
+      hasBitmapExtension: true,
+      currentlyEligible: true,
+      lastActiveId: activeId,
+    });
+    return;
+  }
+  
+  const binArrayIndex = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
+  const currentlyEligible = isActiveIdInSafeRange(activeId);
+  
+  meteoraBitmapEligibility.set(poolId, {
+    hasBitmapExtension: false,
+    currentlyEligible,
+    lastActiveId: activeId,
+    lastBinArrayIndex: binArrayIndex,
+  });
+  
+  // Log initial state for pools without bitmap extension
+  if (!currentlyEligible) {
+    logger.info('meteora.bitmap.pool_ineligible', {
+      poolId: poolId.slice(0, 8) + '…',
+      activeId,
+      binArrayIndex,
+      reason: 'no_bitmap_extension_and_out_of_range',
+      cat: 'pools'
+    });
+  }
+}
+
+/**
+ * Bulk register pools for bitmap eligibility tracking.
+ * More efficient for startup when processing many pools.
+ */
+export function registerPoolsForBitmapWatch(
+  pools: Array<{ id: string; active_id?: number; activeId?: number; bin_array_bitmap_extension?: string }>
+): { registered: number; ineligible: number } {
+  let registered = 0;
+  let ineligible = 0;
+  
+  for (const pool of pools) {
+    const activeId = pool.active_id ?? pool.activeId;
+    if (activeId === undefined) continue;
+    
+    const bitmapExt = pool.bin_array_bitmap_extension;
+    // Has bitmap extension if value exists and is NOT the program ID
+    const hasBitmapExtension = !!bitmapExt && bitmapExt !== METEORA_DEFAULT_PROGRAM_ID;
+    
+    registerPoolForBitmapWatch(pool.id, activeId, hasBitmapExtension);
+    registered++;
+    
+    const state = meteoraBitmapEligibility.get(pool.id);
+    if (state && !state.currentlyEligible) {
+      ineligible++;
+    }
+  }
+  
+  logger.info('meteora.bitmap.bulk_register', {
+    registered,
+    ineligible,
+    cat: 'pools'
+  });
+  
+  return { registered, ineligible };
+}
+
+/**
+ * Handle an activeId update for a pool.
+ * Checks if eligibility changed and triggers callback if so.
+ * 
+ * @param poolId - The pool's public key
+ * @param newActiveId - The new active bin ID
+ * @returns Object indicating if eligibility changed, or null if pool not tracked
+ */
+export function onMeteorActiveIdUpdate(
+  poolId: string, 
+  newActiveId: number
+): { changed: boolean; eligible: boolean; binArrayIndex: number } | null {
+  const state = meteoraBitmapEligibility.get(poolId);
+  if (!state) {
+    // Pool not tracked - might have bitmap extension or not registered
+    return null;
+  }
+  
+  // Pools with bitmap extension are always eligible
+  if (state.hasBitmapExtension) {
+    state.lastActiveId = newActiveId;
+    return { changed: false, eligible: true, binArrayIndex: Math.floor(newActiveId / METEORA_BIN_ARRAY_SIZE) };
+  }
+  
+  const binArrayIndex = Math.floor(newActiveId / METEORA_BIN_ARRAY_SIZE);
+  const nowEligible = isActiveIdInSafeRange(newActiveId);
+  const changed = nowEligible !== state.currentlyEligible;
+  
+  // Update state
+  state.lastActiveId = newActiveId;
+  state.lastBinArrayIndex = binArrayIndex;
+  
+  if (changed) {
+    state.currentlyEligible = nowEligible;
+    
+    logger.info('meteora.bitmap.eligibility_changed', {
+      poolId: poolId.slice(0, 8) + '…',
+      activeId: newActiveId,
+      binArrayIndex,
+      eligible: nowEligible,
+      previouslyEligible: !nowEligible,
+      cat: 'pools'
+    });
+    
+    // Trigger callback if registered
+    if (onBitmapEligibilityChange) {
+      try {
+        onBitmapEligibilityChange(poolId, nowEligible, binArrayIndex);
+      } catch (e) {
+        logger.warn('meteora.bitmap.callback_error', {
+          poolId: poolId.slice(0, 8) + '…',
+          error: String((e as any)?.message || e),
+          cat: 'pools'
+        });
+      }
+    }
+  }
+  
+  return { changed, eligible: nowEligible, binArrayIndex };
+}
+
+/**
+ * Check if a Meteora pool is currently eligible for trading.
+ * Use this in your graph/detector to filter pools.
+ * 
+ * @param poolId - The pool's public key
+ * @returns true if eligible, false if not, undefined if not tracked
+ */
+export function isPoolBitmapEligible(poolId: string): boolean | undefined {
+  const state = meteoraBitmapEligibility.get(poolId);
+  if (!state) return undefined;  // Not tracked
+  return state.currentlyEligible;
+}
+
+/**
+ * Get bitmap eligibility stats for monitoring/debugging.
+ */
+export function getBitmapEligibilityStats(): {
+  tracked: number;
+  withBitmapExtension: number;
+  withoutBitmapExtension: number;
+  currentlyEligible: number;
+  currentlyIneligible: number;
+} {
+  let withBitmapExtension = 0;
+  let withoutBitmapExtension = 0;
+  let currentlyEligible = 0;
+  let currentlyIneligible = 0;
+  
+  for (const state of meteoraBitmapEligibility.values()) {
+    if (state.hasBitmapExtension) {
+      withBitmapExtension++;
+      currentlyEligible++;
+    } else {
+      withoutBitmapExtension++;
+      if (state.currentlyEligible) {
+        currentlyEligible++;
+      } else {
+        currentlyIneligible++;
+      }
+    }
+  }
+  
+  return {
+    tracked: meteoraBitmapEligibility.size,
+    withBitmapExtension,
+    withoutBitmapExtension,
+    currentlyEligible,
+    currentlyIneligible,
+  };
+}
+
+/**
+ * Clear all bitmap eligibility tracking (e.g., on pool refresh)
+ */
+export function clearBitmapEligibilityTracking(): void {
+  meteoraBitmapEligibility.clear();
+}
+
+// ============================================================================
+// End Bitmap Extension Eligibility Tracking
+// ============================================================================
 
 export function isMeteoraBinArraySubscribed(address: string): boolean {
   return meteoraBinAccountToPool.has(address);

@@ -157,11 +157,15 @@ export async function fetchOrcaPoolViaSdk(
     let center: string | undefined;
     const upper: string[] = [];
     
+    // Collect all existing tick arrays with their offsets
+    const existingArrays: Array<{ offset: number; address: string }> = [];
+    
     for (let i = 0; i < tickArrayPdas.length; i++) {
       const info = accountInfos[i];
       if (info && info.owner.equals(ORCA_WHIRLPOOL_PROGRAM) && info.data.length > 0) {
         const { offset, pda } = tickArrayPdas[i];
         const addr = pda.toBase58();
+        existingArrays.push({ offset, address: addr });
         
         if (offset === 0) {
           center = addr;
@@ -175,8 +179,39 @@ export async function fetchOrcaPoolViaSdk(
     
     const fetchDurationMs = Date.now() - startTime;
     
-    if (!center) {
-      logger.warn('orca.sdk.fetch.no_center_tick_array', {
+    // If center doesn't exist but we have other arrays, pick the nearest one as center
+    // This handles pools with concentrated liquidity where tick has drifted into uninitialized range
+    if (!center && existingArrays.length > 0) {
+      // Sort by absolute offset (closest to center first)
+      existingArrays.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset));
+      const nearest = existingArrays[0];
+      center = nearest.address;
+      
+      // Recategorize: the nearest becomes center, others become lower/upper relative to it
+      lower.length = 0;
+      upper.length = 0;
+      for (const arr of existingArrays) {
+        if (arr.address === center) continue;
+        if (arr.offset < nearest.offset) {
+          lower.push(arr.address);
+        } else {
+          upper.push(arr.address);
+        }
+      }
+      
+      logger.debug('orca.sdk.fetch.center_from_nearest', {
+        cat: 'cache',
+        ctx: { 
+          pool: poolId.slice(0, 8), 
+          currentTick, 
+          tickSpacing,
+          originalCenterIdx: centerIdx,
+          nearestOffset: nearest.offset,
+          totalArrays: existingArrays.length,
+        }
+      });
+    } else if (!center && existingArrays.length === 0) {
+      logger.warn('orca.sdk.fetch.no_tick_arrays', {
         cat: 'cache',
         ctx: { pool: poolId, currentTick, tickSpacing, centerIdx }
       });
@@ -193,6 +228,7 @@ export async function fetchOrcaPoolViaSdk(
       }
     });
     
+    // Return tick arrays if we found any (center is guaranteed if any exist now)
     return {
       poolId,
       dex: 'orca',

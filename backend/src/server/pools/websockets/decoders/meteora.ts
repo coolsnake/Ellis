@@ -17,6 +17,8 @@ import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { CONFIG } from '../../../../utils/config.js';
+// Import bitmap eligibility tracking for reactive pool filtering
+import { onMeteorActiveIdUpdate } from '../../../pools.websockets.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -646,6 +648,17 @@ export async function handleMeteoraUpdate(
           hasRawData: !!data,
           cat: 'pools'
         });
+        
+        // Check bitmap eligibility on activeId update
+        // This enables reactive pool filtering when price moves in/out of safe range
+        if (Number.isFinite(activeId)) {
+          try {
+            onMeteorActiveIdUpdate(poolId, Number(activeId));
+          } catch (eligibilityErr) {
+            // Non-fatal - log and continue
+            logCatchDebug('meteora.bitmap.eligibility_check', eligibilityErr);
+          }
+        }
       }
     } catch (cacheErr) {
       logger.warn('meteora.ws.cache_update_failed', {

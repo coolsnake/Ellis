@@ -27,9 +27,51 @@ const ORCA_TICK_ARRAY_SIZE = 88;
 const RAYDIUM_TICK_ARRAY_SIZE = 60;
 const METEORA_BIN_ARRAY_SIZE = 70;
 
+// Bitmap extension range - default bitmap covers bin array indices -512 to +511
+const METEORA_BITMAP_RANGE = 512;
+
+/**
+ * Quick check if a Meteora pool is eligible for trading based on activeId.
+ * 
+ * Use this in WebSocket handlers to toggle pool eligibility without full validation.
+ * A pool is eligible if:
+ * 1. It has a bitmap extension initialized on-chain, OR
+ * 2. The current activeId is within the safe range (bin array index ±512)
+ * 
+ * @param activeId - The pool's current active bin ID
+ * @param hasBitmapExtension - Whether the bitmap extension PDA exists on-chain
+ * @returns Eligibility status with bin array index and whether extension is required
+ */
+export function checkMeteoraBitmapEligibility(
+  activeId: number,
+  hasBitmapExtension: boolean
+): { eligible: boolean; binArrayIndex: number; requiresExtension: boolean } {
+  const binArrayIndex = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
+  const requiresExtension = binArrayIndex < -METEORA_BITMAP_RANGE || binArrayIndex >= METEORA_BITMAP_RANGE;
+  const eligible = hasBitmapExtension || !requiresExtension;
+  
+  return { eligible, binArrayIndex, requiresExtension };
+}
+
+/**
+ * Calculate the safe activeId range for pools without bitmap extension.
+ * Useful for determining if a pool can become tradeable again.
+ * 
+ * @returns The min/max activeId values that don't require bitmap extension
+ */
+export function getMeteoraSafeActiveIdRange(): { min: number; max: number } {
+  return {
+    min: -METEORA_BITMAP_RANGE * METEORA_BIN_ARRAY_SIZE,  // -35,840
+    max: METEORA_BITMAP_RANGE * METEORA_BIN_ARRAY_SIZE - 1,  // +35,839
+  };
+}
+
 /**
  * Fetch fresh tick data from chain and validate tick arrays
  * Used when cached tick data leads to non-existent tick arrays
+ * 
+ * IMPORTANT: This function validates derivation-dependent values FIRST,
+ * updates the cache immediately with fresh values, then derives tick arrays.
  */
 async function fetchFreshTickDataAndValidate(
   connection: Connection,
@@ -40,9 +82,18 @@ async function fetchFreshTickDataAndValidate(
   tickSpacing: number;
   tickArrays?: { center: string; lower: string[]; upper: string[] };
   validation?: TickArrayValidation;
+  derivationValidation: DerivationValidation;
 } | null> {
   try {
     const poolPk = new PublicKey(poolId);
+    const basePoolId = poolId.replace(/[#-]rev$/, '');
+    
+    // Get cached values BEFORE fetching fresh data (for comparison)
+    const hot = executionCache.getHot(basePoolId);
+    const stat = executionCache.getStatic(basePoolId);
+    const cachedTick = hot?.currentTickIndex;
+    const cachedSpacing = hot?.tickSpacing || stat?.tickSpacing || (stat as any)?.tick_spacing;
+    
     const accountInfo = await withRpcLimit(
       () => connection.getAccountInfo(poolPk),
       1,
@@ -74,11 +125,84 @@ async function fetchFreshTickDataAndValidate(
       currentTick = view.getInt32(8 + 32 + 1 + 2 + 2 + 2 + 2 + 16 + 16, true); // offset 81
     }
     
-    if (tickSpacing <= 0 || tickSpacing > 1000) {
+    // === DERIVATION VALIDATION ===
+    // Validate derivation-dependent values FIRST before deriving arrays
+    const TICK_ARRAY_SIZE = dex === 'raydium' ? RAYDIUM_TICK_ARRAY_SIZE : ORCA_TICK_ARRAY_SIZE;
+    const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
+    
+    // Calculate tick array indices to detect if drift requires new arrays
+    const cachedTickArrayIdx = cachedTick !== undefined 
+      ? Math.floor(cachedTick / ticksInArray) 
+      : undefined;
+    const freshTickArrayIdx = Math.floor(currentTick / ticksInArray);
+    const tickArrayIdxChanged = cachedTickArrayIdx !== undefined && cachedTickArrayIdx !== freshTickArrayIdx;
+    
+    const tickDrift = cachedTick !== undefined ? Math.abs(currentTick - cachedTick) : 0;
+    const tickDriftPercent = cachedTick !== undefined && cachedTick !== 0 
+      ? Math.abs((currentTick - cachedTick) / cachedTick * 100) 
+      : 0;
+    
+    const derivationFieldsValid = tickSpacing > 0 && tickSpacing <= 1000;
+    const cacheWasStale = cachedTick !== currentTick || cachedSpacing !== tickSpacing;
+    
+    const derivationValidation: DerivationValidation = {
+      currentTick: {
+        cached: cachedTick,
+        fresh: currentTick,
+        drift: tickDrift,
+        driftPercent: tickDriftPercent,
+      },
+      tickSpacing: {
+        cached: cachedSpacing,
+        fresh: tickSpacing,
+        matches: cachedSpacing === tickSpacing,
+      },
+      derivationFieldsValid,
+      cacheWasStale,
+      cacheUpdated: false,
+      needsArrayRederivation: tickArrayIdxChanged,
+    };
+    
+    // === UPDATE CACHE IMMEDIATELY WITH FRESH DERIVATION VALUES ===
+    // This ensures any subsequent operations use the validated values
+    if (cacheWasStale && derivationFieldsValid) {
+      const existingHot = executionCache.getHot(basePoolId) || {};
+      executionCache.setHot(basePoolId, {
+        ...existingHot,
+        currentTickIndex: currentTick,
+        tickSpacing,
+      });
+      derivationValidation.cacheUpdated = true;
+      
+      logger.info('cache.derivation.tick_updated', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId.slice(0, 8) + '…',
+          dex,
+          cachedTick,
+          freshTick: currentTick,
+          tickDrift,
+          tickDriftPercent: tickDriftPercent.toFixed(2) + '%',
+          tickArrayIdxChanged,
+          cachedTickArrayIdx,
+          freshTickArrayIdx,
+        }
+      });
+    }
+    
+    if (!derivationFieldsValid) {
+      logger.warn('cache.derivation.invalid_tick_spacing', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId.slice(0, 8) + '…',
+          dex,
+          tickSpacing,
+        }
+      });
       return null;
     }
     
-    // Now derive and validate with fresh tick data
+    // === NOW DERIVE TICK ARRAYS FROM VALIDATED FRESH VALUES ===
     const derivedResult = await deriveAndValidateTickArrays(connection, poolId, currentTick, tickSpacing, dex);
     
     return {
@@ -86,6 +210,7 @@ async function fetchFreshTickDataAndValidate(
       tickSpacing,
       tickArrays: derivedResult.tickArrays,
       validation: derivedResult.validation,
+      derivationValidation,
     };
   } catch (e) {
     logCatchError('fetchFreshTickDataAndValidate', e);
@@ -96,6 +221,9 @@ async function fetchFreshTickDataAndValidate(
 /**
  * Fetch fresh bin data from chain and validate bin arrays for Meteora DLMM
  * Used to ensure we're deriving bin arrays from the current activeId, not stale cache
+ * 
+ * IMPORTANT: This function validates derivation-dependent values FIRST,
+ * updates the cache immediately with fresh values, then derives bin arrays.
  */
 async function fetchFreshBinDataAndValidate(
   connection: Connection,
@@ -110,9 +238,18 @@ async function fetchFreshBinDataAndValidate(
     arrays: Array<{ index: number; address: string }>;
   };
   validation?: BinArrayValidation;
+  derivationValidation: DerivationValidation;
 } | null> {
   try {
     const poolPk = new PublicKey(poolId);
+    const basePoolId = poolId.replace(/[#-]rev$/, '');
+    
+    // Get cached values BEFORE fetching fresh data (for comparison)
+    const hot = executionCache.getHot(basePoolId);
+    const stat = executionCache.getStatic(basePoolId);
+    const cachedActiveId = hot?.activeId;
+    const cachedBinStep = hot?.binStep || stat?.binStep;
+    
     const accountInfo = await withRpcLimit(
       () => connection.getAccountInfo(poolPk),
       1,
@@ -178,7 +315,66 @@ async function fetchFreshBinDataAndValidate(
       }
     }
     
-    // Now derive and validate bin arrays
+    // === DERIVATION VALIDATION ===
+    // Validate derivation-dependent values FIRST before deriving arrays
+    
+    // Calculate bin array indices to detect if drift requires new arrays
+    const cachedBinArrayIdx = cachedActiveId !== undefined 
+      ? Math.floor(cachedActiveId / METEORA_BIN_ARRAY_SIZE)
+      : undefined;
+    const freshBinArrayIdx = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
+    const activeBinArrayIdxChanged = cachedBinArrayIdx !== undefined && cachedBinArrayIdx !== freshBinArrayIdx;
+    
+    const activeIdDrift = cachedActiveId !== undefined ? Math.abs(activeId - cachedActiveId) : 0;
+    
+    const derivationFieldsValid = binStep > 0 && binStep <= 10000;
+    const cacheWasStale = cachedActiveId !== activeId || cachedBinStep !== binStep;
+    
+    const derivationValidation: DerivationValidation = {
+      activeId: {
+        cached: cachedActiveId,
+        fresh: activeId,
+        drift: activeIdDrift,
+        activeBinArrayIdxChanged,
+      },
+      binStep: {
+        cached: cachedBinStep,
+        fresh: binStep,
+        matches: cachedBinStep === binStep,
+      },
+      derivationFieldsValid,
+      cacheWasStale,
+      cacheUpdated: false,
+      needsArrayRederivation: activeBinArrayIdxChanged,
+    };
+    
+    // === UPDATE CACHE IMMEDIATELY WITH FRESH DERIVATION VALUES ===
+    // This ensures any subsequent operations use the validated values
+    if (cacheWasStale && derivationFieldsValid) {
+      const existingHot = executionCache.getHot(basePoolId) || {};
+      executionCache.setHot(basePoolId, {
+        ...existingHot,
+        activeId,
+        binStep,
+      });
+      derivationValidation.cacheUpdated = true;
+      
+      logger.info('cache.derivation.activeId_updated', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId.slice(0, 8) + '…',
+          dex: 'meteora',
+          cachedActiveId,
+          freshActiveId: activeId,
+          activeIdDrift,
+          activeBinArrayIdxChanged,
+          cachedBinArrayIdx,
+          freshBinArrayIdx,
+        }
+      });
+    }
+    
+    // === NOW DERIVE BIN ARRAYS FROM VALIDATED FRESH VALUES ===
     const derivedResult = await deriveAndValidateBinArrays(connection, poolId, activeId);
     
     return {
@@ -186,6 +382,7 @@ async function fetchFreshBinDataAndValidate(
       binStep,
       binArrays: derivedResult.binArrays,
       validation: derivedResult.validation,
+      derivationValidation,
     };
   } catch (e) {
     logCatchError('fetchFreshBinDataAndValidate', e);
@@ -374,14 +571,23 @@ async function deriveAndValidateTickArrays(
     const upper: string[] = [];
     const validation: TickArrayValidation = { lower: null, center: null, upper: null };
     
+    // Track all existing arrays with their offsets (for finding nearest if center doesn't exist)
+    const existingArrays: Array<{ offset: number; address: string; type: 'lower' | 'center' | 'upper' }> = [];
+    let centerExists = false;
+    
     for (let i = 0; i < tickArrayPdas.length; i++) {
-      const { type, pda } = tickArrayPdas[i];
+      const { type, offset, pda } = tickArrayPdas[i];
       const info = infos[i];
       const exists = !!info && info.owner.equals(programId);
       const addr = pda.toBase58();
       
+      if (exists) {
+        existingArrays.push({ offset, address: addr, type });
+      }
+      
       if (type === 'center') {
         center = addr;
+        centerExists = exists;
         validation.center = { address: addr, exists };
       } else if (type === 'lower') {
         if (exists) lower.push(addr);
@@ -392,12 +598,46 @@ async function deriveAndValidateTickArrays(
       }
     }
     
-    if (!center) {
+    // If center doesn't exist but we have other arrays, use nearest as center
+    // This handles pools with concentrated liquidity where tick has drifted into uninitialized range
+    if (!centerExists && existingArrays.length > 0) {
+      // Sort by absolute offset (closest to calculated center first)
+      existingArrays.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset));
+      const nearest = existingArrays[0];
+      center = nearest.address;
+      
+      // Update validation to mark the nearest array as the effective center
+      validation.center = { address: nearest.address, exists: true };
+      
+      // Recategorize lower/upper relative to the new center
+      lower.length = 0;
+      upper.length = 0;
+      for (const arr of existingArrays) {
+        if (arr.address === center) continue;
+        if (arr.offset < nearest.offset) {
+          lower.push(arr.address);
+        } else {
+          upper.push(arr.address);
+        }
+      }
+      
+      logger.debug('cache.validation.center_from_nearest', {
+        cat: 'cache',
+        ctx: { 
+          poolId: poolId.slice(0, 8),
+          dex,
+          currentTick,
+          nearestOffset: nearest.offset,
+          totalExisting: existingArrays.length,
+        }
+      });
+    } else if (!centerExists && existingArrays.length === 0) {
+      // No tick arrays exist at all
       return { validation };
     }
     
     return {
-      tickArrays: { center, lower, upper },
+      tickArrays: { center: center!, lower, upper },
       validation,
     };
   } catch (e) {
@@ -419,6 +659,47 @@ export interface BinArrayValidation {
   allArrays?: Array<{ index: number; address: string; exists: boolean }>;
 }
 
+/**
+ * Derivation Validation - validates the values that tick/bin array derivation depends on
+ * These must be validated FIRST before deriving arrays
+ */
+export interface DerivationValidation {
+  // Raydium/Orca CLMM fields
+  currentTick?: {
+    cached: number | undefined;
+    fresh: number;
+    drift: number;
+    driftPercent: number;
+  };
+  tickSpacing?: {
+    cached: number | undefined;
+    fresh: number;
+    matches: boolean;
+  };
+  // Meteora DLMM fields
+  activeId?: {
+    cached: number | undefined;
+    fresh: number;
+    drift: number;
+    /** True if the active bin array index changed (requires new bin arrays) */
+    activeBinArrayIdxChanged: boolean;
+  };
+  binStep?: {
+    cached: number | undefined;
+    fresh: number;
+    matches: boolean;
+  };
+  // Common validation results
+  /** All derivation-dependent fields have valid values */
+  derivationFieldsValid: boolean;
+  /** Cached values differed from fresh chain values */
+  cacheWasStale: boolean;
+  /** Cache was updated with fresh values */
+  cacheUpdated: boolean;
+  /** Tick/bin array needs to be re-derived due to significant drift */
+  needsArrayRederivation: boolean;
+}
+
 export interface BitmapExtensionValidation {
   cachedValue: string | null;
   derivedPda: string;
@@ -426,6 +707,12 @@ export interface BitmapExtensionValidation {
   isUsingProgramIdFallback: boolean;
   isValid: boolean;
   issue?: string;
+  /** Does the current activeId require a bitmap extension? (bin array index outside ±512) */
+  activeIdRequiresBitmapExt?: boolean;
+  /** The calculated bin array index from activeId */
+  binArrayIndex?: number;
+  /** Can we trade this pool right now? True if bitmap ext exists OR activeId doesn't require it */
+  isEligibleForTrading?: boolean;
 }
 
 export interface RaydiumExBitmapValidation {
@@ -450,6 +737,8 @@ export interface PoolValidationResult {
   hasCacheEntry: boolean;
   hasHotCache: boolean;
   hasStaticCache: boolean;
+  /** Validation of derivation-dependent values (currentTick, activeId, etc.) - validated FIRST */
+  derivationValidation?: DerivationValidation;
   tickArrayValidation?: TickArrayValidation;
   binArrayValidation?: BinArrayValidation;
   bitmapExtensionValidation?: BitmapExtensionValidation;  // Meteora bitmap extension
@@ -478,10 +767,15 @@ export interface BatchValidationResult {
   poolsWithMissingArrays: number;
   poolsWithNoCacheEntry: number;
   poolsWithInvalidBitmapExtension: number;  // Meteora
+  poolsIneligibleDueToBitmapRange: number;  // Meteora - activeId outside ±512 bin array range with no bitmap ext
   poolsWithInvalidExBitmap: number;          // Raydium
   poolsWithMissingAmmConfig: number;         // Raydium - missing ammConfig
   poolsWithZeroFee: number;                  // Pools with 0 fee BPS (likely incorrect)
   poolsWithMissingFee: number;               // Pools with no fee in cache
+  // Derivation validation stats
+  poolsWithStaleDerivedValues: number;       // Pools where cached tick/activeId differed from chain
+  poolsWithDerivationUpdated: number;        // Pools where cache was updated with fresh derivation values
+  poolsNeedingArrayRederivation: number;     // Pools where tick/bin drift requires new arrays
   results: PoolValidationResult[];
   timestamp: number;
   durationMs: number;
@@ -557,13 +851,29 @@ export async function validatePoolCache(
       const freshResult = await fetchFreshTickDataAndValidate(connection, basePoolId, dex);
       
       if (freshResult) {
-        const { currentTick, tickSpacing, tickArrays, validation } = freshResult;
+        const { currentTick, tickSpacing, tickArrays, validation, derivationValidation } = freshResult;
         
         result.cacheData = {
           currentTick,
           tickSpacing,
         };
         result.tickArrayValidation = validation;
+        result.derivationValidation = derivationValidation;
+        
+        // Log derivation validation results
+        if (derivationValidation?.cacheWasStale) {
+          logger.info('cache.validation.derivation.stale_detected', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8) + '…',
+              dex,
+              tickDrift: derivationValidation.currentTick?.drift,
+              tickDriftPercent: derivationValidation.currentTick?.driftPercent?.toFixed(2) + '%',
+              needsArrayRederivation: derivationValidation.needsArrayRederivation,
+              cacheUpdated: derivationValidation.cacheUpdated,
+            }
+          });
+        }
         
         if (tickArrays && validation?.center?.exists) {
           // Successfully validated with fresh data - update all caches
@@ -833,13 +1143,29 @@ export async function validatePoolCache(
       const freshResult = await fetchFreshBinDataAndValidate(connection, basePoolId);
       
       if (freshResult) {
-        const { activeId, binStep, binArrays, validation } = freshResult;
+        const { activeId, binStep, binArrays, validation, derivationValidation } = freshResult;
         
         result.cacheData = {
           activeId,
           binStep,
         };
         result.binArrayValidation = validation;
+        result.derivationValidation = derivationValidation;
+        
+        // Log derivation validation results
+        if (derivationValidation?.cacheWasStale) {
+          logger.info('cache.validation.derivation.stale_detected', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8) + '…',
+              dex: 'meteora',
+              activeIdDrift: derivationValidation.activeId?.drift,
+              activeBinArrayIdxChanged: derivationValidation.activeId?.activeBinArrayIdxChanged,
+              needsArrayRederivation: derivationValidation.needsArrayRederivation,
+              cacheUpdated: derivationValidation.cacheUpdated,
+            }
+          });
+        }
         
         // Check if at least one bin array exists
         const hasAnyBinArray = 
@@ -1009,12 +1335,30 @@ export async function validatePoolCache(
           );
           const pdaExistsOnChain = !!info && info.owner.equals(METEORA_DLMM_PROGRAM);
           
+          // Calculate if activeId requires bitmap extension (bin array index outside ±512)
+          const activeId = result.cacheData?.activeId ?? hot?.activeId;
+          let activeIdRequiresBitmapExt = false;
+          let binArrayIndex: number | undefined;
+          const BITMAP_RANGE = 512; // Default bitmap covers indices -512 to +511
+          
+          if (activeId !== undefined && typeof activeId === 'number') {
+            binArrayIndex = Math.floor(activeId / METEORA_BIN_ARRAY_SIZE);
+            activeIdRequiresBitmapExt = binArrayIndex < -BITMAP_RANGE || binArrayIndex >= BITMAP_RANGE;
+          }
+          
+          // Determine trading eligibility:
+          // Pool is eligible if bitmap extension exists on-chain OR activeId doesn't require it
+          const isEligibleForTrading = pdaExistsOnChain || !activeIdRequiresBitmapExt;
+          
           const bitmapValidation: BitmapExtensionValidation = {
             cachedValue: cachedBitmapExt || null,
             derivedPda,
             pdaExistsOnChain,
             isUsingProgramIdFallback,
             isValid: false,
+            activeIdRequiresBitmapExt,
+            binArrayIndex,
+            isEligibleForTrading,
           };
           
           if (pdaExistsOnChain) {
@@ -1044,6 +1388,17 @@ export async function validatePoolCache(
               bitmapValidation.issue = 'Cached PDA does not exist on-chain, should use program ID';
               issues.push(bitmapValidation.issue);
             }
+          }
+          
+          // Add issue if pool is not eligible for trading due to bitmap range
+          if (!isEligibleForTrading) {
+            const rangeIssue = `Pool at bin array index ${binArrayIndex} requires bitmap extension but none initialized - not tradeable`;
+            if (!bitmapValidation.issue) {
+              bitmapValidation.issue = rangeIssue;
+            } else {
+              bitmapValidation.issue += '; ' + rangeIssue;
+            }
+            issues.push(rangeIssue);
           }
           
           result.bitmapExtensionValidation = bitmapValidation;
@@ -1177,10 +1532,15 @@ export async function validatePoolCacheBatch(
   let poolsWithMissingArrays = 0;
   let poolsWithNoCacheEntry = 0;
   let poolsWithInvalidBitmapExtension = 0;  // Meteora
+  let poolsIneligibleDueToBitmapRange = 0;  // Meteora - activeId outside ±512 bin array range
   let poolsWithInvalidExBitmap = 0;          // Raydium
   let poolsWithMissingAmmConfig = 0;         // Raydium - missing ammConfig
   let poolsWithZeroFee = 0;                  // Pools with 0 fee BPS
   let poolsWithMissingFee = 0;               // Pools with no fee in cache
+  // Derivation validation stats
+  let poolsWithStaleDerivedValues = 0;       // Pools where cached tick/activeId differed from chain
+  let poolsWithDerivationUpdated = 0;        // Pools where cache was updated with fresh derivation values
+  let poolsNeedingArrayRederivation = 0;     // Pools where tick/bin drift requires new arrays
   
   // Process in batches to avoid overwhelming RPC
   // Reduced batch size and added delay between batches for rate limiting
@@ -1227,6 +1587,11 @@ export async function validatePoolCacheBatch(
           poolsWithInvalidBitmapExtension++;
         }
         
+        // Track pools ineligible due to bitmap range (Meteora only)
+        if (result.bitmapExtensionValidation?.isEligibleForTrading === false) {
+          poolsIneligibleDueToBitmapRange++;
+        }
+        
         // Track ex_bitmap issues (Raydium only)
         if (result.exBitmapValidation && !result.exBitmapValidation.isValid) {
           poolsWithInvalidExBitmap++;
@@ -1246,6 +1611,19 @@ export async function validatePoolCacheBatch(
           poolsWithMissingFee++;
         }
       }
+      
+      // Track derivation validation stats (for all pools)
+      if (result.derivationValidation) {
+        if (result.derivationValidation.cacheWasStale) {
+          poolsWithStaleDerivedValues++;
+        }
+        if (result.derivationValidation.cacheUpdated) {
+          poolsWithDerivationUpdated++;
+        }
+        if (result.derivationValidation.needsArrayRederivation) {
+          poolsNeedingArrayRederivation++;
+        }
+      }
     }
   }
   
@@ -1262,10 +1640,15 @@ export async function validatePoolCacheBatch(
       poolsWithMissingArrays,
       poolsWithNoCacheEntry,
       poolsWithInvalidBitmapExtension,
+      poolsIneligibleDueToBitmapRange,
       poolsWithInvalidExBitmap,
       poolsWithMissingAmmConfig,
       poolsWithZeroFee,
       poolsWithMissingFee,
+      // Derivation validation stats
+      poolsWithStaleDerivedValues,
+      poolsWithDerivationUpdated,
+      poolsNeedingArrayRederivation,
       durationMs,
     }
   });
@@ -1278,10 +1661,15 @@ export async function validatePoolCacheBatch(
     poolsWithMissingArrays,
     poolsWithNoCacheEntry,
     poolsWithInvalidBitmapExtension,
+    poolsIneligibleDueToBitmapRange,
     poolsWithInvalidExBitmap,
     poolsWithMissingAmmConfig,
     poolsWithZeroFee,
     poolsWithMissingFee,
+    // Derivation validation stats
+    poolsWithStaleDerivedValues,
+    poolsWithDerivationUpdated,
+    poolsNeedingArrayRederivation,
     results,
     timestamp: Date.now(),
     durationMs,
