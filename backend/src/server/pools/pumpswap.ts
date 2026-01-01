@@ -65,6 +65,21 @@ export async function fetchPumpswapSummaryOnly(providedMints?: string[]): Promis
     }
   }
 
+  // CRITICAL: Always include anchor tokens in mints list for GraphQL queries
+  // This ensures we can find pools containing SOL/USDC/USDT even if they're not in the universe
+  // Anchor bridging only affects filtering AFTER fetching, not what we query
+  try {
+    const { getAnchorSet } = await import('../universe.js');
+    const anchors = getAnchorSet();
+    const mintsSet = new Set(mints);
+    for (const anchor of anchors) {
+      mintsSet.add(anchor);
+    }
+    mints = Array.from(mintsSet);
+  } catch (e: any) {
+    logger.warn('pumpswap.graphql.summary_only.anchors.failed', { error: String(e?.message || e), cat: 'pumpswap' });
+  }
+
   const poolsMap = new Map<string, SummaryPool>();
   const mintBatches = chunkArray(mints, mintBatchSize);
 
@@ -157,6 +172,19 @@ export async function fetchPumpswapGraphQL(providedMints?: string[]): Promise<Pu
       mints = [SOL_MINT, USDC_MINT];
     }
   }
+  
+  // CRITICAL: Always include anchor tokens in mints list for GraphQL queries
+  // This ensures we can find pools containing SOL/USDC/USDT even if they're not in the universe
+  // Anchor bridging only affects filtering AFTER fetching, not what we query
+  try {
+    const { getAnchorSet } = await import('../universe.js');
+    const anchors = getAnchorSet();
+    const mintsSet = new Set(mints);
+    for (const anchor of anchors) {
+      mintsSet.add(anchor);
+    }
+    mints = Array.from(mintsSet);
+  } catch (e) { logCatchError('pools.pumpswap', e); }
   
   const pools = new Map<string, any>(); // Dedupe by pubkey
   
