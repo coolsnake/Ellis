@@ -1534,11 +1534,13 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           }
         } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
         
-        // Swap account fields if pipeline swapped mints
+        // Swap account fields if pipeline swapped mints (CANONICAL order)
         const finalAccountA = wasSwapped ? pool.tokenVault1 : pool.tokenVault0;
         const finalAccountB = wasSwapped ? pool.tokenVault0 : pool.tokenVault1;
-        const finalNativeAccountA = wasSwapped ? pool.tokenVault1 : pool.tokenVault0;
-        const finalNativeAccountB = wasSwapped ? pool.tokenVault0 : pool.tokenVault1;
+        // NATIVE accounts are ALWAYS in on-chain order (never swap based on canonicalization)
+        // native_account_a pairs with native_mint_a (tokenMint0), native_account_b pairs with native_mint_b (tokenMint1)
+        const finalNativeAccountA = pool.tokenVault0;
+        const finalNativeAccountB = pool.tokenVault1;
         
         const finalAmountA = wasSwapped ? amount_b_whole : amount_a_whole;
         const finalAmountB = wasSwapped ? amount_a_whole : amount_b_whole;
@@ -1651,11 +1653,13 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           }
         } catch (e) { logCatchError('pools.raydiumGraphQL', e); }
         
-        // Swap account fields if pipeline swapped mints
+        // Swap account fields if pipeline swapped mints (CANONICAL order)
         const finalAccountA = wasSwapped ? pool.quoteVault : pool.baseVault;
         const finalAccountB = wasSwapped ? pool.baseVault : pool.quoteVault;
-        const finalNativeAccountA = wasSwapped ? pool.quoteVault : pool.baseVault;
-        const finalNativeAccountB = wasSwapped ? pool.baseVault : pool.quoteVault;
+        // NATIVE accounts are ALWAYS in on-chain order (never swap based on canonicalization)
+        // native_account_a pairs with native_mint_a (baseMint), native_account_b pairs with native_mint_b (quoteMint)
+        const finalNativeAccountA = pool.baseVault;
+        const finalNativeAccountB = pool.quoteVault;
         
         const finalAmountA = wasSwapped ? amount_b_whole : amount_a_whole;
         const finalAmountB = wasSwapped ? amount_a_whole : amount_b_whole;

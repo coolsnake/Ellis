@@ -856,11 +856,13 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
         }
       } catch (e) { logCatchError('pools.orcaGraphQL', e); }
       
-      // Swap account/vault fields if pipeline swapped mints
+      // Swap account/vault fields if pipeline swapped mints (CANONICAL order)
       const finalTokenVaultA = wasSwapped ? pool.tokenVaultB : pool.tokenVaultA;
       const finalTokenVaultB = wasSwapped ? pool.tokenVaultA : pool.tokenVaultB;
-      const finalNativeAccountA = wasSwapped ? pool.tokenVaultB : pool.tokenVaultA;
-      const finalNativeAccountB = wasSwapped ? pool.tokenVaultA : pool.tokenVaultB;
+      // NATIVE accounts are ALWAYS in on-chain order (never swap based on canonicalization)
+      // native_account_a pairs with native_mint_a (tokenMintA), native_account_b pairs with native_mint_b (tokenMintB)
+      const finalNativeAccountA = pool.tokenVaultA;
+      const finalNativeAccountB = pool.tokenVaultB;
       
       const finalAmountA = wasSwapped ? amount_b_whole : amount_a_whole;
       const finalAmountB = wasSwapped ? amount_a_whole : amount_b_whole;

@@ -308,8 +308,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    let loaded_config = load_config();
+    eprintln!("[arb-rs] Startup config: start_mint_mode={}, enabled={}", loaded_config.start_mint_mode, loaded_config.enabled);
     let state = Arc::new(RwLock::new(AppState {
-        config: load_config(),
+        config: loaded_config,
         opportunities: Vec::new(),
         rejected_opportunities: Vec::new(),
         rejected_opportunities_updated_ms: 0,
@@ -872,10 +874,12 @@ async fn main() -> anyhow::Result<()> {
                         ratio,
                         "arb.detect.scope"
                     );
-                    // Run detection
-                    let cycles = match s.config.start_mint_mode.as_str() {
+                    // Run detection - log which mode is being used
+                    let current_mode = s.config.start_mint_mode.as_str();
+                    let cycles = match current_mode {
                         "sol_usdc" => {
                             // SOL & USDC only mode - hardcoded anchors
+                            tracing::debug!(target = "arb_rs", "arb.detect.mode=sol_usdc");
                             use std::collections::HashSet;
                             let mut sol_usdc_set = HashSet::new();
                             sol_usdc_set.insert("So11111111111111111111111111111111111111112".to_string()); // SOL
@@ -902,6 +906,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                         _ => {
                             // "any" mode or unknown - full graph scan (existing behavior)
+                            tracing::debug!(target = "arb_rs", mode = %current_mode, "arb.detect.mode=any_or_unknown");
                             if use_filtered {
                                 // Run both BF and SPFA for filtered detection if run_dual_algo is enabled
                                 if s.config.run_dual_algo {
