@@ -2666,7 +2666,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       // Also persist to config file
       const { readJson, writeJson } = await import('../../utils/fs.js');
       const configPath = 'backend/config/arbExecutor.json';
-      const currentConfig = await readJson(configPath, {});
+      const currentConfig: any = await readJson(configPath, {});
       const blocklist = new Set<string>(currentConfig.manualPoolBlocklist || []);
       blocklist.add(poolId);
       currentConfig.manualPoolBlocklist = Array.from(blocklist);
@@ -2695,7 +2695,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       // Also persist to config file
       const { readJson, writeJson } = await import('../../utils/fs.js');
       const configPath = 'backend/config/arbExecutor.json';
-      const currentConfig = await readJson(configPath, {});
+      const currentConfig: any = await readJson(configPath, {});
       const blocklist = new Set<string>(currentConfig.manualPoolBlocklist || []);
       blocklist.delete(poolId);
       currentConfig.manualPoolBlocklist = Array.from(blocklist);
