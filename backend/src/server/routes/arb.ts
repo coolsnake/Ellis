@@ -2599,6 +2599,128 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
 
   // ============================================================================
+  // Pool Quarantine Management APIs
+  // ============================================================================
+
+  // Get quarantine status and statistics
+  api.get('/arb/quarantine/status', async (_req: Request, res: Response) => {
+    try {
+      const { getQuarantineStats } = await import('../../execution/poolFailureTracker.js');
+      const stats = getQuarantineStats();
+      res.json(stats);
+    } catch (e: any) {
+      logger.error('arb.quarantine.api.status_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Clear all auto-quarantines
+  api.post('/arb/quarantine/clear', async (_req: Request, res: Response) => {
+    try {
+      const { clearAllQuarantines } = await import('../../execution/poolFailureTracker.js');
+      const count = clearAllQuarantines();
+      logger.info('arb.quarantine.api.cleared', { cat: 'arb', count });
+      res.json({ status: 'cleared', count });
+    } catch (e: any) {
+      logger.error('arb.quarantine.api.clear_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Remove specific pool from quarantine
+  api.delete('/arb/quarantine/:poolId', async (req: Request, res: Response) => {
+    try {
+      const { poolId } = req.params;
+      if (!poolId) {
+        res.status(400).json({ error: 'poolId is required' });
+        return;
+      }
+      
+      const { removeFromQuarantine } = await import('../../execution/poolFailureTracker.js');
+      const removed = removeFromQuarantine(poolId);
+      
+      if (removed) {
+        logger.info('arb.quarantine.api.removed', { cat: 'arb', poolId });
+        res.json({ status: 'removed', poolId });
+      } else {
+        res.json({ status: 'not_found', poolId, message: 'Pool was not quarantined' });
+      }
+    } catch (e: any) {
+      logger.error('arb.quarantine.api.remove_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Add pool to manual blocklist
+  api.post('/arb/blocklist/add', async (req: Request, res: Response) => {
+    try {
+      const { poolId } = req.body;
+      if (!poolId || typeof poolId !== 'string') {
+        res.status(400).json({ error: 'poolId (string) is required in request body' });
+        return;
+      }
+      
+      const { addToManualBlocklist, getManualBlocklist } = await import('../../execution/poolFailureTracker.js');
+      addToManualBlocklist(poolId);
+      
+      // Also persist to config file
+      const { readJson, writeJson } = await import('../../utils/fs.js');
+      const configPath = 'backend/config/arbExecutor.json';
+      const currentConfig = await readJson(configPath, {});
+      const blocklist = new Set<string>(currentConfig.manualPoolBlocklist || []);
+      blocklist.add(poolId);
+      currentConfig.manualPoolBlocklist = Array.from(blocklist);
+      await writeJson(configPath, currentConfig);
+      
+      logger.info('arb.blocklist.api.added', { cat: 'arb', poolId });
+      res.json({ status: 'added', poolId, blocklist: getManualBlocklist() });
+    } catch (e: any) {
+      logger.error('arb.blocklist.api.add_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Remove pool from manual blocklist
+  api.post('/arb/blocklist/remove', async (req: Request, res: Response) => {
+    try {
+      const { poolId } = req.body;
+      if (!poolId || typeof poolId !== 'string') {
+        res.status(400).json({ error: 'poolId (string) is required in request body' });
+        return;
+      }
+      
+      const { removeFromManualBlocklist, getManualBlocklist } = await import('../../execution/poolFailureTracker.js');
+      removeFromManualBlocklist(poolId);
+      
+      // Also persist to config file
+      const { readJson, writeJson } = await import('../../utils/fs.js');
+      const configPath = 'backend/config/arbExecutor.json';
+      const currentConfig = await readJson(configPath, {});
+      const blocklist = new Set<string>(currentConfig.manualPoolBlocklist || []);
+      blocklist.delete(poolId);
+      currentConfig.manualPoolBlocklist = Array.from(blocklist);
+      await writeJson(configPath, currentConfig);
+      
+      logger.info('arb.blocklist.api.removed', { cat: 'arb', poolId });
+      res.json({ status: 'removed', poolId, blocklist: getManualBlocklist() });
+    } catch (e: any) {
+      logger.error('arb.blocklist.api.remove_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Get manual blocklist
+  api.get('/arb/blocklist', async (_req: Request, res: Response) => {
+    try {
+      const { getManualBlocklist } = await import('../../execution/poolFailureTracker.js');
+      res.json({ blocklist: getManualBlocklist() });
+    } catch (e: any) {
+      logger.error('arb.blocklist.api.get_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // ============================================================================
   // ALT (Address Lookup Table) Management APIs
   // ============================================================================
 
