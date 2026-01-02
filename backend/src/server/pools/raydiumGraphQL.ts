@@ -549,13 +549,24 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
 
   const poolsMap = new Map<string, any>();
 
-  // Chunk mints into batches for efficient querying
-  const mintBatches = chunkArray(mints, mintBatchSize);
-  
-  logger.info('raydium.graphql.batch.start', {
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  // Anchor tokens (SOL, USDC, USDT) have many pools and should be queried individually
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  for (const mint of mints) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
+
+  logger.info('raydium.graphql.fetch.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'raydium',
   });
 
@@ -563,6 +574,52 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   if (pageDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  // Each anchor gets its own pagination, avoiding crowding from other high-volume tokens
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const pools = await fetchRaydiumPoolsForMintBatch({
+        mints: [anchorMint], // Query single anchor token
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        poolsMap.set(pool.pubkey, pool);
+      }
+
+      logger.info('raydium.graphql.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'raydium',
+      });
+    } catch (e: any) {
+      logger.warn('raydium.graphql.anchor.failed', { 
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e), 
+        cat: 'raydium' 
+      });
+    }
+    // Rate limit delay between anchor queries
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches (they have fewer pools each)
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
+  
+  logger.info('raydium.graphql.batch.start', {
+    regularMints: regularMints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'raydium',
+  });
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];
@@ -985,13 +1042,24 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
 
   const poolsMap = new Map<string, any>();
 
-  // Chunk mints into batches for efficient querying
-  const mintBatches = chunkArray(mints, mintBatchSize);
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  // Anchor tokens (SOL, USDC, USDT) have many pools and should be queried individually
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  for (const mint of mints) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
 
-  logger.info('raydium.clmm.graphql.batch.start', {
+  logger.info('raydium.clmm.graphql.fetch.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'raydium-clmm',
   });
 
@@ -1008,6 +1076,52 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
     });
     await new Promise(resolve => setTimeout(resolve, initialDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  // Each anchor gets its own pagination, avoiding crowding from other high-volume tokens
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const pools = await fetchRaydiumClmmPoolsForMintBatch({
+        mints: [anchorMint], // Query single anchor token
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        poolsMap.set(pool.pubkey, pool);
+      }
+
+      logger.info('raydium.clmm.graphql.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'raydium-clmm',
+      });
+    } catch (e: any) {
+      logger.warn('raydium.clmm.graphql.anchor.failed', { 
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e), 
+        cat: 'raydium-clmm' 
+      });
+    }
+    // Rate limit delay between anchor queries
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches (they have fewer pools each)
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
+
+  logger.info('raydium.clmm.graphql.batch.start', {
+    regularMints: regularMints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'raydium-clmm',
+  });
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];
