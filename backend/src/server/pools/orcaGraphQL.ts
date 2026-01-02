@@ -204,7 +204,8 @@ async function fetchOrcaPoolsForMintBatch(opts: {
 }): Promise<any[]> {
   // Validate pagination params
   const safePageSize = Math.min(Math.max(1, opts.pageSize), 1000);
-  const safeMaxPages = Math.min(Math.max(1, opts.maxPages), 20);
+  // Respect configured maxPages (default 50) - no arbitrary hard cap
+  const safeMaxPages = Math.max(1, opts.maxPages);
   
   const allPools: any[] = [];
   let offset = 0;
@@ -277,6 +278,17 @@ async function fetchOrcaPoolsForMintBatch(opts: {
     }
   }
   
+  // Warn if we hit the page limit with a full page (likely truncated results)
+  if (page >= safeMaxPages && allPools.length > 0 && allPools.length % safePageSize === 0) {
+    logger.warn('orca.graphql.batch.possibly_truncated', {
+      mintCount: opts.mints.length,
+      pagesFetched: page,
+      maxPages: safeMaxPages,
+      totalPools: allPools.length,
+      cat: 'orca'
+    });
+  }
+  
   return allPools;
 }
 
@@ -299,7 +311,8 @@ async function fetchOrcaPoolsForToken(opts: {
   
   // Validate pagination params
   const safePageSize = Math.min(Math.max(1, opts.pageSize), 1000);
-  const safeMaxPages = Math.min(Math.max(1, opts.maxPages), 20);
+  // Respect configured maxPages (default 50) - no arbitrary hard cap
+  const safeMaxPages = Math.max(1, opts.maxPages);
   
   const allPools: any[] = [];
   let offset = 0;
@@ -382,6 +395,17 @@ async function fetchOrcaPoolsForToken(opts: {
     if (page < safeMaxPages && opts.pageDelayMs > 0) {
       await new Promise(r => setTimeout(r, opts.pageDelayMs));
     }
+  }
+  
+  // Warn if we hit the page limit with a full page (likely truncated results)
+  if (page >= safeMaxPages && allPools.length > 0 && allPools.length % safePageSize === 0) {
+    logger.warn('orca.graphql.token.possibly_truncated', {
+      mint: opts.mint.slice(0, 8) + '…',
+      pagesFetched: page,
+      maxPages: safeMaxPages,
+      totalPools: allPools.length,
+      cat: 'orca'
+    });
   }
   
   return allPools;
