@@ -19,24 +19,82 @@ import { isValidPublicKey } from '../../execution/builder/utils.js';
 export async function fetchOrcaSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
   const retries = Number((CONFIG as any)?.orca?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.orca?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.orca?.pageSize || 1000);
+  // Use dedicated graphqlPageSize, falling back to 1000 (optimal for Shyft GraphQL)
+  const pageSize = Number((CONFIG as any)?.orca?.graphqlPageSize || 1000);
   const maxPages = Number((CONFIG as any)?.orca?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.orca?.pageDelayMs || 200);
   const mintBatchSize = Number((CONFIG as any)?.orca?.mintBatchSize || 10);
 
   const poolsMap = new Map<string, SummaryPool>();
-  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  for (const mint of mints) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
 
   logger.info('orca.graphql.summary_only.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'orca',
   });
 
   if (pageDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const pools = await fetchOrcaPoolsForMintBatch({
+        mints: [anchorMint],
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.tokenMintA,
+          mint_b: pool.tokenMintB,
+          dex: 'orca',
+          type: 'clmm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.info('orca.graphql.summary_only.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'orca',
+      });
+    } catch (e: any) {
+      logger.warn('orca.graphql.summary_only.anchor.failed', {
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e),
+        cat: 'orca',
+      });
+    }
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];

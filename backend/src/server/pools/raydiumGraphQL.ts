@@ -382,24 +382,82 @@ async function fetchClmmPoolRawData(
 export async function fetchRaydiumSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
   const retries = Number((CONFIG as any)?.raydium?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.raydium?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.raydium?.pageSize || 1000);
+  // Use dedicated graphqlPageSize, falling back to 1000 (optimal for Shyft GraphQL)
+  const pageSize = Number((CONFIG as any)?.raydium?.graphqlPageSize || 1000);
   const maxPages = Number((CONFIG as any)?.raydium?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.raydium?.pageDelayMs || 200);
   const mintBatchSize = Number((CONFIG as any)?.raydium?.mintBatchSize || 10);
 
   const poolsMap = new Map<string, SummaryPool>();
-  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  for (const mint of mints) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
 
   logger.info('raydium.graphql.summary_only.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'raydium',
   });
 
   if (pageDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const pools = await fetchRaydiumPoolsForMintBatch({
+        mints: [anchorMint],
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.baseMint,
+          mint_b: pool.quoteMint,
+          dex: 'raydium',
+          type: 'amm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.info('raydium.graphql.summary_only.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'raydium',
+      });
+    } catch (e: any) {
+      logger.warn('raydium.graphql.summary_only.anchor.failed', {
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e),
+        cat: 'raydium',
+      });
+    }
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];
@@ -460,18 +518,31 @@ export async function fetchRaydiumSummaryOnly(mints: string[]): Promise<SummaryP
 export async function fetchRaydiumClmmSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
   const retries = Number((CONFIG as any)?.raydiumClmm?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.raydiumClmm?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.raydiumClmm?.pageSize || 1000);
-  const maxPages = Number((CONFIG as any)?.raydiumClmm?.maxPages || 50);
+  // Use dedicated graphqlPageSize, falling back to 1000 (optimal for Shyft GraphQL)
+  const pageSize = Number((CONFIG as any)?.raydiumClmm?.graphqlPageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.raydiumClmm?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
   const mintBatchSize = Number((CONFIG as any)?.raydiumClmm?.mintBatchSize || 10);
 
   const poolsMap = new Map<string, SummaryPool>();
-  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  for (const mint of mints) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
 
   logger.info('raydium.clmm.graphql.summary_only.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'raydium-clmm',
   });
 
@@ -481,6 +552,51 @@ export async function fetchRaydiumClmmSummaryOnly(mints: string[]): Promise<Summ
   if (initialDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, initialDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const pools = await fetchRaydiumClmmPoolsForMintBatch({
+        mints: [anchorMint],
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.tokenMint0,
+          mint_b: pool.tokenMint1,
+          dex: 'raydium-clmm',
+          type: 'clmm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.info('raydium.clmm.graphql.summary_only.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'raydium-clmm',
+      });
+    } catch (e: any) {
+      logger.warn('raydium.clmm.graphql.summary_only.anchor.failed', {
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e),
+        cat: 'raydium-clmm',
+      });
+    }
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];

@@ -21,24 +21,83 @@ import { resolveMeteoraBitmapExtensions } from './meteora.js';
 export async function fetchMeteoraSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
   const retries = Number((CONFIG as any)?.meteora?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.meteora?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.meteora?.pageSize || 1000);
+  // Use dedicated graphqlPageSize, falling back to 1000 (optimal for Shyft GraphQL)
+  const pageSize = Number((CONFIG as any)?.meteora?.graphqlPageSize || 1000);
   const maxPages = Number((CONFIG as any)?.meteora?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.meteora?.pageDelayMs || 200);
   const mintBatchSize = Number((CONFIG as any)?.meteora?.mintBatchSize || 10);
 
   const poolsMap = new Map<string, SummaryPool>();
-  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  for (const mint of mints) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
 
   logger.info('meteora.graphql.summary_only.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'meteora',
   });
 
   if (pageDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const pools = await fetchMeteoraPoolsForMintBatch({
+        mints: [anchorMint],
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        const key = pool.pubkey || pool.baseKey;
+        if (!key) continue;
+        poolsMap.set(key, {
+          pubkey: key,
+          mint_a: pool.tokenXMint,
+          mint_b: pool.tokenYMint,
+          dex: 'meteora',
+          type: 'clmm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.info('meteora.graphql.summary_only.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'meteora',
+      });
+    } catch (e: any) {
+      logger.warn('meteora.graphql.summary_only.anchor.failed', {
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e),
+        cat: 'meteora',
+      });
+    }
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];

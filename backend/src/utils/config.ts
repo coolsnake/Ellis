@@ -105,6 +105,8 @@ export const CONFIG = {
     minClmmLiquidity: Number(process.env.ORCA_MIN_CLMM_LIQUIDITY || 0),
     // GraphQL batch optimization: number of mints per _in query
     mintBatchSize: Number(process.env.ORCA_MINT_BATCH_SIZE || 10),
+    // GraphQL pagination: page size (1000 optimal for Shyft GraphQL)
+    graphqlPageSize: Number(process.env.ORCA_GRAPHQL_PAGE_SIZE || 1000),
     // GraphQL pagination: max pages per batch (50 pages * 1000 = 50k pools per batch)
     graphqlMaxPages: Number(process.env.ORCA_GRAPHQL_MAX_PAGES || 50),
     // Optional: minimum liquidity filter for GraphQL queries (skip dust pools)
@@ -441,6 +443,8 @@ export const CONFIG = {
     minClmmLiquidity: Number(process.env.RAYDIUM_MIN_CLMM_LIQUIDITY || 0),
     // GraphQL batch optimization: number of mints per _in query
     mintBatchSize: Number(process.env.RAYDIUM_MINT_BATCH_SIZE || 10),
+    // GraphQL pagination: page size (1000 optimal for Shyft GraphQL)
+    graphqlPageSize: Number(process.env.RAYDIUM_GRAPHQL_PAGE_SIZE || 1000),
     // GraphQL pagination: max pages per batch (50 pages * 1000 = 50k pools per batch)
     graphqlMaxPages: Number(process.env.RAYDIUM_GRAPHQL_MAX_PAGES || 50),
     // Optional: minimum liquidity filter for GraphQL queries (skip dust pools)
@@ -450,6 +454,10 @@ export const CONFIG = {
   raydiumClmm: {
     mintBatchSize: Number(process.env.RAYDIUM_CLMM_MINT_BATCH_SIZE || 10),
     minLiquidity: process.env.RAYDIUM_CLMM_MIN_LIQUIDITY ? Number(process.env.RAYDIUM_CLMM_MIN_LIQUIDITY) : undefined,
+    // GraphQL pagination: page size (1000 optimal for Shyft GraphQL)
+    graphqlPageSize: Number(process.env.RAYDIUM_CLMM_GRAPHQL_PAGE_SIZE || 1000),
+    // GraphQL pagination: max pages per batch
+    graphqlMaxPages: Number(process.env.RAYDIUM_CLMM_GRAPHQL_MAX_PAGES || 50),
     pageSize: Number(process.env.RAYDIUM_CLMM_PAGE_SIZE || 1000),
     maxPages: Number(process.env.RAYDIUM_CLMM_MAX_PAGES || 50),
     pageDelayMs: Number(process.env.RAYDIUM_CLMM_PAGE_DELAY_MS || 200),
@@ -481,6 +489,8 @@ export const CONFIG = {
     universePrefilter: (process.env.METEORA_UNIVERSE_PREFILTER || 'false') === 'true',
     // GraphQL batch optimization: number of mints per _in query
     mintBatchSize: Number(process.env.METEORA_MINT_BATCH_SIZE || 10),
+    // GraphQL pagination: page size (1000 optimal for Shyft GraphQL)
+    graphqlPageSize: Number(process.env.METEORA_GRAPHQL_PAGE_SIZE || 1000),
     // GraphQL pagination: max pages per batch (50 pages * 1000 = 50k pools per batch)
     graphqlMaxPages: Number(process.env.METEORA_GRAPHQL_MAX_PAGES || 50),
     // Optional: minimum liquidity filter for GraphQL queries (skip dust pools)
@@ -840,6 +850,8 @@ export const CONFIG = {
     validationSamples: Number(process.env.PUMPSWAP_VALIDATION_SAMPLES || 10),
     // GraphQL batch optimization: number of mints per _in query
     mintBatchSize: Number(process.env.PUMPSWAP_MINT_BATCH_SIZE || 10),
+    // GraphQL pagination: page size (1000 optimal for Shyft GraphQL)
+    graphqlPageSize: Number(process.env.PUMPSWAP_GRAPHQL_PAGE_SIZE || 1000),
     // GraphQL pagination: max pages per batch (50 pages * 1000 = 50k pools per batch)
     graphqlMaxPages: Number(process.env.PUMPSWAP_GRAPHQL_MAX_PAGES || 50),
     // Optional: minimum liquidity filter for GraphQL queries (skip dust pools)
