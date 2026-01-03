@@ -1718,6 +1718,13 @@ export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skip
         return await normalizeMeteoraBalancedHttpImpl(raw);
       });
       const norm = union;
+      
+      // Save raw normalized pools (before filtering) for debugging/analysis
+      try {
+        const { saveRawNormalizedPools } = await import('./pools.persistence.js');
+        await saveRawNormalizedPools('meteoraBalanced', norm);
+      } catch {}
+      
       const prev = metbalCache.data;
       metbalCache.data = norm; metbalCache.ts = Date.now();
       poolsMetrics.meteora_balanced.fetches = (poolsMetrics.meteora_balanced.fetches || 0) + 1;
@@ -1794,6 +1801,13 @@ export async function getPumpswapPoolsCached(force = false, opts?: { mints?: str
       poolsMetrics.pumpswap.enrichmentMs = enrichResult.metrics?.ms || 0;
       
       let norm = await normalizePumpswapPoolsImpl(enrichedRaw);
+      
+      // Save raw normalized pools (before filtering) for debugging/analysis
+      try {
+        const { saveRawNormalizedPools } = await import('./pools.persistence.js');
+        await saveRawNormalizedPools('pumpswap', norm);
+      } catch {}
+      
       // Apply token blocklist (exclude pools containing any blocked mint)
       try {
         const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);
@@ -2120,6 +2134,12 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
           ctx: { error: String((err as any)?.message || err) }
         });
       }
+      
+      // Save raw normalized pools (before filtering) for debugging/analysis
+      try {
+        const { saveRawNormalizedPools } = await import('./pools.persistence.js');
+        await saveRawNormalizedPools('raydium', norm);
+      } catch {}
       
       // Apply universe filtering early so caches are consistent across sources
       try {
@@ -2699,6 +2719,13 @@ export async function getOrcaPoolsNormalized(opts?: { skipUniverseFilter?: boole
     try {
     const raw = await fetchOrcaHttpImpl();
     let norm = await normalizeOrcaHttpImpl(raw);
+    
+        // Save raw normalized pools (before filtering) for debugging/analysis
+        try {
+          const { saveRawNormalizedPools } = await import('./pools.persistence.js');
+          await saveRawNormalizedPools('orca', norm);
+        } catch {}
+        
         // Apply token blocklist (exclude pools containing any blocked mint)
         try {
           const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);
@@ -3153,6 +3180,13 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
       const t0 = Date.now();
       const raw = await fetchMeteoraHttpImpl();
       let norm = await normalizeMeteoraHttpImpl(raw);
+      
+      // Save raw normalized pools (before filtering) for debugging/analysis
+      try {
+        const { saveRawNormalizedPools } = await import('./pools.persistence.js');
+        await saveRawNormalizedPools('meteora', norm);
+      } catch {}
+      
       // Apply token blocklist (exclude pools containing any blocked mint)
       try {
         const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);

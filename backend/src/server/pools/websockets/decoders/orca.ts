@@ -12,8 +12,9 @@ import { logCatchError, logCatchDebug } from '../../../../utils/errorHandler.js'
 import { anyToBigInt } from '../../precision.js';
 import { processPriceThroughPipeline } from '../../pricePipeline.js';
 import { diffNormalizedPools } from '../../../pools.utils.js';
-import { orcaCache } from '../../../pools.cache.js';
+import { orcaCache, updatePoolCacheFromValidation } from '../../../pools.cache.js';
 import { deriveOrcaFeeBps } from '../../orca.js';
+import { deriveOrcaClmmCacheFields } from '../../../pools.derivation.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
@@ -599,22 +600,92 @@ export async function handleOrcaUpdate(
         rawAccountDataUpdatedMs: Date.now()
       });
 
+      // Check if we need to derive tick arrays:
+      // 1. If tick arrays are missing from cache
+      // 2. If tick crossed an array boundary (handled by setHot's boundary detection)
+      const existingHot = executionCache.getHot(poolId);
+      const hasExistingTickArrays = existingHot?.tickArrays?.center;
+      const currentTick = Number(parsed.tickCurrentIndex);
+      
+      // Only derive tick arrays if missing - boundary crossing is handled by setHot
+      // This avoids overhead on every WebSocket update
+      let tickArraysToSet: { center?: string; lower?: string | string[]; upper?: string | string[] } | undefined;
+      
+      if (!hasExistingTickArrays) {
+        // Tick arrays missing - derive them
+        try {
+          const derived = await deriveOrcaClmmCacheFields(poolId, currentTick, tick_spacing);
+          if (derived?.tickArrays) {
+            tickArraysToSet = derived.tickArrays;
+            
+            // Also update static cache with tick arrays for resolver access
+            const existingStaticForArrays = executionCache.getStatic(poolId) || {};
+            const tickArrayLower = typeof derived.tickArrays.lower === 'string'
+              ? derived.tickArrays.lower
+              : (Array.isArray(derived.tickArrays.lower) && derived.tickArrays.lower.length > 0
+                ? derived.tickArrays.lower[0]
+                : undefined);
+            const tickArrayUpper = typeof derived.tickArrays.upper === 'string'
+              ? derived.tickArrays.upper
+              : (Array.isArray(derived.tickArrays.upper) && derived.tickArrays.upper.length > 0
+                ? derived.tickArrays.upper[0]
+                : undefined);
+                
+            executionCache.setStatic(poolId, {
+              ...existingStaticForArrays,
+              tickArrayLower,
+              tickArrayCenter: derived.tickArrays.center,
+              tickArrayUpper,
+            });
+            
+            // Sync tick arrays to pool cache for persistence
+            try {
+              updatePoolCacheFromValidation([{
+                poolId,
+                dex: 'orca',
+                currentTick,
+                tickSpacing: tick_spacing,
+                tickArrayLower,
+                tickArrayCenter: derived.tickArrays.center,
+                tickArrayUpper,
+              }]);
+            } catch (syncErr) {
+              logCatchDebug('orca.ws.pool_cache_sync', syncErr);
+            }
+            
+            logger.debug('orca.ws.tick_arrays_derived', {
+              pool: poolId.slice(0, 8) + '…',
+              currentTick,
+              tickSpacing: tick_spacing,
+              center: derived.tickArrays.center?.slice(0, 8) + '…',
+              cat: 'pools'
+            });
+          }
+        } catch (deriveErr) {
+          logCatchDebug('orca.ws.tick_array_derive', deriveErr);
+        }
+      }
+
       // Store hot pool data (frequently changing price/liquidity)
-      // Include tickSpacing for boundary crossing detection in cache
+      // setHot handles boundary crossing detection and will clear stale arrays
       executionCache.setHot(poolId, {
         sqrtPriceX64: sqrtRaw,
-        currentTickIndex: Number(parsed.tickCurrentIndex),
+        currentTickIndex: currentTick,
         tickSpacing: tick_spacing,
         liquidity: liquidityRaw,
-        feeRate: fee_bps
+        feeRate: fee_bps,
+        // Only include tick arrays if we just derived them
+        ...(tickArraysToSet ? { tickArrays: tickArraysToSet } : {}),
       });
 
       logger.debug('orca.ws.cache_updated', {
         pool: poolId.slice(0, 8) + '…',
         hasRawData: !!data,
         sqrtPrice: sqrtRaw?.toString(),
-        currentTick: parsed.tickCurrentIndex,
+        currentTick,
         liquidity: liquidityRaw?.toString(),
+        hadExistingArrays: !!hasExistingTickArrays,
+        derivedArrays: !!tickArraysToSet,
         cat: 'pools'
       });
       

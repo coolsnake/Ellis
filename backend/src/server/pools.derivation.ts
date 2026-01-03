@@ -1,10 +1,15 @@
 import { web3 } from '@project-serum/anchor';
+import { PublicKey } from '@solana/web3.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
 import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js';
 import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/raydiumTickArrays.js';
 import BN from 'bn.js';
 import { toB58Any } from './pools.utils.js';
+
+// Orca Whirlpool constants
+const ORCA_WHIRLPOOL_PROGRAM_ID = 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
+const ORCA_TICK_ARRAY_SIZE = 88;
 
 type RaydiumClmmDerivedFields = {
     programId?: string;
@@ -105,6 +110,128 @@ export async function deriveRaydiumClmmCacheFields(
         try { logger.debug('raydium.clmm.raw.decode_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch { }
         return null;
     }
+}
+
+/**
+ * Derive Orca tick array PDA using the correct encoding
+ * CRITICAL: Orca SDK encodes startTick as ASCII string, not binary i32
+ */
+function deriveOrcaTickArrayPda(
+  poolId: PublicKey,
+  startTickIndex: number
+): PublicKey {
+  const programPk = new PublicKey(ORCA_WHIRLPOOL_PROGRAM_ID);
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('tick_array'), poolId.toBuffer(), Buffer.from(startTickIndex.toString())],
+    programPk
+  );
+  return pda;
+}
+
+/**
+ * Get Orca tick array start index for a given tick
+ */
+function getOrcaTickArrayStartIndex(tick: number, tickSpacing: number): number {
+  const ticksPerArray = ORCA_TICK_ARRAY_SIZE * tickSpacing;
+  // Use floor division to get the array index, then multiply back
+  return Math.floor(tick / ticksPerArray) * ticksPerArray;
+}
+
+type OrcaClmmDerivedFields = {
+  programId?: string;
+  oracle?: string;
+  tickSpacing?: number;
+  tickCurrent?: number;
+  tickArrays?: {
+    center?: string;
+    lower?: string | string[];
+    upper?: string | string[];
+  };
+};
+
+/**
+ * Derive Orca Whirlpool cache fields including tick arrays from tick position
+ * This function derives tick array PDAs based on the current tick position.
+ * NOTE: Derived PDAs may not exist on-chain - use cacheValidator for verification.
+ */
+export async function deriveOrcaClmmCacheFields(
+  poolId: string,
+  tickCurrent: number,
+  tickSpacing: number,
+  opts?: { programId?: string }
+): Promise<OrcaClmmDerivedFields | null> {
+  if (!Number.isFinite(tickCurrent) || !Number.isFinite(tickSpacing) || tickSpacing <= 0) {
+    return null;
+  }
+  
+  try {
+    const programIdStr = opts?.programId || ORCA_WHIRLPOOL_PROGRAM_ID;
+    const poolPk = new PublicKey(poolId);
+    
+    // Calculate tick array indices
+    const ticksInArray = ORCA_TICK_ARRAY_SIZE * tickSpacing;
+    const centerStartTick = getOrcaTickArrayStartIndex(tickCurrent, tickSpacing);
+    
+    // Derive center tick array
+    const centerPk = deriveOrcaTickArrayPda(poolPk, centerStartTick);
+    
+    // Derive lower tick arrays (for swaps that move price down)
+    const lowerArrays: string[] = [];
+    for (let i = 1; i <= 5; i++) {
+      try {
+        const lowerStartTick = centerStartTick - (ticksInArray * i);
+        const lowerPk = deriveOrcaTickArrayPda(poolPk, lowerStartTick);
+        if (lowerPk) lowerArrays.push(lowerPk.toBase58());
+      } catch {
+        break;
+      }
+    }
+    
+    // Derive upper tick arrays (for swaps that move price up)
+    const upperArrays: string[] = [];
+    for (let i = 1; i <= 5; i++) {
+      try {
+        const upperStartTick = centerStartTick + (ticksInArray * i);
+        const upperPk = deriveOrcaTickArrayPda(poolPk, upperStartTick);
+        if (upperPk) upperArrays.push(upperPk.toBase58());
+      } catch {
+        break;
+      }
+    }
+    
+    const tickArrays = {
+      center: centerPk.toBase58(),
+      lower: lowerArrays.length > 1 ? lowerArrays : (lowerArrays[0] || undefined),
+      upper: upperArrays.length > 1 ? upperArrays : (upperArrays[0] || undefined),
+    };
+    
+    logger.debug('orca.clmm.tickarray.derived', {
+      pool: poolId.slice(0, 8) + '…',
+      tickCurrent,
+      tickSpacing,
+      centerStartTick,
+      tickArrays: {
+        center: tickArrays.center?.slice(0, 8) + '…',
+        lowerCount: lowerArrays.length,
+        upperCount: upperArrays.length,
+      },
+      cat: 'pools'
+    });
+    
+    return {
+      programId: programIdStr,
+      tickSpacing,
+      tickCurrent,
+      tickArrays,
+    };
+  } catch (err: any) {
+    logger.debug('orca.clmm.tickarray.derive_failed', {
+      pool: poolId.slice(0, 8) + '…',
+      error: String(err?.message || err),
+      cat: 'pools'
+    });
+    return null;
+  }
 }
 
 type MeteoraBinHelpers = {

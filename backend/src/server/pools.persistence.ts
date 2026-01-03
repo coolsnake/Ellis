@@ -1076,3 +1076,243 @@ export async function loadDefaultSnapshot(): Promise<boolean> {
   return result.success;
 }
 
+// ============================================================================
+// RAW NORMALIZED POOLS (per-DEX files) - Save/load pools before filtering
+// ============================================================================
+
+type DexName = 'raydium' | 'orca' | 'meteora' | 'meteoraBalanced' | 'pumpswap';
+
+const RAW_NORMALIZED_VERSION = 1;
+
+/**
+ * Get the file path for a DEX's raw normalized pools
+ */
+function getRawNormalizedPath(dex: DexName): string {
+  return joinPath(CONFIG.cacheDir, `raw-normalized-${dex}.json`);
+}
+
+interface RawNormalizedDexSnapshot {
+  version: number;
+  dex: DexName;
+  savedAt: string;
+  savedAtMs: number;
+  pools: PoolsPayload;
+}
+
+/**
+ * Save raw normalized pools for a specific DEX (before filtering)
+ * Call this right after normalization but before any filters are applied
+ */
+export async function saveRawNormalizedPools(
+  dex: DexName,
+  pools: PoolsPayload
+): Promise<boolean> {
+  try {
+    await ensureDir(CONFIG.cacheDir);
+    
+    const snapshot: RawNormalizedDexSnapshot = {
+      version: RAW_NORMALIZED_VERSION,
+      dex,
+      savedAt: new Date().toISOString(),
+      savedAtMs: Date.now(),
+      pools,
+    };
+    
+    const filePath = getRawNormalizedPath(dex);
+    await writeJson(filePath, snapshot);
+    
+    const counts = {
+      amm: pools.amm?.length || 0,
+      clmm: pools.clmm?.length || 0,
+      total: (pools.amm?.length || 0) + (pools.clmm?.length || 0),
+    };
+    
+    logger.debug('pools.raw_normalized.saved', {
+      dex,
+      counts,
+      path: filePath,
+      cat: 'pools'
+    });
+    
+    return true;
+  } catch (err: any) {
+    logger.warn('pools.raw_normalized.save.failed', {
+      dex,
+      error: err.message,
+      cat: 'pools'
+    });
+    return false;
+  }
+}
+
+/**
+ * Load raw normalized pools for a specific DEX
+ * Returns null if not found or invalid
+ */
+export async function loadRawNormalizedPools(dex: DexName): Promise<PoolsPayload | null> {
+  try {
+    const filePath = getRawNormalizedPath(dex);
+    const snapshot = await readJson<RawNormalizedDexSnapshot>(filePath, null as any);
+    
+    if (!snapshot) {
+      logger.debug('pools.raw_normalized.not_found', { dex, path: filePath, cat: 'pools' });
+      return null;
+    }
+    
+    // Validate version
+    if (snapshot.version !== RAW_NORMALIZED_VERSION) {
+      logger.warn('pools.raw_normalized.version_mismatch', {
+        dex,
+        found: snapshot.version,
+        expected: RAW_NORMALIZED_VERSION,
+        cat: 'pools'
+      });
+      return null;
+    }
+    
+    const ageMs = Date.now() - (snapshot.savedAtMs || 0);
+    const ageHours = Math.round(ageMs / 3600000 * 10) / 10;
+    
+    const counts = {
+      amm: snapshot.pools?.amm?.length || 0,
+      clmm: snapshot.pools?.clmm?.length || 0,
+      total: (snapshot.pools?.amm?.length || 0) + (snapshot.pools?.clmm?.length || 0),
+    };
+    
+    logger.info('pools.raw_normalized.loaded', {
+      dex,
+      savedAt: snapshot.savedAt,
+      ageHours,
+      counts,
+      cat: 'pools'
+    });
+    
+    return snapshot.pools || { amm: [], clmm: [] };
+  } catch (err: any) {
+    logger.warn('pools.raw_normalized.load.failed', { dex, error: err.message, cat: 'pools' });
+    return null;
+  }
+}
+
+/**
+ * Load raw normalized pools for all DEXes
+ * Returns a combined snapshot object
+ */
+export async function loadAllRawNormalizedPools(): Promise<PoolsSnapshot | null> {
+  const dexes: DexName[] = ['raydium', 'orca', 'meteora', 'meteoraBalanced', 'pumpswap'];
+  
+  const result: PoolsSnapshot = {
+    version: SNAPSHOT_VERSION,
+    savedAt: new Date().toISOString(),
+    savedAtMs: Date.now(),
+    raydium: { amm: [], clmm: [] },
+    orca: { amm: [], clmm: [] },
+    meteora: { amm: [], clmm: [] },
+    meteoraBalanced: { amm: [], clmm: [] },
+    pumpswap: { amm: [], clmm: [] },
+  };
+  
+  let foundAny = false;
+  let oldestMs = Date.now();
+  
+  for (const dex of dexes) {
+    const pools = await loadRawNormalizedPools(dex);
+    if (pools) {
+      result[dex] = pools;
+      foundAny = true;
+      
+      // Track oldest snapshot time
+      try {
+        const filePath = getRawNormalizedPath(dex);
+        const snapshot = await readJson<RawNormalizedDexSnapshot>(filePath, null as any);
+        if (snapshot?.savedAtMs && snapshot.savedAtMs < oldestMs) {
+          oldestMs = snapshot.savedAtMs;
+          result.savedAt = snapshot.savedAt;
+          result.savedAtMs = snapshot.savedAtMs;
+        }
+      } catch {}
+    }
+  }
+  
+  if (!foundAny) {
+    logger.debug('pools.raw_normalized.load_all.none_found', { cat: 'pools' });
+    return null;
+  }
+  
+  const counts = {
+    raydium: (result.raydium?.amm?.length || 0) + (result.raydium?.clmm?.length || 0),
+    orca: (result.orca?.amm?.length || 0) + (result.orca?.clmm?.length || 0),
+    meteora: (result.meteora?.amm?.length || 0) + (result.meteora?.clmm?.length || 0),
+    meteoraBalanced: (result.meteoraBalanced?.amm?.length || 0),
+    pumpswap: (result.pumpswap?.amm?.length || 0),
+  };
+  
+  logger.info('pools.raw_normalized.load_all.complete', {
+    counts,
+    total: Object.values(counts).reduce((a, b) => a + b, 0),
+    cat: 'pools'
+  });
+  
+  return result;
+}
+
+/**
+ * Check if raw normalized pools exist for a DEX
+ */
+export async function rawNormalizedPoolsExist(dex: DexName): Promise<boolean> {
+  try {
+    const filePath = getRawNormalizedPath(dex);
+    return await fileExists(filePath);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get info about raw normalized pool snapshots
+ */
+export async function getRawNormalizedInfo(): Promise<{
+  dex: DexName;
+  exists: boolean;
+  savedAt?: string;
+  ageHours?: number;
+  counts?: { amm: number; clmm: number; total: number };
+}[]> {
+  const dexes: DexName[] = ['raydium', 'orca', 'meteora', 'meteoraBalanced', 'pumpswap'];
+  const results: {
+    dex: DexName;
+    exists: boolean;
+    savedAt?: string;
+    ageHours?: number;
+    counts?: { amm: number; clmm: number; total: number };
+  }[] = [];
+  
+  for (const dex of dexes) {
+    try {
+      const filePath = getRawNormalizedPath(dex);
+      const snapshot = await readJson<RawNormalizedDexSnapshot>(filePath, null as any);
+      
+      if (snapshot?.pools) {
+        const ageMs = Date.now() - (snapshot.savedAtMs || 0);
+        results.push({
+          dex,
+          exists: true,
+          savedAt: snapshot.savedAt,
+          ageHours: Math.round(ageMs / 3600000 * 10) / 10,
+          counts: {
+            amm: snapshot.pools.amm?.length || 0,
+            clmm: snapshot.pools.clmm?.length || 0,
+            total: (snapshot.pools.amm?.length || 0) + (snapshot.pools.clmm?.length || 0),
+          },
+        });
+      } else {
+        results.push({ dex, exists: false });
+      }
+    } catch {
+      results.push({ dex, exists: false });
+    }
+  }
+  
+  return results;
+}
+

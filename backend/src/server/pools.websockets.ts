@@ -2436,6 +2436,9 @@ function runWebsocketRefreshLoop(): void {
                     _pipelineProcessed: true,
                   } as any;
                   
+                  // Track derived tick arrays at handler scope for pool cache sync
+                  let derivedTickArrays: { center?: string; lower?: string | string[]; upper?: string | string[] } | undefined;
+                  
                   // OPTIMIZATION: Cache Orca pool state in execution cache to avoid RPC calls during tx building
                   try {
                     const { executionCache } = await import('../execution/cache.js');
@@ -2474,14 +2477,56 @@ function runWebsocketRefreshLoop(): void {
                       rawAccountDataUpdatedMs: Date.now()
                     });
                     
+                    // Only derive tick arrays if missing - boundary crossing handled by setHot
+                    const existingHot = executionCache.getHot(id);
+                    const hasExistingTickArrays = existingHot?.tickArrays?.center;
+                    
+                    if (!hasExistingTickArrays) {
+                      // Tick arrays missing - derive them
+                      try {
+                        const { deriveOrcaClmmCacheFields } = await import('./pools.derivation.js');
+                        const derived = await deriveOrcaClmmCacheFields(
+                          id,
+                          Number(parsed.tickCurrentIndex),
+                          tick_spacing
+                        );
+                        if (derived?.tickArrays) {
+                          derivedTickArrays = derived.tickArrays;
+                          
+                          // Also update static cache with tick arrays
+                          const tickArrayLower = typeof derivedTickArrays.lower === 'string'
+                            ? derivedTickArrays.lower
+                            : (Array.isArray(derivedTickArrays.lower) && derivedTickArrays.lower.length > 0
+                              ? derivedTickArrays.lower[0]
+                              : undefined);
+                          const tickArrayUpper = typeof derivedTickArrays.upper === 'string'
+                            ? derivedTickArrays.upper
+                            : (Array.isArray(derivedTickArrays.upper) && derivedTickArrays.upper.length > 0
+                              ? derivedTickArrays.upper[0]
+                              : undefined);
+                              
+                          executionCache.setStatic(id, {
+                            ...existing,
+                            tickArrayLower,
+                            tickArrayCenter: derivedTickArrays.center,
+                            tickArrayUpper,
+                          });
+                        }
+                      } catch (deriveErr) {
+                        try { logger.debug('orca.ws.tickarray_derive_failed', { pool: id.slice(0, 8) + '…', error: String((deriveErr as any)?.message || deriveErr), cat: 'pools' }); } catch {}
+                      }
+                    }
+                    
                     // Store hot pool data (frequently changing price/liquidity)
-                    // Include tickSpacing for boundary crossing detection in cache
+                    // setHot handles boundary crossing detection and will clear stale arrays
                     executionCache.setHot(id, {
                       sqrtPriceX64: sqrtRaw,
                       currentTickIndex: Number(parsed.tickCurrentIndex),
                       tickSpacing: tick_spacing,
                       liquidity: liquidityRaw,
-                      feeRate: fee_bps
+                      feeRate: fee_bps,
+                      // Only include tick arrays if we just derived them
+                      ...(derivedTickArrays ? { tickArrays: derivedTickArrays } : {}),
                     });
                     
                     try {
@@ -2491,6 +2536,8 @@ function runWebsocketRefreshLoop(): void {
                         sqrtPrice: sqrtRaw?.toString(),
                         currentTick: parsed.tickCurrentIndex,
                         liquidity: liquidityRaw?.toString(),
+                        hadExistingArrays: !!hasExistingTickArrays,
+                        derivedArrays: !!derivedTickArrays,
                         cat: 'pools'
                       });
                     } catch {}
@@ -2521,16 +2568,27 @@ function runWebsocketRefreshLoop(): void {
                   wsDeltaStats.orca.decoded += 1;
                   orcaCache.data = next; orcaCache.ts = Date.now();
                   
-                  // Sync tick data to pool cache
-                  // Note: Orca WebSocket doesn't derive tick arrays, but we can update tick/spacing
+                  // Sync tick data and tick arrays to pool cache
                   try {
                     const { updatePoolCacheFromValidation } = await import('./pools.cache.js');
+                    const tickArrayLower = typeof derivedTickArrays?.lower === 'string'
+                      ? derivedTickArrays.lower
+                      : (Array.isArray(derivedTickArrays?.lower) && derivedTickArrays.lower.length > 0
+                        ? derivedTickArrays.lower[0]
+                        : undefined);
+                    const tickArrayUpper = typeof derivedTickArrays?.upper === 'string'
+                      ? derivedTickArrays.upper
+                      : (Array.isArray(derivedTickArrays?.upper) && derivedTickArrays.upper.length > 0
+                        ? derivedTickArrays.upper[0]
+                        : undefined);
                     updatePoolCacheFromValidation([{
                       poolId: id,
                       dex: 'orca',
                       currentTick: Number(parsed.tickCurrentIndex),
                       tickSpacing: tick_spacing,
-                      // Tick arrays not available from WebSocket, will be populated by validator or resolver
+                      tickArrayLower,
+                      tickArrayCenter: derivedTickArrays?.center,
+                      tickArrayUpper,
                     }]);
                   } catch (syncErr) {
                     logger.debug('orca.ws.pool_cache_sync_failed', {
