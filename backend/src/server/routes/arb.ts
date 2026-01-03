@@ -10,6 +10,11 @@ import { getTxRelatedLogs } from '../../utils/sessionLogs.js';
 import { createWorkerClient, WorkerClient } from '../../workers/client.js';
 import type { ArbBuildRequest, ArbBuildResult, SerializedInstruction } from '../../workers/arbBuild.types.js';
 import { buildTransactionSummary } from '../arb.build.worker.compute.js';
+// Static imports for executor - avoid per-request import overhead
+import { getArbExecutor, stopArbExecutor } from '../../execution/arbExecutor.js';
+import { loadJitoConfig, saveJitoConfig } from '../jitoConfigStore.js';
+import { getSlippageConfig, updateSlippageConfig, resetSlippageConfig, DEFAULT_SLIPPAGE_CONFIG } from '../../execution/slippage/index.js';
+import { getQuarantineStats } from '../../execution/poolFailureTracker.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -2430,9 +2435,6 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Start the automatic arbitrage executor
   api.post('/arb/executor/start', async (req: Request, res: Response) => {
     try {
-      const { getArbExecutor } = await import('../../execution/arbExecutor.js');
-      const { readJson } = await import('../../utils/fs.js');
-      
       // Load config from file or use provided config
       let config = req.body || {};
       if (Object.keys(config).length === 0) {
@@ -2454,9 +2456,8 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
 
   // Stop the automatic arbitrage executor
-  api.post('/arb/executor/stop', async (req: Request, res: Response) => {
+  api.post('/arb/executor/stop', async (_req: Request, res: Response) => {
     try {
-      const { stopArbExecutor } = await import('../../execution/arbExecutor.js');
       stopArbExecutor();
       logger.info('arb.executor.api.stopped', { cat: 'arb' });
       res.json({ status: 'stopped' });
@@ -2466,10 +2467,9 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
-  // Get executor status
-  api.get('/arb/executor/status', async (req: Request, res: Response) => {
+  // Get executor status - fast path, no dynamic imports
+  api.get('/arb/executor/status', (_req: Request, res: Response) => {
     try {
-      const { getArbExecutor } = await import('../../execution/arbExecutor.js');
       const executor = getArbExecutor();
       res.json(executor.getStatus());
     } catch (e: any) {
@@ -2478,9 +2478,8 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
 
   // Get executor configuration from file
-  api.get('/arb/executor/config', async (req: Request, res: Response) => {
+  api.get('/arb/executor/config', async (_req: Request, res: Response) => {
     try {
-      const { readJson } = await import('../../utils/fs.js');
       const configPath = 'backend/config/arbExecutor.json';
       const config = await readJson(configPath, {});
       res.json(config);
@@ -2493,7 +2492,6 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Update executor configuration at runtime
   api.post('/arb/executor/config', async (req: Request, res: Response) => {
     try {
-      const { readJson, writeJson } = await import('../../utils/fs.js');
       const configPath = 'backend/config/arbExecutor.json';
       
       // Read current config from file
@@ -2507,7 +2505,6 @@ export function createArbRouter(io: SocketIOServer): Router {
       
       // If executor is running, reload the FULL config from file and update runtime
       try {
-        const { getArbExecutor } = await import('../../execution/arbExecutor.js');
         const executor = getArbExecutor();
         
         // Reload the complete config from file (not just the updates)
@@ -2533,10 +2530,9 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
-  // Get slippage configuration
-  api.get('/arb/slippage/config', async (_req: Request, res: Response) => {
+  // Get slippage configuration - fast path, no dynamic imports
+  api.get('/arb/slippage/config', (_req: Request, res: Response) => {
     try {
-      const { getSlippageConfig, DEFAULT_SLIPPAGE_CONFIG } = await import('../../execution/slippage/index.js');
       const config = getSlippageConfig();
       res.json({ config, defaults: DEFAULT_SLIPPAGE_CONFIG });
     } catch (e: any) {
@@ -2546,9 +2542,8 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
 
   // Update slippage configuration
-  api.post('/arb/slippage/config', async (req: Request, res: Response) => {
+  api.post('/arb/slippage/config', (req: Request, res: Response) => {
     try {
-      const { updateSlippageConfig, getSlippageConfig } = await import('../../execution/slippage/index.js');
       updateSlippageConfig(req.body);
       const updated = getSlippageConfig();
       logger.info('arb.slippage.api.config_updated', { cat: 'arb', updates: req.body, config: updated });
@@ -2560,9 +2555,8 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
 
   // Reset slippage configuration to defaults
-  api.post('/arb/slippage/config/reset', async (_req: Request, res: Response) => {
+  api.post('/arb/slippage/config/reset', (_req: Request, res: Response) => {
     try {
-      const { resetSlippageConfig, getSlippageConfig, DEFAULT_SLIPPAGE_CONFIG } = await import('../../execution/slippage/index.js');
       resetSlippageConfig();
       const config = getSlippageConfig();
       logger.info('arb.slippage.api.config_reset', { cat: 'arb', config });
@@ -2576,7 +2570,6 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Get Jito tipping configuration
   api.get('/arb/jito/config', async (_req: Request, res: Response) => {
     try {
-      const { loadJitoConfig } = await import('../jitoConfigStore.js');
       const config = await loadJitoConfig();
       res.json(config);
     } catch (e: any) {
@@ -2588,7 +2581,6 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Update Jito tipping configuration
   api.post('/arb/jito/config', async (req: Request, res: Response) => {
     try {
-      const { saveJitoConfig } = await import('../jitoConfigStore.js');
       const updated = await saveJitoConfig(req.body);
       logger.info('arb.jito.api.config_updated', { cat: 'arb', updates: req.body, config: updated });
       res.json({ status: 'updated', config: updated });
@@ -2602,10 +2594,9 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Pool Quarantine Management APIs
   // ============================================================================
 
-  // Get quarantine status and statistics
-  api.get('/arb/quarantine/status', async (_req: Request, res: Response) => {
+  // Get quarantine status and statistics - fast path, no dynamic imports
+  api.get('/arb/quarantine/status', (_req: Request, res: Response) => {
     try {
-      const { getQuarantineStats } = await import('../../execution/poolFailureTracker.js');
       const stats = getQuarantineStats();
       res.json(stats);
     } catch (e: any) {

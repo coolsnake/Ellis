@@ -103,11 +103,20 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
   useEffect(() => {
     fetchStatus();
     fetchJitoConfig();
+    // Poll less frequently (5s) - socket events provide real-time updates
+    // This reduces backend load while still catching missed events
     const interval = setInterval(() => {
       fetchStatus();
+      // Only fetch Jito config occasionally since it rarely changes
+    }, 5000);
+    // Jito config polling at 30s interval (rarely changes)
+    const jitoInterval = setInterval(() => {
       fetchJitoConfig();
-    }, 3000); // Poll every 3 seconds
-    return () => clearInterval(interval);
+    }, 30000);
+    return () => {
+      clearInterval(interval);
+      clearInterval(jitoInterval);
+    };
   }, [apiBase]);
 
   // Reset edit values when status changes

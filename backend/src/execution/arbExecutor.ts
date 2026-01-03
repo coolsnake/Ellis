@@ -1821,13 +1821,31 @@ export class ArbExecutor {
 
   // Public API for runtime configuration
   updateConfig(updates: Partial<ExecutorConfig>): void {
-    this.config = { ...this.config, ...updates };
+    // Deep merge nested objects to avoid losing fields when only updating a subset
+    // For top-level primitives, use the update value if provided, else keep existing
+    this.config = {
+      ...this.config,
+      ...updates,
+      // Deep merge dynamicSizing - preserve existing fields when updating subset
+      dynamicSizing: updates.dynamicSizing !== undefined
+        ? { ...this.config.dynamicSizing, ...updates.dynamicSizing }
+        : this.config.dynamicSizing,
+      // Deep merge flashloanSettings
+      flashloanSettings: updates.flashloanSettings !== undefined
+        ? { ...this.config.flashloanSettings, ...updates.flashloanSettings }
+        : this.config.flashloanSettings,
+      // Deep merge quarantineSettings
+      quarantineSettings: updates.quarantineSettings !== undefined
+        ? { ...this.config.quarantineSettings, ...updates.quarantineSettings }
+        : this.config.quarantineSettings,
+    };
     logger.info('arb.executor.config_updated', { cat: 'arb', config: this.config });
     
     // Update pool failure tracker configuration if quarantine settings changed
     try {
       if (updates.quarantineSettings) {
-        setQuarantineConfig(updates.quarantineSettings);
+        // Pass the merged config, not just the update
+        setQuarantineConfig(this.config.quarantineSettings);
       }
       if (updates.manualPoolBlocklist !== undefined) {
         setManualBlocklist(updates.manualPoolBlocklist);
@@ -1867,6 +1885,9 @@ let executorInstance: ArbExecutor | null = null;
 export function getArbExecutor(config?: ExecutorConfig): ArbExecutor {
   if (!executorInstance && config) {
     executorInstance = new ArbExecutor(config);
+  } else if (executorInstance && config) {
+    // Update existing instance's config - ensures runtime config stays in sync
+    executorInstance.updateConfig(config);
   }
   if (!executorInstance) {
     throw new Error('ArbExecutor not initialized - provide config first');
