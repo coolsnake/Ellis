@@ -314,7 +314,7 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
  * Populate execution cache from pool data
  * Extracts execution-critical fields from pool objects and stores in execution cache
  */
-function populateExecutionCacheFromPools(
+export function populateExecutionCacheFromPools(
   pools: PoolsPayload,
   dex: 'Raydium' | 'Orca' | 'Meteora' | 'MeteoraBalanced' | 'Pumpswap'
 ): number {

@@ -2184,6 +2184,25 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
       raydiumCache.data = norm;
       raydiumCache.ts = Date.now();
 
+      // Populate execution cache with Raydium pool data (HTTP path)
+      // This ensures instruction builders have access to execution-critical accounts
+      try {
+        const { populateExecutionCacheFromPools } = await import('./pools.persistence.js');
+        populateExecutionCacheFromPools(norm, 'Raydium');
+        logger.debug('raydium.http.execution_cache.populated', {
+          cat: 'pools',
+          ctx: {
+            amm: norm.amm.length,
+            clmm: norm.clmm.length,
+          }
+        });
+      } catch (e: any) {
+        logger.warn('raydium.http.execution_cache.population.failed', {
+          cat: 'pools',
+          ctx: { error: String(e?.message || e) }
+        });
+      }
+
       // Emit socket event when normalized cache changes
       try {
         const prevAmm = prev?.amm?.length || 0;
@@ -2361,6 +2380,50 @@ export async function getRaydiumPoolsGraphQL(force = false, opts?: { mints?: str
         if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
         
         executionCache.setStatic(pool.id, staticData);
+        
+        // Also populate hot cache with price/tick data if available
+        const hotData: any = {};
+        let hasHotData = false;
+        
+        if (pool.sqrt_price_x64 !== undefined) {
+          hotData.sqrtPriceX64 = BigInt(String(pool.sqrt_price_x64));
+          hasHotData = true;
+        }
+        if ((pool as any).tick_current !== undefined) {
+          hotData.currentTickIndex = (pool as any).tick_current;
+          hasHotData = true;
+        }
+        if (pool.tick_spacing) {
+          hotData.tickSpacing = pool.tick_spacing;
+          hasHotData = true;
+        }
+        if (pool.liquidity !== undefined) {
+          hotData.liquidity = BigInt(String(pool.liquidity));
+          hasHotData = true;
+        }
+        if (pool.fee_bps !== undefined) {
+          hotData.feeRate = pool.fee_bps;
+          hasHotData = true;
+        }
+        
+        // Tick arrays for hot cache
+        const tickArrayLower = (pool as any).tick_array_lower ?? (pool as any).tickArrayLower;
+        const tickArrayCenter = (pool as any).tick_array_center ?? (pool as any).tickArrayCenter;
+        const tickArrayUpper = (pool as any).tick_array_upper ?? (pool as any).tickArrayUpper;
+        
+        if (tickArrayCenter && tickArrayCenter !== null) {
+          hotData.tickArrays = {
+            center: tickArrayCenter,
+            lower: (tickArrayLower && tickArrayLower !== null) ? [tickArrayLower] : undefined,
+            upper: (tickArrayUpper && tickArrayUpper !== null) ? [tickArrayUpper] : undefined,
+          };
+          hasHotData = true;
+        }
+        
+        if (hasHotData) {
+          const existingHot = executionCache.getHot(pool.id) || {};
+          executionCache.setHot(pool.id, { ...existingHot, ...hotData });
+        }
       }
       
       logger.info('raydium.graphql.execution_cache.populated', {
@@ -2510,6 +2573,25 @@ export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFil
       poolsMetrics.orca.lastMs = Date.now();
       poolsMetrics.orca.lastAmm = (data.amm || []).length;
       poolsMetrics.orca.lastClmm = (data.clmm || []).length;
+      
+      // Populate execution cache with Orca pool data (HTTP path)
+      // This ensures instruction builders have access to execution-critical accounts
+      try {
+        const { populateExecutionCacheFromPools } = await import('./pools.persistence.js');
+        populateExecutionCacheFromPools(data, 'Orca');
+        logger.debug('orca.http.execution_cache.populated', {
+          cat: 'pools',
+          ctx: {
+            amm: (data.amm || []).length,
+            clmm: (data.clmm || []).length,
+          }
+        });
+      } catch (e: any) {
+        logger.warn('orca.http.execution_cache.population.failed', {
+          cat: 'pools',
+          ctx: { error: String(e?.message || e) }
+        });
+      }
       
       // Register Orca pools for eligibility tracking
       // This enables reactive filtering when tick moves in/out of safe range
@@ -2770,6 +2852,50 @@ export async function getOrcaPoolsGraphQL(force = false, opts?: { mints?: string
         if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
         
         executionCache.setStatic(pool.id, staticData);
+        
+        // Also populate hot cache with price/tick data if available
+        const hotData: any = {};
+        let hasHotData = false;
+        
+        if (pool.sqrt_price_x64 !== undefined) {
+          hotData.sqrtPriceX64 = BigInt(String(pool.sqrt_price_x64));
+          hasHotData = true;
+        }
+        if ((pool as any).tick_current !== undefined) {
+          hotData.currentTickIndex = (pool as any).tick_current;
+          hasHotData = true;
+        }
+        if (pool.tick_spacing) {
+          hotData.tickSpacing = pool.tick_spacing;
+          hasHotData = true;
+        }
+        if (pool.liquidity !== undefined) {
+          hotData.liquidity = BigInt(String(pool.liquidity));
+          hasHotData = true;
+        }
+        if (pool.fee_bps !== undefined) {
+          hotData.feeRate = pool.fee_bps;
+          hasHotData = true;
+        }
+        
+        // Tick arrays for hot cache
+        const tickArrayLower = (pool as any).tick_array_lower ?? (pool as any).tickArrayLower;
+        const tickArrayCenter = (pool as any).tick_array_center ?? (pool as any).tickArrayCenter;
+        const tickArrayUpper = (pool as any).tick_array_upper ?? (pool as any).tickArrayUpper;
+        
+        if (tickArrayCenter && tickArrayCenter !== null) {
+          hotData.tickArrays = {
+            center: tickArrayCenter,
+            lower: (tickArrayLower && tickArrayLower !== null) ? [tickArrayLower] : undefined,
+            upper: (tickArrayUpper && tickArrayUpper !== null) ? [tickArrayUpper] : undefined,
+          };
+          hasHotData = true;
+        }
+        
+        if (hasHotData) {
+          const existingHot = executionCache.getHot(pool.id) || {};
+          executionCache.setHot(pool.id, { ...existingHot, ...hotData });
+        }
       }
       
       logger.info('orca.graphql.execution_cache.populated', {
@@ -3182,6 +3308,51 @@ export async function getMeteoraPoolsGraphQL(force = false, opts?: { mints?: str
         if ((pool as any).bin_step) staticData.binStep = (pool as any).bin_step;
         
         executionCache.setStatic(pool.id, staticData);
+        
+        // Also populate hot cache with price/activeId data if available
+        const hotData: any = {};
+        let hasHotData = false;
+        
+        if (pool.sqrt_price_x64 !== undefined) {
+          hotData.sqrtPriceX64 = BigInt(String(pool.sqrt_price_x64));
+          hasHotData = true;
+        }
+        if ((pool as any).active_id !== undefined) {
+          hotData.activeId = (pool as any).active_id;
+          hasHotData = true;
+        }
+        if (pool.tick_spacing) {
+          hotData.binStep = pool.tick_spacing;
+          hasHotData = true;
+        }
+        if ((pool as any).bin_step) {
+          hotData.binStep = (pool as any).bin_step;
+          hasHotData = true;
+        }
+        if (pool.liquidity !== undefined) {
+          hotData.liquidity = BigInt(String(pool.liquidity));
+          hasHotData = true;
+        }
+        if (pool.fee_bps !== undefined) {
+          hotData.feeRate = pool.fee_bps;
+          hasHotData = true;
+        }
+        
+        // Bin arrays for hot cache
+        const binArrayLower = (pool as any).bin_array_lower;
+        const binArrayUpper = (pool as any).bin_array_upper;
+        if ((binArrayLower && binArrayLower !== null) || (binArrayUpper && binArrayUpper !== null)) {
+          hotData.binArrays = {
+            lower: (binArrayLower && binArrayLower !== null) ? binArrayLower : undefined,
+            upper: (binArrayUpper && binArrayUpper !== null) ? binArrayUpper : undefined,
+          };
+          hasHotData = true;
+        }
+        
+        if (hasHotData) {
+          const existingHot = executionCache.getHot(pool.id) || {};
+          executionCache.setHot(pool.id, { ...existingHot, ...hotData });
+        }
       }
       
       logger.info('meteora.graphql.execution_cache.populated', {

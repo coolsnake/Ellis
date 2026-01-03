@@ -2002,6 +2002,39 @@ function runWebsocketRefreshLoop(): void {
                         wsDeltaStats.raydium.decoded += 1;
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
+                        
+                        // Sync tick arrays to pool cache if we have tick data
+                        if (derived?.tickArrays || derived?.tickCurrent !== undefined) {
+                          try {
+                            const { updatePoolCacheFromValidation } = await import('./pools.cache.js');
+                            const tickArrayLower = typeof derived.tickArrays?.lower === 'string' 
+                              ? derived.tickArrays.lower 
+                              : (Array.isArray(derived.tickArrays?.lower) && derived.tickArrays.lower.length > 0 
+                                ? derived.tickArrays.lower[0] 
+                                : undefined);
+                            const tickArrayUpper = typeof derived.tickArrays?.upper === 'string' 
+                              ? derived.tickArrays.upper 
+                              : (Array.isArray(derived.tickArrays?.upper) && derived.tickArrays.upper.length > 0 
+                                ? derived.tickArrays.upper[0] 
+                                : undefined);
+                            updatePoolCacheFromValidation([{
+                              poolId: pk58,
+                              dex: 'raydium',
+                              currentTick: derived?.tickCurrent,
+                              tickSpacing: derived?.tickSpacing,
+                              tickArrayLower,
+                              tickArrayCenter: derived.tickArrays?.center,
+                              tickArrayUpper,
+                            }]);
+                          } catch (syncErr) {
+                            logger.debug('raydium.ws.pool_cache_sync_failed', {
+                              pool: pk58.slice(0, 8) + '…',
+                              error: String((syncErr as any)?.message || syncErr),
+                              cat: 'pools'
+                            });
+                          }
+                        }
+                        
                         const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                         if (hasDelta) { 
                           wsDeltaStats.raydium.applied += 1; 
@@ -2489,6 +2522,26 @@ function runWebsocketRefreshLoop(): void {
                   try { wsDecodeStats.orca.successes += 1; } catch {}
                   wsDeltaStats.orca.decoded += 1;
                   orcaCache.data = next; orcaCache.ts = Date.now();
+                  
+                  // Sync tick data to pool cache
+                  // Note: Orca WebSocket doesn't derive tick arrays, but we can update tick/spacing
+                  try {
+                    const { updatePoolCacheFromValidation } = await import('./pools.cache.js');
+                    updatePoolCacheFromValidation([{
+                      poolId: id,
+                      dex: 'orca',
+                      currentTick: Number(parsed.tickCurrentIndex),
+                      tickSpacing: tick_spacing,
+                      // Tick arrays not available from WebSocket, will be populated by validator or resolver
+                    }]);
+                  } catch (syncErr) {
+                    logger.debug('orca.ws.pool_cache_sync_failed', {
+                      pool: id.slice(0, 8) + '…',
+                      error: String((syncErr as any)?.message || syncErr),
+                      cat: 'pools'
+                    });
+                  }
+                  
                   const d = diffNormalizedPools(prev, next);
                   const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
                   emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
@@ -2962,6 +3015,27 @@ function runWebsocketRefreshLoop(): void {
                     const prev = meteoraCache.data || { amm: [], clmm: [] };
                     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                     const idx = next.clmm.findIndex(p => p.id === finalItem.id);
+                    
+                    // Sync bin arrays to pool cache if we have activeId/bin array data
+                    if (Number.isFinite(activeId as any) || binArrayAddresses.lower || binArrayAddresses.upper) {
+                      try {
+                        const { updatePoolCacheFromValidation } = await import('./pools.cache.js');
+                        updatePoolCacheFromValidation([{
+                          poolId: poolId,
+                          dex: 'meteora',
+                          activeId: Number.isFinite(activeId as any) ? Number(activeId) : undefined,
+                          binStep: Number.isFinite(tickSpacing as any) ? tickSpacing : undefined,
+                          binArrayLower: binArrayAddresses.lower,
+                          binArrayUpper: binArrayAddresses.upper,
+                        }]);
+                      } catch (syncErr) {
+                        logger.debug('meteora.ws.pool_cache_sync_failed', {
+                          pool: poolId.slice(0, 8) + '…',
+                          error: String((syncErr as any)?.message || syncErr),
+                          cat: 'pools'
+                        });
+                      }
+                    }
                     
                     // CRITICAL FIX: Handle orientation changes correctly
                     // When canonicalization changes orientation (e.g., after token swaps), we need to:
