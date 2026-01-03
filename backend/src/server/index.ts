@@ -28,6 +28,7 @@ import { ensureDir, writeJson } from '../utils/fs.js';
 import { setupRustLogForwarding, shutdownRustProcess } from './arbProcess.js';
 import { loadClmmCacheFromDisk } from '../execution/clmmCache.js';
 import { startClmmRefreshLoop } from './tasks/refreshClmm.js';
+import { startTickArrayValidator, stopTickArrayValidator } from '../execution/tickArrayValidator.js';
 
 const app = express();
 // Respect X-Forwarded-* from Nginx
@@ -416,6 +417,12 @@ export async function shutdown() {
       (pools as any).clearAllPoolCaches?.(); 
     } catch {}
     
+    // Stop background tick array validator
+    try {
+      stopTickArrayValidator();
+      logger.info('tickArrayValidator.stopped', { cat: 'cache' });
+    } catch {}
+    
     // Clear graph snapshot cache
     try {
       const graph = await import('./graph.js');
@@ -779,6 +786,17 @@ server.listen(CONFIG.port, () => {
     const intervalMs = Math.max(5000, Number((CONFIG as any)?.pools?.clmmRefreshIntervalMs || 10000));
     startClmmRefreshLoop(getTargetPools, intervalMs);
   } catch {}
+
+  // Start background tick array validator for CLMM pools
+  // This validates tick arrays asynchronously when boundaries are crossed,
+  // ensuring we don't use stale/non-existent tick arrays in transactions
+  try {
+    const validatorIntervalMs = Math.max(50, Number((CONFIG as any)?.pools?.tickArrayValidatorIntervalMs || 100));
+    startTickArrayValidator(validatorIntervalMs);
+    logger.info('tickArrayValidator.started', { cat: 'cache', intervalMs: validatorIntervalMs });
+  } catch (validatorErr) {
+    logger.warn('tickArrayValidator.start_failed', { cat: 'cache', error: String((validatorErr as Error)?.message || validatorErr) });
+  }
 
   // Start graph stream on first socket connect, or after configured delay
   try {

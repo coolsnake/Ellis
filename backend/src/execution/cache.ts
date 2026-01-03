@@ -92,6 +92,12 @@ type PoolHot = {
   // This enables intelligent cache invalidation when tick/bin crosses array boundaries
   tickSpacing?: number;
   binStep?: number;
+  // Tick array validation flags - used to exclude pools with stale/unvalidated tick arrays
+  // When tick crosses array boundary, arrays are cleared and this flag is set
+  // Background validator will validate arrays on-chain and clear the flag
+  needsTickArrayValidation?: boolean;
+  tickArrayInvalidatedAt?: number;  // Timestamp when arrays were invalidated
+  tickArraysValidatedAt?: number;   // Timestamp when arrays were last validated on-chain
   tickArrays?: { 
     center?: string;
     // Support both single value (backward compat) and arrays
@@ -102,6 +108,10 @@ type PoolHot = {
     centerData?: Buffer;
     upperData?: Buffer;
   };
+  // Bin array validation flags (same pattern as tick arrays)
+  needsBinArrayValidation?: boolean;
+  binArrayInvalidatedAt?: number;
+  binArraysValidatedAt?: number;
   binArrays?: { 
     lower?: string; 
     upper?: string;
@@ -153,27 +163,79 @@ export class ExecutionCache {
     // Automatically merge with existing data to prevent loss of tickArrays/binArrays
     const existing = this.hotByPool.get(poolId) || {};
     
-    // Detect if tick/bin crossed array boundaries - if so, replace arrays entirely
+    // Detect if tick/bin crossed array boundaries - if so, INVALIDATE arrays
     // This prevents stale array addresses from persisting when price moves significantly
     const tickArrayBoundaryCrossed = this.didTickArrayBoundaryCross(existing, val);
     const binArrayBoundaryCrossed = this.didBinArrayBoundaryCross(existing, val);
     
+    const now = Date.now();
+    
+    // Handle tick array boundary crossing
+    let tickArrays = existing.tickArrays;
+    let needsTickArrayValidation = existing.needsTickArrayValidation;
+    let tickArrayInvalidatedAt = existing.tickArrayInvalidatedAt;
+    let tickArraysValidatedAt = existing.tickArraysValidatedAt;
+    
+    if (tickArrayBoundaryCrossed) {
+      // CRITICAL: Clear stale tick arrays and flag for validation
+      // Don't use incoming tick arrays either - they haven't been validated on-chain
+      tickArrays = undefined;
+      needsTickArrayValidation = true;
+      tickArrayInvalidatedAt = now;
+      tickArraysValidatedAt = undefined;
+    } else if (val.tickArrays) {
+      // No boundary crossed - merge incoming arrays with existing
+      // If incoming has needsTickArrayValidation explicitly set to false, it means validated
+      if (val.needsTickArrayValidation === false) {
+        // Explicitly validated - use incoming arrays and clear flag
+        tickArrays = val.tickArrays;
+        needsTickArrayValidation = false;
+        tickArraysValidatedAt = val.tickArraysValidatedAt || now;
+      } else {
+        // Merge arrays, preserve validation state
+        tickArrays = {
+          ...(existing.tickArrays || {}),
+          ...val.tickArrays,
+        };
+      }
+    }
+    
+    // Handle bin array boundary crossing (same pattern)
+    let binArrays = existing.binArrays;
+    let needsBinArrayValidation = existing.needsBinArrayValidation;
+    let binArrayInvalidatedAt = existing.binArrayInvalidatedAt;
+    let binArraysValidatedAt = existing.binArraysValidatedAt;
+    
+    if (binArrayBoundaryCrossed) {
+      // CRITICAL: Clear stale bin arrays and flag for validation
+      binArrays = undefined;
+      needsBinArrayValidation = true;
+      binArrayInvalidatedAt = now;
+      binArraysValidatedAt = undefined;
+    } else if (val.binArrays) {
+      if (val.needsBinArrayValidation === false) {
+        binArrays = val.binArrays;
+        needsBinArrayValidation = false;
+        binArraysValidatedAt = val.binArraysValidatedAt || now;
+      } else {
+        binArrays = {
+          ...(existing.binArrays || {}),
+          ...val.binArrays,
+        };
+      }
+    }
+    
     const merged: PoolHot = {
       ...existing,
       ...val,
-      // If boundary crossed, replace arrays entirely; otherwise deep merge to preserve data
-      tickArrays: tickArrayBoundaryCrossed
-        ? val.tickArrays  // Replace entirely - old arrays are now stale
-        : (val.tickArrays ? {
-            ...(existing.tickArrays || {}),
-            ...val.tickArrays,
-          } : existing.tickArrays),
-      binArrays: binArrayBoundaryCrossed
-        ? val.binArrays  // Replace entirely - old arrays are now stale
-        : (val.binArrays ? {
-            ...(existing.binArrays || {}),
-            ...val.binArrays,
-          } : existing.binArrays),
+      tickArrays,
+      needsTickArrayValidation,
+      tickArrayInvalidatedAt,
+      tickArraysValidatedAt,
+      binArrays,
+      needsBinArrayValidation,
+      binArrayInvalidatedAt,
+      binArraysValidatedAt,
     };
     
     this.hotByPool.set(poolId, merged);
@@ -342,6 +404,137 @@ export class ExecutionCache {
     this.staticByPool.clear();
     this.hotByPool.clear();
     this.tokenMeta.clear();
+  }
+
+  /**
+   * Check if a pool needs tick array validation
+   * Pools with this flag should be excluded from routing until validated
+   */
+  needsTickArrayValidation(poolId: string): boolean {
+    const hot = this.hotByPool.get(poolId);
+    return hot?.needsTickArrayValidation === true;
+  }
+
+  /**
+   * Check if a pool needs bin array validation (Meteora DLMM)
+   */
+  needsBinArrayValidation(poolId: string): boolean {
+    const hot = this.hotByPool.get(poolId);
+    return hot?.needsBinArrayValidation === true;
+  }
+
+  /**
+   * Check if a pool has validated tick arrays ready for use
+   */
+  hasValidatedTickArrays(poolId: string): boolean {
+    const hot = this.hotByPool.get(poolId);
+    if (!hot) return false;
+    // Has arrays and doesn't need validation
+    return !!(hot.tickArrays?.center) && hot.needsTickArrayValidation !== true;
+  }
+
+  /**
+   * Get all pools that need tick array validation
+   * Used by background validator to find work
+   */
+  getPoolsNeedingTickArrayValidation(): Array<{ poolId: string; invalidatedAt: number; tickSpacing?: number; currentTick?: number }> {
+    const pools: Array<{ poolId: string; invalidatedAt: number; tickSpacing?: number; currentTick?: number }> = [];
+    for (const [poolId, hot] of this.hotByPool.entries()) {
+      if (hot.needsTickArrayValidation) {
+        pools.push({
+          poolId,
+          invalidatedAt: hot.tickArrayInvalidatedAt || 0,
+          tickSpacing: hot.tickSpacing,
+          currentTick: hot.currentTickIndex,
+        });
+      }
+    }
+    // Sort by invalidatedAt (oldest first) for fairness
+    pools.sort((a, b) => a.invalidatedAt - b.invalidatedAt);
+    return pools;
+  }
+
+  /**
+   * Get all pools that need bin array validation
+   */
+  getPoolsNeedingBinArrayValidation(): Array<{ poolId: string; invalidatedAt: number; binStep?: number; activeId?: number }> {
+    const pools: Array<{ poolId: string; invalidatedAt: number; binStep?: number; activeId?: number }> = [];
+    for (const [poolId, hot] of this.hotByPool.entries()) {
+      if (hot.needsBinArrayValidation) {
+        pools.push({
+          poolId,
+          invalidatedAt: hot.binArrayInvalidatedAt || 0,
+          binStep: hot.binStep,
+          activeId: hot.activeId,
+        });
+      }
+    }
+    pools.sort((a, b) => a.invalidatedAt - b.invalidatedAt);
+    return pools;
+  }
+
+  /**
+   * Mark tick arrays as validated (called by background validator)
+   * This clears the needsTickArrayValidation flag and stores the validated arrays
+   */
+  setValidatedTickArrays(
+    poolId: string, 
+    tickArrays: { center?: string; lower?: string | string[]; upper?: string | string[] }
+  ): void {
+    const existing = this.hotByPool.get(poolId) || {};
+    this.hotByPool.set(poolId, {
+      ...existing,
+      tickArrays,
+      needsTickArrayValidation: false,
+      tickArraysValidatedAt: Date.now(),
+    });
+  }
+
+  /**
+   * Mark bin arrays as validated (called by background validator)
+   */
+  setValidatedBinArrays(
+    poolId: string,
+    binArrays: { lower?: string; upper?: string; active?: string; arrays?: Array<{ index: number; address: string }> }
+  ): void {
+    const existing = this.hotByPool.get(poolId) || {};
+    this.hotByPool.set(poolId, {
+      ...existing,
+      binArrays,
+      needsBinArrayValidation: false,
+      binArraysValidatedAt: Date.now(),
+    });
+  }
+
+  /**
+   * Invalidate tick arrays for a pool (trigger re-validation)
+   * Call this when you know arrays might be stale (e.g., after failed tx)
+   */
+  invalidateTickArrays(poolId: string): void {
+    const existing = this.hotByPool.get(poolId);
+    if (!existing) return;
+    this.hotByPool.set(poolId, {
+      ...existing,
+      tickArrays: undefined,
+      needsTickArrayValidation: true,
+      tickArrayInvalidatedAt: Date.now(),
+      tickArraysValidatedAt: undefined,
+    });
+  }
+
+  /**
+   * Invalidate bin arrays for a pool
+   */
+  invalidateBinArrays(poolId: string): void {
+    const existing = this.hotByPool.get(poolId);
+    if (!existing) return;
+    this.hotByPool.set(poolId, {
+      ...existing,
+      binArrays: undefined,
+      needsBinArrayValidation: true,
+      binArrayInvalidatedAt: Date.now(),
+      binArraysValidatedAt: undefined,
+    });
   }
 }
 

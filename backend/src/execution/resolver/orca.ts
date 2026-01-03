@@ -34,10 +34,17 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
   
   // Load from hot cache for tick arrays (like Raydium CLMM)
   const hot = executionCache.getHot(poolIdBase);
+  
+  // Check if pool needs tick array validation (boundary crossed or only center derived)
+  // If so, we should NOT use the cached tick arrays as they may be stale/incomplete
+  const cacheNeedsValidation = hot?.needsTickArrayValidation === true;
+  
   // If hot cache is missing/expired, we can still derive tick arrays using pool-cache tick_current_index
   // (but pool-cache tick_current_index is often canonicalized/negated when was_swapped=true).
   let poolTickIndexNative: number | undefined;
-  if (hot?.tickArrays) {
+  
+  // Only use cached tick arrays if they're validated (not pending validation)
+  if (hot?.tickArrays && !cacheNeedsValidation) {
     // Handle arrays for lower/upper (take first element), string for center
     // PREFER hot cache over existing hop values to ensure validated data is used
     const hotLower = Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower;
@@ -58,6 +65,30 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
           lower: hop.tickArrayLower?.slice(0, 8) + '…' || 'none',
           center: hop.tickArrayCenter?.slice(0, 8) + '…' || 'none',
           upper: hop.tickArrayUpper?.slice(0, 8) + '…' || 'none',
+          traceId,
+        }
+      });
+    } catch (e) { logCatchError('resolver.orca', e); }
+  } else if (cacheNeedsValidation) {
+    // Cache is pending validation - only use center array (it's almost always safe)
+    // Lower/upper arrays are not safe to use until validated
+    const hotCenter = hot?.tickArrays?.center;
+    if (hotCenter) {
+      hop.tickArrayCenter = hotCenter;
+      // Clear lower/upper to force builder to handle missing arrays gracefully
+      hop.tickArrayLower = undefined;
+      hop.tickArrayUpper = undefined;
+    }
+    
+    try {
+      logger.warn('orca.resolver.tick_arrays_pending_validation', {
+        cat: 'tx',
+        traceId,
+        ctx: {
+          pool: hop.poolId,
+          hasCenter: !!hotCenter,
+          invalidatedAt: hot?.tickArrayInvalidatedAt,
+          hint: 'Tick arrays are pending background validation. Only center array is safe to use.',
           traceId,
         }
       });
@@ -152,12 +183,15 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
   // WARNING: Do NOT blindly derive tick arrays - derived PDAs may not exist on-chain!
   // Tick arrays should come from validated sources (pool fetch, websocket updates, or cacheValidator).
   // If tick arrays are missing, log a warning - the builder should handle missing arrays gracefully.
-  if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
+  const hasAllTickArrays = hop.tickArrayLower && hop.tickArrayCenter && hop.tickArrayUpper;
+  const isPendingValidation = cacheNeedsValidation || !hasAllTickArrays;
+  
+  if (isPendingValidation) {
     const currentTick = hot?.currentTickIndex ?? poolTickIndexNative;
     const tickSpacing = hop.tickSpacing || stat?.tickSpacing || stat?.tick_spacing;
     
     try {
-      logger.warn('orca.resolver.tick_arrays_missing', {
+      logger.warn('orca.resolver.tick_arrays_incomplete', {
         cat: 'tx',
         traceId,
         ctx: {
@@ -165,9 +199,12 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
           hasLower: !!hop.tickArrayLower,
           hasCenter: !!hop.tickArrayCenter,
           hasUpper: !!hop.tickArrayUpper,
+          cacheNeedsValidation,
           hasCurrentTick: currentTick !== undefined,
           hasTickSpacing: !!tickSpacing,
-          hint: 'Tick arrays not in cache. Pool needs validation via /arb/pools/revalidate or REVALIDATE_ON_LOAD=true',
+          hint: cacheNeedsValidation 
+            ? 'Tick arrays pending background validation. Pool may be temporarily unavailable.'
+            : 'Tick arrays not in cache. Pool needs validation via /arb/pools/revalidate or REVALIDATE_ON_LOAD=true',
         }
       });
     } catch (e) { logCatchError('resolver.orca', e); }

@@ -541,16 +541,30 @@ async function handleClmmUpdate(
     
     if (derived?.tickArrays || derived?.tickCurrent !== undefined) {
       const hotExisting = executionCache.getHot(poolId) || {};
-      executionCache.setHot(poolId, {
-        ...hotExisting,
+      
+      // Build hot cache update
+      // IMPORTANT: If derivation flagged needsTickArrayValidation, propagate it
+      // This happens when only center array was derived (safe mode)
+      const hotUpdate: any = {
         currentTickIndex: derived?.tickCurrent ?? hotExisting.currentTickIndex,
         // Include tickSpacing for boundary crossing detection in cache
         tickSpacing: derived?.tickSpacing ?? hotExisting.tickSpacing,
-        tickArrays: {
-          ...(hotExisting?.tickArrays || {}),
-          ...(derived?.tickArrays || {}),
-        },
-      });
+      };
+      
+      // Only include tick arrays if we have them from derivation
+      // The cache.setHot will handle boundary crossing detection
+      if (derived?.tickArrays) {
+        hotUpdate.tickArrays = derived.tickArrays;
+      }
+      
+      // If derivation flagged needsTickArrayValidation, set it explicitly
+      // This allows the background validator to pick up this pool
+      if (derived?.needsTickArrayValidation) {
+        hotUpdate.needsTickArrayValidation = true;
+        hotUpdate.tickArrayInvalidatedAt = Date.now();
+      }
+      
+      executionCache.setHot(poolId, hotUpdate);
       
       // Check pool eligibility on tick update
       // This enables reactive pool filtering when tick moves in/out of safe range

@@ -7,6 +7,11 @@ import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/r
 import BN from 'bn.js';
 import { toB58Any } from './pools.utils.js';
 
+// Flag to control whether to derive all tick arrays (legacy) or just center (safe)
+// When true: only derive center tick array and mark pool for background validation
+// When false: derive all arrays (may include non-existent PDAs)
+const SAFE_TICK_ARRAY_DERIVATION = true;
+
 // Orca Whirlpool constants
 const ORCA_WHIRLPOOL_PROGRAM_ID = 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
 const ORCA_TICK_ARRAY_SIZE = 88;
@@ -25,6 +30,8 @@ type RaydiumClmmDerivedFields = {
         lower?: string | string[]; 
         upper?: string | string[] 
     };
+    // Flag indicating tick arrays need validation (only center was derived)
+    needsTickArrayValidation?: boolean;
 };
 
 export async function deriveRaydiumClmmCacheFields(
@@ -51,6 +58,7 @@ export async function deriveRaydiumClmmCacheFields(
             lower?: string | string[]; 
             upper?: string | string[] 
         } | undefined;
+        let needsTickArrayValidation = false;
         
         if (Number.isFinite(tickSpacing) && tickSpacing > 0 && Number.isFinite(tickCurrent)) {
             try {
@@ -60,37 +68,54 @@ export async function deriveRaydiumClmmCacheFields(
                 const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
                 const delta = 60 * Math.max(1, tickSpacing);
                 
-                // Derive center tick array
+                // Derive center tick array (almost always exists if pool has liquidity)
                 const centerPk = await deriveTickArrayPda(programPk, poolPk, centerStart);
                 
-                // Derive multiple lower tick arrays (for B→A swaps)
-                const lowerArrays: string[] = [];
-                for (let i = 1; i <= 5; i++) {
+                if (SAFE_TICK_ARRAY_DERIVATION) {
+                    // SAFE MODE: Only derive center, mark for background validation
+                    // Lower/upper arrays will be validated asynchronously
+                    tickArrays = {
+                        center: centerPk?.toBase58(),
+                        // Don't derive lower/upper - they might not exist
+                        // Background validator will populate these after on-chain check
+                    };
+                    needsTickArrayValidation = true;
+                    
+                    // Queue for background validation (non-blocking)
                     try {
-                        const lowerPk = await deriveTickArrayPda(programPk, poolPk, centerStart - (delta * i));
-                        if (lowerPk) lowerArrays.push(lowerPk.toBase58());
-                    } catch (err) {
-                        break;
+                        const { queueTickArrayValidation } = await import('../execution/tickArrayValidator.js');
+                        queueTickArrayValidation(poolId);
+                    } catch {
+                        // Validator not available, will be validated later
                     }
-                }
-                
-                // Derive multiple upper tick arrays (for A→B swaps)
-                const upperArrays: string[] = [];
-                for (let i = 1; i <= 5; i++) {
-                    try {
-                        const upperPk = await deriveTickArrayPda(programPk, poolPk, centerStart + (delta * i));
-                        if (upperPk) upperArrays.push(upperPk.toBase58());
-                    } catch (err) {
-                        break;
+                } else {
+                    // LEGACY MODE: Derive all arrays (may include non-existent PDAs)
+                    const lowerArrays: string[] = [];
+                    for (let i = 1; i <= 5; i++) {
+                        try {
+                            const lowerPk = await deriveTickArrayPda(programPk, poolPk, centerStart - (delta * i));
+                            if (lowerPk) lowerArrays.push(lowerPk.toBase58());
+                        } catch (err) {
+                            break;
+                        }
                     }
+                    
+                    const upperArrays: string[] = [];
+                    for (let i = 1; i <= 5; i++) {
+                        try {
+                            const upperPk = await deriveTickArrayPda(programPk, poolPk, centerStart + (delta * i));
+                            if (upperPk) upperArrays.push(upperPk.toBase58());
+                        } catch (err) {
+                            break;
+                        }
+                    }
+                    
+                    tickArrays = {
+                        center: centerPk?.toBase58(),
+                        lower: lowerArrays.length > 1 ? lowerArrays : (lowerArrays[0] || undefined),
+                        upper: upperArrays.length > 1 ? upperArrays : (upperArrays[0] || undefined),
+                    };
                 }
-                
-                tickArrays = {
-                    center: centerPk?.toBase58(),
-                    // Store arrays if we have multiple, otherwise single value
-                    lower: lowerArrays.length > 1 ? lowerArrays : (lowerArrays[0] || undefined),
-                    upper: upperArrays.length > 1 ? upperArrays : (upperArrays[0] || undefined),
-                };
             } catch (err: any) {
                 try { logger.debug('raydium.clmm.tickarray.derive_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch { }
             }
@@ -105,6 +130,7 @@ export async function deriveRaydiumClmmCacheFields(
             tickSpacing: Number.isFinite(tickSpacing) && tickSpacing > 0 ? tickSpacing : undefined,
             tickCurrent: Number.isFinite(tickCurrent) ? tickCurrent : undefined,
             tickArrays,
+            needsTickArrayValidation,
         };
     } catch (err: any) {
         try { logger.debug('raydium.clmm.raw.decode_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch { }
@@ -147,12 +173,19 @@ type OrcaClmmDerivedFields = {
     lower?: string | string[];
     upper?: string | string[];
   };
+  // Flag indicating tick arrays need validation (only center was derived)
+  needsTickArrayValidation?: boolean;
 };
 
 /**
  * Derive Orca Whirlpool cache fields including tick arrays from tick position
- * This function derives tick array PDAs based on the current tick position.
- * NOTE: Derived PDAs may not exist on-chain - use cacheValidator for verification.
+ * 
+ * When SAFE_TICK_ARRAY_DERIVATION is enabled (default):
+ * - Only derives the center tick array (almost always exists)
+ * - Marks pool for background validation
+ * - Lower/upper arrays are populated by the validator after on-chain check
+ * 
+ * This prevents using non-existent tick arrays that cause transaction failures.
  */
 export async function deriveOrcaClmmCacheFields(
   poolId: string,
@@ -172,57 +205,88 @@ export async function deriveOrcaClmmCacheFields(
     const ticksInArray = ORCA_TICK_ARRAY_SIZE * tickSpacing;
     const centerStartTick = getOrcaTickArrayStartIndex(tickCurrent, tickSpacing);
     
-    // Derive center tick array
+    // Derive center tick array (almost always exists if pool has liquidity)
     const centerPk = deriveOrcaTickArrayPda(poolPk, centerStartTick);
     
-    // Derive lower tick arrays (for swaps that move price down)
-    const lowerArrays: string[] = [];
-    for (let i = 1; i <= 5; i++) {
+    let tickArrays: { center?: string; lower?: string | string[]; upper?: string | string[] };
+    let needsTickArrayValidation = false;
+    
+    if (SAFE_TICK_ARRAY_DERIVATION) {
+      // SAFE MODE: Only derive center, mark for background validation
+      tickArrays = {
+        center: centerPk.toBase58(),
+        // Don't derive lower/upper - they might not exist on-chain
+        // Background validator will populate these after validation
+      };
+      needsTickArrayValidation = true;
+      
+      // Queue for background validation (non-blocking)
       try {
-        const lowerStartTick = centerStartTick - (ticksInArray * i);
-        const lowerPk = deriveOrcaTickArrayPda(poolPk, lowerStartTick);
-        if (lowerPk) lowerArrays.push(lowerPk.toBase58());
+        const { queueTickArrayValidation } = await import('../execution/tickArrayValidator.js');
+        queueTickArrayValidation(poolId);
       } catch {
-        break;
+        // Validator not available, will be validated later
       }
-    }
-    
-    // Derive upper tick arrays (for swaps that move price up)
-    const upperArrays: string[] = [];
-    for (let i = 1; i <= 5; i++) {
-      try {
-        const upperStartTick = centerStartTick + (ticksInArray * i);
-        const upperPk = deriveOrcaTickArrayPda(poolPk, upperStartTick);
-        if (upperPk) upperArrays.push(upperPk.toBase58());
-      } catch {
-        break;
+      
+      logger.debug('orca.clmm.tickarray.derived.safe', {
+        pool: poolId.slice(0, 8) + '…',
+        tickCurrent,
+        tickSpacing,
+        centerStartTick,
+        center: centerPk.toBase58().slice(0, 8) + '…',
+        queuedForValidation: true,
+        cat: 'pools'
+      });
+    } else {
+      // LEGACY MODE: Derive all arrays (may include non-existent PDAs)
+      const lowerArrays: string[] = [];
+      for (let i = 1; i <= 5; i++) {
+        try {
+          const lowerStartTick = centerStartTick - (ticksInArray * i);
+          const lowerPk = deriveOrcaTickArrayPda(poolPk, lowerStartTick);
+          if (lowerPk) lowerArrays.push(lowerPk.toBase58());
+        } catch {
+          break;
+        }
       }
+      
+      const upperArrays: string[] = [];
+      for (let i = 1; i <= 5; i++) {
+        try {
+          const upperStartTick = centerStartTick + (ticksInArray * i);
+          const upperPk = deriveOrcaTickArrayPda(poolPk, upperStartTick);
+          if (upperPk) upperArrays.push(upperPk.toBase58());
+        } catch {
+          break;
+        }
+      }
+      
+      tickArrays = {
+        center: centerPk.toBase58(),
+        lower: lowerArrays.length > 1 ? lowerArrays : (lowerArrays[0] || undefined),
+        upper: upperArrays.length > 1 ? upperArrays : (upperArrays[0] || undefined),
+      };
+      
+      logger.debug('orca.clmm.tickarray.derived.legacy', {
+        pool: poolId.slice(0, 8) + '…',
+        tickCurrent,
+        tickSpacing,
+        centerStartTick,
+        tickArrays: {
+          center: tickArrays.center?.slice(0, 8) + '…',
+          lowerCount: lowerArrays.length,
+          upperCount: upperArrays.length,
+        },
+        cat: 'pools'
+      });
     }
-    
-    const tickArrays = {
-      center: centerPk.toBase58(),
-      lower: lowerArrays.length > 1 ? lowerArrays : (lowerArrays[0] || undefined),
-      upper: upperArrays.length > 1 ? upperArrays : (upperArrays[0] || undefined),
-    };
-    
-    logger.debug('orca.clmm.tickarray.derived', {
-      pool: poolId.slice(0, 8) + '…',
-      tickCurrent,
-      tickSpacing,
-      centerStartTick,
-      tickArrays: {
-        center: tickArrays.center?.slice(0, 8) + '…',
-        lowerCount: lowerArrays.length,
-        upperCount: upperArrays.length,
-      },
-      cat: 'pools'
-    });
     
     return {
       programId: programIdStr,
       tickSpacing,
       tickCurrent,
       tickArrays,
+      needsTickArrayValidation,
     };
   } catch (err: any) {
     logger.debug('orca.clmm.tickarray.derive_failed', {

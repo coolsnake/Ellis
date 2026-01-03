@@ -16,7 +16,8 @@ import { logCatchError } from '../../utils/errorHandler.js';
 export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   // Prefer statics from in-memory exec cache.
   // CRITICAL: Strip #rev suffix to match cache key format (pools are cached by base ID)
-  const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
+  const poolIdBase = hop.poolId.replace(/[#-]rev$/, '');
+  const stat = executionCache.getStatic(poolIdBase);
   if (stat?.programId) hop.programId = stat.programId;
   if (stat?.oracle && !hop.oracle) hop.oracle = stat.oracle;
   // CRITICAL: Use NATIVE vault ordering for SDK/on-chain compatibility
@@ -24,17 +25,21 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   if (!hop.vaultA) hop.vaultA = stat?.native_account_a || stat?.account_a;
   if (!hop.vaultB) hop.vaultB = stat?.native_account_b || stat?.account_b;
   if (stat?.tick_spacing && !hop.tickSpacing) hop.tickSpacing = stat.tick_spacing;
-  if (stat?.tickArrayLower && !hop.tickArrayLower) hop.tickArrayLower = stat.tickArrayLower;
-  if (stat?.tickArrayCenter && !hop.tickArrayCenter) hop.tickArrayCenter = stat.tickArrayCenter;
-  if (stat?.tickArrayUpper && !hop.tickArrayUpper) hop.tickArrayUpper = stat.tickArrayUpper;
+  // Don't load tick arrays from static cache here - check hot cache validation flag first
   if (stat?.observation_state && !hop.observationId) hop.observationId = stat.observation_state;
   if ((stat as any)?.amm_config && !hop.ammConfig) hop.ammConfig = (stat as any).amm_config;
   if (stat?.ex_bitmap && !(hop as any).exBitmap) (hop as any).exBitmap = stat.ex_bitmap;
 
   // Load from hot cache for tick arrays (like Orca resolver)
   // CRITICAL: Hot cache contains validated data from cacheValidator - PREFER over existing hop values
-  const hot = executionCache.getHot(hop.poolId.replace(/[#-]rev$/, ''));
-  if (hot?.tickArrays) {
+  const hot = executionCache.getHot(poolIdBase);
+  
+  // Check if pool needs tick array validation (boundary crossed or only center derived)
+  // If so, we should NOT use the cached tick arrays as they may be stale/incomplete
+  const cacheNeedsValidation = hot?.needsTickArrayValidation === true;
+  
+  // Only use cached tick arrays if they're validated (not pending validation)
+  if (hot?.tickArrays && !cacheNeedsValidation) {
     // Handle arrays for lower/upper (take first element), string for center
     // PREFER hot cache over existing hop values to ensure validated data is used
     const hotLower = Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower;
@@ -57,6 +62,33 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
         }
       });
     } catch (e) { logCatchError('resolver.raydiumClmm', e); }
+  } else if (cacheNeedsValidation) {
+    // Cache is pending validation - only use center array (it's almost always safe)
+    // Lower/upper arrays are not safe to use until validated on-chain
+    const hotCenter = hot?.tickArrays?.center;
+    if (hotCenter) {
+      hop.tickArrayCenter = hotCenter;
+      // Clear lower/upper to force builder to handle missing arrays gracefully
+      hop.tickArrayLower = undefined;
+      hop.tickArrayUpper = undefined;
+    }
+    
+    try {
+      logger.warn('raydium.clmm.resolver.tick_arrays_pending_validation', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId,
+          hasCenter: !!hotCenter,
+          invalidatedAt: hot?.tickArrayInvalidatedAt,
+          hint: 'Tick arrays are pending background validation. Only center array is safe to use.',
+        }
+      });
+    } catch (e) { logCatchError('resolver.raydiumClmm', e); }
+  } else {
+    // No hot cache or no tick arrays - try static cache as fallback
+    if (stat?.tickArrayLower && !hop.tickArrayLower) hop.tickArrayLower = stat.tickArrayLower;
+    if (stat?.tickArrayCenter && !hop.tickArrayCenter) hop.tickArrayCenter = stat.tickArrayCenter;
+    if (stat?.tickArrayUpper && !hop.tickArrayUpper) hop.tickArrayUpper = stat.tickArrayUpper;
   }
 
   // Load from CLMM static cache (authoritative for arrays/oracle).
@@ -128,21 +160,27 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   // WARNING: Do NOT blindly derive tick arrays - derived PDAs may not exist on-chain!
   // Tick arrays should come from validated sources (pool fetch, websocket updates, or cacheValidator).
   // If tick arrays are missing, log a warning - the builder should handle missing arrays gracefully.
-  if (!hop.tickArrayLower || !hop.tickArrayCenter || !hop.tickArrayUpper) {
+  const hasAllTickArrays = hop.tickArrayLower && hop.tickArrayCenter && hop.tickArrayUpper;
+  const isPendingValidation = cacheNeedsValidation || !hasAllTickArrays;
+  
+  if (isPendingValidation) {
     const currentTick = hot?.currentTickIndex;
-    const tickSpacing = hop.tickSpacing || stat?.tick_spacing || stat?.tickSpacing;
+    const tickSpacing = hop.tickSpacing || stat?.tick_spacing || (stat as any)?.tickSpacing;
     
     try {
-      logger.warn('raydium.clmm.resolver.tick_arrays_missing', {
+      logger.warn('raydium.clmm.resolver.tick_arrays_incomplete', {
         cat: 'tx',
         ctx: {
           pool: hop.poolId,
           hasLower: !!hop.tickArrayLower,
           hasCenter: !!hop.tickArrayCenter,
           hasUpper: !!hop.tickArrayUpper,
+          cacheNeedsValidation,
           hasCurrentTick: currentTick !== undefined,
           hasTickSpacing: !!tickSpacing,
-          hint: 'Tick arrays not in cache. Pool needs validation via /arb/pools/revalidate or REVALIDATE_ON_LOAD=true',
+          hint: cacheNeedsValidation 
+            ? 'Tick arrays pending background validation. Pool may be temporarily unavailable.'
+            : 'Tick arrays not in cache. Pool needs validation via /arb/pools/revalidate or REVALIDATE_ON_LOAD=true',
         }
       });
     } catch (e) { logCatchError('resolver.raydiumClmm', e); }
@@ -151,7 +189,7 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
     (hop as any).needsTickArrayValidation = true;
   }
   
-  try { logger.info('raydium.clmm.resolve', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch (e) { logCatchError('resolver.raydiumClmm', e); }
+  try { logger.info('raydium.clmm.resolve', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper, needsValidation: isPendingValidation } as any }); } catch (e) { logCatchError('resolver.raydiumClmm', e); }
   return hop;
 }
 

@@ -610,6 +610,7 @@ export async function handleOrcaUpdate(
       // Only derive tick arrays if missing - boundary crossing is handled by setHot
       // This avoids overhead on every WebSocket update
       let tickArraysToSet: { center?: string; lower?: string | string[]; upper?: string | string[] } | undefined;
+      let needsTickArrayValidation = false;
       
       if (!hasExistingTickArrays) {
         // Tick arrays missing - derive them
@@ -617,6 +618,8 @@ export async function handleOrcaUpdate(
           const derived = await deriveOrcaClmmCacheFields(poolId, currentTick, tick_spacing);
           if (derived?.tickArrays) {
             tickArraysToSet = derived.tickArrays;
+            // Propagate validation flag from derivation (set when only center is derived)
+            needsTickArrayValidation = derived.needsTickArrayValidation || false;
             
             // Also update static cache with tick arrays for resolver access
             const existingStaticForArrays = executionCache.getStatic(poolId) || {};
@@ -638,19 +641,21 @@ export async function handleOrcaUpdate(
               tickArrayUpper,
             });
             
-            // Sync tick arrays to pool cache for persistence
-            try {
-              updatePoolCacheFromValidation([{
-                poolId,
-                dex: 'orca',
-                currentTick,
-                tickSpacing: tick_spacing,
-                tickArrayLower,
-                tickArrayCenter: derived.tickArrays.center,
-                tickArrayUpper,
-              }]);
-            } catch (syncErr) {
-              logCatchDebug('orca.ws.pool_cache_sync', syncErr);
+            // Sync tick arrays to pool cache for persistence (only if fully validated)
+            if (!needsTickArrayValidation) {
+              try {
+                updatePoolCacheFromValidation([{
+                  poolId,
+                  dex: 'orca',
+                  currentTick,
+                  tickSpacing: tick_spacing,
+                  tickArrayLower,
+                  tickArrayCenter: derived.tickArrays.center,
+                  tickArrayUpper,
+                }]);
+              } catch (syncErr) {
+                logCatchDebug('orca.ws.pool_cache_sync', syncErr);
+              }
             }
             
             logger.debug('orca.ws.tick_arrays_derived', {
@@ -658,6 +663,7 @@ export async function handleOrcaUpdate(
               currentTick,
               tickSpacing: tick_spacing,
               center: derived.tickArrays.center?.slice(0, 8) + '…',
+              needsValidation: needsTickArrayValidation,
               cat: 'pools'
             });
           }
@@ -668,15 +674,27 @@ export async function handleOrcaUpdate(
 
       // Store hot pool data (frequently changing price/liquidity)
       // setHot handles boundary crossing detection and will clear stale arrays
-      executionCache.setHot(poolId, {
+      // IMPORTANT: Include needsTickArrayValidation flag for background validator
+      const hotUpdate: any = {
         sqrtPriceX64: sqrtRaw,
         currentTickIndex: currentTick,
         tickSpacing: tick_spacing,
         liquidity: liquidityRaw,
         feeRate: fee_bps,
-        // Only include tick arrays if we just derived them
-        ...(tickArraysToSet ? { tickArrays: tickArraysToSet } : {}),
-      });
+      };
+      
+      // Only include tick arrays if we just derived them
+      if (tickArraysToSet) {
+        hotUpdate.tickArrays = tickArraysToSet;
+      }
+      
+      // If derivation flagged needsTickArrayValidation, set it for background validator
+      if (needsTickArrayValidation) {
+        hotUpdate.needsTickArrayValidation = true;
+        hotUpdate.tickArrayInvalidatedAt = Date.now();
+      }
+      
+      executionCache.setHot(poolId, hotUpdate);
 
       logger.debug('orca.ws.cache_updated', {
         pool: poolId.slice(0, 8) + '…',
@@ -686,6 +704,7 @@ export async function handleOrcaUpdate(
         liquidity: liquidityRaw?.toString(),
         hadExistingArrays: !!hasExistingTickArrays,
         derivedArrays: !!tickArraysToSet,
+        needsValidation: needsTickArrayValidation,
         cat: 'pools'
       });
       
