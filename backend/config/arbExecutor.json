@@ -10,6 +10,12 @@
   "minReservesUsd": 10000,
   "maxExecutionsPerMinute": 10,
   "blacklistedPaths": [],
-  "requireStartBalance": true
+  "requireStartBalance": true,
+  "quarantineSettings": {
+    "enabled": true,
+    "maxFailures": 5,
+    "windowMs": 300000,
+    "quarantineDurationMs": 900000
+  },
+  "manualPoolBlocklist": []
 }
-

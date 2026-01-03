@@ -11,6 +11,15 @@ import { sendToBlockEngine } from './jitoClient.js';
 import { startTipFeed } from './jitoTipCache.js';
 import { CONFIG } from '../utils/config.js';
 import { ensureWallet } from '../wallet/wallet.js';
+import {
+  initializeTracker,
+  setQuarantineConfig,
+  setManualBlocklist,
+  filterQuarantinedPools,
+  recordPoolFailure,
+  hasQuarantinedPool,
+} from './poolFailureTracker.js';
+import { analyzeTransactionFailure } from './poolFailureAnalyzer.js';
 
 interface Opportunity {
   path: string[];
@@ -106,6 +115,15 @@ export interface ExecutorConfig {
   };
   // On-chain router settings - route swaps through deployed router program
   useRouter?: boolean;  // Use on-chain router for execution (when enabled and deployed)
+  // Pool quarantine settings - automatically quarantine pools that fail repeatedly
+  quarantineSettings?: {
+    enabled: boolean;
+    maxFailures: number;      // Failures before quarantine (default: 5)
+    windowMs: number;         // Time window in ms (default: 5 min)
+    quarantineDurationMs: number; // How long to quarantine in ms (default: 15 min)
+  };
+  // Manual pool blocklist - pools to always skip (persisted)
+  manualPoolBlocklist?: string[];
 }
 
 interface ExecutionState {
@@ -171,6 +189,16 @@ export class ArbExecutor {
       logger.debug('arb.executor.wallet_cached', { cat: 'arb', publicKey: wallet.publicKey.toBase58() });
     } catch (e) {
       logger.warn('arb.executor.wallet_cache_failed', { cat: 'arb', error: String(e?.message || e) });
+    }
+
+    // Initialize pool failure tracker with config
+    try {
+      initializeTracker(
+        this.config.quarantineSettings,
+        this.config.manualPoolBlocklist
+      );
+    } catch (e) {
+      logger.warn('arb.executor.tracker_init_failed', { cat: 'arb', error: String((e as any)?.message || e) });
     }
 
     // Connect to arb-rs opportunity stream
@@ -449,6 +477,33 @@ export class ArbExecutor {
         elapsedMs: timeSinceLastExec,
       });
       return false;
+    }
+
+    // Pool quarantine check - skip opportunities with quarantined/blocked pools
+    if (opp.hop_pool_ids && opp.hop_pool_ids.length > 0) {
+      try {
+        const result = filterQuarantinedPools(opp.hop_pool_ids);
+        if (result.blocked.length > 0) {
+          const reasons = Array.from(result.reasons.entries())
+            .map(([id, reason]) => `${id.slice(0, 8)}...: ${reason}`)
+            .join(', ');
+          logger.info('arb.executor.filtered', {
+            cat: 'arb',
+            reason: 'quarantined_pool',
+            path: pathStr,
+            blockedPools: result.blocked.map(id => id.slice(0, 8) + '...'),
+            reasons,
+          });
+          return false;
+        }
+      } catch (e) {
+        // Non-blocking - continue if quarantine check fails
+        logger.warn('arb.executor.quarantine_check_failed', {
+          cat: 'arb',
+          path: pathStr,
+          error: String((e as any)?.message || e),
+        });
+      }
     }
 
     // Balance validation (skip if flashloans enabled for flashloanable tokens)
@@ -1344,6 +1399,57 @@ export class ArbExecutor {
         error: errorMsg,
         timestamp: Date.now(),
       });
+
+      // Pool failure tracking - identify and record which pool caused the failure
+      try {
+        // Get simulation result from error if available
+        const simResult = (e as any)?.simResult || (e as any)?.sim || null;
+        const programs = (e as any)?.programs || [];
+        
+        if (opp.hop_pool_ids && opp.hop_pool_ids.length > 0) {
+          // Try to analyze the failure to identify the failing pool
+          if (simResult && programs.length > 0) {
+            const analysis = analyzeTransactionFailure(
+              simResult,
+              programs,
+              opp.hop_pool_ids,
+              opp.hop_dexes || []
+            );
+            
+            if (analysis.failingPool) {
+              recordPoolFailure(
+                analysis.failingPool.poolId,
+                analysis.failingPool.dex,
+                analysis.errorMessage || errorMsg,
+                traceId
+              );
+            }
+          } else {
+            // Fallback: if we can't identify the specific pool, record failure for all pools
+            // with a lower weight (don't immediately quarantine)
+            // Only do this for certain error types that suggest pool issues
+            const isPoolRelatedError = /slippage|liquidity|insufficient|exceeded|custom/i.test(errorMsg);
+            if (isPoolRelatedError && opp.hop_pool_ids.length === 1) {
+              // Single-hop: we know which pool failed
+              recordPoolFailure(
+                opp.hop_pool_ids[0],
+                opp.hop_dexes?.[0] || opp.dexes?.[0] || 'unknown',
+                errorMsg,
+                traceId
+              );
+            }
+          }
+        }
+      } catch (trackErr) {
+        // Non-blocking - don't let tracking errors affect execution flow
+        try {
+          logger.warn('arb.executor.failure_tracking_error', {
+            cat: 'arb',
+            traceId,
+            error: String((trackErr as any)?.message || trackErr),
+          });
+        } catch {}
+      }
     } finally {
       this.state.inFlight.delete(oppKey);
     }
@@ -1717,6 +1823,21 @@ export class ArbExecutor {
   updateConfig(updates: Partial<ExecutorConfig>): void {
     this.config = { ...this.config, ...updates };
     logger.info('arb.executor.config_updated', { cat: 'arb', config: this.config });
+    
+    // Update pool failure tracker configuration if quarantine settings changed
+    try {
+      if (updates.quarantineSettings) {
+        setQuarantineConfig(updates.quarantineSettings);
+      }
+      if (updates.manualPoolBlocklist !== undefined) {
+        setManualBlocklist(updates.manualPoolBlocklist);
+      }
+    } catch (e) {
+      logger.warn('arb.executor.tracker_update_failed', { 
+        cat: 'arb', 
+        error: String((e as any)?.message || e) 
+      });
+    }
   }
 
   getStatus() {

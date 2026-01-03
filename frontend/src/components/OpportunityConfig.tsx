@@ -111,6 +111,23 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           if (typeof j.useRouter === 'boolean') {
             set('use_router', j.useRouter);
           }
+          // Load quarantine settings
+          if (j.quarantineSettings) {
+            set('quarantine_enabled', !!j.quarantineSettings.enabled);
+            if (typeof j.quarantineSettings.maxFailures === 'number') {
+              set('quarantine_max_failures', j.quarantineSettings.maxFailures);
+            }
+            if (typeof j.quarantineSettings.windowMs === 'number') {
+              set('quarantine_window_sec', Math.round(j.quarantineSettings.windowMs / 1000));
+            }
+            if (typeof j.quarantineSettings.quarantineDurationMs === 'number') {
+              set('quarantine_duration_sec', Math.round(j.quarantineSettings.quarantineDurationMs / 1000));
+            }
+          }
+          // Load manual pool blocklist
+          if (Array.isArray(j.manualPoolBlocklist)) {
+            set('manual_pool_blocklist_csv', j.manualPoolBlocklist.join(', '));
+          }
         } 
       } catch {}
       // Load Jito config
@@ -229,6 +246,16 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             },
             // Router settings - use on-chain router for execution
             useRouter: !!det.use_router,
+            // Quarantine settings
+            quarantineSettings: {
+              enabled: det.quarantine_enabled !== false,
+              maxFailures: toNum(det.quarantine_max_failures) || 5,
+              windowMs: (toNum(det.quarantine_window_sec) || 300) * 1000,
+              quarantineDurationMs: (toNum(det.quarantine_duration_sec) || 900) * 1000,
+            },
+            // Manual pool blocklist
+            manualPoolBlocklist: String(det.manual_pool_blocklist_csv || '')
+              .split(',').map((s: string) => s.trim()).filter(Boolean),
           }) 
         }),
         // Save Jito config
@@ -823,6 +850,103 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Pool Quarantine Settings Section */}
+          <div className="bg-gray-700 rounded p-4 border-2 border-orange-500/30">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-lg font-semibold text-white">Pool Quarantine</h3>
+              <label className="flex items-center gap-2 text-sm">
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4"
+                  checked={det.quarantine_enabled !== false} 
+                  onChange={e=>set('quarantine_enabled', e.target.checked)} 
+                />
+                <span className="text-orange-400">Auto-Quarantine</span>
+              </label>
+            </div>
+            
+            <p className="text-xs text-gray-400 mb-3">
+              Automatically quarantine pools that cause repeated transaction failures. 
+              Quarantined pools are temporarily excluded from opportunities.
+            </p>
+            
+            {/* Auto-quarantine settings */}
+            <div className={`space-y-4 ${det.quarantine_enabled === false ? 'opacity-50 pointer-events-none' : ''}`}>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block mb-1 text-gray-300 text-sm">
+                    Max Failures
+                    <span className="text-xs text-gray-500 ml-1">before quarantine</span>
+                  </label>
+                  <input 
+                    type="number" 
+                    min="1"
+                    max="20"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                    value={det.quarantine_max_failures ?? 5} 
+                    onChange={e=>set('quarantine_max_failures', Number(e.target.value)||5)} 
+                    disabled={det.quarantine_enabled === false}
+                  />
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-sm">
+                    Window (seconds)
+                    <span className="text-xs text-gray-500 ml-1">failure counting</span>
+                  </label>
+                  <input 
+                    type="number" 
+                    min="60"
+                    step="60"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                    value={det.quarantine_window_sec ?? 300} 
+                    onChange={e=>set('quarantine_window_sec', Number(e.target.value)||300)} 
+                    disabled={det.quarantine_enabled === false}
+                  />
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-sm">
+                    Duration (seconds)
+                    <span className="text-xs text-gray-500 ml-1">quarantine time</span>
+                  </label>
+                  <input 
+                    type="number" 
+                    min="60"
+                    step="60"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                    value={det.quarantine_duration_sec ?? 900} 
+                    onChange={e=>set('quarantine_duration_sec', Number(e.target.value)||900)} 
+                    disabled={det.quarantine_enabled === false}
+                  />
+                </div>
+              </div>
+              
+              <div className="p-2 bg-gray-800/50 rounded text-xs text-gray-400">
+                With these settings: A pool causing <strong className="text-orange-300">{det.quarantine_max_failures ?? 5}</strong> failures 
+                within <strong className="text-orange-300">{Math.round((det.quarantine_window_sec ?? 300) / 60)} min</strong> will 
+                be quarantined for <strong className="text-orange-300">{Math.round((det.quarantine_duration_sec ?? 900) / 60)} min</strong>.
+              </div>
+            </div>
+            
+            {/* Manual Pool Blocklist */}
+            <div className="mt-4 pt-4 border-t border-gray-600">
+              <h4 className="text-sm font-semibold text-white mb-2">Manual Pool Blocklist</h4>
+              <p className="text-xs text-gray-400 mb-2">
+                Permanently block specific pools (persisted to config). Enter pool IDs separated by commas.
+              </p>
+              <textarea
+                className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 font-mono text-xs h-16 resize-y"
+                placeholder="Pool1Address, Pool2Address, ..."
+                value={det.manual_pool_blocklist_csv ?? ''} 
+                onChange={e=>set('manual_pool_blocklist_csv', e.target.value)} 
+              />
+              {det.manual_pool_blocklist_csv && String(det.manual_pool_blocklist_csv).split(',').filter((s: string) => s.trim()).length > 0 && (
+                <div className="mt-1 text-xs text-orange-400">
+                  {String(det.manual_pool_blocklist_csv).split(',').filter((s: string) => s.trim()).length} pool(s) in blocklist
                 </div>
               )}
             </div>

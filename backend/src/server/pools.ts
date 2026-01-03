@@ -407,9 +407,20 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     logger.info('pools.refresh.phase.fetch.early_filter_path', { cat: 'pools' });
     
     // Get token universe for summary queries - compute once and share with all fetchers
-    const { computeTokenUniverse } = await import('./universe.js');
+    const { computeTokenUniverse, getAnchorSet } = await import('./universe.js');
     const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    const mints = Array.from(universe);
+    let mints = Array.from(universe);
+    
+    // CRITICAL: Always include anchor tokens in shared mints list for GraphQL queries
+    // This ensures pools containing SOL/USDC/USDT are always fetched, regardless of
+    // includeAnchorsInUniverse setting. Anchor bridging controls post-fetch filtering,
+    // but we need anchors in the query to find the pools in the first place.
+    const anchors = getAnchorSet();
+    const mintsSet = new Set(mints);
+    for (const anchor of anchors) {
+      mintsSet.add(anchor);
+    }
+    mints = Array.from(mintsSet);
     sharedMints = mints; // Store for potential use outside early filter path
     
     // === PHASE 1A: SUMMARY FETCH (lightweight) ===
@@ -2298,7 +2309,18 @@ export async function getRaydiumPoolsGraphQL(force = false, opts?: { mints?: str
       mints = Array.from(universe);
     }
     
-    logger.info('raydium.graphql.fetch.start', { mintCount: mints.length, shared: !!opts?.mints, cat: 'raydium' });
+    // CRITICAL: Always include anchor tokens in mints list for GraphQL queries
+    // This ensures we can find pools containing SOL/USDC/USDT even if they're not in the universe
+    // Anchor bridging only affects filtering AFTER fetching, not what we query
+    const { getAnchorSet } = await import('./universe.js');
+    const anchors = getAnchorSet();
+    const mintsSet = new Set(mints);
+    for (const anchor of anchors) {
+      mintsSet.add(anchor);
+    }
+    mints = Array.from(mintsSet);
+    
+    logger.info('raydium.graphql.fetch.start', { mintCount: mints.length, anchorCount: anchors.size, shared: !!opts?.mints, cat: 'raydium' });
     
     const { fetchRaydiumGraphQL, normalizeRaydiumGraphQL } = await import('./pools/raydiumGraphQL.js');
     const raw = await fetchRaydiumGraphQL(mints);
@@ -2469,7 +2491,18 @@ export async function getRaydiumClmmPoolsGraphQL(force = false, opts?: { mints?:
       mints = Array.from(universe);
     }
     
-    logger.info('raydium.clmm.graphql.fetch.start', { mintCount: mints.length, shared: !!opts?.mints, cat: 'raydium-clmm' });
+    // CRITICAL: Always include anchor tokens in mints list for GraphQL queries
+    // This ensures we can find pools containing SOL/USDC/USDT even if they're not in the universe
+    // Anchor bridging only affects filtering AFTER fetching, not what we query
+    const { getAnchorSet } = await import('./universe.js');
+    const anchors = getAnchorSet();
+    const mintsSet = new Set(mints);
+    for (const anchor of anchors) {
+      mintsSet.add(anchor);
+    }
+    mints = Array.from(mintsSet);
+    
+    logger.info('raydium.clmm.graphql.fetch.start', { mintCount: mints.length, anchorCount: anchors.size, shared: !!opts?.mints, cat: 'raydium-clmm' });
     
     const { fetchRaydiumClmmGraphQL, normalizeRaydiumGraphQL } = await import('./pools/raydiumGraphQL.js');
     const raw = await fetchRaydiumClmmGraphQL(mints);
@@ -2793,7 +2826,18 @@ export async function getOrcaPoolsGraphQL(force = false, opts?: { mints?: string
       mints = Array.from(universe);
     }
     
-    logger.info('orca.graphql.fetch.start', { mintCount: mints.length, shared: !!opts?.mints, cat: 'orca' });
+    // CRITICAL: Always include anchor tokens in mints list for GraphQL queries
+    // This ensures we can find pools containing SOL/USDC/USDT even if they're not in the universe
+    // Anchor bridging only affects filtering AFTER fetching, not what we query
+    const { getAnchorSet } = await import('./universe.js');
+    const anchors = getAnchorSet();
+    const mintsSet = new Set(mints);
+    for (const anchor of anchors) {
+      mintsSet.add(anchor);
+    }
+    mints = Array.from(mintsSet);
+    
+    logger.info('orca.graphql.fetch.start', { mintCount: mints.length, anchorCount: anchors.size, shared: !!opts?.mints, cat: 'orca' });
     
     const { fetchOrcaGraphQL, normalizeOrcaGraphQL } = await import('./pools/orcaGraphQL.js');
     const raw = await fetchOrcaGraphQL(mints);
@@ -3263,7 +3307,18 @@ export async function getMeteoraPoolsGraphQL(force = false, opts?: { mints?: str
       mints = Array.from(universe);
     }
     
-    logger.info('meteora.graphql.fetch.start', { mintCount: mints.length, shared: !!opts?.mints, cat: 'meteora' });
+    // CRITICAL: Always include anchor tokens in mints list for GraphQL queries
+    // This ensures we can find pools containing SOL/USDC/USDT even if they're not in the universe
+    // Anchor bridging only affects filtering AFTER fetching, not what we query
+    const { getAnchorSet } = await import('./universe.js');
+    const anchors = getAnchorSet();
+    const mintsSet = new Set(mints);
+    for (const anchor of anchors) {
+      mintsSet.add(anchor);
+    }
+    mints = Array.from(mintsSet);
+    
+    logger.info('meteora.graphql.fetch.start', { mintCount: mints.length, anchorCount: anchors.size, shared: !!opts?.mints, cat: 'meteora' });
     
     const { fetchMeteoraGraphQL, normalizeMeteoraGraphQL } = await import('./pools/meteoraGraphQL.js');
     const raw = await fetchMeteoraGraphQL(mints);

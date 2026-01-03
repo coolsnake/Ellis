@@ -43,7 +43,8 @@ export async function fetchPumpswapSummaryOnly(providedMints?: string[]): Promis
 
   const retries = Number((CONFIG as any)?.pumpswap?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.pumpswap?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.pumpswap?.pageSize || 1000);
+  // Use dedicated graphqlPageSize, falling back to 1000 (optimal for Shyft GraphQL)
+  const pageSize = Number((CONFIG as any)?.pumpswap?.graphqlPageSize || 1000);
   const maxPages = Number((CONFIG as any)?.pumpswap?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.pumpswap?.pageDelayMs || 200);
   const mintBatchSize = Number((CONFIG as any)?.pumpswap?.mintBatchSize || 10);
@@ -65,19 +66,73 @@ export async function fetchPumpswapSummaryOnly(providedMints?: string[]): Promis
     }
   }
 
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  
+  // First add all anchors to ensure coverage
+  for (const anchor of anchors) {
+    anchorMints.push(anchor);
+  }
+  
+  // Then categorize the provided mints
+  for (const mint of mints) {
+    if (!anchors.has(mint)) {
+      regularMints.push(mint);
+    }
+  }
+
   const poolsMap = new Map<string, SummaryPool>();
-  const mintBatches = chunkArray(mints, mintBatchSize);
 
   logger.info('pumpswap.graphql.summary_only.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'pumpswap',
   });
 
   if (pageDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const batchPools = await fetchPoolsForMintBatch([anchorMint], apiKey, retries, backoffMs, pageSize, maxPages, pageDelayMs);
+      for (const pool of batchPools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.base_mint,
+          mint_b: pool.quote_mint,
+          dex: 'pumpswap',
+          type: 'amm',
+        });
+      }
+
+      logger.info('pumpswap.graphql.summary_only.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: batchPools.length,
+        total: poolsMap.size,
+        cat: 'pumpswap',
+      });
+    } catch (e: any) {
+      logger.warn('pumpswap.graphql.summary_only.anchor.failed', {
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e),
+        cat: 'pumpswap',
+      });
+    }
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];
@@ -117,7 +172,7 @@ export async function fetchPumpswapSummaryOnly(providedMints?: string[]): Promis
   const result = Array.from(poolsMap.values());
   logger.info('pumpswap.graphql.summary_only.complete', {
     count: result.length,
-    mints: mints.length,
+    mints: anchorMints.length + regularMints.length,
     cat: 'pumpswap',
   });
   return result;
@@ -158,22 +213,80 @@ export async function fetchPumpswapGraphQL(providedMints?: string[]): Promise<Pu
     }
   }
   
-  const pools = new Map<string, any>(); // Dedupe by pubkey
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  // Anchor tokens (SOL, USDC, USDT) have many pools and should be queried individually
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
   
-  // Chunk mints into batches for efficient querying
-  const mintBatches = chunkArray(mints, mintBatchSize);
+  // First ensure anchors are in the mints list
+  const mintsSet = new Set(mints);
+  for (const anchor of anchors) {
+    mintsSet.add(anchor);
+  }
+  
+  // Then separate them for individual querying
+  for (const mint of mintsSet) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
+  
+  const pools = new Map<string, any>(); // Dedupe by pubkey
 
-  logger.info('pumpswap.graphql.batch.start', {
-    totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+  logger.info('pumpswap.graphql.fetch.start', {
+    totalMints: mintsSet.size,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'pumpswap',
   });
 
   // Add initial delay before first request to respect rate limits
-  if (pageDelayMs > 0 && mints.length > 0) {
+  if (pageDelayMs > 0 && mintsSet.size > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
+  
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  // Each anchor gets its own pagination, avoiding crowding from other high-volume tokens
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const anchorPools = await fetchPoolsForMintBatch([anchorMint], apiKey, retries, backoffMs, pageSize, maxPages, pageDelayMs);
+      for (const p of anchorPools) {
+        pools.set(p.pubkey, p);
+      }
+      
+      logger.info('pumpswap.graphql.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: anchorPools.length,
+        total: pools.size,
+        cat: 'pumpswap',
+      });
+    } catch (e: any) {
+      logger.warn('pumpswap.graphql.anchor.failed', { 
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e), 
+        cat: 'pumpswap' 
+      });
+    }
+    // Rate limit delay between anchor queries
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(r => setTimeout(r, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches (they have fewer pools each)
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
+
+  logger.info('pumpswap.graphql.batch.start', {
+    regularMints: regularMints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'pumpswap',
+  });
   
   // Fetch pools for each batch of mints
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {

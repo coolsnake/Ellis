@@ -19,24 +19,82 @@ import { isValidPublicKey } from '../../execution/builder/utils.js';
 export async function fetchOrcaSummaryOnly(mints: string[]): Promise<SummaryPool[]> {
   const retries = Number((CONFIG as any)?.orca?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.orca?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.orca?.pageSize || 1000);
+  // Use dedicated graphqlPageSize, falling back to 1000 (optimal for Shyft GraphQL)
+  const pageSize = Number((CONFIG as any)?.orca?.graphqlPageSize || 1000);
   const maxPages = Number((CONFIG as any)?.orca?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.orca?.pageDelayMs || 200);
   const mintBatchSize = Number((CONFIG as any)?.orca?.mintBatchSize || 10);
 
   const poolsMap = new Map<string, SummaryPool>();
-  const mintBatches = chunkArray(mints, mintBatchSize);
+
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  for (const mint of mints) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
 
   logger.info('orca.graphql.summary_only.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'orca',
   });
 
   if (pageDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const pools = await fetchOrcaPoolsForMintBatch({
+        mints: [anchorMint],
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        if (!pool?.pubkey) continue;
+        poolsMap.set(pool.pubkey, {
+          pubkey: pool.pubkey,
+          mint_a: pool.tokenMintA,
+          mint_b: pool.tokenMintB,
+          dex: 'orca',
+          type: 'clmm',
+          _updatedAt: pool._updatedAt,
+        });
+      }
+
+      logger.info('orca.graphql.summary_only.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'orca',
+      });
+    } catch (e: any) {
+      logger.warn('orca.graphql.summary_only.anchor.failed', {
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e),
+        cat: 'orca',
+      });
+    }
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];
@@ -110,13 +168,24 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
 
   const poolsMap = new Map<string, any>();
 
-  // Chunk mints into batches for efficient querying
-  const mintBatches = chunkArray(mints, mintBatchSize);
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  // Anchor tokens (SOL, USDC, USDT) have many pools and should be queried individually
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  for (const mint of mints) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
 
-  logger.info('orca.graphql.batch.start', {
+  logger.info('orca.graphql.fetch.start', {
     totalMints: mints.length,
-    batchCount: mintBatches.length,
-    mintBatchSize,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
     cat: 'orca',
   });
 
@@ -124,6 +193,52 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
   if (pageDelayMs > 0 && mints.length > 0) {
     await new Promise(resolve => setTimeout(resolve, pageDelayMs));
   }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  // Each anchor gets its own pagination, avoiding crowding from other high-volume tokens
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
+    try {
+      const pools = await fetchOrcaPoolsForMintBatch({
+        mints: [anchorMint], // Query single anchor token
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        poolsMap.set(pool.pubkey, pool);
+      }
+
+      logger.info('orca.graphql.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'orca',
+      });
+    } catch (e: any) {
+      logger.warn('orca.graphql.anchor.failed', { 
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e), 
+        cat: 'orca' 
+      });
+    }
+    // Rate limit delay between anchor queries
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches (they have fewer pools each)
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
+
+  logger.info('orca.graphql.batch.start', {
+    regularMints: regularMints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'orca',
+  });
 
   for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
     const mintBatch = mintBatches[batchIdx];
@@ -204,7 +319,8 @@ async function fetchOrcaPoolsForMintBatch(opts: {
 }): Promise<any[]> {
   // Validate pagination params
   const safePageSize = Math.min(Math.max(1, opts.pageSize), 1000);
-  const safeMaxPages = Math.min(Math.max(1, opts.maxPages), 20);
+  // Respect configured maxPages (default 50) - no arbitrary hard cap
+  const safeMaxPages = Math.max(1, opts.maxPages);
   
   const allPools: any[] = [];
   let offset = 0;
@@ -277,6 +393,17 @@ async function fetchOrcaPoolsForMintBatch(opts: {
     }
   }
   
+  // Warn if we hit the page limit with a full page (likely truncated results)
+  if (page >= safeMaxPages && allPools.length > 0 && allPools.length % safePageSize === 0) {
+    logger.warn('orca.graphql.batch.possibly_truncated', {
+      mintCount: opts.mints.length,
+      pagesFetched: page,
+      maxPages: safeMaxPages,
+      totalPools: allPools.length,
+      cat: 'orca'
+    });
+  }
+  
   return allPools;
 }
 
@@ -299,7 +426,8 @@ async function fetchOrcaPoolsForToken(opts: {
   
   // Validate pagination params
   const safePageSize = Math.min(Math.max(1, opts.pageSize), 1000);
-  const safeMaxPages = Math.min(Math.max(1, opts.maxPages), 20);
+  // Respect configured maxPages (default 50) - no arbitrary hard cap
+  const safeMaxPages = Math.max(1, opts.maxPages);
   
   const allPools: any[] = [];
   let offset = 0;
@@ -382,6 +510,17 @@ async function fetchOrcaPoolsForToken(opts: {
     if (page < safeMaxPages && opts.pageDelayMs > 0) {
       await new Promise(r => setTimeout(r, opts.pageDelayMs));
     }
+  }
+  
+  // Warn if we hit the page limit with a full page (likely truncated results)
+  if (page >= safeMaxPages && allPools.length > 0 && allPools.length % safePageSize === 0) {
+    logger.warn('orca.graphql.token.possibly_truncated', {
+      mint: opts.mint.slice(0, 8) + '…',
+      pagesFetched: page,
+      maxPages: safeMaxPages,
+      totalPools: allPools.length,
+      cat: 'orca'
+    });
   }
   
   return allPools;
