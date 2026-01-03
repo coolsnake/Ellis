@@ -285,7 +285,32 @@ export async function normalizeMeteoraHttp(raw: MeteoraApiListResponse | Meteora
       dex: 'Meteora',
       mint_a: finalMintA,
       mint_b: finalMintB,
-      fee_bps: Math.round(Number(pool.feeRate || 0) * 100),
+      fee_bps: (() => {
+        // Meteora API returns feeRate in PPM (parts per million) or percentage format
+        // base_fee is preferred (already in BPS), otherwise derive from feeRate
+        const baseFee = Number((pool as any).base_fee || 0);
+        if (baseFee > 0 && baseFee <= 10000) {
+          return Math.round(baseFee);
+        }
+        const feeRate = Number(pool.feeRate || 0);
+        // If feeRate > 100, it's likely in PPM (parts per million) - divide by 100 to get BPS
+        // e.g., 1000 PPM = 10 BPS = 0.1%
+        if (feeRate > 100) {
+          return Math.round(feeRate / 100);
+        }
+        // If feeRate is small (< 1), it's a decimal percentage - multiply by 10000
+        // e.g., 0.001 = 0.1% = 10 BPS
+        if (feeRate > 0 && feeRate < 1) {
+          return Math.round(feeRate * 10000);
+        }
+        // If feeRate is between 1-100, treat as percentage - multiply by 100
+        // e.g., 0.1 = 0.1% = 10 BPS (but this case is rare)
+        if (feeRate >= 1 && feeRate <= 100) {
+          // This might already be in BPS if it's a reasonable fee value (1-100)
+          return Math.round(feeRate);
+        }
+        return 0;
+      })(),
       sqrt_price_x64: 0, // Let graph builder derive if needed
       liquidity: 0,
       tick_spacing: Number(pool.bin_step || pool.binStep || 0),

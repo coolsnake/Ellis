@@ -28,7 +28,7 @@ import { ensureDir, writeJson } from '../utils/fs.js';
 import { setupRustLogForwarding, shutdownRustProcess } from './arbProcess.js';
 import { loadClmmCacheFromDisk } from '../execution/clmmCache.js';
 import { startClmmRefreshLoop } from './tasks/refreshClmm.js';
-import { startTickArrayValidator, stopTickArrayValidator } from '../execution/tickArrayValidator.js';
+import { startReactiveValidation, stopReactiveValidation } from '../execution/cacheValidator.js';
 
 const app = express();
 // Respect X-Forwarded-* from Nginx
@@ -417,10 +417,10 @@ export async function shutdown() {
       (pools as any).clearAllPoolCaches?.(); 
     } catch {}
     
-    // Stop background tick array validator
+    // Stop reactive tick array validation
     try {
-      stopTickArrayValidator();
-      logger.info('tickArrayValidator.stopped', { cat: 'cache' });
+      stopReactiveValidation();
+      logger.info('cacheValidator.reactive.stopped', { cat: 'cache' });
     } catch {}
     
     // Clear graph snapshot cache
@@ -787,15 +787,15 @@ server.listen(CONFIG.port, () => {
     startClmmRefreshLoop(getTargetPools, intervalMs);
   } catch {}
 
-  // Start background tick array validator for CLMM pools
+  // Start reactive tick array validation for CLMM pools
   // This validates tick arrays asynchronously when boundaries are crossed,
   // ensuring we don't use stale/non-existent tick arrays in transactions
   try {
     const validatorIntervalMs = Math.max(50, Number((CONFIG as any)?.pools?.tickArrayValidatorIntervalMs || 100));
-    startTickArrayValidator(validatorIntervalMs);
-    logger.info('tickArrayValidator.started', { cat: 'cache', intervalMs: validatorIntervalMs });
+    startReactiveValidation(validatorIntervalMs);
+    logger.info('cacheValidator.reactive.started', { cat: 'cache', intervalMs: validatorIntervalMs });
   } catch (validatorErr) {
-    logger.warn('tickArrayValidator.start_failed', { cat: 'cache', error: String((validatorErr as Error)?.message || validatorErr) });
+    logger.warn('cacheValidator.reactive.start_failed', { cat: 'cache', error: String((validatorErr as Error)?.message || validatorErr) });
   }
 
   // Start graph stream on first socket connect, or after configured delay

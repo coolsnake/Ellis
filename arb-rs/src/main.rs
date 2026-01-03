@@ -1416,6 +1416,29 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             };
+                        let rotate_to_start_i64 =
+                            |labels_orig: &Vec<String>,
+                             labels_canon: &Vec<String>,
+                             arr: &mut Vec<i64>| {
+                                if labels_orig.is_empty() || arr.is_empty() {
+                                    return;
+                                }
+                                let n = labels_orig.len();
+                                if n == 0 {
+                                    return;
+                                }
+                                if let Some(i) =
+                                    labels_orig.iter().position(|m| m == &labels_canon[0])
+                                {
+                                    if i % n != 0 {
+                                        let mut tmp = vec![0i64; n];
+                                        for k in 0..n {
+                                            tmp[k] = arr[(k + i) % n];
+                                        }
+                                        *arr = tmp;
+                                    }
+                                }
+                            };
                         let canon_labels = canon(&labels, &anchor_set_for_canon);
                         tracing::debug!(path = %canon_labels.join("->"), profit_bps, "arb.detect.cycle.end");
                         // Align hop arrays with the rotated labels (no reversal)
@@ -1423,6 +1446,8 @@ async fn main() -> anyhow::Result<()> {
                         rotate_to_start(&labels, &canon_labels, &mut hop_dexes);
                         rotate_to_start_num(&labels, &canon_labels, &mut hop_rates);
                         rotate_to_start_num(&labels, &canon_labels, &mut hop_outs);
+                        rotate_to_start_i64(&labels, &canon_labels, &mut hop_fee_bps);
+                        rotate_to_start_num(&labels, &canon_labels, &mut hop_liq_disp);
                         // Validate alignment: each hop_pool_ids[i] must correspond to an edge between canon_labels[i] -> canon_labels[(i+1)%n]
                         {
                             let n = canon_labels.len();

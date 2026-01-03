@@ -3065,3 +3065,216 @@ export async function validateAndRefreshAllDecimals(
   };
 }
 
+// ============================================================================
+// REACTIVE VALIDATION LOOP
+// ============================================================================
+// Automatically validates tick arrays for pools flagged with needsTickArrayValidation.
+// This runs in the background and picks up pools that had boundary crossings or
+// were loaded with SAFE_TICK_ARRAY_DERIVATION (only center array derived).
+
+let reactiveValidationRunning = false;
+let reactiveValidationInterval: NodeJS.Timeout | null = null;
+let reactiveValidationConnection: Connection | null = null;
+
+/**
+ * Detect DEX type for a pool from cache
+ */
+function detectPoolDex(poolId: string): 'orca' | 'raydium' | 'meteora' | null {
+  const stat = executionCache.getStatic(poolId);
+  if (stat?.dex) {
+    if (stat.dex === 'orca') return 'orca';
+    if (stat.dex === 'raydium') return 'raydium';
+    if (stat.dex === 'meteora') return 'meteora';
+  }
+  
+  // Fallback: check program ID
+  const programId = stat?.programId;
+  if (programId === 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc') return 'orca';
+  if (programId === 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK') return 'raydium';
+  if (programId === 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') return 'meteora';
+  
+  // Try to find in pool caches
+  try {
+    const raydiumPools = peekRaydiumPools();
+    if (raydiumPools?.clmm?.some((p: any) => p.id === poolId)) return 'raydium';
+    
+    const orcaPools = peekOrcaPools();
+    if (orcaPools?.clmm?.some((p: any) => p.id === poolId)) return 'orca';
+    
+    const meteoraPools = peekMeteoraPools();
+    if (meteoraPools?.clmm?.some((p: any) => p.id === poolId)) return 'meteora';
+  } catch {}
+  
+  return null;
+}
+
+/**
+ * Process a single pool that needs tick array validation
+ */
+async function validatePoolTickArrays(
+  connection: Connection,
+  poolId: string
+): Promise<boolean> {
+  try {
+    const dex = detectPoolDex(poolId);
+    if (!dex || dex === 'meteora') {
+      // Meteora uses bin arrays, not tick arrays - skip for now
+      // Could add bin array validation here if needed
+      if (dex === 'meteora') {
+        // Clear the flag since we can't validate meteora tick arrays here
+        const hot = executionCache.getHot(poolId);
+        if (hot?.needsTickArrayValidation) {
+          executionCache.setHot(poolId, {
+            ...hot,
+            needsTickArrayValidation: false,
+          });
+        }
+      }
+      return false;
+    }
+    
+    // Use the existing fetchFreshTickDataAndValidate function
+    const result = await fetchFreshTickDataAndValidate(connection, poolId, dex);
+    
+    if (result?.tickArrays) {
+      // Store validated arrays in cache
+      executionCache.setValidatedTickArrays(poolId, {
+        center: result.tickArrays.center,
+        lower: result.tickArrays.lower.length > 0 
+          ? (result.tickArrays.lower.length === 1 ? result.tickArrays.lower[0] : result.tickArrays.lower)
+          : undefined,
+        upper: result.tickArrays.upper.length > 0
+          ? (result.tickArrays.upper.length === 1 ? result.tickArrays.upper[0] : result.tickArrays.upper)
+          : undefined,
+      });
+      
+      logger.debug('cacheValidator.reactive.validated', {
+        cat: 'cache',
+        poolId: poolId.slice(0, 8) + '…',
+        dex,
+        hasCenter: !!result.tickArrays.center,
+        lowerCount: result.tickArrays.lower.length,
+        upperCount: result.tickArrays.upper.length,
+      });
+      
+      return true;
+    }
+    
+    return false;
+  } catch (err) {
+    logCatchError('cacheValidator.reactive.validatePool', err);
+    return false;
+  }
+}
+
+/**
+ * Main reactive validation loop - processes pools needing validation
+ */
+async function runReactiveValidationLoop(): Promise<void> {
+  if (!reactiveValidationRunning || !reactiveValidationConnection) return;
+  
+  try {
+    // Get pools needing tick array validation
+    const poolsNeedingValidation = executionCache.getPoolsNeedingTickArrayValidation();
+    
+    if (poolsNeedingValidation.length === 0) return;
+    
+    // Process up to 5 pools per cycle to avoid overwhelming RPC
+    const batch = poolsNeedingValidation.slice(0, 5);
+    
+    logger.debug('cacheValidator.reactive.processing', {
+      cat: 'cache',
+      batchSize: batch.length,
+      totalPending: poolsNeedingValidation.length,
+    });
+    
+    // Process in parallel
+    const results = await Promise.allSettled(
+      batch.map(p => validatePoolTickArrays(reactiveValidationConnection!, p.poolId))
+    );
+    
+    const validated = results.filter(r => r.status === 'fulfilled' && r.value).length;
+    if (validated > 0) {
+      logger.debug('cacheValidator.reactive.batch_complete', {
+        cat: 'cache',
+        validated,
+        total: batch.length,
+        remaining: poolsNeedingValidation.length - batch.length,
+      });
+    }
+  } catch (err) {
+    logCatchError('cacheValidator.reactive.loop', err);
+  }
+}
+
+/**
+ * Start the reactive validation loop
+ * This continuously monitors for pools with needsTickArrayValidation=true
+ * and validates their tick arrays in the background
+ */
+export function startReactiveValidation(intervalMs: number = 100): void {
+  if (reactiveValidationRunning) {
+    logger.warn('cacheValidator.reactive.already_running', { cat: 'cache' });
+    return;
+  }
+  
+  // Get connection lazily to avoid circular imports at startup
+  import('../wallet/wallet.js').then(({ getConnection }) => {
+    reactiveValidationConnection = getConnection();
+    reactiveValidationRunning = true;
+    
+    logger.info('cacheValidator.reactive.started', {
+      cat: 'cache',
+      intervalMs,
+    });
+    
+    // Run immediately once
+    runReactiveValidationLoop();
+    
+    // Then run on interval
+    reactiveValidationInterval = setInterval(runReactiveValidationLoop, intervalMs);
+  }).catch(err => {
+    logCatchError('cacheValidator.reactive.start', err);
+  });
+}
+
+/**
+ * Stop the reactive validation loop
+ */
+export function stopReactiveValidation(): void {
+  if (!reactiveValidationRunning) return;
+  
+  reactiveValidationRunning = false;
+  
+  if (reactiveValidationInterval) {
+    clearInterval(reactiveValidationInterval);
+    reactiveValidationInterval = null;
+  }
+  
+  reactiveValidationConnection = null;
+  
+  logger.info('cacheValidator.reactive.stopped', { cat: 'cache' });
+}
+
+/**
+ * Check if reactive validation is running
+ */
+export function isReactiveValidationRunning(): boolean {
+  return reactiveValidationRunning;
+}
+
+/**
+ * Get reactive validation stats
+ */
+export function getReactiveValidationStats(): {
+  isRunning: boolean;
+  tickPoolsPending: number;
+  binPoolsPending: number;
+} {
+  return {
+    isRunning: reactiveValidationRunning,
+    tickPoolsPending: executionCache.getPoolsNeedingTickArrayValidation().length,
+    binPoolsPending: executionCache.getPoolsNeedingBinArrayValidation().length,
+  };
+}
+

@@ -1104,6 +1104,45 @@ async function extractDexAccounts(
           const rayTickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
           const rayTickArray2 = isAtoB ? hop.tickArrayUpper : hop.tickArrayLower;
           
+          // CRITICAL: Validate tick arrays exist before building instruction
+          const missingTickArrays: string[] = [];
+          if (!rayTickArray0) missingTickArrays.push('center');
+          if (!rayTickArray1) missingTickArrays.push(isAtoB ? 'lower' : 'upper');
+          if (!rayTickArray2) missingTickArrays.push(isAtoB ? 'upper' : 'lower');
+          
+          if (missingTickArrays.length > 0) {
+            throw new Error(
+              `RAYDIUM_CLMM_TICK_ARRAYS_MISSING: Pool ${hop.poolId} missing tick arrays [${missingTickArrays.join(', ')}]. ` +
+              `Pool needs validation. The reactive cacheValidator should populate these automatically.`
+            );
+          }
+          
+          // CRITICAL: Check for duplicate tick arrays - causes "already mutably borrowed" panic
+          // Raydium CLMM tries to borrow all 3 tick arrays mutably. If any are the same address,
+          // the second borrow fails with BorrowError. This happens when pool is at array boundary.
+          const duplicateArrays: string[] = [];
+          if (rayTickArray0 === rayTickArray1) duplicateArrays.push('center===array1');
+          if (rayTickArray0 === rayTickArray2) duplicateArrays.push('center===array2');
+          if (rayTickArray1 === rayTickArray2) duplicateArrays.push('array1===array2');
+          
+          if (duplicateArrays.length > 0) {
+            // Log the issue and skip this pool - duplicate tick arrays cause on-chain panic
+            logger.warn('routerTx.raydium.duplicate_tick_arrays', {
+              cat: 'tx',
+              poolId: hop.poolId,
+              duplicates: duplicateArrays,
+              center: rayTickArray0?.slice(0, 8) + '…',
+              array1: rayTickArray1?.slice(0, 8) + '…',
+              array2: rayTickArray2?.slice(0, 8) + '…',
+              isAtoB,
+              hint: 'Pool has duplicate tick arrays (at boundary?). Skipping to avoid BorrowError.',
+            });
+            throw new Error(
+              `RAYDIUM_CLMM_DUPLICATE_TICK_ARRAYS: Pool ${hop.poolId} has duplicate tick arrays [${duplicateArrays.join(', ')}]. ` +
+              `This causes BorrowError on-chain. Pool may be at tick array boundary.`
+            );
+          }
+          
           // Fixed accounts (0-12) - same for both layouts
           accounts.push(
             wallet,                                                              // 0: Payer (signer)
@@ -1126,17 +1165,17 @@ async function extractDexAccounts(
             // WITH exBitmap: 18 accounts total
             accounts.push(
               exBitmapPda,                                                       // 13: Tick Array Bitmap Extension
-              rayTickArray0 ? new PublicKey(rayTickArray0) : poolId,             // 14: Tick Array 0 (center)
-              rayTickArray1 ? new PublicKey(rayTickArray1) : poolId,             // 15: Tick Array 1
-              rayTickArray2 ? new PublicKey(rayTickArray2) : poolId,             // 16: Tick Array 2
+              new PublicKey(rayTickArray0),                                      // 14: Tick Array 0 (center)
+              new PublicKey(rayTickArray1),                                      // 15: Tick Array 1
+              new PublicKey(rayTickArray2),                                      // 16: Tick Array 2
               programIdKey,                                                      // 17: Raydium CLMM Program
             );
           } else {
             // WITHOUT exBitmap: 17 accounts total
             accounts.push(
-              rayTickArray0 ? new PublicKey(rayTickArray0) : poolId,             // 13: Tick Array 0 (center)
-              rayTickArray1 ? new PublicKey(rayTickArray1) : poolId,             // 14: Tick Array 1
-              rayTickArray2 ? new PublicKey(rayTickArray2) : poolId,             // 15: Tick Array 2
+              new PublicKey(rayTickArray0),                                      // 13: Tick Array 0 (center)
+              new PublicKey(rayTickArray1),                                      // 14: Tick Array 1
+              new PublicKey(rayTickArray2),                                      // 15: Tick Array 2
               programIdKey,                                                      // 16: Raydium CLMM Program
             );
           }
@@ -1701,6 +1740,40 @@ async function extractDexAccounts(
           outputMint: hop.outputMint,
         });
         
+        // CRITICAL: Validate tick arrays exist before building instruction
+        {
+          const missingTickArrays: string[] = [];
+          if (!tickArray0) missingTickArrays.push('center (array0)');
+          if (!tickArray1) missingTickArrays.push(isAtoBOrca ? 'lower (array1)' : 'upper (array1)');
+          // tickArray2 can be a duplicate of tickArray1, so only fail if tickArray1 is also missing
+          if (!tickArray2 && !tickArray1) missingTickArrays.push('array2');
+          
+          if (missingTickArrays.length > 0) {
+            throw new Error(
+              `ORCA_TICK_ARRAYS_MISSING: Pool ${hop.poolId} missing tick arrays [${missingTickArrays.join(', ')}]. ` +
+              `Pool needs validation. The reactive cacheValidator should populate these automatically.`
+            );
+          }
+          
+          // CRITICAL: Check for duplicate tick arrays - causes "already mutably borrowed" panic
+          // Orca tries to borrow all tick arrays. If center === array1, this causes BorrowError.
+          // Note: array2 can equal array1 safely (we use fallback), but center must be unique.
+          if (tickArray0 === tickArray1) {
+            logger.warn('routerTx.orca.duplicate_tick_arrays', {
+              cat: 'tx',
+              poolId: hop.poolId,
+              center: tickArray0?.slice(0, 8) + '…',
+              array1: tickArray1?.slice(0, 8) + '…',
+              isAtoB: isAtoBOrca,
+              hint: 'Center and array1 are same (pool at boundary?). Skipping to avoid BorrowError.',
+            });
+            throw new Error(
+              `ORCA_DUPLICATE_TICK_ARRAYS: Pool ${hop.poolId} has center === array1. ` +
+              `This causes BorrowError on-chain. Pool may be at tick array boundary.`
+            );
+          }
+        }
+        
         if (orcaNeedsSwapV2) {
           // swapV2: Token-2022 compatible (15 accounts)
           // Account layout matches Orca SDK's swapV2Ix
@@ -1716,10 +1789,10 @@ async function extractDexAccounts(
             new PublicKey(orcaVaultA),                                         // 8: Token Vault A (native)
             userTokenB,                                                        // 9: Token Owner Account B
             new PublicKey(orcaVaultB),                                         // 10: Token Vault B (native)
-            tickArray0 ? new PublicKey(tickArray0) : poolId,                   // 11: Tick Array 0
-            tickArray1 ? new PublicKey(tickArray1) : poolId,                   // 12: Tick Array 1
-            tickArray2 ? new PublicKey(tickArray2) : poolId,                   // 13: Tick Array 2
-            hop.oracle ? new PublicKey(hop.oracle) : poolId,                   // 14: Oracle
+            new PublicKey(tickArray0),                                         // 11: Tick Array 0
+            new PublicKey(tickArray1),                                         // 12: Tick Array 1
+            new PublicKey(tickArray2 || tickArray1),                           // 13: Tick Array 2 (fallback to array1)
+            hop.oracle ? new PublicKey(hop.oracle) : poolId,                   // 14: Oracle (can fallback - separate account)
             programIdKey,                                                      // 15: Whirlpool Program (for CPI)
           );
         } else {
@@ -1732,10 +1805,10 @@ async function extractDexAccounts(
             new PublicKey(orcaVaultA),                                         // 4: Token Vault A (native)
             userTokenB,                                                        // 5: Token Owner Account B
             new PublicKey(orcaVaultB),                                         // 6: Token Vault B (native)
-            tickArray0 ? new PublicKey(tickArray0) : poolId,                   // 7: Tick Array 0
-            tickArray1 ? new PublicKey(tickArray1) : poolId,                   // 8: Tick Array 1
-            tickArray2 ? new PublicKey(tickArray2) : poolId,                   // 9: Tick Array 2
-            hop.oracle ? new PublicKey(hop.oracle) : poolId,                   // 10: Oracle
+            new PublicKey(tickArray0),                                         // 7: Tick Array 0
+            new PublicKey(tickArray1),                                         // 8: Tick Array 1
+            new PublicKey(tickArray2 || tickArray1),                           // 9: Tick Array 2 (fallback to array1)
+            hop.oracle ? new PublicKey(hop.oracle) : poolId,                   // 10: Oracle (can fallback - separate account)
             programIdKey,                                                      // 11: Whirlpool Program
           );
         }

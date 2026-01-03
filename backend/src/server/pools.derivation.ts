@@ -10,7 +10,11 @@ import { toB58Any } from './pools.utils.js';
 // Flag to control whether to derive all tick arrays (legacy) or just center (safe)
 // When true: only derive center tick array and mark pool for background validation
 // When false: derive all arrays (may include non-existent PDAs)
-const SAFE_TICK_ARRAY_DERIVATION = true;
+// 
+// DISABLED: Safe mode causes race conditions where transactions are attempted before
+// validation completes. Better to derive all arrays optimistically and handle
+// non-existent PDAs at the on-chain level than to have constant build failures.
+const SAFE_TICK_ARRAY_DERIVATION = false;
 
 // Orca Whirlpool constants
 const ORCA_WHIRLPOOL_PROGRAM_ID = 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
@@ -81,13 +85,8 @@ export async function deriveRaydiumClmmCacheFields(
                     };
                     needsTickArrayValidation = true;
                     
-                    // Queue for background validation (non-blocking)
-                    try {
-                        const { queueTickArrayValidation } = await import('../execution/tickArrayValidator.js');
-                        queueTickArrayValidation(poolId);
-                    } catch {
-                        // Validator not available, will be validated later
-                    }
+                    // Pool is flagged for validation via needsTickArrayValidation
+                    // The reactive cacheValidator background loop will validate it
                 } else {
                     // LEGACY MODE: Derive all arrays (may include non-existent PDAs)
                     const lowerArrays: string[] = [];
@@ -220,13 +219,8 @@ export async function deriveOrcaClmmCacheFields(
       };
       needsTickArrayValidation = true;
       
-      // Queue for background validation (non-blocking)
-      try {
-        const { queueTickArrayValidation } = await import('../execution/tickArrayValidator.js');
-        queueTickArrayValidation(poolId);
-      } catch {
-        // Validator not available, will be validated later
-      }
+      // Pool is flagged for validation via needsTickArrayValidation
+      // The reactive cacheValidator background loop will validate it
       
       logger.debug('orca.clmm.tickarray.derived.safe', {
         pool: poolId.slice(0, 8) + '…',

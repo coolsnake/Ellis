@@ -31,22 +31,23 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   if (stat?.ex_bitmap && !(hop as any).exBitmap) (hop as any).exBitmap = stat.ex_bitmap;
 
   // Load from hot cache for tick arrays (like Orca resolver)
-  // CRITICAL: Hot cache contains validated data from cacheValidator - PREFER over existing hop values
+  // CRITICAL: Hot cache contains tick array data - use even if not yet validated on-chain
   const hot = executionCache.getHot(poolIdBase);
   
-  // Check if pool needs tick array validation (boundary crossed or only center derived)
-  // If so, we should NOT use the cached tick arrays as they may be stale/incomplete
+  // Check if pool needs tick array validation (boundary crossed or freshly derived)
+  // Even if validation pending, still USE the derived arrays - they're usually correct
+  // The builder will catch any issues (duplicates, non-existent) at build time
   const cacheNeedsValidation = hot?.needsTickArrayValidation === true;
   
-  // Only use cached tick arrays if they're validated (not pending validation)
-  if (hot?.tickArrays && !cacheNeedsValidation) {
+  // Use cached tick arrays regardless of validation status
+  // Derived arrays are usually correct; validation just confirms on-chain existence
+  if (hot?.tickArrays) {
     // Handle arrays for lower/upper (take first element), string for center
-    // PREFER hot cache over existing hop values to ensure validated data is used
     const hotLower = Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower;
     const hotCenter = hot.tickArrays.center;
     const hotUpper = Array.isArray(hot.tickArrays.upper) ? hot.tickArrays.upper[0] : hot.tickArrays.upper;
     
-    // Use validated hot cache values, only fall back to hop if hot cache is undefined
+    // Use hot cache values, only fall back to hop if hot cache is undefined
     if (hotLower) hop.tickArrayLower = hotLower;
     if (hotCenter) hop.tickArrayCenter = hotCenter;
     if (hotUpper) hop.tickArrayUpper = hotUpper;
@@ -58,34 +59,13 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
           pool: hop.poolId,
           lower: hop.tickArrayLower?.slice(0, 8) + '…' || 'none',
           center: hop.tickArrayCenter?.slice(0, 8) + '…' || 'none',
-          upper: hop.tickArrayUpper?.slice(0, 8) + '…' || 'none'
-        }
-      });
-    } catch (e) { logCatchError('resolver.raydiumClmm', e); }
-  } else if (cacheNeedsValidation) {
-    // Cache is pending validation - only use center array (it's almost always safe)
-    // Lower/upper arrays are not safe to use until validated on-chain
-    const hotCenter = hot?.tickArrays?.center;
-    if (hotCenter) {
-      hop.tickArrayCenter = hotCenter;
-      // Clear lower/upper to force builder to handle missing arrays gracefully
-      hop.tickArrayLower = undefined;
-      hop.tickArrayUpper = undefined;
-    }
-    
-    try {
-      logger.warn('raydium.clmm.resolver.tick_arrays_pending_validation', {
-        cat: 'tx',
-        ctx: {
-          pool: hop.poolId,
-          hasCenter: !!hotCenter,
-          invalidatedAt: hot?.tickArrayInvalidatedAt,
-          hint: 'Tick arrays are pending background validation. Only center array is safe to use.',
+          upper: hop.tickArrayUpper?.slice(0, 8) + '…' || 'none',
+          validated: !cacheNeedsValidation,
         }
       });
     } catch (e) { logCatchError('resolver.raydiumClmm', e); }
   } else {
-    // No hot cache or no tick arrays - try static cache as fallback
+    // No hot cache tick arrays - try static cache as fallback
     if (stat?.tickArrayLower && !hop.tickArrayLower) hop.tickArrayLower = stat.tickArrayLower;
     if (stat?.tickArrayCenter && !hop.tickArrayCenter) hop.tickArrayCenter = stat.tickArrayCenter;
     if (stat?.tickArrayUpper && !hop.tickArrayUpper) hop.tickArrayUpper = stat.tickArrayUpper;
