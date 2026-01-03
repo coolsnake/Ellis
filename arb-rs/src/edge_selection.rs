@@ -127,6 +127,45 @@ pub fn select_best_edge_combination(
     let mut indices = vec![0usize; cycle_len];
 
     loop {
+        // Check for duplicate pool_ids in this combination
+        // Using the same pool on multiple hops is impossible to execute atomically
+        let mut pool_ids_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut has_duplicate_pool = false;
+
+        for (hop, &edge_idx) in indices.iter().enumerate() {
+            let pool_id = &edges_per_hop[hop][edge_idx].data.pool_id;
+            
+            // Skip empty pool_ids (Link edges don't have real pool_ids)
+            if !pool_id.is_empty() {
+                // Strip #rev suffix to treat forward/reverse as same pool
+                let base_pool_id = pool_id.strip_suffix("#rev").unwrap_or(pool_id.as_str()).to_string();
+                if !pool_ids_seen.insert(base_pool_id) {
+                    has_duplicate_pool = true;
+                    break;
+                }
+            }
+        }
+
+        // Skip combinations with duplicate pools
+        if has_duplicate_pool {
+            // Increment indices (odometer style) and continue
+            let mut carry = true;
+            for i in 0..cycle_len {
+                if carry {
+                    indices[i] += 1;
+                    if indices[i] >= edges_per_hop[i].len() {
+                        indices[i] = 0;
+                    } else {
+                        carry = false;
+                    }
+                }
+            }
+            if carry {
+                break;
+            }
+            continue;
+        }
+
         // Calculate product and min liquidity for this combination
         let mut product = 1.0f64;
         let mut min_liq = f64::MAX;
@@ -379,5 +418,72 @@ mod tests {
 
         assert!(cycle_has_valid_path(&g, &[a, b], 0.0));
         assert!(!cycle_has_valid_path(&g, &[a, b], 5000.0)); // Above liquidity threshold
+    }
+
+    #[test]
+    fn test_rejects_duplicate_pool_in_cycle() {
+        let mut g = ArbGraph::new();
+        // Create a cycle where the same pool (P1) would be used on multiple hops
+        // This is impossible to execute atomically
+        // A -> B via P1, B -> C via P1 (same pool!), C -> A via P3
+        g.upsert_edge("D1", "A", "B", make_edge(1.5, 1000.0, "D1", "P1"));  // Best rate for A->B
+        g.upsert_edge("D1", "B", "C", make_edge(1.5, 1000.0, "D1", "P1"));  // Same pool P1!
+        g.upsert_edge("D1", "C", "A", make_edge(0.5, 1000.0, "D1", "P3"));
+
+        let a = g.map.get("A").unwrap().index();
+        let b = g.map.get("B").unwrap().index();
+        let c = g.map.get("C").unwrap().index();
+
+        // Should return None because the only available combination uses P1 twice
+        let result = select_best_edge_combination(&g, &[a, b, c], 0.0, 10000, 5);
+        assert!(result.is_none(), "Should reject cycle with duplicate pool");
+    }
+
+    #[test]
+    fn test_selects_alternative_when_best_has_duplicate_pool() {
+        let mut g = ArbGraph::new();
+        // A -> B: Two options
+        //   P1 with best rate 1.5
+        //   P2 with lower rate 1.1
+        g.upsert_edge("D1", "A", "B", make_edge(1.5, 1000.0, "D1", "P1"));
+        g.upsert_edge("D2", "A", "B", make_edge(1.1, 1000.0, "D2", "P2"));
+
+        // B -> C: Only P1 available (would cause duplicate if P1 used on first hop)
+        g.upsert_edge("D1", "B", "C", make_edge(1.2, 1000.0, "D1", "P1"));
+
+        // C -> A: P3
+        g.upsert_edge("D1", "C", "A", make_edge(0.8, 1000.0, "D1", "P3"));
+
+        let a = g.map.get("A").unwrap().index();
+        let b = g.map.get("B").unwrap().index();
+        let c = g.map.get("C").unwrap().index();
+
+        let result = select_best_edge_combination(&g, &[a, b, c], 0.0, 10000, 5);
+        assert!(result.is_some(), "Should find valid combination using P2 instead of P1");
+
+        let sel = result.unwrap();
+        // Should use P2 for A->B (even though P1 has better rate) to avoid duplicate
+        assert_eq!(sel.edges[0].pool_id, "P2");
+        assert_eq!(sel.edges[1].pool_id, "P1");
+        assert_eq!(sel.edges[2].pool_id, "P3");
+        // Product: 1.1 * 1.2 * 0.8 = 1.056
+        assert!((sel.rate_product - 1.056).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_rejects_duplicate_pool_with_rev_suffix() {
+        let mut g = ArbGraph::new();
+        // Test that P1 and P1#rev are treated as the same pool
+        g.upsert_edge("D1", "A", "B", make_edge(1.5, 1000.0, "D1", "P1"));
+        g.upsert_edge("D1", "B", "C", make_edge(1.5, 1000.0, "D1", "P1#rev")); // Same pool, reverse direction
+        g.upsert_edge("D1", "C", "A", make_edge(0.5, 1000.0, "D1", "P3"));
+
+        let a = g.map.get("A").unwrap().index();
+        let b = g.map.get("B").unwrap().index();
+        let c = g.map.get("C").unwrap().index();
+
+        // Should return None because P1 and P1#rev are the same pool
+        let result = select_best_edge_combination(&g, &[a, b, c], 0.0, 10000, 5);
+        assert!(result.is_none(), "Should reject cycle with P1 and P1#rev as duplicate");
     }
 }
