@@ -628,3 +628,6 @@ arb-rs/target/debug/deps/zerocopy-8004e0c6df7fa6f1.d
 arb-rs/target/debug/deps/zerofrom-6783657d10c60f9b.d
 arb-rs/target/debug/deps/zerotrie-ab2a85cdfec3bc84.d
 arb-rs/target/debug/deps/zerovec-49ef0233fd7f450d.d
+*.lock
+arb-rs/Cargo.lock
+arb-rs/target/.rustc_info.json
