@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { ROUTES } from '../utils/routes';
 
 type ExecutorStatus = {
@@ -62,7 +62,7 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
   const [editSlippage, setEditSlippage] = useState<number | null>(null);
   const [editSizeUsd, setEditSizeUsd] = useState<number | null>(null);
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     try {
       const response = await fetch(`${apiBase}/arb/executor/status`);
       const data = await response.json();
@@ -71,9 +71,9 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
     } catch (e: any) {
       setError(e.message);
     }
-  };
+  }, [apiBase]);
 
-  const fetchJitoConfig = async () => {
+  const fetchJitoConfig = useCallback(async () => {
     try {
       const response = await fetch(`${apiBase}/arb/jito/config`);
       if (response.ok) {
@@ -81,7 +81,15 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
         setJitoConfig(data);
       }
     } catch {}
-  };
+  }, [apiBase]);
+
+  // Store latest fetch functions in refs to avoid dependency issues
+  const fetchStatusRef = useRef(fetchStatus);
+  const fetchJitoConfigRef = useRef(fetchJitoConfig);
+  useEffect(() => {
+    fetchStatusRef.current = fetchStatus;
+    fetchJitoConfigRef.current = fetchJitoConfig;
+  }, [fetchStatus, fetchJitoConfig]);
 
   const updateConfig = useCallback(async (updates: Record<string, any>) => {
     setSaving(true);
@@ -92,7 +100,7 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
         body: JSON.stringify(updates),
       });
       if (!response.ok) throw new Error('Failed to update config');
-      await fetchStatus();
+      await fetchStatusRef.current();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -103,21 +111,20 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
   useEffect(() => {
     fetchStatus();
     fetchJitoConfig();
-    // Poll less frequently (5s) - socket events provide real-time updates
-    // This reduces backend load while still catching missed events
+    // Reduced polling frequency - socket events provide real-time updates
+    // Fallback poll every 30s for status (socket events handle most updates)
     const interval = setInterval(() => {
-      fetchStatus();
-      // Only fetch Jito config occasionally since it rarely changes
-    }, 5000);
-    // Jito config polling at 30s interval (rarely changes)
-    const jitoInterval = setInterval(() => {
-      fetchJitoConfig();
+      fetchStatusRef.current();
     }, 30000);
+    // Jito config polling at 60s interval (rarely changes)
+    const jitoInterval = setInterval(() => {
+      fetchJitoConfigRef.current();
+    }, 60000);
     return () => {
       clearInterval(interval);
       clearInterval(jitoInterval);
     };
-  }, [apiBase]);
+  }, [fetchStatus, fetchJitoConfig]); // Only re-run if fetch functions change
 
   // Reset edit values when status changes
   useEffect(() => {
@@ -132,8 +139,14 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
   useEffect(() => {
     if (!socket) return;
     
+    let lastFetchTime = 0;
+    const MIN_FETCH_INTERVAL = 2000; // Throttle: max once per 2 seconds
+    
     const onExecution = () => {
-      fetchStatus(); // Refresh status on execution
+      const now = Date.now();
+      if (now - lastFetchTime < MIN_FETCH_INTERVAL) return;
+      lastFetchTime = now;
+      fetchStatusRef.current(); // Refresh status on execution
     };
     
     socket.on('arb:execution', onExecution);

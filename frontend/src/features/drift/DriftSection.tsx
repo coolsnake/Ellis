@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { LiquidationMonitor, TriggerStatus, FillerStatus } from '../drift';
 import { LiquidatorStatus } from '../../components/LiquidatorStatus';
 import { ROUTES } from '../../utils/routes';
@@ -90,6 +90,7 @@ export const DriftSection: React.FC<{
   useEffect(() => { loadStatusAndSubs(); loadSubaccounts(); }, []);
   useEffect(() => {
     // Poll infra status occasionally for live indicators
+    // Reduced frequency since this is just for indicators, not critical data
     let id: any = null;
     const tick = async () => {
       try {
@@ -98,7 +99,7 @@ export const DriftSection: React.FC<{
         setInfra(j || null);
       } catch {}
     };
-    id = setInterval(tick, 5000);
+    id = setInterval(tick, 15000); // Increased from 5s to 15s - less critical data
     tick();
     return () => { try { clearInterval(id); } catch {} };
   }, [p.apiBase]);
@@ -189,22 +190,30 @@ export const DriftSection: React.FC<{
     return () => { try { s.off('drift-liquidation', onLiq); } catch {} };
   }, [ctxSocket]);
 
+  // Store liquidator status in ref to avoid dependency issues
+  const lsRef = useRef<any[]>([]);
+  useEffect(() => {
+    lsRef.current = Array.isArray(p.ls) ? p.ls : [];
+  }, [p.ls]);
+
   // Periodically poll queue for users to keep UI fresh even if socket events are sparse
+  // Reduced polling frequency - socket events handle most updates
   useEffect(() => {
     let id: any = null;
-    const key = (Array.isArray(p.ls) && p.ls.length > 0 && typeof p.ls[0]?.key === 'string') ? p.ls[0].key : 'liq#default';
     const tick = async () => {
       try {
+        const ls = lsRef.current;
+        const key = (ls.length > 0 && typeof ls[0]?.key === 'string') ? ls[0].key : 'liq#default';
         const res = await fetch(`${p.apiBase}${ROUTES.strategies.liquidator.queue}?key=${encodeURIComponent(key)}&limit=200`);
         const data = await res.json().catch(() => ({}));
         const q = data?.queue;
         if (q && Array.isArray(q.users)) setLiqUsers(q.users);
       } catch {}
     };
-    id = setInterval(tick, 3000);
+    id = setInterval(tick, 10000); // Increased from 3s to 10s - socket events handle real-time updates
     tick();
     return () => { try { clearInterval(id); } catch {} };
-  }, [p.apiBase, JSON.stringify(p.ls||[]) ]);
+  }, [p.apiBase]); // Removed JSON.stringify dependency - use ref instead
 
   const createSub = async () => {
     try {

@@ -67,11 +67,18 @@ export const FillerStatus: React.FC<{ apiBase: string; hideHeader?: boolean }> =
     },
   });
 
-  // Background metrics refresh (not realtime): every 20s
+  // Store fillers list in ref to avoid dependency issues
+  const fillersRef = useRef<FillerItem[]>([]);
+  useEffect(() => {
+    fillersRef.current = Array.isArray(status?.fillers) ? status.fillers : [];
+  }, [status?.fillers]);
+
+  // Background metrics refresh (not realtime): every 30s (reduced from 20s)
+  // Socket events handle real-time updates, this is just a fallback
   useEffect(() => {
     const id = setInterval(async () => {
       try {
-        const list = Array.isArray(status?.fillers) ? status!.fillers as any[] : [];
+        const list = fillersRef.current;
         if (list.length === 0) return;
         const ms: Record<string, any> = {};
         await Promise.all(list.map(async (it: any) => {
@@ -82,9 +89,9 @@ export const FillerStatus: React.FC<{ apiBase: string; hideHeader?: boolean }> =
         }));
         setMetrics(ms);
       } catch {}
-    }, 20000);
+    }, 30000); // Increased from 20s to reduce load
     return () => { try { clearInterval(id); } catch {} };
-  }, [apiBase, JSON.stringify(status?.fillers || [])]);
+  }, [apiBase]); // Removed JSON.stringify dependency - use ref instead
 
   const act = async (kind: 'start' | 'stop' | 'remove', key: string) => {
     try {

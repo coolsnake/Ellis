@@ -184,6 +184,12 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     }
   }, [apiBase]);
 
+  // Store latest fetch function in ref to avoid dependency issues
+  const fetchWalletBalancesRef = useRef(fetchWalletBalances);
+  useEffect(() => {
+    fetchWalletBalancesRef.current = fetchWalletBalances;
+  }, [fetchWalletBalances]);
+
   // Initial fallback fetch only
   const [lastDetectionTs, setLastDetectionTs] = useState<number>(0);
   useEffect(() => {
@@ -199,20 +205,26 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     })();
   }, []);
 
-  // Refresh wallet balances periodically and on wallet updates
+  // Refresh wallet balances on wallet updates via socket (backend emits every 60s)
+  // Removed polling interval - rely solely on socket events to prevent excessive requests
   useEffect(() => {
     if (!effectiveSocket) return;
+    let lastFetchTime = 0;
+    const MIN_FETCH_INTERVAL = 5000; // Throttle: max once per 5 seconds even if socket fires rapidly
+    
     const onWalletUpdate = () => {
-      fetchWalletBalances();
+      const now = Date.now();
+      if (now - lastFetchTime < MIN_FETCH_INTERVAL) return;
+      lastFetchTime = now;
+      fetchWalletBalancesRef.current();
     };
+    
     try { effectiveSocket.on('wallet-update', onWalletUpdate); } catch {}
-    // Also refresh periodically (every 30 seconds)
-    const interval = setInterval(fetchWalletBalances, 30000);
+    
     return () => {
       try { effectiveSocket.off('wallet-update', onWalletUpdate); } catch {}
-      clearInterval(interval);
     };
-  }, [effectiveSocket, fetchWalletBalances]);
+  }, [effectiveSocket]); // Removed fetchWalletBalances from deps to prevent effect re-runs
 
   // Subscribe to backend-bridged opportunities stream
   // Throttle opportunities updates with reduced latency for critical updates (200ms for summary, 100ms for critical signals)

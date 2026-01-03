@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useSocket } from '../app/contexts/socket';
 
 type QueueItem = { userPk: string; health: number; updatedAt: number };
@@ -17,7 +17,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
   const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users?: UserItem[] } | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
 
-  const fetchQueue = async () => {
+  const fetchQueue = useCallback(async () => {
     try {
       const url = `${apiBase}/strategies/liquidator/queue?key=${encodeURIComponent(liquidatorKey)}&limit=25`;
       const res = await fetch(url);
@@ -28,13 +28,23 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
         setLastUpdate(Date.now());
       }
     } catch {}
-  };
+  }, [apiBase, liquidatorKey]);
+
+  // Store latest fetch function in ref to avoid dependency issues
+  const fetchQueueRef = useRef(fetchQueue);
+  useEffect(() => {
+    fetchQueueRef.current = fetchQueue;
+  }, [fetchQueue]);
 
   useEffect(() => {
     fetchQueue();
-    const id = setInterval(fetchQueue, 3000);
+    // Reduced polling frequency - socket events provide real-time updates
+    // Fallback poll every 10s (reduced from 3s) since socket handles most updates
+    const id = setInterval(() => {
+      fetchQueueRef.current();
+    }, 10000);
     return () => clearInterval(id);
-  }, [apiBase, liquidatorKey]);
+  }, [fetchQueue]); // Only re-run if fetch function changes
 
   useEffect(() => {
     if (!effectiveSocket) return;
