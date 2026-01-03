@@ -1993,6 +1993,36 @@ function runWebsocketRefreshLoop(): void {
                                 ...(derived?.tickArrays || {}),
                               },
                             });
+                            
+                            // Sync tick arrays to pool cache if we have tick data
+                            try {
+                              const { updatePoolCacheFromValidation } = await import('./pools.cache.js');
+                              const tickArrayLower = typeof derived.tickArrays?.lower === 'string' 
+                                ? derived.tickArrays.lower 
+                                : (Array.isArray(derived.tickArrays?.lower) && derived.tickArrays.lower.length > 0 
+                                  ? derived.tickArrays.lower[0] 
+                                  : undefined);
+                              const tickArrayUpper = typeof derived.tickArrays?.upper === 'string' 
+                                ? derived.tickArrays.upper 
+                                : (Array.isArray(derived.tickArrays?.upper) && derived.tickArrays.upper.length > 0 
+                                  ? derived.tickArrays.upper[0] 
+                                  : undefined);
+                              updatePoolCacheFromValidation([{
+                                poolId: pk58,
+                                dex: 'raydium',
+                                currentTick: derived?.tickCurrent,
+                                tickSpacing: derived?.tickSpacing,
+                                tickArrayLower,
+                                tickArrayCenter: derived.tickArrays?.center,
+                                tickArrayUpper,
+                              }]);
+                            } catch (syncErr) {
+                              logger.debug('raydium.ws.pool_cache_sync_failed', {
+                                pool: pk58.slice(0, 8) + '…',
+                                error: String((syncErr as any)?.message || syncErr),
+                                cat: 'pools'
+                              });
+                            }
                           }
                         } catch (cacheErr) {
                           try { logger.debug('raydium.ws.cache_update_failed', { pool: pk58.slice(0, 8) + '…', error: String((cacheErr as any)?.message || cacheErr) }); } catch {}
@@ -2002,38 +2032,6 @@ function runWebsocketRefreshLoop(): void {
                         wsDeltaStats.raydium.decoded += 1;
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
-                        
-                        // Sync tick arrays to pool cache if we have tick data
-                        if (derived?.tickArrays || derived?.tickCurrent !== undefined) {
-                          try {
-                            const { updatePoolCacheFromValidation } = await import('./pools.cache.js');
-                            const tickArrayLower = typeof derived.tickArrays?.lower === 'string' 
-                              ? derived.tickArrays.lower 
-                              : (Array.isArray(derived.tickArrays?.lower) && derived.tickArrays.lower.length > 0 
-                                ? derived.tickArrays.lower[0] 
-                                : undefined);
-                            const tickArrayUpper = typeof derived.tickArrays?.upper === 'string' 
-                              ? derived.tickArrays.upper 
-                              : (Array.isArray(derived.tickArrays?.upper) && derived.tickArrays.upper.length > 0 
-                                ? derived.tickArrays.upper[0] 
-                                : undefined);
-                            updatePoolCacheFromValidation([{
-                              poolId: pk58,
-                              dex: 'raydium',
-                              currentTick: derived?.tickCurrent,
-                              tickSpacing: derived?.tickSpacing,
-                              tickArrayLower,
-                              tickArrayCenter: derived.tickArrays?.center,
-                              tickArrayUpper,
-                            }]);
-                          } catch (syncErr) {
-                            logger.debug('raydium.ws.pool_cache_sync_failed', {
-                              pool: pk58.slice(0, 8) + '…',
-                              error: String((syncErr as any)?.message || syncErr),
-                              cat: 'pools'
-                            });
-                          }
-                        }
                         
                         const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                         if (hasDelta) { 
