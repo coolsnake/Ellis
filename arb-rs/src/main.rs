@@ -2847,23 +2847,45 @@ async fn main() -> anyhow::Result<()> {
                     s.config.opportunity_base_ttl_ms
                 };
                 let mut merged: Vec<Opportunity> = Vec::new();
-                // Always keep current detections, but enforce detection cap unless executed
+                // Always keep ALL current detections for monitoring purposes
+                // The executor can filter based on detection count if needed
                 for mut m in opps.into_iter() {
                     let s = loop_state.read().await;
                     let key = keyify_opportunity(&m.path, &m.dexes);
                     let executed = s.executed_keys.contains(&key);
                     let count = s.detection_counts.get(&key).map(|(c, _)| *c).unwrap_or(0) as usize;
-                    if executed || count < s.config.max_detections_without_exec {
-                        // Set timestamps for new detections
-                        if m.first_seen_ms.is_none() {
-                            m.first_seen_ms = Some(now_ms_val);
-                        }
-                        m.last_verified_ms = Some(now_ms_val);
-                        if m.detected_ms.is_none() {
-                            m.detected_ms = Some(now_ms_val);
-                        }
-                        merged.push(m);
+                    let max_det = s.config.max_detections_without_exec;
+                    // cap_disabled = true means show all opportunities
+                    let cap_disabled = max_det == 0;
+                    let under_cap = count < max_det;
+                    
+                    // Always include opportunity for display (executor can filter)
+                    // Mark as over_cap if it exceeds detection limit
+                    let over_cap = !cap_disabled && !executed && !under_cap;
+                    
+                    // Set timestamps for new detections
+                    if m.first_seen_ms.is_none() {
+                        m.first_seen_ms = Some(now_ms_val);
                     }
+                    m.last_verified_ms = Some(now_ms_val);
+                    if m.detected_ms.is_none() {
+                        m.detected_ms = Some(now_ms_val);
+                    }
+                    // Store detection count for monitoring
+                    m.detections = Some(count as u64);
+                    
+                    if over_cap {
+                        // Log that opportunity hit cap but still include it for monitoring
+                        tracing::debug!(
+                            target = "arb_rs",
+                            path = m.path.join("->"),
+                            count,
+                            max_det,
+                            "arb.opportunity: over detection cap (still displayed)"
+                        );
+                    }
+                    
+                    merged.push(m);
                 }
                 // Retain prior ones if within adaptive TTL and not duplicated
                 for mut o in prev.into_iter() {
@@ -2879,21 +2901,9 @@ async fn main() -> anyhow::Result<()> {
                             .map(|(c, _)| *c)
                             .unwrap_or(o.detections.unwrap_or(1))
                     };
-                    // Hard drop if exceeding cap and not executed
-                    let over_cap = {
-                        let s = loop_state.read().await;
-                        let key = keyify_opportunity(&o.path, &o.dexes);
-                        let executed = s.executed_keys.contains(&key);
-                        !executed
-                            && (s
-                                .detection_counts
-                                .get(&key)
-                                .map(|(c, _)| (*c as usize) >= s.config.max_detections_without_exec)
-                                .unwrap_or(false))
-                    };
-                    if over_cap {
-                        continue;
-                    }
+                    // NOTE: We no longer drop opportunities based on detection cap
+                    // All opportunities are kept for monitoring; executor can filter
+                    
                     // Apply opportunity TTL check
                     // Use first_seen_ms instead of last_verified_ms so opportunities persist
                     // even when they're not detected in subsequent cycles
@@ -3191,11 +3201,11 @@ async fn main() -> anyhow::Result<()> {
                     let last_resync = s.last_resync_attempt_ms.load(Ordering::Acquire);
                     let now = now_ms();
 
-                    // Track empty cycles (no pending updates)
-                    let empty_cycle = pending_version == u64::MAX
-                        && s.pending_added_edges.is_empty()
-                        && s.pending_updated_edges.is_empty()
-                        && s.pending_removed_edge_ids.is_empty();
+                    // Track empty cycles using version comparison (double-buffer pattern)
+                    // An empty cycle means no new updates since last snapshot
+                    let live_v = s.live_graph_version.load(Ordering::Acquire);
+                    let snap_v = s.detection_snapshot_version.load(Ordering::Acquire);
+                    let empty_cycle = live_v == snap_v && pending_version == u64::MAX;
 
                     if empty_cycle {
                         let prev_empty = s.consecutive_empty_cycles.fetch_add(1, Ordering::Relaxed);
@@ -4004,6 +4014,9 @@ async fn arb_graph_update(
     // Apply diffs directly to live_graph (double-buffer pattern)
     // Detection will create a snapshot at start of each cycle
     
+    // Track changed mints for scoped detection (used by detection loop)
+    let mut changed_mints: Vec<String> = Vec::new();
+    
     // Apply removals directly to live_graph
     if let Some(removed) = req.removed_edge_ids {
         let n = removed.len();
@@ -4011,8 +4024,7 @@ async fn arb_graph_update(
             let _ = s.live_graph.remove_edges_by_ids(&removed);
             tracing::info!(removed = n, "arb.graph.diff: applied removals to live_graph");
         }
-        // Also buffer for backward compatibility during transition
-        s.pending_removed_edge_ids.extend(removed);
+        // NO buffering - we applied directly
     }
     
     // Apply additions directly to live_graph
@@ -4038,10 +4050,11 @@ async fn arb_graph_update(
                 native_reserve_b_raw: e.native_reserve_b_raw.clone(),
             };
             s.live_graph.upsert_edge(dex, &e.source, &e.target, data);
+            changed_mints.push(e.source.clone());
+            changed_mints.push(e.target.clone());
         }
         tracing::info!(added = n, "arb.graph.diff: applied additions to live_graph");
-        // Also buffer for backward compatibility during transition
-        s.pending_added_edges.extend(added);
+        // NO buffering - we applied directly
     }
     
     // Apply updates directly to live_graph (same as additions - upsert handles update)
@@ -4067,10 +4080,11 @@ async fn arb_graph_update(
                 native_reserve_b_raw: e.native_reserve_b_raw.clone(),
             };
             s.live_graph.upsert_edge(dex, &e.source, &e.target, data);
+            changed_mints.push(e.source.clone());
+            changed_mints.push(e.target.clone());
         }
-        tracing::info!(updated = n, "arb.graph.diff: applied updates to live_graph");
-        // Also buffer for backward compatibility during transition
-        s.pending_updated_edges.extend(updated);
+        tracing::info!(updated = n, changed_mints = changed_mints.len(), "arb.graph.diff: applied updates to live_graph");
+        // NO buffering - we applied directly
     }
     
     // Increment live_graph_version
