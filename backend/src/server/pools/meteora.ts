@@ -647,6 +647,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
     const { executionCache } = await import('../../execution/cache.js');
     const { getConnection } = await import('../../wallet/wallet.js');
     const { PublicKey } = await import('@solana/web3.js');
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
     const connection = getConnection();
     
     const startTime = Date.now();
@@ -675,7 +676,11 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
       
       try {
         const pks = batch.map(p => new PublicKey(p.id));
-        const accounts = await connection.getMultipleAccountsInfo(pks);
+        const accounts = await withRpcLimit(
+          () => connection.getMultipleAccountsInfo(pks),
+          Math.ceil(pks.length / 5),
+          { module: 'pools', method: 'meteora.batchFetch' }
+        );
         
         // Process each account and decode using Anchor
         for (let j = 0; j < accounts.length; j++) {
@@ -717,7 +722,11 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                 if (binArrayAddresses?.arrays && binArrayAddresses.arrays.length > 0) {
                   try {
                     const pdaKeys = binArrayAddresses.arrays.map(a => new PublicKey(a.address));
-                    const binArrayInfos = await connection.getMultipleAccountsInfo(pdaKeys);
+                    const binArrayInfos = await withRpcLimit(
+                      () => connection.getMultipleAccountsInfo(pdaKeys),
+                      Math.ceil(pdaKeys.length / 5),
+                      { module: 'pools', method: 'meteora.binArrayValidation' }
+                    );
                     
                     const validArrays: Array<{ index: number; address: string }> = [];
                     let validLower: string | undefined;

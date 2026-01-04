@@ -78,6 +78,7 @@ interface ErrorRecord {
 const rpcMetrics = {
   totalCalls: 0,
   totalErrors: 0,
+  total429s: 0,  // Track 429 rate limit errors specifically
   callsByMethod: new Map<string, MethodStats>(),
   callsByModule: new Map<string, ModuleStats>(),
   recentErrors: [] as ErrorRecord[],
@@ -88,6 +89,46 @@ const rpcMetrics = {
 const MAX_LATENCY_SAMPLES = 1000; // Keep last N latencies per method/module
 const MAX_TIMESTAMPS = 3600; // Keep last hour of timestamps for RPS calc
 const MAX_RECENT_ERRORS = 50; // Keep last N errors
+
+// 429 detection and adaptive backoff
+let last429Time = 0;
+const BACKOFF_COOLDOWN_MS = 5000; // Wait 5s after a 429 before resuming normal rate
+
+/**
+ * Check if an error indicates a 429 rate limit response
+ */
+function is429Error(error: unknown): boolean {
+  const msg = String((error as any)?.message || error || '').toLowerCase();
+  return (
+    msg.includes('429') ||
+    msg.includes('rate limit') ||
+    msg.includes('too many requests') ||
+    msg.includes('rate_limit') ||
+    msg.includes('ratelimit')
+  );
+}
+
+/**
+ * Handle a 429 error by draining tokens and forcing a pause.
+ * This provides adaptive backoff when the RPC provider signals rate limiting.
+ */
+async function handle429Error(): Promise<void> {
+  const now = Date.now();
+  rpcMetrics.total429s++;
+  last429Time = now;
+  
+  // Drain 50% of token capacity to slow subsequent requests
+  tokens = Math.max(0, tokens - capacity * 0.5);
+  tokens = Math.round(tokens * 1000000) / 1000000;
+  if (tokens < 0.000001) {
+    tokens = 0;
+  }
+  
+  console.warn(`[RPC LIMITER] 429 detected! Draining tokens to ${tokens.toFixed(2)}, pausing for 1s. Total 429s: ${rpcMetrics.total429s}`);
+  
+  // Force a 1 second pause
+  await sleep(1000);
+}
 
 function refill(): void {
   const now = Date.now();
@@ -290,6 +331,10 @@ export function getRpcMetrics(): any {
           ? Math.round((rpcMetrics.totalErrors / rpcMetrics.totalCalls) * 10000) / 100
           : 0,
       },
+      rateLimitErrors: {
+        total: rpcMetrics.total429s,
+        lastOccurrence: last429Time > 0 ? now - last429Time : null,
+      },
       latency: {
         p50: percentile(sortedAll, 50),
         p90: percentile(sortedAll, 90),
@@ -398,6 +443,11 @@ export async function withRpcLimit<T>(
   } catch (error: any) {
     const duration = Date.now() - startTime;
     
+    // Check for 429 rate limit error and apply adaptive backoff
+    if (is429Error(error)) {
+      await handle429Error();
+    }
+    
     recordRpcCall({
       timestamp: Date.now(),
       module,
@@ -458,7 +508,13 @@ export async function withRpcRetry<T>(
       msg.includes('socket hang up') ||
       msg.includes('502') ||
       msg.includes('503') ||
-      msg.includes('504')
+      msg.includes('504') ||
+      // Add 429 rate limit errors as retryable
+      msg.includes('429') ||
+      msg.includes('rate limit') ||
+      msg.includes('too many requests') ||
+      msg.includes('rate_limit') ||
+      msg.includes('ratelimit')
     );
   });
   
@@ -483,9 +539,18 @@ export async function withRpcRetry<T>(
       return res;
     } catch (e: any) {
       lastErr = e;
+      
+      // Handle 429 errors with adaptive backoff
+      if (is429Error(e)) {
+        await handle429Error();
+      }
+      
       if (i === retries) break;
       if (!classify(e)) break;
-      const delay = Math.min(maxMs, baseMs * Math.pow(2, i));
+      
+      // Use longer delay for 429 errors
+      const baseDelay = is429Error(e) ? Math.max(baseMs, 1000) : baseMs;
+      const delay = Math.min(maxMs, baseDelay * Math.pow(2, i));
       await new Promise((r) => setTimeout(r, delay));
       continue;
     }

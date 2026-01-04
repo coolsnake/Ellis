@@ -152,6 +152,18 @@ export const CONFIG = {
     wsReconcileMinGapMs: Number(process.env.WS_RECONCILE_MIN_GAP_MS || 60000), // 60s minimum between reconciliations
     wsReconcileThreshold: Number(process.env.WS_RECONCILE_THRESHOLD || 10), // Min missing/excess pools to trigger
     
+    // RPC rate limiting configuration
+    // These values are also configurable via RPC_MAX_RPS, RPC_BURST, RPC_MIN_GAP_MS env vars in rpcLimiter.ts
+    rpcMaxRps: Number(process.env.RPC_MAX_RPS || 40),  // Max requests per second
+    rpcBurst: Number(process.env.RPC_BURST || 10),     // Burst capacity (token bucket)
+    rpcMinGapMs: Number(process.env.RPC_MIN_GAP_MS || 25), // Minimum gap between requests
+    
+    // Validation tuning configuration
+    validationBatchSize: Number(process.env.VALIDATION_BATCH_SIZE || 3),     // Pools per batch in validatePoolCacheBatch
+    validationBatchDelayMs: Number(process.env.VALIDATION_BATCH_DELAY_MS || 200), // Delay between batches
+    reactiveBatchSize: Number(process.env.REACTIVE_BATCH_SIZE || 2),         // Pools per cycle in reactive validation
+    tickArrayValidatorIntervalMs: Number(process.env.TICK_ARRAY_VALIDATOR_INTERVAL_MS || 500), // Reactive validation loop interval
+    
     // Graph diff filter knobs
     graphDiffFilterEnable: (process.env.GRAPH_DIFF_FILTER_ENABLE || 'true') !== 'false',
     graphDiffPriceEps: Number(process.env.GRAPH_DIFF_PRICE_EPS || 0.002),

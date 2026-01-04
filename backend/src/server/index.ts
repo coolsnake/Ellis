@@ -791,7 +791,9 @@ server.listen(CONFIG.port, () => {
   // This validates tick arrays asynchronously when boundaries are crossed,
   // ensuring we don't use stale/non-existent tick arrays in transactions
   try {
-    const validatorIntervalMs = Math.max(50, Number((CONFIG as any)?.pools?.tickArrayValidatorIntervalMs || 100));
+    // Increased default from 100ms to 500ms to reduce RPC rate limit pressure
+    // Configurable via TICK_ARRAY_VALIDATOR_INTERVAL_MS env var
+    const validatorIntervalMs = Math.max(250, Number((CONFIG as any)?.system?.tickArrayValidatorIntervalMs || 500));
     startReactiveValidation(validatorIntervalMs);
     logger.info('cacheValidator.reactive.started', { cat: 'cache', intervalMs: validatorIntervalMs });
   } catch (validatorErr) {

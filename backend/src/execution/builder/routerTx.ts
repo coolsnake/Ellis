@@ -14,6 +14,7 @@ import { LogCode } from '../../utils/logging.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection, getBalances } from '../../wallet/wallet.js';
 import { executionCache } from '../cache.js';
+import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { buildWrapSolIxs, buildUnwrapSolIx, isSolMint } from '../accounts.js';
 import { getTokenMeta } from '../resolver/tokenMeta.js';
 import {
@@ -319,8 +320,16 @@ async function buildFlashLoanArbTx(
     // Fetch both ATA infos and mint infos in parallel for verification
     const mintAddressesFlash = atasToCreate.map(({ mint }) => mint);
     const [ataInfos, mintInfosFlash] = await Promise.all([
-      connection.getMultipleAccountsInfo(ataAddresses),
-      connection.getMultipleAccountsInfo(mintAddressesFlash),
+      withRpcLimit(
+        () => connection.getMultipleAccountsInfo(ataAddresses),
+        Math.ceil(ataAddresses.length / 5),
+        { module: 'routerTx', method: 'getMultipleAccountsInfo:flashATAs' }
+      ),
+      withRpcLimit(
+        () => connection.getMultipleAccountsInfo(mintAddressesFlash),
+        Math.ceil(mintAddressesFlash.length / 5),
+        { module: 'routerTx', method: 'getMultipleAccountsInfo:flashMints' }
+      ),
     ]);
     
     let atasCreated = 0;
@@ -604,8 +613,16 @@ async function buildDirectRouterTx(
     // Fetch both ATA infos and mint infos in parallel for verification
     const mintAddresses = atasToCreate.map(({ mint }) => mint);
     const [ataInfos, mintInfos] = await Promise.all([
-      connection.getMultipleAccountsInfo(ataAddresses),
-      connection.getMultipleAccountsInfo(mintAddresses),
+      withRpcLimit(
+        () => connection.getMultipleAccountsInfo(ataAddresses),
+        Math.ceil(ataAddresses.length / 5),
+        { module: 'routerTx', method: 'getMultipleAccountsInfo:directATAs' }
+      ),
+      withRpcLimit(
+        () => connection.getMultipleAccountsInfo(mintAddresses),
+        Math.ceil(mintAddresses.length / 5),
+        { module: 'routerTx', method: 'getMultipleAccountsInfo:directMints' }
+      ),
     ]);
     
     let atasCreated = 0;
@@ -2340,7 +2357,11 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
               const conn = getConnection();
               const pkA = new PublicKey(hop.binArrayLower);
               const pkB = new PublicKey(hop.binArrayUpper);
-              const infos = await conn.getMultipleAccountsInfo([pkA, pkB]);
+              const infos = await withRpcLimit(
+                () => conn.getMultipleAccountsInfo([pkA, pkB]),
+                1,
+                { module: 'routerTx', method: 'getMultipleAccountsInfo:meteoraBinArrayVerify' }
+              );
               const okA = !!infos?.[0] && infos[0].owner.equals(METEORA_DLMM_PROGRAM);
               const okB = !!infos?.[1] && infos[1].owner.equals(METEORA_DLMM_PROGRAM);
               if (!okA) {

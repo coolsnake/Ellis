@@ -2,6 +2,7 @@ import type { DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { logCatchError } from '../../utils/errorHandler.js';
+import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { address } from '@solana/kit';
@@ -1877,7 +1878,11 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
               hop,
               'metadata_fetch',
             );
-            const metadataAccount = await connection.getAccountInfo(metadataPda);
+            const metadataAccount = await withRpcLimit(
+              () => connection.getAccountInfo(metadataPda),
+              1,
+              { module: 'ix', method: 'getAccountInfo:pumpswapMetadata' }
+            );
             if (metadataAccount && metadataAccount.data.length >= 33) {
               const updateAuthority = new PublicKey(metadataAccount.data.subarray(1, 33));
               actualCreator = updateAuthority.toBase58();

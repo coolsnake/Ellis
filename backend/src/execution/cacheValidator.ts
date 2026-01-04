@@ -15,6 +15,7 @@ import { updatePoolCacheFromValidation } from '../server/pools.cache.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { resolveManyDecimals } from '../server/pools/decimals.js';
 import { updateEligibilityFromBatchValidation } from '../server/pools.websockets.js';
+import { CONFIG } from '../utils/config.js';
 
 // RPC context for rate limiting
 const RPC_MODULE = 'cacheValidator';
@@ -1750,9 +1751,9 @@ export async function validatePoolCacheBatch(
   let poolsNeedingArrayRederivation = 0;     // Pools where tick/bin drift requires new arrays
   
   // Process in batches to avoid overwhelming RPC
-  // Reduced batch size and added delay between batches for rate limiting
-  const BATCH_SIZE = 5;
-  const BATCH_DELAY_MS = 100; // 100ms delay between batches
+  // Configurable via VALIDATION_BATCH_SIZE and VALIDATION_BATCH_DELAY_MS env vars
+  const BATCH_SIZE = (CONFIG as any)?.system?.validationBatchSize ?? 3;
+  const BATCH_DELAY_MS = (CONFIG as any)?.system?.validationBatchDelayMs ?? 200;
   
   for (let i = 0; i < pools.length; i += BATCH_SIZE) {
     const batch = pools.slice(i, i + BATCH_SIZE);
@@ -3179,8 +3180,10 @@ async function runReactiveValidationLoop(): Promise<void> {
     
     if (poolsNeedingValidation.length === 0) return;
     
-    // Process up to 5 pools per cycle to avoid overwhelming RPC
-    const batch = poolsNeedingValidation.slice(0, 5);
+    // Process pools per cycle - configurable via REACTIVE_BATCH_SIZE env var
+    // Default reduced from 5 to 2 to respect RPC rate limits
+    const reactiveBatchSize = (CONFIG as any)?.system?.reactiveBatchSize ?? 2;
+    const batch = poolsNeedingValidation.slice(0, reactiveBatchSize);
     
     logger.debug('cacheValidator.reactive.processing', {
       cat: 'cache',
