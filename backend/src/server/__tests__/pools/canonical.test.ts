@@ -3,7 +3,7 @@ import { canonicalOrientation, canonicalizePools, swapPoolFields, clearCanonical
 
 describe('Canonical Orientation', () => {
   const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-  const USDT = 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN';
+  const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
   const USD1 = 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB';
   const SOL = 'So11111111111111111111111111111111111111112';
   const SOME_TOKEN = 'SOME1111111111111111111111111111111111111';

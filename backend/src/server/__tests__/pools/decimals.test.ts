@@ -14,7 +14,7 @@ describe('Decimal Resolution', () => {
   });
   
   it('should resolve USDT decimals from anchors', async () => {
-    const decimals = await resolveDecimals('Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN');
+    const decimals = await resolveDecimals('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB');
     expect(decimals).toBe(6);
   });
   
@@ -37,7 +37,7 @@ describe('Decimal Resolution', () => {
     const mints = [
       'So11111111111111111111111111111111111111112',
       'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-      'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
     ];
     
     const result = await resolveManyDecimals(mints);

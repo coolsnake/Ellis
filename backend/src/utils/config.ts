@@ -220,7 +220,7 @@ export const CONFIG = {
           .filter(Boolean)
       : [
           'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-          'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+          'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
         ]),
     // System-wide TVL/liquidity thresholds (applied in addition to per-source thresholds)
     // Lower defaults to avoid over-pruning during discovery; tune via env in prod

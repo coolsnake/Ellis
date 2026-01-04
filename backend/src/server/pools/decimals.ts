@@ -9,7 +9,7 @@ import { logCatchError } from '../../utils/errorHandler.js';
 const ANCHOR_DECIMALS = new Map<string, number>([
   ['So11111111111111111111111111111111111111112', 9],  // SOL
   ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 6], // USDC
-  ['Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', 6], // USDT
+  ['Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', 6], // USDT
   ['USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', 6],  // USD1
 ]);
 
@@ -22,7 +22,7 @@ const KNOWN_TOKEN_DECIMALS: Record<string, { name: string; decimals: number }> =
   'So11111111111111111111111111111111111111112': { name: 'SOL', decimals: 9 },
   // Stablecoins
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': { name: 'USDC', decimals: 6 },
-  'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN': { name: 'USDT', decimals: 6 },
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': { name: 'USDT', decimals: 6 },
   'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB': { name: 'USD1', decimals: 6 },
   'USDhvdLPwTSgFdHu6wuf6rmEZJsKFRHznBggvjKfDLJ': { name: 'USDY', decimals: 6 },
   'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm': { name: 'WIF', decimals: 6 },

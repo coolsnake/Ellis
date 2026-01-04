@@ -12,7 +12,7 @@ const DEFAULT_SOL_MINTS = [
 
 const DEFAULT_STABLE_MINTS = [
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-  'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
   'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB',  // USD1
 ];
 
@@ -25,6 +25,10 @@ let stableMintSetCache: Set<string> | null = null;
 function normalizeMintList(value: unknown, fallback: string[]): string[] {
   if (Array.isArray(value)) {
     return value.map((m) => String(m));
+  }
+  // Handle comma-separated string from config/env
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.split(',').map(m => m.trim()).filter(m => m.length > 0);
   }
   return fallback;
 }
