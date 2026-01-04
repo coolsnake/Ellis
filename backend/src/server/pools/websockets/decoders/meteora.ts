@@ -406,17 +406,43 @@ export async function handleMeteoraUpdate(
         const { resolveDecimals } = await import('../../decimals.js');
         if (!Number.isFinite(decA)) decA = await resolveDecimals(tokenX);
         if (!Number.isFinite(decB)) decB = await resolveDecimals(tokenY);
-      } catch {
-        if (!Number.isFinite(decA)) decA = 9;
-        if (!Number.isFinite(decB)) decB = 6;
+      } catch (resolveErr) {
+        logger.warn('meteora.decoder.decimals_resolve_error', {
+          poolId: poolId.slice(0, 8) + '…',
+          tokenX: tokenX?.slice(0, 8) + '…',
+          tokenY: tokenY?.slice(0, 8) + '…',
+          error: String((resolveErr as Error)?.message || resolveErr),
+          cat: 'pools'
+        });
       }
     }
 
-    // Ensure valid numbers
+    // Ensure valid numbers and apply fallbacks with logging
     if (Number.isFinite(decA)) decA = Number(decA);
     if (Number.isFinite(decB)) decB = Number(decB);
-    if (!Number.isFinite(decA)) decA = undefined;
-    if (!Number.isFinite(decB)) decB = undefined;
+
+    if (!Number.isFinite(decA)) {
+      logger.warn('meteora.decoder.decimals_fallback', {
+        poolId: poolId.slice(0, 8) + '…',
+        mint: tokenX?.slice(0, 8) + '…',
+        side: 'A',
+        fallbackValue: 9,
+        reason: 'all_resolution_sources_failed',
+        cat: 'pools'
+      });
+      decA = 9;
+    }
+    if (!Number.isFinite(decB)) {
+      logger.warn('meteora.decoder.decimals_fallback', {
+        poolId: poolId.slice(0, 8) + '…',
+        mint: tokenY?.slice(0, 8) + '…',
+        side: 'B',
+        fallbackValue: 6,
+        reason: 'all_resolution_sources_failed',
+        cat: 'pools'
+      });
+      decB = 6;
+    }
 
     // Validate decimals against known tokens
     try {

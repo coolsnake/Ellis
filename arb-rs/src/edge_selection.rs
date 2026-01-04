@@ -6,6 +6,65 @@
 use crate::graph::{ArbGraph, EdgeData};
 use petgraph::graph::NodeIndex;
 
+/// Epsilon for floating point comparisons in profit calculations.
+/// This accounts for accumulated error in rate product calculations.
+/// At 6 hops with rates near 1.0, we expect ~1e-14 relative error,
+/// so 1e-10 provides a comfortable margin.
+pub const PROFIT_EPSILON: f64 = 1e-10;
+
+/// Compute rate product using log-space accumulation for better numerical stability.
+///
+/// When multiplying many values close to 1.0, floating point error accumulates.
+/// Using log-space (sum of logs, then exp) reduces this error significantly.
+///
+/// Returns (rate_product, log_sum) where log_sum can be used for additional precision.
+#[inline]
+pub fn compute_rate_product_stable(rates: &[f64]) -> (f64, f64) {
+    if rates.is_empty() {
+        return (1.0, 0.0);
+    }
+
+    let log_sum: f64 = rates.iter()
+        .map(|r| r.max(1e-12).ln())
+        .sum();
+
+    let product = log_sum.exp();
+    (product, log_sum)
+}
+
+/// Compute profit in basis points with improved precision for near-breakeven values.
+///
+/// When rate_product is very close to 1.0, direct subtraction loses precision.
+/// For rate_product in [0.9, 1.1], we use expm1 which computes exp(x)-1 accurately.
+#[inline]
+pub fn compute_profit_bps(rate_product: f64, log_sum: f64) -> i64 {
+    // For values close to 1.0, use expm1(log_sum) which computes exp(log_sum) - 1 accurately
+    let profit = if log_sum.abs() < 0.1 {
+        // Near breakeven: use expm1 for better precision
+        log_sum.exp_m1()
+    } else {
+        // Far from breakeven: regular calculation is fine
+        rate_product - 1.0
+    };
+
+    let profit_bps_raw = profit * 10_000.0;
+
+    // Clamp to reasonable bounds
+    if profit_bps_raw > 1_000_000.0 {
+        1_000_000
+    } else if profit_bps_raw < -1_000_000.0 {
+        -1_000_000
+    } else {
+        profit_bps_raw.floor() as i64
+    }
+}
+
+/// Check if rate_product indicates profitability, accounting for floating point error.
+#[inline]
+pub fn is_profitable(rate_product: f64) -> bool {
+    rate_product > 1.0 + PROFIT_EPSILON
+}
+
 /// Represents a selected edge for one hop in a cycle
 #[derive(Clone, Debug)]
 pub struct SelectedEdge {
@@ -35,6 +94,8 @@ impl From<&EdgeData> for SelectedEdge {
 pub struct CycleEdgeSelection {
     pub edges: Vec<SelectedEdge>,
     pub rate_product: f64,
+    /// Log of rate product - useful for precision-sensitive profit calculations
+    pub log_rate_product: f64,
     pub min_liquidity: f64,
 }
 
@@ -121,6 +182,8 @@ pub fn select_best_edge_combination(
     }
 
     // 4. Enumerate all combinations using odometer-style iteration
+    // Track best using log-space for numerical stability
+    let mut best_log_sum = f64::NEG_INFINITY;
     let mut best_product = 0.0f64;
     let mut best_selection: Option<CycleEdgeSelection> = None;
 
@@ -166,18 +229,25 @@ pub fn select_best_edge_combination(
             continue;
         }
 
-        // Calculate product and min liquidity for this combination
-        let mut product = 1.0f64;
+        // Calculate product using log-space for numerical stability
+        // and track min liquidity
+        let mut log_sum = 0.0f64;
         let mut min_liq = f64::MAX;
 
         for (hop, &edge_idx) in indices.iter().enumerate() {
             let edge = &edges_per_hop[hop][edge_idx];
-            product *= edge.data.rate_effective;
+            // Use log-space accumulation: log(a*b*c) = log(a) + log(b) + log(c)
+            log_sum += edge.data.rate_effective.max(1e-12).ln();
             min_liq = min_liq.min(edge.data.liquidity);
         }
 
+        // Convert back from log-space
+        let product = log_sum.exp();
+
         // Update best if this combination is better
-        if product > best_product {
+        // Compare in log-space to avoid precision issues
+        if log_sum > best_log_sum {
+            best_log_sum = log_sum;
             best_product = product;
             let edges: Vec<SelectedEdge> = indices
                 .iter()
@@ -188,6 +258,7 @@ pub fn select_best_edge_combination(
             best_selection = Some(CycleEdgeSelection {
                 edges,
                 rate_product: product,
+                log_rate_product: log_sum,
                 min_liquidity: if min_liq == f64::MAX { 0.0 } else { min_liq },
             });
         }

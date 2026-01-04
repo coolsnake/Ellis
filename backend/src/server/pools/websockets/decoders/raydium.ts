@@ -374,10 +374,39 @@ async function handleClmmUpdate(
       const { resolveDecimals } = await import('../../decimals.js');
       if (!Number.isFinite(decA) && mintA) decA = await resolveDecimals(mintA);
       if (!Number.isFinite(decB) && mintB) decB = await resolveDecimals(mintB);
-    } catch {
-      if (!Number.isFinite(decA)) decA = 9;
-      if (!Number.isFinite(decB)) decB = 6;
+    } catch (resolveErr) {
+      logger.warn('raydium.decoder.clmm.decimals_resolve_error', {
+        poolId: poolId.slice(0, 8) + '…',
+        mintA: mintA?.slice(0, 8) + '…',
+        mintB: mintB?.slice(0, 8) + '…',
+        error: String((resolveErr as Error)?.message || resolveErr),
+        cat: 'pools'
+      });
     }
+  }
+
+  // Fallback to defaults if decimals still not resolved - log this as it may cause price errors
+  if (!Number.isFinite(decA)) {
+    logger.warn('raydium.decoder.clmm.decimals_fallback', {
+      poolId: poolId.slice(0, 8) + '…',
+      mint: mintA?.slice(0, 8) + '…',
+      side: 'A',
+      fallbackValue: 9,
+      reason: 'all_resolution_sources_failed',
+      cat: 'pools'
+    });
+    decA = 9;
+  }
+  if (!Number.isFinite(decB)) {
+    logger.warn('raydium.decoder.clmm.decimals_fallback', {
+      poolId: poolId.slice(0, 8) + '…',
+      mint: mintB?.slice(0, 8) + '…',
+      side: 'B',
+      fallbackValue: 6,
+      reason: 'all_resolution_sources_failed',
+      cat: 'pools'
+    });
+    decB = 6;
   }
 
   // Validate decimals against known tokens
@@ -669,10 +698,39 @@ async function handleAmmUpdate(
       const { resolveDecimals } = await import('../../decimals.js');
       if (!Number.isFinite(decA) && mintA) decA = await resolveDecimals(mintA);
       if (!Number.isFinite(decB) && mintB) decB = await resolveDecimals(mintB);
-    } catch {
-      if (!Number.isFinite(decA)) decA = 9;
-      if (!Number.isFinite(decB)) decB = 6;
+    } catch (resolveErr) {
+      logger.warn('raydium.decoder.amm.decimals_resolve_error', {
+        poolId: poolId.slice(0, 8) + '…',
+        mintA: mintA?.slice(0, 8) + '…',
+        mintB: mintB?.slice(0, 8) + '…',
+        error: String((resolveErr as Error)?.message || resolveErr),
+        cat: 'pools'
+      });
     }
+  }
+
+  // Fallback to defaults if decimals still not resolved - log this as it may cause price errors
+  if (!Number.isFinite(decA)) {
+    logger.warn('raydium.decoder.amm.decimals_fallback', {
+      poolId: poolId.slice(0, 8) + '…',
+      mint: mintA?.slice(0, 8) + '…',
+      side: 'A',
+      fallbackValue: 9,
+      reason: 'all_resolution_sources_failed',
+      cat: 'pools'
+    });
+    decA = 9;
+  }
+  if (!Number.isFinite(decB)) {
+    logger.warn('raydium.decoder.amm.decimals_fallback', {
+      poolId: poolId.slice(0, 8) + '…',
+      mint: mintB?.slice(0, 8) + '…',
+      side: 'B',
+      fallbackValue: 6,
+      reason: 'all_resolution_sources_failed',
+      cat: 'pools'
+    });
+    decB = 6;
   }
 
   // Validate decimals against known tokens

@@ -271,46 +271,60 @@ pub fn detect_negative_cycles_spfa_filtered(
 }
 
 /// Helper function to extract a cycle starting from a node using predecessor chain.
+/// Uses Floyd's tortoise-and-hare algorithm for efficient cycle detection in O(cycle_length)
+/// rather than O(n) predecessor walks.
 fn extract_cycle_from_node(start: usize, pred: &[Option<usize>], max_hops: usize) -> Vec<usize> {
-    let mut cycle = Vec::new();
-    let mut cur = start;
-    let mut visited = HashSet::new();
-    
-    // Find a node that's definitely in the cycle by following predecessor n times
-    for _ in 0..pred.len() {
-        if let Some(p) = pred[cur] {
-            cur = p;
-        } else {
-            return vec![];
-        }
-    }
-    
-    // Now cur is definitely in a cycle, collect it
-    let cycle_start = cur;
+    // Phase 1: Use Floyd's tortoise-and-hare to find a meeting point in the cycle
+    // Tortoise moves 1 step, hare moves 2 steps
+    let mut tortoise = start;
+    let mut hare = start;
+
+    // Move until they meet (guaranteed to meet in a cycle)
+    let mut steps = 0;
+    let max_steps = pred.len().min(max_hops * 2); // Limit to avoid infinite loops on broken data
     loop {
-        if cycle.len() > max_hops {
-            break;
+        steps += 1;
+        if steps > max_steps {
+            return vec![]; // Safety limit reached
         }
-        cycle.push(cur);
-        visited.insert(cur);
-        
-        if let Some(p) = pred[cur] {
-            cur = p;
-            if cur == cycle_start {
-                break;
-            }
-            if visited.contains(&cur) {
-                // We've hit a different node we've seen - truncate to that cycle
-                if let Some(pos) = cycle.iter().position(|&x| x == cur) {
-                    cycle = cycle[pos..].to_vec();
-                }
-                break;
-            }
-        } else {
-            break;
+
+        // Tortoise takes 1 step
+        tortoise = match pred[tortoise] {
+            Some(p) => p,
+            None => return vec![],
+        };
+
+        // Hare takes 2 steps
+        hare = match pred[hare] {
+            Some(p) => match pred[p] {
+                Some(pp) => pp,
+                None => return vec![],
+            },
+            None => return vec![],
+        };
+
+        if tortoise == hare {
+            break; // Found meeting point inside the cycle
         }
     }
-    
+
+    // Phase 2: Find the cycle starting from the meeting point
+    // The meeting point is guaranteed to be in the cycle
+    let cycle_start = tortoise;
+    let mut cycle = vec![cycle_start];
+    let mut cur = match pred[cycle_start] {
+        Some(p) => p,
+        None => return vec![],
+    };
+
+    while cur != cycle_start && cycle.len() <= max_hops {
+        cycle.push(cur);
+        cur = match pred[cur] {
+            Some(p) => p,
+            None => break,
+        };
+    }
+
     if cycle.len() >= 2 && cycle.len() <= max_hops {
         cycle.reverse();
         cycle

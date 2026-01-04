@@ -440,21 +440,27 @@ export async function handleOrcaUpdate(
       });
     }
 
-    // Fallback to defaults if decimals not resolved (moved outside catch block)
+    // Fallback to defaults if decimals not resolved - log as WARN to track potential price errors
     // This ensures we use fallbacks even when resolveDecimals returns undefined (not an error)
     if (!Number.isFinite(decA)) {
-      logger.debug('orca.decoder.decimals_fallback_a', { 
-        poolId: poolId.slice(0, 8) + '…', 
-        mintA: mintA?.slice(0, 8) + '…', 
-        cat: 'pools' 
+      logger.warn('orca.decoder.decimals_fallback', {
+        poolId: poolId.slice(0, 8) + '…',
+        mint: mintA?.slice(0, 8) + '…',
+        side: 'A',
+        fallbackValue: 9,
+        reason: 'all_resolution_sources_failed',
+        cat: 'pools'
       });
       decA = 9;
     }
     if (!Number.isFinite(decB)) {
-      logger.debug('orca.decoder.decimals_fallback_b', { 
-        poolId: poolId.slice(0, 8) + '…', 
-        mintB: mintB?.slice(0, 8) + '…', 
-        cat: 'pools' 
+      logger.warn('orca.decoder.decimals_fallback', {
+        poolId: poolId.slice(0, 8) + '…',
+        mint: mintB?.slice(0, 8) + '…',
+        side: 'B',
+        fallbackValue: 6,
+        reason: 'all_resolution_sources_failed',
+        cat: 'pools'
       });
       decB = 6;
     }

@@ -93,9 +93,32 @@ export function decodeMeteoraBalancedPool(
       return null;
     }
 
-    // Get decimals
-    const decA = existingPool.native_decimals_a ?? existingPool.decimals_a ?? 9;
-    const decB = existingPool.native_decimals_b ?? existingPool.decimals_b ?? 6;
+    // Get decimals with fallback logging
+    let decA = existingPool.native_decimals_a ?? existingPool.decimals_a;
+    let decB = existingPool.native_decimals_b ?? existingPool.decimals_b;
+
+    if (!Number.isFinite(decA)) {
+      logger.warn('meteora_balanced.decoder.decimals_fallback', {
+        poolId: existingPool.id?.slice(0, 8) + '…',
+        mint: mintA?.slice(0, 8) + '…',
+        side: 'A',
+        fallbackValue: 9,
+        reason: 'cache_missing_decimals',
+        cat: 'pools'
+      });
+      decA = 9;
+    }
+    if (!Number.isFinite(decB)) {
+      logger.warn('meteora_balanced.decoder.decimals_fallback', {
+        poolId: existingPool.id?.slice(0, 8) + '…',
+        mint: mintB?.slice(0, 8) + '…',
+        side: 'B',
+        fallbackValue: 6,
+        reason: 'cache_missing_decimals',
+        cat: 'pools'
+      });
+      decB = 6;
+    }
 
     // Calculate reserves from vault balances
     let reserveA = vaultABalance;
@@ -227,8 +250,32 @@ export async function handleMeteoraBalancedVaultUpdate(
     const mintB = decoded.native_mint_b || decoded.mint_b;
     const reserveA = anyToBigInt(decoded.reserve_a_raw);
     const reserveB = anyToBigInt(decoded.reserve_b_raw);
-    const decA = decoded.native_decimals_a ?? decoded.decimals_a ?? 9;
-    const decB = decoded.native_decimals_b ?? decoded.decimals_b ?? 6;
+    let decA = decoded.native_decimals_a ?? decoded.decimals_a;
+    let decB = decoded.native_decimals_b ?? decoded.decimals_b;
+
+    // Fallback decimals with logging (vault update path)
+    if (!Number.isFinite(decA)) {
+      logger.warn('meteora_balanced.decoder.decimals_fallback', {
+        poolId: poolId?.slice(0, 8) + '…',
+        mint: mintA?.slice(0, 8) + '…',
+        side: 'A',
+        fallbackValue: 9,
+        reason: 'vault_update_missing_decimals',
+        cat: 'pools'
+      });
+      decA = 9;
+    }
+    if (!Number.isFinite(decB)) {
+      logger.warn('meteora_balanced.decoder.decimals_fallback', {
+        poolId: poolId?.slice(0, 8) + '…',
+        mint: mintB?.slice(0, 8) + '…',
+        side: 'B',
+        fallbackValue: 6,
+        reason: 'vault_update_missing_decimals',
+        cat: 'pools'
+      });
+      decB = 6;
+    }
 
     // Validate decimals against known tokens
     try {

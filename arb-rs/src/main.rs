@@ -30,7 +30,7 @@ use graph::{expand_nodes_by_hops, ArbGraph, EdgeData};
 mod algos;
 use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered, detect_negative_cycles_from_anchors, detect_negative_cycles_spfa, detect_negative_cycles_spfa_filtered};
 mod edge_selection;
-use edge_selection::select_best_edge_combination;
+use edge_selection::{select_best_edge_combination, compute_profit_bps, is_profitable, PROFIT_EPSILON};
 
 const REJECTED_DEBUG_LIMIT: usize = 15;
 const REJECTED_DEBUG_TTL_MS: u64 = 30_000;
@@ -859,52 +859,46 @@ async fn main() -> anyhow::Result<()> {
                 // Create detection snapshot if live_graph has changed since last snapshot
                 // This implements the double-buffer pattern: updates go to live_graph,
                 // detection runs on an immutable snapshot
-                let snapshot_created = {
-                    let s = loop_state.read().await;
-                    let live_v = s.live_graph_version.load(Ordering::Acquire);
-                    let snap_v = s.detection_snapshot_version.load(Ordering::Acquire);
-                    live_v > snap_v || s.detection_snapshot.is_none()
-                };
-                
-                if snapshot_created {
+                //
+                // IMPORTANT: We use a single write lock to atomically check AND create the snapshot.
+                // This prevents a race condition where an HTTP handler could modify live_graph
+                // between checking the version and creating the snapshot.
+                let detection_graph: Arc<ArbGraph> = {
                     let mut s = loop_state.write().await;
                     let live_v = s.live_graph_version.load(Ordering::Acquire);
-                    // Clone live_graph to create immutable snapshot for detection
-                    s.detection_snapshot = Some(Arc::new(s.live_graph.clone()));
-                    s.detection_snapshot_version.store(live_v, Ordering::Release);
-                    // Track when snapshot was created
-                    s.metrics.snapshot_created_ms = now_ms();
-                    s.metrics.snapshot_version_lag = 0; // Fresh snapshot
-                    // Commit version for ACK responses
-                    if let Some(v) = version_to_commit.take() {
-                        s.last_graph_version.store(v, Ordering::Release);
-                        s.version_changed.notify_waiters();
-                    }
-                    if let Some(ts) = ts_to_commit.take() {
-                        s.last_graph_ts.store(ts, Ordering::Release);
-                    }
-                    tracing::info!(
-                        live_version = live_v,
-                        nodes = s.live_graph.g.node_count(),
-                        edges = s.live_graph.g.edge_count(),
-                        "arb.graph.snapshot: created detection snapshot"
-                    );
-                } else {
-                    // Update version lag metric when not creating new snapshot
-                    let s = loop_state.read().await;
-                    let live_v = s.live_graph_version.load(Ordering::Acquire);
                     let snap_v = s.detection_snapshot_version.load(Ordering::Acquire);
-                    drop(s);
-                    if live_v > snap_v {
-                        let mut sw = loop_state.write().await;
-                        sw.metrics.snapshot_version_lag = live_v.saturating_sub(snap_v);
+                    let needs_snapshot = live_v > snap_v || s.detection_snapshot.is_none();
+
+                    if needs_snapshot {
+                        // Atomically capture both graph state AND version under same lock
+                        // This ensures the snapshot version matches the actual graph state
+                        let snapshot = Arc::new(s.live_graph.clone());
+                        s.detection_snapshot = Some(snapshot.clone());
+                        s.detection_snapshot_version.store(live_v, Ordering::Release);
+                        // Track when snapshot was created
+                        s.metrics.snapshot_created_ms = now_ms();
+                        s.metrics.snapshot_version_lag = 0; // Fresh snapshot
+                        // Commit version for ACK responses
+                        if let Some(v) = version_to_commit.take() {
+                            s.last_graph_version.store(v, Ordering::Release);
+                            s.version_changed.notify_waiters();
+                        }
+                        if let Some(ts) = ts_to_commit.take() {
+                            s.last_graph_ts.store(ts, Ordering::Release);
+                        }
+                        tracing::info!(
+                            live_version = live_v,
+                            nodes = s.live_graph.g.node_count(),
+                            edges = s.live_graph.g.edge_count(),
+                            "arb.graph.snapshot: created detection snapshot"
+                        );
+                        snapshot
+                    } else {
+                        // Update version lag metric
+                        s.metrics.snapshot_version_lag = live_v.saturating_sub(snap_v);
+                        // Return existing snapshot (guaranteed to exist since needs_snapshot was false)
+                        s.detection_snapshot.clone().expect("snapshot must exist when needs_snapshot is false")
                     }
-                }
-                
-                // Get snapshot reference for detection (no lock held during detection!)
-                let detection_graph: Arc<ArbGraph> = {
-                    let s = loop_state.read().await;
-                    s.detection_snapshot.clone().unwrap_or_else(|| Arc::new(s.live_graph.clone()))
                 };
                 
                 let detect_start = Instant::now();
@@ -1247,6 +1241,7 @@ async fn main() -> anyhow::Result<()> {
 
                         // Extract results from exhaustive selection
                         let rate_prod = selection.rate_product;
+                        let log_rate_prod = selection.log_rate_product;
                         let min_edge_liquidity = selection.min_liquidity;
                         
                         // Build all required vectors from selected edges
@@ -1311,14 +1306,15 @@ async fn main() -> anyhow::Result<()> {
                             hop_outs.push(next_out);
                             cur_out = next_out;
                         }
-                        let profit = rate_prod - 1.0;
-                        let profit_bps = (profit * 10_000.0).floor() as i64;
+                        // Use precision-safe profit calculation with log_rate_prod for accuracy near breakeven
+                        let profit_bps = compute_profit_bps(rate_prod, log_rate_prod);
 
                         // Skip if cycle is unprofitable after picking best edges
                         // (Bellman-Ford detected negative cycle, but best edges don't form profitable cycle)
-                        if rate_prod <= 1.0 {
+                        // Use is_profitable which accounts for floating point epsilon
+                        if !is_profitable(rate_prod) {
                             let path_str = labels.join("->");
-                            tracing::info!(path = %path_str, rate_prod, "arb.detect.cycle.unprofitable_after_edge_selection");
+                            tracing::info!(path = %path_str, rate_prod, log_rate_prod, "arb.detect.cycle.unprofitable_after_edge_selection");
                             rejected_unprofitable += 1;
                             continue;
                         }
@@ -1789,8 +1785,9 @@ async fn main() -> anyhow::Result<()> {
                             };
 
                             let rate_prod = selection.rate_product;
+                            let log_rate_prod = selection.log_rate_product;
                             let min_edge_liquidity = selection.min_liquidity;
-                            
+
                             let mut link_edges_used: usize = 0;
                             let mut link_penalty_bps_total: i64 = 0;
                             let mut dexes_set: std::collections::HashSet<String> =
@@ -1851,18 +1848,8 @@ async fn main() -> anyhow::Result<()> {
                                 hop_outs.push(next_out);
                                 cur_out = next_out;
                             }
-                            let profit_bps_raw = ((rate_prod - 1.0) * 10_000.0).floor();
-                            let mut profit_bps = if profit_bps_raw.is_finite() {
-                                profit_bps_raw as i64
-                            } else {
-                                0
-                            };
-                            if profit_bps > 1_000_000 {
-                                profit_bps = 1_000_000;
-                            }
-                            if profit_bps < -1_000_000 {
-                                profit_bps = -1_000_000;
-                            }
+                            // Use precision-safe profit calculation
+                            let profit_bps = compute_profit_bps(rate_prod, log_rate_prod);
                             if profit_bps >= min_bps {
                                 continue;
                             } // near-miss only
@@ -2311,7 +2298,9 @@ async fn main() -> anyhow::Result<()> {
                             }
                             let mut dexes: Vec<String> = dexes_set.into_iter().collect();
                             dexes.sort();
-                            let profit_bps = ((prod2 - 1.0) * 10_000.0).floor() as i64;
+                            // Use precision-safe profit calculation
+                            let log_prod2 = prod2.max(1e-12).ln();
+                            let profit_bps = compute_profit_bps(prod2, log_prod2);
                             let net_bps = profit_bps - link_penalty_bps_total.max(0);
                             let est_capacity = if min_edge_liquidity.is_finite() {
                                 Some(min_edge_liquidity.max(0.0))
@@ -2533,18 +2522,9 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 let mut dexes: Vec<String> = dexes_set.into_iter().collect();
                                 dexes.sort();
-                                let profit_bps_raw = ((prod - 1.0) * 10_000.0).floor();
-                                let mut profit_bps = if profit_bps_raw.is_finite() {
-                                    profit_bps_raw as i64
-                                } else {
-                                    0
-                                };
-                                if profit_bps > 1_000_000 {
-                                    profit_bps = 1_000_000;
-                                }
-                                if profit_bps < -1_000_000 {
-                                    profit_bps = -1_000_000;
-                                }
+                                // Use precision-safe profit calculation
+                                let log_prod = prod.max(1e-12).ln();
+                                let profit_bps = compute_profit_bps(prod, log_prod);
                                 let mut net_bps = profit_bps - link_penalty_bps_total.max(0);
                                 if net_bps > 1_000_000 {
                                     net_bps = 1_000_000;
@@ -2796,7 +2776,9 @@ async fn main() -> anyhow::Result<()> {
                             if !ok {
                                 continue;
                             }
-                            let bps = ((prod - 1.0) * 10_000.0).floor() as i64;
+                            // Use precision-safe profit calculation
+                            let log_prod = prod.max(1e-12).ln();
+                            let bps = compute_profit_bps(prod, log_prod);
                             if bps < min_bps {
                                 let labels: Vec<String> = c
                                     .nodes
@@ -2859,6 +2841,30 @@ async fn main() -> anyhow::Result<()> {
                     let ttl = sw.config.detection_history_ttl_ms.max(1_000);
                     sw.detection_counts
                         .retain(|_, &mut (_, ts)| now_ms_val.saturating_sub(ts) <= ttl);
+
+                    // Cap detection_counts to prevent unbounded memory growth
+                    // If too many entries, evict oldest ones (by timestamp)
+                    const MAX_DETECTION_ENTRIES: usize = 10_000;
+                    if sw.detection_counts.len() > MAX_DETECTION_ENTRIES {
+                        // Collect entries sorted by timestamp (oldest first)
+                        let mut entries: Vec<(String, u64)> = sw.detection_counts
+                            .iter()
+                            .map(|(k, (_, ts))| (k.clone(), *ts))
+                            .collect();
+                        entries.sort_by_key(|(_, ts)| *ts);
+
+                        // Remove oldest entries to get back under limit
+                        let to_remove = sw.detection_counts.len() - MAX_DETECTION_ENTRIES;
+                        for (key, _) in entries.into_iter().take(to_remove) {
+                            sw.detection_counts.remove(&key);
+                        }
+                        tracing::debug!(
+                            removed = to_remove,
+                            remaining = sw.detection_counts.len(),
+                            "arb.detection_counts: evicted oldest entries"
+                        );
+                    }
+
                     for m in opps.iter() {
                         let key = keyify_opportunity(&m.path, &m.dexes);
                         let (c, _) = sw.detection_counts.get(&key).copied().unwrap_or((0, 0));
