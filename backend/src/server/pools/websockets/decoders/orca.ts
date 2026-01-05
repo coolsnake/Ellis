@@ -112,6 +112,10 @@ function toPublicKey(owner: any): PublicKey | null {
  * - 32 bytes: tokenVaultB (PublicKey)
  * - 32 bytes: oracle (PublicKey)
  */
+// Whirlpool account discriminator - first 8 bytes of sha256("account:Whirlpool")
+// This distinguishes pool accounts from tick arrays, positions, and other Whirlpool program accounts
+const WHIRLPOOL_DISCRIMINATOR = Buffer.from([63, 149, 209, 12, 225, 128, 99, 9]);
+
 function decodeWhirlpoolManually(inputData: Buffer | Uint8Array): {
   tickSpacing: number;
   feeRate: number;
@@ -130,6 +134,14 @@ function decodeWhirlpoolManually(inputData: Buffer | Uint8Array): {
     
     // Minimum size check (discriminator + config + basic fields + mints + vaults)
     if (data.length < 300) {
+      return null;
+    }
+
+    // Validate discriminator - reject tick arrays, positions, and other non-pool accounts
+    // This is CRITICAL to prevent decoding garbage data and producing invalid mints
+    const discriminator = data.subarray(0, 8);
+    if (!discriminator.equals(WHIRLPOOL_DISCRIMINATOR)) {
+      // Not a Whirlpool pool account - likely a tick array or position
       return null;
     }
 
@@ -387,6 +399,24 @@ export async function handleOrcaUpdate(
         cat: 'pools'
       });
       return { success: false, error: 'no_data', skipped: true };
+    }
+
+    // Early discriminator check - skip non-pool accounts (tick arrays, positions, etc.)
+    // before attempting full decode to avoid wasted processing
+    if (data.length >= 8) {
+      const discriminator = data.subarray(0, 8);
+      if (!discriminator.equals(WHIRLPOOL_DISCRIMINATOR)) {
+        // Not a Whirlpool pool account - likely a tick array or position
+        logger.debug('orca.decoder.non_pool_account', {
+          poolId: poolId.slice(0, 8) + '…',
+          discriminator: discriminator.toString('hex'),
+          expected: WHIRLPOOL_DISCRIMINATOR.toString('hex'),
+          reason: 'discriminator_mismatch',
+          cat: 'pools'
+        });
+        incrementSkipReason('orca', 'non_pool_account');
+        return { success: true, skipped: true, skipReason: 'non_pool_account' };
+      }
     }
 
     // Create a normalized AccountInfo with Buffer data for the SDK
