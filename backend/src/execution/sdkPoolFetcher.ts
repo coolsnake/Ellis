@@ -944,24 +944,23 @@ export async function fetchRaydiumPoolViaSdk(
     
     let existingArrays: Array<{ offset: number; address: string; pda: PublicKey }> = [];
     
-    // OPTIMIZATION: Use bitmap to know exactly which tick arrays are initialized
-    // This avoids unnecessary RPC calls to check non-existent tick arrays
+    // Use the FULL bitmap to find ALL initialized tick arrays (covers -512 to +511)
+    // This finds tick arrays even if liquidity is far from current price (single-position pools)
     if (hasBitmap) {
-      // Get initialized tick array indices from bitmap
-      const SEARCH_RANGE = 20; // Check ±20 tick array indices around center
-      const initializedIndices = getInitializedTickArraysNearTick(tickArrayBitmap, centerIdx, SEARCH_RANGE);
+      // Decode ALL initialized indices from bitmap - not just near center
+      const allInitializedIndices = decodeRaydiumTickArrayBitmap(tickArrayBitmap);
       
-      if (initializedIndices.length > 0) {
+      if (allInitializedIndices.length > 0) {
         // Only derive and verify PDAs for tick arrays that the bitmap says exist
         const tickArrayPdas: Array<{ offset: number; pda: PublicKey; tickArrayIdx: number }> = [];
         
-        for (const tickArrayIdx of initializedIndices) {
+        for (const tickArrayIdx of allInitializedIndices) {
           const startTick = tickArrayIdx * ticksInArray;
           const pda = deriveRaydiumTickArrayPda(poolPk, startTick, program);
           tickArrayPdas.push({ offset: tickArrayIdx - centerIdx, pda, tickArrayIdx });
         }
         
-        // Still verify on-chain (bitmap could be stale) but only for known-initialized arrays
+        // Verify on-chain (bitmap could be stale) but only for known-initialized arrays
         const pdaKeys = tickArrayPdas.map(p => p.pda);
         const infos = await connection.getMultipleAccountsInfo(pdaKeys);
         
@@ -973,30 +972,31 @@ export async function fetchRaydiumPoolViaSdk(
           }
         }
         
-        logger.debug('raydium.sdk.fetch.bitmap_search', {
+        logger.debug('raydium.sdk.fetch.bitmap_full_search', {
           cat: 'cache',
           ctx: { 
             pool: poolId.slice(0, 8) + '…', 
             tickCurrent, 
             tickSpacing,
             centerIdx,
-            bitmapInitialized: initializedIndices.length,
-            verifiedOnChain: existingArrays.length
+            bitmapInitialized: allInitializedIndices.length,
+            verifiedOnChain: existingArrays.length,
+            // Show where the tick arrays actually are (helpful for debugging single-position pools)
+            foundIndices: existingArrays.map(a => a.offset + centerIdx).slice(0, 10),
           }
         });
       } else {
-        // Bitmap says no tick arrays are initialized in range
+        // Bitmap shows NO tick arrays initialized anywhere in range -512 to +511
+        logger.debug('raydium.sdk.fetch.bitmap_completely_empty', {
+          cat: 'cache',
+          ctx: { pool: poolId.slice(0, 8) + '…', centerIdx, bitmapRange: RAYDIUM_BITMAP_RANGE }
+        });
+        
+        // If center is outside bitmap range, we need RPC search
         if (Math.abs(centerIdx) >= RAYDIUM_BITMAP_RANGE) {
           logger.debug('raydium.sdk.fetch.center_outside_bitmap', {
             cat: 'cache',
             ctx: { pool: poolId.slice(0, 8) + '…', centerIdx, bitmapRange: RAYDIUM_BITMAP_RANGE }
-          });
-        } else {
-          // Bitmap shows empty in range - will fall back to RPC search
-          // (bitmap could be stale or tick arrays might exist outside checked range)
-          logger.debug('raydium.sdk.fetch.bitmap_empty_fallback_rpc', {
-            cat: 'cache',
-            ctx: { pool: poolId.slice(0, 8) + '…', centerIdx, searchRange: SEARCH_RANGE }
           });
         }
       }
