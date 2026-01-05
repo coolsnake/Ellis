@@ -30,7 +30,7 @@ use graph::{expand_nodes_by_hops, ArbGraph, EdgeData};
 mod algos;
 use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered, detect_negative_cycles_from_anchors, detect_negative_cycles_spfa, detect_negative_cycles_spfa_filtered};
 mod edge_selection;
-use edge_selection::{select_best_edge_combination, compute_profit_bps, is_profitable, PROFIT_EPSILON};
+use edge_selection::{select_best_edge_combination, compute_profit_bps, is_profitable};
 
 const REJECTED_DEBUG_LIMIT: usize = 15;
 const REJECTED_DEBUG_TTL_MS: u64 = 30_000;
@@ -863,7 +863,7 @@ async fn main() -> anyhow::Result<()> {
                 // IMPORTANT: We use a single write lock to atomically check AND create the snapshot.
                 // This prevents a race condition where an HTTP handler could modify live_graph
                 // between checking the version and creating the snapshot.
-                let detection_graph: Arc<ArbGraph> = {
+                let _detection_graph: Arc<ArbGraph> = {
                     let mut s = loop_state.write().await;
                     let live_v = s.live_graph_version.load(Ordering::Acquire);
                     let snap_v = s.detection_snapshot_version.load(Ordering::Acquire);
@@ -1047,7 +1047,7 @@ async fn main() -> anyhow::Result<()> {
                     let mut seen: HashSet<String> = HashSet::new();
                     let mut curr: Vec<Opportunity> = Vec::new();
                     #[allow(unused_assignments, unused_variables)]
-                    let mut best_below: Option<Opportunity> = None;
+                    let mut _best_below: Option<Opportunity> = None;
                     #[allow(unused_variables)]
                     let mut best_below_shortfall: i64 = i64::MAX;
                     // Minimum liquidity threshold to consider an edge in rate selection
@@ -1059,7 +1059,7 @@ async fn main() -> anyhow::Result<()> {
                     let mut rejected_stable_stable: usize = 0;
                     let mut rejected_sol_stable_limit: usize = 0;
                     let mut rejected_no_edge: usize = 0;
-                    let mut rejected_timeout: usize = 0;
+                    let rejected_timeout: usize = 0;
                     let mut rejected_unprofitable: usize = 0;
                     let mut rejected_misaligned: usize = 0;
                     let mut rejected_duplicate: usize = 0;
@@ -1566,7 +1566,7 @@ async fn main() -> anyhow::Result<()> {
                                 };
                                 // Only accept near-miss if at least 3 hops and min_edge_liquidity > 0
                                 if nlen >= 3 && est_capacity.unwrap_or(0.0) > 0.0 {
-                                    best_below = Some(near);
+                                    _best_below = Some(near);
                                     best_below_shortfall = shortfall;
                                 }
                             }

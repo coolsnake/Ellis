@@ -1004,12 +1004,23 @@ async function extractDexAccounts(
     
     switch (dexType) {
       case DexType.Raydium:
-        // Raydium CLMM: variable accounts (17 or 18) based on exBitmap presence
-        // 0: Payer, 1: AmmConfig, 2: Pool, 3: UserInputToken, 4: UserOutputToken,
-        // 5: InputVault, 6: OutputVault, 7: Observation, 8: TokenProgram, 9: Token2022Program,
-        // 10: MemoProgram, 11: InputMint, 12: OutputMint, 
-        // WITH exBitmap: 13: exBitmap, 14-16: TickArrays, 17: Program (18 total)
-        // WITHOUT exBitmap: 13-15: TickArrays, 16: Program (17 total)
+        // Raydium CLMM: Two instruction variants based on token type
+        //
+        // swap (standard SPL tokens - 12-13 accounts):
+        //   0: Payer, 1: AmmConfig, 2: Pool, 3: UserInput, 4: UserOutput,
+        //   5: InputVault, 6: OutputVault, 7: Observation, 8: TokenProgram,
+        //   [9: exBitmap], 9-11/10-12: TickArrays, last: Program
+        //
+        // swap_v2 (Token-2022 compatible - 17-18 accounts):
+        //   0: Payer, 1: AmmConfig, 2: Pool, 3: UserInput, 4: UserOutput,
+        //   5: InputVault, 6: OutputVault, 7: Observation, 8: TokenProgram, 9: Token2022Program,
+        //   10: MemoProgram, 11: InputMint, 12: OutputMint,
+        //   [13: exBitmap], 13-15/14-16: TickArrays, last: Program
+        //
+        // On-chain router auto-detects based on account count (>=17 = swap_v2)
+        
+        // Detect if Token-2022 is involved - determines which instruction to use
+        const raydiumNeedsSwapV2 = hop.inputTokenProgram === 'token-2022' || hop.outputTokenProgram === 'token-2022';
         
         // Get ammConfig from hop or cache - CRITICAL: cannot be derived, must come from pool data
         const ammConfigAddr = hop.ammConfig || stat?.amm_config;
@@ -1060,6 +1071,10 @@ async function extractDexAccounts(
         logger.info('routerTx.raydium.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
+          // Swap variant selection
+          swapVariant: raydiumNeedsSwapV2 ? 'swap_v2' : 'swap',
+          inputTokenProgram: hop.inputTokenProgram || 'spl-token',
+          outputTokenProgram: hop.outputTokenProgram || 'spl-token',
           ammConfig: ammConfig.toBase58(),
           ammConfigSource: ammConfigAddr ? 'cache' : 'fallback',
           observation: observationState.toBase58(),
@@ -1108,14 +1123,18 @@ async function extractDexAccounts(
           outputMint: hop.outputMint,
         });
         
-        // CRITICAL: Tick arrays must be passed in DIRECTIONAL order for Raydium CLMM swapV2:
+        // CRITICAL: Tick arrays must be passed in DIRECTIONAL order for Raydium CLMM:
         // - A→B (isAtoB=true, tick decreases): [center, lower, upper] - lower first (primary direction)
         // - B→A (isAtoB=false, tick increases): [center, upper, lower] - upper first (primary direction)
         // All three tick arrays are passed; the program uses them based on swap traversal.
         //
-        // Account layout depends on whether exBitmap exists:
-        // - WITH exBitmap (18 accounts): 0-12 fixed, 13 exBitmap, 14-16 tickArrays, 17 program
-        // - WITHOUT exBitmap (17 accounts): 0-12 fixed, 13-15 tickArrays, 16 program
+        // Account layout depends on instruction variant AND whether exBitmap exists:
+        // swap (SPL-only):
+        //   - WITH exBitmap (13 accounts): 0-8 fixed, 9 exBitmap, 10-11 tickArrays, 12 program
+        //   - WITHOUT exBitmap (12 accounts): 0-8 fixed, 9-10 tickArrays, 11 program
+        // swap_v2 (Token-2022):
+        //   - WITH exBitmap (18 accounts): 0-12 fixed, 13 exBitmap, 14-16 tickArrays, 17 program
+        //   - WITHOUT exBitmap (17 accounts): 0-12 fixed, 13-15 tickArrays, 16 program
         {
           const rayTickArray0 = hop.tickArrayCenter;
           const rayTickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
@@ -1160,41 +1179,80 @@ async function extractDexAccounts(
             );
           }
           
-          // Fixed accounts (0-12) - same for both layouts
-          accounts.push(
-            wallet,                                                              // 0: Payer (signer)
-            ammConfig,                                                           // 1: AMM Config
-            poolId,                                                              // 2: Pool State
-            userSourceAta,                                                       // 3: Input Token Account (user)
-            userDestAta,                                                         // 4: Output Token Account (user)
-            new PublicKey(inputVault),                                           // 5: Input Vault
-            new PublicKey(outputVault),                                          // 6: Output Vault
-            observationState,                                                    // 7: Observation State
-            TOKEN_PROGRAM_ID,                                                    // 8: Token Program
-            TOKEN_2022_PROGRAM_ID,                                               // 9: Token-2022 Program
-            MEMO_PROGRAM_ID,                                                     // 10: Memo Program
-            inputMint,                                                           // 11: Input Token Mint
-            outputMint,                                                          // 12: Output Token Mint
-          );
-          
-          // Remaining accounts depend on whether exBitmap exists
-          if (hasExBitmap) {
-            // WITH exBitmap: 18 accounts total
+          if (raydiumNeedsSwapV2) {
+            // =================================================================
+            // swap_v2: Token-2022 compatible (17-18 accounts)
+            // =================================================================
+            // Fixed accounts (0-12)
             accounts.push(
-              exBitmapPda,                                                       // 13: Tick Array Bitmap Extension
-              new PublicKey(rayTickArray0),                                      // 14: Tick Array 0 (center)
-              new PublicKey(rayTickArray1),                                      // 15: Tick Array 1
-              new PublicKey(rayTickArray2),                                      // 16: Tick Array 2
-              programIdKey,                                                      // 17: Raydium CLMM Program
+              wallet,                                                              // 0: Payer (signer)
+              ammConfig,                                                           // 1: AMM Config
+              poolId,                                                              // 2: Pool State
+              userSourceAta,                                                       // 3: Input Token Account (user)
+              userDestAta,                                                         // 4: Output Token Account (user)
+              new PublicKey(inputVault),                                           // 5: Input Vault
+              new PublicKey(outputVault),                                          // 6: Output Vault
+              observationState,                                                    // 7: Observation State
+              TOKEN_PROGRAM_ID,                                                    // 8: Token Program
+              TOKEN_2022_PROGRAM_ID,                                               // 9: Token-2022 Program
+              MEMO_PROGRAM_ID,                                                     // 10: Memo Program
+              inputMint,                                                           // 11: Input Token Mint
+              outputMint,                                                          // 12: Output Token Mint
             );
+            
+            // Remaining accounts depend on whether exBitmap exists
+            if (hasExBitmap) {
+              // WITH exBitmap: 18 accounts total
+              accounts.push(
+                exBitmapPda,                                                       // 13: Tick Array Bitmap Extension
+                new PublicKey(rayTickArray0),                                      // 14: Tick Array 0 (center)
+                new PublicKey(rayTickArray1),                                      // 15: Tick Array 1
+                new PublicKey(rayTickArray2),                                      // 16: Tick Array 2
+                programIdKey,                                                      // 17: Raydium CLMM Program
+              );
+            } else {
+              // WITHOUT exBitmap: 17 accounts total
+              accounts.push(
+                new PublicKey(rayTickArray0),                                      // 13: Tick Array 0 (center)
+                new PublicKey(rayTickArray1),                                      // 14: Tick Array 1
+                new PublicKey(rayTickArray2),                                      // 15: Tick Array 2
+                programIdKey,                                                      // 16: Raydium CLMM Program
+              );
+            }
           } else {
-            // WITHOUT exBitmap: 17 accounts total
+            // =================================================================
+            // swap: Standard SPL tokens only (12-13 accounts)
+            // =================================================================
+            // Fixed accounts (0-8) - no Token2022, Memo, or Mints
             accounts.push(
-              new PublicKey(rayTickArray0),                                      // 13: Tick Array 0 (center)
-              new PublicKey(rayTickArray1),                                      // 14: Tick Array 1
-              new PublicKey(rayTickArray2),                                      // 15: Tick Array 2
-              programIdKey,                                                      // 16: Raydium CLMM Program
+              wallet,                                                              // 0: Payer (signer)
+              ammConfig,                                                           // 1: AMM Config
+              poolId,                                                              // 2: Pool State
+              userSourceAta,                                                       // 3: Input Token Account (user)
+              userDestAta,                                                         // 4: Output Token Account (user)
+              new PublicKey(inputVault),                                           // 5: Input Vault
+              new PublicKey(outputVault),                                          // 6: Output Vault
+              observationState,                                                    // 7: Observation State
+              TOKEN_PROGRAM_ID,                                                    // 8: Token Program
             );
+            
+            // Remaining accounts depend on whether exBitmap exists
+            if (hasExBitmap) {
+              // WITH exBitmap: 13 accounts total
+              accounts.push(
+                exBitmapPda,                                                       // 9: Tick Array Bitmap Extension
+                new PublicKey(rayTickArray0),                                      // 10: Tick Array 0 (center)
+                new PublicKey(rayTickArray1),                                      // 11: Tick Array 1
+                programIdKey,                                                      // 12: Raydium CLMM Program
+              );
+            } else {
+              // WITHOUT exBitmap: 12 accounts total
+              accounts.push(
+                new PublicKey(rayTickArray0),                                      // 9: Tick Array 0 (center)
+                new PublicKey(rayTickArray1),                                      // 10: Tick Array 1
+                programIdKey,                                                      // 11: Raydium CLMM Program
+              );
+            }
           }
           
           // Debug logging to verify account positions
@@ -1203,17 +1261,16 @@ async function extractDexAccounts(
             poolId: hop.poolId,
             totalAccounts: accounts.length,
             hasExBitmap,
+            useSwapV2: raydiumNeedsSwapV2,
+            inputTokenProgram: hop.inputTokenProgram || 'spl-token',
+            outputTokenProgram: hop.outputTokenProgram || 'spl-token',
             // Log the last few accounts to verify program ID position
-            account13: accounts[13]?.toBase58(),
-            account14: accounts[14]?.toBase58(),
-            account15: accounts[15]?.toBase58(),
-            account16: accounts[16]?.toBase58(),
-            account17: accounts[17]?.toBase58(),
+            accountLast3: accounts.slice(-3).map(a => a?.toBase58?.()?.slice(0, 8) + '…'),
             expectedProgramId: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
           });
         }
         // CRITICAL: Return early for Raydium to avoid padding by getAccountsNeededForDex
-        // which always returns 18, but we intentionally use 17 when exBitmap doesn't exist
+        // Variable accounts based on instruction variant and exBitmap presence
         return accounts;
 
       case DexType.Meteora:

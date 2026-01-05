@@ -19,6 +19,7 @@ pub const PROFIT_EPSILON: f64 = 1e-10;
 ///
 /// Returns (rate_product, log_sum) where log_sum can be used for additional precision.
 #[inline]
+#[allow(dead_code)]
 pub fn compute_rate_product_stable(rates: &[f64]) -> (f64, f64) {
     if rates.is_empty() {
         return (1.0, 0.0);
@@ -184,7 +185,6 @@ pub fn select_best_edge_combination(
     // 4. Enumerate all combinations using odometer-style iteration
     // Track best using log-space for numerical stability
     let mut best_log_sum = f64::NEG_INFINITY;
-    let mut best_product = 0.0f64;
     let mut best_selection: Option<CycleEdgeSelection> = None;
 
     let mut indices = vec![0usize; cycle_len];
@@ -248,7 +248,6 @@ pub fn select_best_edge_combination(
         // Compare in log-space to avoid precision issues
         if log_sum > best_log_sum {
             best_log_sum = log_sum;
-            best_product = product;
             let edges: Vec<SelectedEdge> = indices
                 .iter()
                 .enumerate()
@@ -286,6 +285,7 @@ pub fn select_best_edge_combination(
 }
 
 /// Quick check if a cycle has any valid edges (used for early rejection)
+#[allow(dead_code)]
 pub fn cycle_has_valid_path(
     graph: &ArbGraph,
     cycle_nodes: &[usize],
@@ -321,6 +321,7 @@ pub fn cycle_has_valid_path(
 }
 
 /// Get the best rate between two nodes (for compatibility with existing code patterns)
+#[allow(dead_code)]
 pub fn best_rate_between(
     graph: &ArbGraph,
     u_idx: usize,
