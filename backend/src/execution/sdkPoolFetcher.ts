@@ -26,6 +26,111 @@ const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9Y
 const ORCA_TICK_ARRAY_SIZE = 88;
 const RAYDIUM_TICK_ARRAY_SIZE = 60;
 
+// Raydium tick array bitmap constants
+// The bitmap covers tick array indices from -512 to +511 (1024 total)
+// It's stored as 16 u64 values (16 * 64 = 1024 bits)
+const RAYDIUM_BITMAP_RANGE = 512;
+const RAYDIUM_BITMAP_WORDS = 16;
+
+/**
+ * Decode Raydium's tickArrayBitmap to find all initialized tick array indices.
+ * 
+ * The bitmap is an array of 16 u64 values covering indices -512 to +511.
+ * Each bit represents whether a tick array at that index is initialized.
+ * 
+ * Bitmap layout:
+ * - Word 0: indices -512 to -449
+ * - Word 1: indices -448 to -385
+ * - ...
+ * - Word 7: indices -64 to -1
+ * - Word 8: indices 0 to 63
+ * - ...
+ * - Word 15: indices 448 to 511
+ * 
+ * @param bitmap Array of 16 u64 values (as bigints or strings)
+ * @returns Array of initialized tick array indices
+ */
+export function decodeRaydiumTickArrayBitmap(bitmap: (bigint | string | number)[]): number[] {
+  if (!bitmap || !Array.isArray(bitmap) || bitmap.length !== RAYDIUM_BITMAP_WORDS) {
+    return [];
+  }
+  
+  const initializedIndices: number[] = [];
+  
+  for (let wordIdx = 0; wordIdx < RAYDIUM_BITMAP_WORDS; wordIdx++) {
+    const word = BigInt(bitmap[wordIdx] || 0);
+    if (word === 0n) continue; // Skip empty words
+    
+    // Each word covers 64 tick array indices
+    // Word 0 starts at index -512, Word 8 starts at index 0
+    const baseIndex = -RAYDIUM_BITMAP_RANGE + (wordIdx * 64);
+    
+    // Check each bit in the word
+    for (let bit = 0; bit < 64; bit++) {
+      if ((word >> BigInt(bit)) & 1n) {
+        initializedIndices.push(baseIndex + bit);
+      }
+    }
+  }
+  
+  return initializedIndices;
+}
+
+/**
+ * Check if a specific tick array index is initialized according to the bitmap.
+ * @param bitmap Array of 16 u64 values
+ * @param tickArrayIndex The tick array index to check (-512 to +511)
+ * @returns true if initialized, false if not or out of range
+ */
+export function isTickArrayInitializedInBitmap(
+  bitmap: (bigint | string | number)[],
+  tickArrayIndex: number
+): boolean {
+  if (!bitmap || !Array.isArray(bitmap) || bitmap.length !== RAYDIUM_BITMAP_WORDS) {
+    return false;
+  }
+  
+  // Check if index is within bitmap range
+  if (tickArrayIndex < -RAYDIUM_BITMAP_RANGE || tickArrayIndex >= RAYDIUM_BITMAP_RANGE) {
+    // Outside bitmap range - need to check exBitmap or on-chain
+    return false;
+  }
+  
+  // Convert index to word and bit position
+  const adjustedIndex = tickArrayIndex + RAYDIUM_BITMAP_RANGE; // 0-1023
+  const wordIdx = Math.floor(adjustedIndex / 64);
+  const bitIdx = adjustedIndex % 64;
+  
+  const word = BigInt(bitmap[wordIdx] || 0);
+  return ((word >> BigInt(bitIdx)) & 1n) === 1n;
+}
+
+/**
+ * Get initialized tick array indices near a specific tick for Raydium.
+ * Uses the bitmap for indices within range, returns empty for out-of-range.
+ * 
+ * @param bitmap The tickArrayBitmap from pool state
+ * @param centerTickArrayIndex The tick array index containing current tick
+ * @param range How many indices to check on each side
+ * @returns Array of initialized tick array indices near the center
+ */
+export function getInitializedTickArraysNearTick(
+  bitmap: (bigint | string | number)[],
+  centerTickArrayIndex: number,
+  range: number = 5
+): number[] {
+  const initialized: number[] = [];
+  
+  for (let offset = -range; offset <= range; offset++) {
+    const idx = centerTickArrayIndex + offset;
+    if (isTickArrayInitializedInBitmap(bitmap, idx)) {
+      initialized.push(idx);
+    }
+  }
+  
+  return initialized;
+}
+
 export interface ValidatedTickArrays {
   center: string;
   lower: string[];  // Multiple initialized lower arrays
@@ -283,7 +388,9 @@ export async function fetchOrcaPoolViaSdk(
         }
       });
     } else if (!center && existingArrays.length === 0) {
-      logger.warn('orca.sdk.fetch.no_tick_arrays', {
+      // Log at debug level - these are typically empty pools or pools with liquidity far outside any reasonable range
+      // Not actionable, so don't spam warn logs
+      logger.debug('orca.sdk.fetch.no_tick_arrays', {
         cat: 'cache',
         ctx: { pool: poolId, currentTick, tickSpacing, centerIdx, searchedRange: tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15 }
       });
@@ -658,6 +765,10 @@ export async function fetchRaydiumPoolViaSdk(
     const sqrtPriceX64 = String(state.sqrtPriceX64 ?? '0');
     const liquidity = String(state.liquidity ?? '0');
     
+    // Extract tick array bitmap if available (array of 16 u64 values)
+    const tickArrayBitmap = state.tickArrayBitmap ?? state.tick_array_bitmap;
+    const hasBitmap = Array.isArray(tickArrayBitmap) && tickArrayBitmap.length === 16;
+    
     if (tickSpacing <= 0 || tickSpacing > 1000) {
       logger.debug('raydium.sdk.fetch.invalid_tick_spacing', { 
         cat: 'cache', 
@@ -672,45 +783,108 @@ export async function fetchRaydiumPoolViaSdk(
     const centerStart = centerIdx * ticksInArray;
     const delta = ticksInArray;
     
-    // Adaptive range based on tick spacing (Raydium arrays are 60 ticks vs Orca's 88)
-    const INITIAL_RANGE = tickSpacing <= 2 ? 12 : tickSpacing <= 10 ? 8 : 5;
+    let existingArrays: Array<{ offset: number; address: string; pda: PublicKey }> = [];
     
-    // Search for tick arrays in initial range
-    let existingArrays = await searchRaydiumTickArrays(
-      connection, poolPk, centerStart, delta, INITIAL_RANGE, program
-    );
-    
-    // If no tick arrays found, try extended search
-    if (existingArrays.length === 0) {
-      const EXTENDED_RANGE = tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12;
+    // OPTIMIZATION: Use bitmap to know exactly which tick arrays are initialized
+    // This avoids unnecessary RPC calls to check non-existent tick arrays
+    if (hasBitmap) {
+      // Get initialized tick array indices from bitmap
+      const SEARCH_RANGE = 20; // Check ±20 tick array indices around center
+      const initializedIndices = getInitializedTickArraysNearTick(tickArrayBitmap, centerIdx, SEARCH_RANGE);
       
-      logger.debug('raydium.sdk.fetch.extended_search', {
-        cat: 'cache',
-        ctx: { 
-          pool: poolId.slice(0, 8) + '…', 
-          tickCurrent, 
-          tickSpacing, 
-          centerIdx,
-          initialRange: INITIAL_RANGE,
-          extendedRange: EXTENDED_RANGE 
+      if (initializedIndices.length > 0) {
+        // Only derive and verify PDAs for tick arrays that the bitmap says exist
+        const tickArrayPdas: Array<{ offset: number; pda: PublicKey; tickArrayIdx: number }> = [];
+        
+        for (const tickArrayIdx of initializedIndices) {
+          const startTick = tickArrayIdx * ticksInArray;
+          const pda = deriveRaydiumTickArrayPda(poolPk, startTick, program);
+          tickArrayPdas.push({ offset: tickArrayIdx - centerIdx, pda, tickArrayIdx });
         }
-      });
-      
-      existingArrays = await searchRaydiumTickArrays(
-        connection, poolPk, centerStart, delta, EXTENDED_RANGE, program
-      );
-      
-      if (existingArrays.length > 0) {
-        logger.info('raydium.sdk.fetch.found_in_extended', {
+        
+        // Still verify on-chain (bitmap could be stale) but only for known-initialized arrays
+        const pdaKeys = tickArrayPdas.map(p => p.pda);
+        const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+        
+        for (let i = 0; i < tickArrayPdas.length; i++) {
+          const info = infos[i];
+          if (info && info.owner.equals(program) && info.data.length > 0) {
+            const { offset, pda } = tickArrayPdas[i];
+            existingArrays.push({ offset, address: pda.toBase58(), pda });
+          }
+        }
+        
+        logger.debug('raydium.sdk.fetch.bitmap_search', {
           cat: 'cache',
           ctx: { 
             pool: poolId.slice(0, 8) + '…', 
             tickCurrent, 
             tickSpacing,
-            arraysFound: existingArrays.length,
-            nearestOffset: existingArrays.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))[0]?.offset
+            centerIdx,
+            bitmapInitialized: initializedIndices.length,
+            verifiedOnChain: existingArrays.length
           }
         });
+      } else {
+        // Bitmap says no tick arrays are initialized in range
+        // Check if center is outside bitmap range (±512), if so fall back to RPC search
+        if (Math.abs(centerIdx) >= RAYDIUM_BITMAP_RANGE) {
+          logger.debug('raydium.sdk.fetch.center_outside_bitmap', {
+            cat: 'cache',
+            ctx: { pool: poolId.slice(0, 8) + '…', centerIdx, bitmapRange: RAYDIUM_BITMAP_RANGE }
+          });
+          // Fall through to RPC-based search below
+        } else {
+          logger.debug('raydium.sdk.fetch.bitmap_empty', {
+            cat: 'cache',
+            ctx: { pool: poolId.slice(0, 8) + '…', centerIdx, searchRange: SEARCH_RANGE }
+          });
+        }
+      }
+    }
+    
+    // Fall back to RPC-based search if bitmap not available or yielded no results
+    if (existingArrays.length === 0 && (!hasBitmap || Math.abs(centerIdx) >= RAYDIUM_BITMAP_RANGE)) {
+      // Adaptive range based on tick spacing (Raydium arrays are 60 ticks vs Orca's 88)
+      const INITIAL_RANGE = tickSpacing <= 2 ? 12 : tickSpacing <= 10 ? 8 : 5;
+      
+      // Search for tick arrays in initial range
+      existingArrays = await searchRaydiumTickArrays(
+        connection, poolPk, centerStart, delta, INITIAL_RANGE, program
+      );
+      
+      // If no tick arrays found, try extended search
+      if (existingArrays.length === 0) {
+        const EXTENDED_RANGE = tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12;
+        
+        logger.debug('raydium.sdk.fetch.extended_search', {
+          cat: 'cache',
+          ctx: { 
+            pool: poolId.slice(0, 8) + '…', 
+            tickCurrent, 
+            tickSpacing, 
+            centerIdx,
+            initialRange: INITIAL_RANGE,
+            extendedRange: EXTENDED_RANGE 
+          }
+        });
+        
+        existingArrays = await searchRaydiumTickArrays(
+          connection, poolPk, centerStart, delta, EXTENDED_RANGE, program
+        );
+        
+        if (existingArrays.length > 0) {
+          logger.info('raydium.sdk.fetch.found_in_extended', {
+            cat: 'cache',
+            ctx: { 
+              pool: poolId.slice(0, 8) + '…', 
+              tickCurrent, 
+              tickSpacing,
+              arraysFound: existingArrays.length,
+              nearestOffset: existingArrays.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))[0]?.offset
+            }
+          });
+        }
       }
     }
     
@@ -759,7 +933,9 @@ export async function fetchRaydiumPoolViaSdk(
         }
       });
     } else if (!center && existingArrays.length === 0) {
-      logger.warn('raydium.sdk.fetch.no_tick_arrays', {
+      // Log at debug level - these are typically empty pools or pools with liquidity far outside any reasonable range
+      // Not actionable, so don't spam warn logs
+      logger.debug('raydium.sdk.fetch.no_tick_arrays', {
         cat: 'cache',
         ctx: { pool: poolId, tickCurrent, tickSpacing, centerIdx, searchedRange: tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12 }
       });
