@@ -88,7 +88,6 @@ async function fetchFreshTickDataAndValidate(
   derivationValidation: DerivationValidation;
 } | null> {
   try {
-    const poolPk = new PublicKey(poolId);
     const basePoolId = poolId.replace(/[#-]rev$/, '');
     
     // Get cached values BEFORE fetching fresh data (for comparison)
@@ -97,36 +96,27 @@ async function fetchFreshTickDataAndValidate(
     const cachedTick = hot?.currentTickIndex;
     const cachedSpacing = hot?.tickSpacing || stat?.tickSpacing || (stat as any)?.tick_spacing;
     
-    const accountInfo = await withRpcLimit(
-      () => connection.getAccountInfo(poolPk),
-      1,
-      { module: RPC_MODULE, method: 'getAccountInfo:fetchTick' }
-    );
+    // === USE SDK-BASED POOL FETCHERS ===
+    // These use official SDK decoders and PDA derivation methods for accuracy
+    const { fetchOrcaPoolViaSdk, fetchRaydiumPoolViaSdk } = await import('./sdkPoolFetcher.js');
     
-    if (!accountInfo || !accountInfo.data) {
+    let validatedState;
+    if (dex === 'orca') {
+      validatedState = await fetchOrcaPoolViaSdk(connection, basePoolId);
+    } else {
+      validatedState = await fetchRaydiumPoolViaSdk(connection, basePoolId);
+    }
+    
+    if (!validatedState || validatedState.currentTick === undefined || validatedState.tickSpacing === undefined) {
+      logger.debug('cache.validation.sdk_fetch_failed', {
+        cat: 'cache',
+        ctx: { poolId: basePoolId.slice(0, 8) + '…', dex, hasState: !!validatedState }
+      });
       return null;
     }
     
-    const data = accountInfo.data;
-    let currentTick: number;
-    let tickSpacing: number;
-    
-    if (dex === 'raydium') {
-      // Raydium CLMM layout offsets
-      if (data.length < 280) return null;
-      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      tickSpacing = view.getUint16(235, true);
-      currentTick = view.getInt32(269, true);
-    } else {
-      // Orca Whirlpool layout offsets
-      if (data.length < 280) return null;
-      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      // Skip 8 byte discriminator, 32 byte config, 1 byte bump
-      tickSpacing = view.getUint16(41, true);
-      // Skip to tickCurrentIndex at offset ~277
-      // Orca: discriminator(8) + config(32) + bump(1) + tickSpacing(2) + tickSpacingSeed(2) + feeRate(2) + protocolFeeRate(2) + liquidity(16) + sqrtPrice(16) + tickCurrentIndex(4)
-      currentTick = view.getInt32(8 + 32 + 1 + 2 + 2 + 2 + 2 + 16 + 16, true); // offset 81
-    }
+    const currentTick = validatedState.currentTick;
+    const tickSpacing = validatedState.tickSpacing;
     
     // === DERIVATION VALIDATION ===
     // Validate derivation-dependent values FIRST before deriving arrays
@@ -205,14 +195,53 @@ async function fetchFreshTickDataAndValidate(
       return null;
     }
     
-    // === NOW DERIVE TICK ARRAYS FROM VALIDATED FRESH VALUES ===
-    const derivedResult = await deriveAndValidateTickArrays(connection, poolId, currentTick, tickSpacing, dex);
+    // === USE TICK ARRAYS FROM SDK FETCHER ===
+    // SDK fetchers already validate tick arrays exist on-chain
+    let tickArrays: { center: string; lower: string[]; upper: string[] } | undefined;
+    let validation: TickArrayValidation | undefined;
+    
+    if (validatedState.tickArrays) {
+      tickArrays = {
+        center: validatedState.tickArrays.center,
+        lower: validatedState.tickArrays.lower || [],
+        upper: validatedState.tickArrays.upper || [],
+      };
+      
+      // Mark all SDK-returned arrays as validated (they exist on-chain)
+      validation = {
+        lower: tickArrays.lower.length > 0 ? { address: tickArrays.lower[0], exists: true } : null,
+        center: { address: tickArrays.center, exists: true },
+        upper: tickArrays.upper.length > 0 ? { address: tickArrays.upper[0], exists: true } : null,
+      };
+      
+      logger.debug('cache.validation.sdk_tick_arrays', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId.slice(0, 8) + '…',
+          dex,
+          center: tickArrays.center?.slice(0, 12),
+          lowerCount: tickArrays.lower.length,
+          upperCount: tickArrays.upper.length,
+        }
+      });
+    } else {
+      // SDK fetcher found no tick arrays - pool may have no liquidity
+      logger.debug('cache.validation.sdk_no_tick_arrays', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId.slice(0, 8) + '…',
+          dex,
+          currentTick,
+          tickSpacing,
+        }
+      });
+    }
     
     return {
       currentTick,
       tickSpacing,
-      tickArrays: derivedResult.tickArrays,
-      validation: derivedResult.validation,
+      tickArrays,
+      validation,
       derivationValidation,
     };
   } catch (e) {
