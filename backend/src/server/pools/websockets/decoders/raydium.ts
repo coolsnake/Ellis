@@ -564,6 +564,10 @@ async function handleClmmUpdate(
             ? derived.tickArrays.upper[0]
             : undefined);
       }
+      // Store exBitmap (tick array bitmap extension) - required for swap instruction optimization
+      if (derived.exBitmap) {
+        nextStatic.ex_bitmap = derived.exBitmap;
+      }
     }
     
     executionCache.setStatic(poolId, nextStatic);

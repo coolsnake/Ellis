@@ -290,7 +290,7 @@ export async function fetchAmmConfigFeeRates(
 async function fetchClmmPoolRawData(
   poolIds: string[],
   opts: { batchSize: number; delayMs: number }
-): Promise<Map<string, { observationState?: string; ammConfig?: string; oracle?: string; vaultA?: string; vaultB?: string; tickSpacing?: number }>> {
+): Promise<Map<string, { observationState?: string; ammConfig?: string; oracle?: string; vaultA?: string; vaultB?: string; tickSpacing?: number; exBitmap?: string }>> {
   const result = new Map<string, any>();
   if (!poolIds.length) return result;
   
@@ -337,6 +337,7 @@ async function fetchClmmPoolRawData(
               vaultA: derived.vaultA,
               vaultB: derived.vaultB,
               tickSpacing: derived.tickSpacing,
+              exBitmap: derived.exBitmap,
             });
           }
         } catch (err) {
@@ -2156,6 +2157,8 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           amm_config: rawData?.ammConfig || (pool as any).amm_config || (pool as any).ammConfig,
           observation_state: rawData?.observationState,
           oracle: rawData?.oracle,
+          // Tick array bitmap extension (exBitmap) - required for swap instruction optimization
+          ex_bitmap: rawData?.exBitmap,
           // Store VALIDATED tick arrays in static cache for zero-RPC builds
           tickArrayLower,
           tickArrayCenter,

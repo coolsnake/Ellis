@@ -1019,8 +1019,18 @@ async function extractDexAccounts(
         //
         // On-chain router auto-detects based on account count (>=17 = swap_v2)
         
-        // Detect if Token-2022 is involved - determines which instruction to use
-        const raydiumNeedsSwapV2 = hop.inputTokenProgram === 'token-2022' || hop.outputTokenProgram === 'token-2022';
+        // Check if exBitmap (tick array bitmap extension) exists in cache
+        // This must be checked BEFORE deciding which instruction to use
+        const exBitmapFromCacheEarly = (hot as any)?.exBitmap || (hop as any).exBitmap || stat?.ex_bitmap;
+        const hasExBitmapEarly = !!exBitmapFromCacheEarly && exBitmapFromCacheEarly !== 'none';
+        
+        // Detect which instruction variant to use:
+        // - swap_v2: Token-2022 tokens (requires Token-2022 Program, Memo Program, Mints)
+        // - swap: Standard SPL tokens (optimized, 11-12 accounts)
+        //   - With exBitmap: 12 accounts
+        //   - Without exBitmap: 11 accounts
+        const hasToken2022 = hop.inputTokenProgram === 'token-2022' || hop.outputTokenProgram === 'token-2022';
+        const raydiumNeedsSwapV2 = hasToken2022;
         
         // Get ammConfig from hop or cache - CRITICAL: cannot be derived, must come from pool data
         const ammConfigAddr = hop.ammConfig || stat?.amm_config;
@@ -1038,15 +1048,12 @@ async function extractDexAccounts(
           ? new PublicKey(hop.observationId)
           : deriveRaydiumObservationPda(poolId, programIdKey);
         
-        // Check if exBitmap (tick array bitmap extension) exists
-        // The exBitmap is only needed for pools with wide tick ranges (many tick arrays)
-        // If ex_bitmap is in cache with a value, it exists. If it's falsy or 'none', it doesn't exist.
-        // We check hot cache first (set during validation), then static cache
-        const exBitmapFromCache = (hot as any)?.exBitmap || (hop as any).exBitmap || stat?.ex_bitmap;
-        const hasExBitmap = !!exBitmapFromCache && exBitmapFromCache !== 'none';
+        // Use the early exBitmap check results for consistency
+        const exBitmapFromCache = exBitmapFromCacheEarly;
+        const hasExBitmap = hasExBitmapEarly;
         const exBitmapPda = hasExBitmap 
           ? new PublicKey(exBitmapFromCache)
-          : deriveRaydiumExBitmapPda(poolId, programIdKey); // Still derive for reference but won't use if doesn't exist
+          : deriveRaydiumExBitmapPda(poolId, programIdKey); // Derived but won't be used if doesn't exist
         
         // CRITICAL: Use NATIVE account ordering for vault selection
         // Raydium CLMM passes input_vault and output_vault based on swap direction
@@ -1073,6 +1080,7 @@ async function extractDexAccounts(
           poolId: hop.poolId,
           // Swap variant selection
           swapVariant: raydiumNeedsSwapV2 ? 'swap_v2' : 'swap',
+          swapVariantReason: hasToken2022 ? 'token2022' : (hasExBitmap ? 'spl_with_exbitmap' : 'spl_no_exbitmap'),
           inputTokenProgram: hop.inputTokenProgram || 'spl-token',
           outputTokenProgram: hop.outputTokenProgram || 'spl-token',
           ammConfig: ammConfig.toBase58(),
@@ -1124,8 +1132,9 @@ async function extractDexAccounts(
         });
         
         // Account layout depends on instruction variant:
-        // swap (SPL-only, 12 accounts):
-        //   0-8: fixed accounts, 9: tickArray (center), 10: exBitmap (REQUIRED!), 11: program
+        // swap (SPL-only, 11-12 accounts):
+        //   - WITH exBitmap (12 accounts): 0-8 fixed, 9 tickArray, 10 exBitmap, 11 program
+        //   - WITHOUT exBitmap (11 accounts): 0-8 fixed, 9 tickArray, 10 program
         // swap_v2 (Token-2022, 17-18 accounts):
         //   - WITH exBitmap (18 accounts): 0-12 fixed, 13 exBitmap, 14-16 tickArrays, 17 program
         //   - WITHOUT exBitmap (17 accounts): 0-12 fixed, 13-15 tickArrays, 16 program
@@ -1217,19 +1226,10 @@ async function extractDexAccounts(
             }
           } else {
             // =================================================================
-            // swap: Standard SPL tokens only (12 accounts)
-            // Based on actual mainnet transactions, swap requires:
-            // - Only 1 tick array (center)
-            // - exBitmap is REQUIRED (always included)
+            // swap: Standard SPL tokens only (11-12 accounts)
+            // - With exBitmap: 12 accounts (0-8 fixed, 9 tickArray, 10 exBitmap, 11 program)
+            // - Without exBitmap: 11 accounts (0-8 fixed, 9 tickArray, 10 program)
             // =================================================================
-            
-            // Validate exBitmap exists - it's required for swap!
-            if (!hasExBitmap || !exBitmapFromCache || exBitmapFromCache === 'none') {
-              throw new Error(
-                `RAYDIUM_CLMM_EXBITMAP_REQUIRED: Pool ${hop.poolId} missing exBitmap. ` +
-                `The swap instruction requires tick array bitmap extension.`
-              );
-            }
             
             // Fixed accounts (0-8) - no Token2022, Memo, or Mints
             accounts.push(
@@ -1243,9 +1243,14 @@ async function extractDexAccounts(
               observationState,                                                    // 7: Observation State
               TOKEN_PROGRAM_ID,                                                    // 8: Token Program
               new PublicKey(rayTickArray0),                                        // 9: Tick Array (center) - only 1 needed!
-              exBitmapPda,                                                         // 10: Tick Array Bitmap Extension (REQUIRED!)
-              programIdKey,                                                        // 11: Raydium CLMM Program
             );
+            
+            // Add exBitmap if it exists, otherwise skip it
+            if (hasExBitmap) {
+              accounts.push(exBitmapPda);                                          // 10: Tick Array Bitmap Extension (optional)
+            }
+            
+            accounts.push(programIdKey);                                           // 10/11: Raydium CLMM Program
           }
           
           // Debug logging to verify account positions

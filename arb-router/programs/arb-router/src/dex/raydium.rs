@@ -31,9 +31,11 @@ pub const SWAP_V2_ACCOUNTS_NEEDED_NO_EXBITMAP: usize = 17;
 // swap Account Counts (Standard SPL tokens only)
 // =============================================================================
 
-/// Number of accounts for swap (12 accounts: 11 to Raydium + 1 program ID)
-/// Note: swap ALWAYS requires exBitmap (tick array bitmap extension)
+/// Number of accounts for swap WITH exBitmap (12 accounts: 11 to Raydium + 1 program ID)
 pub const SWAP_ACCOUNTS_NEEDED: usize = 12;
+
+/// Number of accounts for swap WITHOUT exBitmap (11 accounts: 10 to Raydium + 1 program ID)
+pub const SWAP_ACCOUNTS_NEEDED_NO_EXBITMAP: usize = 11;
 
 // Legacy aliases for backward compatibility
 pub const ACCOUNTS_NEEDED: usize = SWAP_V2_ACCOUNTS_NEEDED;
@@ -70,9 +72,9 @@ pub struct SwapParams {
 /// - 12 accounts: Use `swap` for standard SPL tokens
 /// - 17-18 accounts: Use `swap_v2` for Token-2022 compatible swaps
 ///
-/// ## `swap` instruction layout (standard SPL tokens, 12 accounts total):
+/// ## `swap` instruction layout (standard SPL tokens, 11-12 accounts):
 ///
-/// Based on actual mainnet transactions, the `swap` instruction requires:
+/// WITH exBitmap (12 accounts total, 11 to Raydium):
 /// 0. `[signer]` Payer
 /// 1. `[]` AMM Config
 /// 2. `[writable]` Pool State
@@ -83,8 +85,21 @@ pub struct SwapParams {
 /// 7. `[writable]` Observation State
 /// 8. `[]` Token Program
 /// 9. `[writable]` Tick Array (center - only ONE tick array needed)
-/// 10. `[writable]` Tick Array Bitmap Extension (exBitmap - REQUIRED!)
+/// 10. `[writable]` Tick Array Bitmap Extension (exBitmap)
 /// 11. `[]` Raydium CLMM Program ID
+///
+/// WITHOUT exBitmap (11 accounts total, 10 to Raydium):
+/// 0. `[signer]` Payer
+/// 1. `[]` AMM Config
+/// 2. `[writable]` Pool State
+/// 3. `[writable]` Input Token Account (user)
+/// 4. `[writable]` Output Token Account (user)
+/// 5. `[writable]` Input Vault
+/// 6. `[writable]` Output Vault
+/// 7. `[writable]` Observation State
+/// 8. `[]` Token Program
+/// 9. `[writable]` Tick Array (center - only ONE tick array needed)
+/// 10. `[]` Raydium CLMM Program ID
 ///
 /// ## `swap_v2` instruction layout (Token-2022 compatible):
 ///
@@ -134,7 +149,7 @@ pub fn swap(
 ) -> Result<()> {
     // Detect which instruction variant to use based on account count
     // swap_v2: 17-18 accounts (Token-2022 compatible, includes memo/mints)
-    // swap: 12 accounts (Standard SPL tokens only)
+    // swap: 11-12 accounts (Standard SPL tokens only, exBitmap optional)
     let use_swap_v2 = accounts.len() >= SWAP_V2_ACCOUNTS_NEEDED_NO_EXBITMAP;
 
     if use_swap_v2 {
@@ -202,15 +217,18 @@ pub fn swap(
              amount_in, min_amount_out, has_exbitmap);
     } else {
         // =========================================================================
-        // swap: Standard SPL tokens (12 accounts)
-        // Layout: payer, ammConfig, pool, userIn, userOut, vaultIn, vaultOut,
-        //         observation, tokenProgram, tickArray, exBitmap, programId
+        // swap: Standard SPL tokens (11-12 accounts)
+        // - WITH exBitmap (12 accounts): payer, ammConfig, pool, userIn, userOut, 
+        //   vaultIn, vaultOut, observation, tokenProgram, tickArray, exBitmap, programId
+        // - WITHOUT exBitmap (11 accounts): payer, ammConfig, pool, userIn, userOut,
+        //   vaultIn, vaultOut, observation, tokenProgram, tickArray, programId
         // =========================================================================
-        let required = SWAP_ACCOUNTS_NEEDED;
+        let has_exbitmap = accounts.len() >= SWAP_ACCOUNTS_NEEDED;
+        let required = if has_exbitmap { SWAP_ACCOUNTS_NEEDED } else { SWAP_ACCOUNTS_NEEDED_NO_EXBITMAP };
         
         if accounts.len() < required {
-            msg!("Raydium swap: Insufficient accounts. Expected {}, got {}", 
-                 required, accounts.len());
+            msg!("Raydium swap: Insufficient accounts. Expected {} (exBitmap={}), got {}", 
+                 required, has_exbitmap, accounts.len());
             return Err(ArbRouterError::InvalidAccount.into());
         }
 
@@ -228,16 +246,24 @@ pub fn swap(
         let program_idx = required - 1;
         let dex_program_id = *accounts[program_idx].key;
 
-        // Build account metas for swap (12 accounts)
-        // Writable accounts: 2-7 (pool, ATAs, vaults, observation), 9-10 (tickArray, exBitmap)
+        // Build account metas for swap
+        // Writable accounts:
+        // - WITH exBitmap: 2-7 (pool, ATAs, vaults, observation), 9-10 (tickArray, exBitmap)
+        // - WITHOUT exBitmap: 2-7 (pool, ATAs, vaults, observation), 9 (tickArray only)
         let account_metas: Vec<AccountMeta> = accounts[..program_idx]
             .iter()
             .enumerate()
             .map(|(i, acc)| {
                 let is_signer = i == 0;
-                // Writable: pool(2), userIn(3), userOut(4), vaultIn(5), vaultOut(6), 
-                //           observation(7), tickArray(9), exBitmap(10)
-                let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10);
+                let is_writable = if has_exbitmap {
+                    // With exBitmap: pool(2), userIn(3), userOut(4), vaultIn(5), vaultOut(6), 
+                    //                observation(7), tickArray(9), exBitmap(10)
+                    matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10)
+                } else {
+                    // Without exBitmap: pool(2), userIn(3), userOut(4), vaultIn(5), vaultOut(6), 
+                    //                   observation(7), tickArray(9)
+                    matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 9)
+                };
                 
                 if is_signer {
                     AccountMeta::new(*acc.key, true)
@@ -258,7 +284,8 @@ pub fn swap(
         let account_infos: Vec<AccountInfo> = accounts[..required].to_vec();
         invoke(&ix, &account_infos)?;
 
-        msg!("Raydium CLMM swap executed: {} in, min {} out", amount_in, min_amount_out);
+        msg!("Raydium CLMM swap executed: {} in, min {} out (exBitmap={})", 
+             amount_in, min_amount_out, has_exbitmap);
     }
 
     Ok(())

@@ -36,6 +36,8 @@ type RaydiumClmmDerivedFields = {
     };
     // Flag indicating tick arrays need validation (only center was derived)
     needsTickArrayValidation?: boolean;
+    // Tick array bitmap extension PDA (exBitmap) - required for swap instruction
+    exBitmap?: string;
 };
 
 export async function deriveRaydiumClmmCacheFields(
@@ -119,6 +121,22 @@ export async function deriveRaydiumClmmCacheFields(
                 try { logger.debug('raydium.clmm.tickarray.derive_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch { }
             }
         }
+        // Derive exBitmap (tick array bitmap extension) PDA
+        // Seeds: ["exaccount", pool_id]
+        let exBitmap: string | undefined;
+        try {
+            const { PublicKey: PK } = await import('@solana/web3.js');
+            const programPk = new PK(programIdStr);
+            const poolPk = new PK(poolId);
+            const [exBitmapPda] = PK.findProgramAddressSync(
+                [Buffer.from('exaccount'), poolPk.toBuffer()],
+                programPk
+            );
+            exBitmap = exBitmapPda.toBase58();
+        } catch (err: any) {
+            try { logger.debug('raydium.clmm.exbitmap.derive_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch { }
+        }
+        
         return {
             programId: programIdStr,
             oracle,
@@ -130,6 +148,7 @@ export async function deriveRaydiumClmmCacheFields(
             tickCurrent: Number.isFinite(tickCurrent) ? tickCurrent : undefined,
             tickArrays,
             needsTickArrayValidation,
+            exBitmap,
         };
     } catch (err: any) {
         try { logger.debug('raydium.clmm.raw.decode_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch { }
