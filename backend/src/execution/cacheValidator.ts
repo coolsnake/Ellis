@@ -2194,10 +2194,33 @@ export async function refreshInvalidPools(
     }
   }
   
+  // Categorize failures for better diagnostics
+  const noLiquidityCount = errors.filter(e => 
+    e.includes('No tick arrays found') || e.includes('no liquidity') || e.includes('no arrays found')
+  ).length;
+  const actualErrors = errors.filter(e => 
+    !e.includes('No tick arrays found') && !e.includes('no liquidity') && !e.includes('no arrays found')
+  );
+  
   logger.info('cache.refresh.complete', {
     cat: 'cache',
-    ctx: { refreshed, failed, total: invalidPools.length }
+    ctx: { 
+      refreshed, 
+      failed, 
+      total: invalidPools.length,
+      // Break down failures
+      noLiquidityPools: failed - actualErrors.length,
+      actualErrors: actualErrors.length,
+    }
   });
+  
+  // Log actual errors (not no-liquidity pools) for debugging
+  if (actualErrors.length > 0) {
+    logger.warn('cache.refresh.errors', {
+      cat: 'cache',
+      ctx: { errors: actualErrors.slice(0, 10) } // First 10 errors
+    });
+  }
   
   return { refreshed, failed, errors };
 }
