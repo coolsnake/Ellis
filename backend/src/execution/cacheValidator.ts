@@ -86,6 +86,8 @@ async function fetchFreshTickDataAndValidate(
   tickArrays?: { center: string; lower: string[]; upper: string[] };
   validation?: TickArrayValidation;
   derivationValidation: DerivationValidation;
+  liquidityOutsideRange?: boolean;
+  liquidity?: string;
 } | null> {
   try {
     const basePoolId = poolId.replace(/[#-]rev$/, '');
@@ -225,7 +227,7 @@ async function fetchFreshTickDataAndValidate(
         }
       });
     } else {
-      // SDK fetcher found no tick arrays - pool may have no liquidity
+      // SDK fetcher found no tick arrays - pool may have no liquidity OR liquidity is outside search range
       logger.debug('cache.validation.sdk_no_tick_arrays', {
         cat: 'cache',
         ctx: {
@@ -233,6 +235,7 @@ async function fetchFreshTickDataAndValidate(
           dex,
           currentTick,
           tickSpacing,
+          liquidityOutsideRange: validatedState.liquidityOutsideRange,
         }
       });
     }
@@ -243,6 +246,8 @@ async function fetchFreshTickDataAndValidate(
       tickArrays,
       validation,
       derivationValidation,
+      liquidityOutsideRange: validatedState.liquidityOutsideRange,
+      liquidity: validatedState.liquidity,
     };
   } catch (e) {
     logCatchError('fetchFreshTickDataAndValidate', e);
@@ -905,7 +910,8 @@ export async function validatePoolCache(
   
   // Check if pool was flagged as "liquidity outside search range"
   // These pools ARE tradeable - tick arrays will be derived at swap time
-  if (hot?.liquidityOutsideRange && hot?.liquidity) {
+  // Note: We only check liquidityOutsideRange flag - if it's set, we already confirmed liquidity exists
+  if (hot?.liquidityOutsideRange) {
     result.valid = true;
     result.liquidityOutsideRange = true;
     logger.debug('cache.validation.pool_with_distant_liquidity', {
@@ -913,7 +919,6 @@ export async function validatePoolCache(
       ctx: {
         poolId: basePoolId.slice(0, 8) + '…',
         dex,
-        liquidity: hot.liquidity?.toString()?.slice(0, 16),
       }
     });
     return result;
@@ -948,7 +953,7 @@ export async function validatePoolCache(
       const freshResult = await fetchFreshTickDataAndValidate(connection, basePoolId, dex);
       
       if (freshResult) {
-        const { currentTick, tickSpacing, tickArrays, validation, derivationValidation } = freshResult;
+        const { currentTick, tickSpacing, tickArrays, validation, derivationValidation, liquidityOutsideRange, liquidity } = freshResult;
         
         result.cacheData = {
           currentTick,
@@ -970,6 +975,35 @@ export async function validatePoolCache(
               cacheUpdated: derivationValidation.cacheUpdated,
             }
           });
+        }
+        
+        // Handle pools with liquidity outside search range
+        // These pools ARE tradeable - update cache and mark valid
+        if (liquidityOutsideRange) {
+          const existingHot = executionCache.getHot(basePoolId) || {};
+          executionCache.setHot(basePoolId, {
+            ...existingHot,
+            currentTickIndex: currentTick,
+            tickSpacing,
+            liquidityOutsideRange: true, // Flag for future validations
+          });
+          
+          result.valid = true;
+          result.liquidityOutsideRange = true;
+          
+          logger.debug('cache.validation.liquidity_outside_range', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8) + '…',
+              dex,
+              currentTick,
+              tickSpacing,
+              liquidity: liquidity?.slice(0, 16),
+            }
+          });
+          
+          // Return early - pool is valid, just needs arrays derived at swap time
+          return result;
         }
         
         if (tickArrays && validation?.center?.exists) {
