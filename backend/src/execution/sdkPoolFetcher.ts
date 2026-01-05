@@ -3,19 +3,56 @@
  * 
  * Uses each DEX's SDK to fetch validated pool state including initialized tick/bin arrays.
  * This ensures we only cache arrays that actually exist on-chain, preventing swap failures.
+ * 
+ * SDK Methods Used:
+ * - Orca: @orca-so/whirlpools-sdk PDAUtil.getTickArray for PDA derivation
+ * - Orca: @orca-so/whirlpools-client getWhirlpoolDecoder for pool state decoding
+ * - Raydium: @raydium-io/raydium-sdk-v2 getPdaTickArrayAddress for PDA derivation
+ * - Raydium: @raydium-io/raydium-sdk-v2 PoolInfoLayout for pool state decoding
  */
 
 import { Connection, PublicKey } from '@solana/web3.js';
 import { logger } from '../utils/logger.js';
 import { logCatchError } from '../utils/errorHandler.js';
 
-// Try to import Raydium layout directly for better reliability
+// Cache SDK imports for performance
 let RaydiumClmmLayout: any = null;
+let RaydiumGetPdaTickArrayAddress: any = null;
+let OrcaPDAUtil: any = null;
+let OrcaWhirlpoolDecoder: any = null;
+
+// Pre-import Raydium SDK components
 try {
   const layoutModule = await import('@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js');
   RaydiumClmmLayout = layoutModule.PoolInfoLayout;
 } catch {
   // Will fall back to dynamic lookup
+}
+
+try {
+  const raydiumSdk = await import('@raydium-io/raydium-sdk-v2');
+  RaydiumGetPdaTickArrayAddress = (raydiumSdk as any).getPdaTickArrayAddress 
+    || (raydiumSdk as any).CLMM?.getPdaTickArrayAddress 
+    || (raydiumSdk as any).Clmm?.getPdaTickArrayAddress;
+} catch {
+  // Will fall back to manual derivation
+}
+
+// Pre-import Orca SDK components
+try {
+  const orcaSdk = await import('@orca-so/whirlpools-sdk');
+  OrcaPDAUtil = (orcaSdk as any).PDAUtil;
+} catch {
+  // Will fall back to manual derivation
+}
+
+try {
+  const orcaClient = await import('@orca-so/whirlpools-client');
+  if (typeof (orcaClient as any).getWhirlpoolDecoder === 'function') {
+    OrcaWhirlpoolDecoder = (orcaClient as any).getWhirlpoolDecoder();
+  }
+} catch {
+  // Will fall back to manual decoding
 }
 
 // Constants
@@ -167,12 +204,24 @@ export interface ValidatedPoolState {
 }
 
 /**
- * Derive Orca tick array PDA
+ * Derive Orca tick array PDA using SDK method when available
+ * Falls back to manual derivation if SDK not available
  */
 function deriveOrcaTickArrayPda(
   poolId: PublicKey,
   startTickIndex: number
 ): PublicKey {
+  // Try SDK method first (most reliable)
+  if (OrcaPDAUtil?.getTickArray) {
+    try {
+      const result = OrcaPDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM, poolId, startTickIndex);
+      return result?.publicKey || result;
+    } catch {
+      // Fall through to manual derivation
+    }
+  }
+  
+  // Fallback: Manual PDA derivation
   // CRITICAL: Orca SDK encodes startTick as ASCII string, not binary i32
   const [pda] = PublicKey.findProgramAddressSync(
     [Buffer.from('tick_array'), poolId.toBuffer(), Buffer.from(startTickIndex.toString())],
@@ -182,13 +231,26 @@ function deriveOrcaTickArrayPda(
 }
 
 /**
- * Derive Raydium tick array PDA
+ * Derive Raydium tick array PDA using SDK method when available
+ * Falls back to manual derivation if SDK not available
  */
 function deriveRaydiumTickArrayPda(
   poolId: PublicKey,
   startTickIndex: number,
   programId: PublicKey = RAYDIUM_CLMM_PROGRAM
 ): PublicKey {
+  // Try SDK method first (most reliable, handles edge cases)
+  if (RaydiumGetPdaTickArrayAddress) {
+    try {
+      const result = RaydiumGetPdaTickArrayAddress(programId, poolId, startTickIndex);
+      const pk = result?.publicKey || result;
+      if (pk) return pk;
+    } catch {
+      // Fall through to manual derivation
+    }
+  }
+  
+  // Fallback: Manual PDA derivation
   const startTickBuffer = Buffer.alloc(4);
   startTickBuffer.writeInt32LE(startTickIndex, 0);
   const [pda] = PublicKey.findProgramAddressSync(
@@ -237,6 +299,8 @@ async function searchOrcaTickArrays(
  * Fetch Orca Whirlpool state using SDK
  * Returns validated tick arrays that actually exist on-chain
  * 
+ * Uses SDK decoder when available for accurate pool state decoding.
+ * Uses SDK PDAUtil for tick array PDA derivation.
  * Uses adaptive search range based on tick spacing:
  * - Smaller tick spacing = wider search (pools with tickSpacing=1 need more coverage)
  * - Falls back to extended search if no tick arrays found in initial range
@@ -255,29 +319,76 @@ export async function fetchOrcaPoolViaSdk(
       return null;
     }
     
-    // Decode pool state manually (same layout as in testSwap.ts)
-    const data = Buffer.from(accountInfo.data);
-    let offset = 8; // Skip discriminator
+    let tickSpacing: number;
+    let currentTick: number;
+    let liquidity: string;
+    let sqrtPriceX64: string;
     
-    // Skip whirlpoolsConfig, whirlpoolBump
-    offset += 32 + 1;
-    
-    // tickSpacing (2 bytes, u16 LE)
-    const tickSpacing = data.readUInt16LE(offset);
-    offset += 2 + 2 + 2 + 2; // Skip tickSpacingSeed, feeRate, protocolFeeRate
-    
-    // liquidity (16 bytes)
-    const liquidityBuf = data.subarray(offset, offset + 16);
-    const liquidity = Buffer.from(liquidityBuf).reverse().toString('hex');
-    offset += 16;
-    
-    // sqrtPrice (16 bytes)
-    const sqrtPriceBuf = data.subarray(offset, offset + 16);
-    const sqrtPriceX64 = Buffer.from(sqrtPriceBuf).reverse().toString('hex');
-    offset += 16;
-    
-    // tickCurrentIndex (4 bytes, i32 LE)
-    const currentTick = data.readInt32LE(offset);
+    // Try SDK decoder first (most accurate)
+    if (OrcaWhirlpoolDecoder) {
+      try {
+        const dataBuffer = accountInfo.data instanceof Buffer 
+          ? new Uint8Array(accountInfo.data) 
+          : accountInfo.data;
+        const decoded = OrcaWhirlpoolDecoder.decode(dataBuffer);
+        
+        if (decoded) {
+          tickSpacing = Number(decoded.tickSpacing ?? 0);
+          currentTick = Number(decoded.tickCurrentIndex ?? 0);
+          liquidity = String(decoded.liquidity ?? '0');
+          sqrtPriceX64 = String(decoded.sqrtPrice ?? '0');
+          
+          logger.debug('orca.sdk.fetch.decoded_via_sdk', {
+            cat: 'cache',
+            ctx: { pool: poolId.slice(0, 8) + '…', tickSpacing, currentTick }
+          });
+        } else {
+          throw new Error('SDK decoder returned null');
+        }
+      } catch (decodeErr) {
+        // Fall through to manual decoding
+        logger.debug('orca.sdk.fetch.sdk_decode_failed', {
+          cat: 'cache',
+          ctx: { pool: poolId.slice(0, 8) + '…', error: String((decodeErr as any)?.message || decodeErr) }
+        });
+        
+        // Manual decoding fallback
+        const data = Buffer.from(accountInfo.data);
+        let offset = 8; // Skip discriminator
+        offset += 32 + 1; // Skip whirlpoolsConfig, whirlpoolBump
+        
+        tickSpacing = data.readUInt16LE(offset);
+        offset += 2 + 2 + 2 + 2; // Skip tickSpacingSeed, feeRate, protocolFeeRate
+        
+        const liquidityBuf = data.subarray(offset, offset + 16);
+        liquidity = Buffer.from(liquidityBuf).reverse().toString('hex');
+        offset += 16;
+        
+        const sqrtPriceBuf = data.subarray(offset, offset + 16);
+        sqrtPriceX64 = Buffer.from(sqrtPriceBuf).reverse().toString('hex');
+        offset += 16;
+        
+        currentTick = data.readInt32LE(offset);
+      }
+    } else {
+      // Manual decoding when SDK not available
+      const data = Buffer.from(accountInfo.data);
+      let offset = 8; // Skip discriminator
+      offset += 32 + 1; // Skip whirlpoolsConfig, whirlpoolBump
+      
+      tickSpacing = data.readUInt16LE(offset);
+      offset += 2 + 2 + 2 + 2; // Skip tickSpacingSeed, feeRate, protocolFeeRate
+      
+      const liquidityBuf = data.subarray(offset, offset + 16);
+      liquidity = Buffer.from(liquidityBuf).reverse().toString('hex');
+      offset += 16;
+      
+      const sqrtPriceBuf = data.subarray(offset, offset + 16);
+      sqrtPriceX64 = Buffer.from(sqrtPriceBuf).reverse().toString('hex');
+      offset += 16;
+      
+      currentTick = data.readInt32LE(offset);
+    }
     
     // Validate tick spacing before proceeding
     if (tickSpacing <= 0 || tickSpacing > 1000) {
