@@ -452,6 +452,17 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
     const { getConnection } = await import('../../wallet/wallet.js');
     const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
     const { PublicKey } = await import('@solana/web3.js');
+    
+    // Load new client decoder (v4.0)
+    let newClientDecoder: any = null;
+    try {
+      const newClient = await import('@orca-so/whirlpools-client').catch(() => null);
+      if (newClient && typeof (newClient as any).getWhirlpoolDecoder === 'function') {
+        newClientDecoder = (newClient as any).getWhirlpoolDecoder();
+      }
+    } catch {}
+    
+    // Load legacy SDK as fallback
     const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
     const ParsableWhirlpool = sdkAny?.ParsableWhirlpool;
     const PriceMath = sdkAny?.PriceMath;
@@ -551,7 +562,20 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
             let feeRateBps: number | undefined;
             
             let parsed: any = null;
-            if (ParsableWhirlpool && typeof ParsableWhirlpool.parse === 'function') {
+            
+            // PRIORITY 1: New @orca-so/whirlpools-client (v4.0)
+            if (newClientDecoder) {
+              try {
+                const dataBuffer = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
+                const decoded = newClientDecoder.decode(dataBuffer);
+                if (decoded && decoded.sqrtPrice !== undefined) {
+                  parsed = decoded;
+                }
+              } catch {}
+            }
+            
+            // PRIORITY 2: Legacy @orca-so/whirlpools-sdk (v0.16)
+            if (!parsed && ParsableWhirlpool && typeof ParsableWhirlpool.parse === 'function') {
               try { parsed = ParsableWhirlpool.parse(poolPk, acc); } catch (e) { logCatchError('pools.orca', e); }
             }
             

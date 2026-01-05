@@ -94,8 +94,47 @@ function deriveRaydiumTickArrayPda(
 }
 
 /**
+ * Helper function to search for Orca tick arrays in a given range
+ */
+async function searchOrcaTickArrays(
+  connection: Connection,
+  poolPk: PublicKey,
+  centerIdx: number,
+  ticksInArray: number,
+  range: number
+): Promise<Array<{ offset: number; address: string; pda: PublicKey }>> {
+  const tickArrayPdas: Array<{ offset: number; pda: PublicKey; startTick: number }> = [];
+  
+  for (let i = -range; i <= range; i++) {
+    const startTick = (centerIdx + i) * ticksInArray;
+    const pda = deriveOrcaTickArrayPda(poolPk, startTick);
+    tickArrayPdas.push({ offset: i, pda, startTick });
+  }
+  
+  // Batch check which tick arrays exist
+  const pdaKeys = tickArrayPdas.map(p => p.pda);
+  const accountInfos = await connection.getMultipleAccountsInfo(pdaKeys);
+  
+  const existingArrays: Array<{ offset: number; address: string; pda: PublicKey }> = [];
+  
+  for (let i = 0; i < tickArrayPdas.length; i++) {
+    const info = accountInfos[i];
+    if (info && info.owner.equals(ORCA_WHIRLPOOL_PROGRAM) && info.data.length > 0) {
+      const { offset, pda } = tickArrayPdas[i];
+      existingArrays.push({ offset, address: pda.toBase58(), pda });
+    }
+  }
+  
+  return existingArrays;
+}
+
+/**
  * Fetch Orca Whirlpool state using SDK
  * Returns validated tick arrays that actually exist on-chain
+ * 
+ * Uses adaptive search range based on tick spacing:
+ * - Smaller tick spacing = wider search (pools with tickSpacing=1 need more coverage)
+ * - Falls back to extended search if no tick arrays found in initial range
  */
 export async function fetchOrcaPoolViaSdk(
   connection: Connection,
@@ -135,45 +174,78 @@ export async function fetchOrcaPoolViaSdk(
     // tickCurrentIndex (4 bytes, i32 LE)
     const currentTick = data.readInt32LE(offset);
     
+    // Validate tick spacing before proceeding
+    if (tickSpacing <= 0 || tickSpacing > 1000) {
+      logger.debug('orca.sdk.fetch.invalid_tick_spacing', {
+        cat: 'cache',
+        ctx: { pool: poolId, tickSpacing, currentTick }
+      });
+      return null;
+    }
+    
     // Calculate tick array indices
     const ticksInArray = ORCA_TICK_ARRAY_SIZE * tickSpacing;
     const centerIdx = Math.floor(currentTick / ticksInArray);
     
-    // Derive tick arrays for range [-5, +5] around center
-    const RANGE = 5;
-    const tickArrayPdas: Array<{ offset: number; pda: PublicKey; startTick: number }> = [];
+    // SUGGESTION 1: Use adaptive range based on tick spacing
+    // Smaller tick spacing means each array covers fewer ticks, so we need wider search
+    // tickSpacing=1: each array covers 88 ticks, search ±15 (covers ±1320 ticks)
+    // tickSpacing=8: each array covers 704 ticks, search ±8 (covers ±5632 ticks)
+    // tickSpacing=64+: each array covers 5632+ ticks, search ±5 (covers ±28160+ ticks)
+    const INITIAL_RANGE = tickSpacing <= 2 ? 15 : tickSpacing <= 8 ? 10 : 5;
     
-    for (let i = -RANGE; i <= RANGE; i++) {
-      const startTick = (centerIdx + i) * ticksInArray;
-      const pda = deriveOrcaTickArrayPda(poolPk, startTick);
-      tickArrayPdas.push({ offset: i, pda, startTick });
+    // Search for tick arrays in initial range
+    let existingArrays = await searchOrcaTickArrays(
+      connection, poolPk, centerIdx, ticksInArray, INITIAL_RANGE
+    );
+    
+    // SUGGESTION 2: If no tick arrays found, try extended search
+    // This catches pools where liquidity is concentrated far from current tick
+    if (existingArrays.length === 0) {
+      const EXTENDED_RANGE = tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15;
+      
+      logger.debug('orca.sdk.fetch.extended_search', {
+        cat: 'cache',
+        ctx: { 
+          pool: poolId.slice(0, 8) + '…', 
+          currentTick, 
+          tickSpacing, 
+          centerIdx,
+          initialRange: INITIAL_RANGE,
+          extendedRange: EXTENDED_RANGE 
+        }
+      });
+      
+      existingArrays = await searchOrcaTickArrays(
+        connection, poolPk, centerIdx, ticksInArray, EXTENDED_RANGE
+      );
+      
+      if (existingArrays.length > 0) {
+        logger.info('orca.sdk.fetch.found_in_extended', {
+          cat: 'cache',
+          ctx: { 
+            pool: poolId.slice(0, 8) + '…', 
+            currentTick, 
+            tickSpacing,
+            arraysFound: existingArrays.length,
+            nearestOffset: existingArrays.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))[0]?.offset
+          }
+        });
+      }
     }
     
-    // Batch check which tick arrays exist
-    const pdaKeys = tickArrayPdas.map(p => p.pda);
-    const accountInfos = await connection.getMultipleAccountsInfo(pdaKeys);
-    
+    // Categorize arrays into lower, center, upper
     const lower: string[] = [];
     let center: string | undefined;
     const upper: string[] = [];
     
-    // Collect all existing tick arrays with their offsets
-    const existingArrays: Array<{ offset: number; address: string }> = [];
-    
-    for (let i = 0; i < tickArrayPdas.length; i++) {
-      const info = accountInfos[i];
-      if (info && info.owner.equals(ORCA_WHIRLPOOL_PROGRAM) && info.data.length > 0) {
-        const { offset, pda } = tickArrayPdas[i];
-        const addr = pda.toBase58();
-        existingArrays.push({ offset, address: addr });
-        
-        if (offset === 0) {
-          center = addr;
-        } else if (offset < 0) {
-          lower.push(addr);
-        } else {
-          upper.push(addr);
-        }
+    for (const arr of existingArrays) {
+      if (arr.offset === 0) {
+        center = arr.address;
+      } else if (arr.offset < 0) {
+        lower.push(arr.address);
+      } else {
+        upper.push(arr.address);
       }
     }
     
@@ -213,7 +285,7 @@ export async function fetchOrcaPoolViaSdk(
     } else if (!center && existingArrays.length === 0) {
       logger.warn('orca.sdk.fetch.no_tick_arrays', {
         cat: 'cache',
-        ctx: { pool: poolId, currentTick, tickSpacing, centerIdx }
+        ctx: { pool: poolId, currentTick, tickSpacing, centerIdx, searchedRange: tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15 }
       });
     }
     
@@ -491,8 +563,48 @@ async function fetchMeteoraPoolManual(
 }
 
 /**
+ * Helper function to search for Raydium tick arrays in a given range
+ */
+async function searchRaydiumTickArrays(
+  connection: Connection,
+  poolPk: PublicKey,
+  centerStart: number,
+  delta: number,
+  range: number,
+  program: PublicKey
+): Promise<Array<{ offset: number; address: string; pda: PublicKey }>> {
+  const tickArrayPdas: Array<{ offset: number; pda: PublicKey }> = [];
+  
+  for (let i = -range; i <= range; i++) {
+    const startTick = centerStart + (i * delta);
+    const pda = deriveRaydiumTickArrayPda(poolPk, startTick, program);
+    tickArrayPdas.push({ offset: i, pda });
+  }
+  
+  // Batch check existence
+  const pdaKeys = tickArrayPdas.map(p => p.pda);
+  const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+  
+  const existingArrays: Array<{ offset: number; address: string; pda: PublicKey }> = [];
+  
+  for (let i = 0; i < tickArrayPdas.length; i++) {
+    const info = infos[i];
+    if (info && info.owner.equals(program) && info.data.length > 0) {
+      const { offset, pda } = tickArrayPdas[i];
+      existingArrays.push({ offset, address: pda.toBase58(), pda });
+    }
+  }
+  
+  return existingArrays;
+}
+
+/**
  * Fetch Raydium CLMM pool state
  * Uses tickArrayBitmap from pool state to determine which tick arrays are initialized
+ * 
+ * Uses adaptive search range based on tick spacing:
+ * - Smaller tick spacing = wider search
+ * - Falls back to extended search if no tick arrays found in initial range
  */
 export async function fetchRaydiumPoolViaSdk(
   connection: Connection,
@@ -546,7 +658,7 @@ export async function fetchRaydiumPoolViaSdk(
     const sqrtPriceX64 = String(state.sqrtPriceX64 ?? '0');
     const liquidity = String(state.liquidity ?? '0');
     
-    if (tickSpacing <= 0) {
+    if (tickSpacing <= 0 || tickSpacing > 1000) {
       logger.debug('raydium.sdk.fetch.invalid_tick_spacing', { 
         cat: 'cache', 
         ctx: { pool: poolId, tickSpacing } 
@@ -560,38 +672,97 @@ export async function fetchRaydiumPoolViaSdk(
     const centerStart = centerIdx * ticksInArray;
     const delta = ticksInArray;
     
-    // Derive tick arrays for range
-    const RANGE = 5;
-    const tickArrayPdas: Array<{ offset: number; pda: PublicKey }> = [];
+    // Adaptive range based on tick spacing (Raydium arrays are 60 ticks vs Orca's 88)
+    const INITIAL_RANGE = tickSpacing <= 2 ? 12 : tickSpacing <= 10 ? 8 : 5;
     
-    for (let i = -RANGE; i <= RANGE; i++) {
-      const startTick = centerStart + (i * delta);
-      const pda = deriveRaydiumTickArrayPda(poolPk, startTick, program);
-      tickArrayPdas.push({ offset: i, pda });
+    // Search for tick arrays in initial range
+    let existingArrays = await searchRaydiumTickArrays(
+      connection, poolPk, centerStart, delta, INITIAL_RANGE, program
+    );
+    
+    // If no tick arrays found, try extended search
+    if (existingArrays.length === 0) {
+      const EXTENDED_RANGE = tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12;
+      
+      logger.debug('raydium.sdk.fetch.extended_search', {
+        cat: 'cache',
+        ctx: { 
+          pool: poolId.slice(0, 8) + '…', 
+          tickCurrent, 
+          tickSpacing, 
+          centerIdx,
+          initialRange: INITIAL_RANGE,
+          extendedRange: EXTENDED_RANGE 
+        }
+      });
+      
+      existingArrays = await searchRaydiumTickArrays(
+        connection, poolPk, centerStart, delta, EXTENDED_RANGE, program
+      );
+      
+      if (existingArrays.length > 0) {
+        logger.info('raydium.sdk.fetch.found_in_extended', {
+          cat: 'cache',
+          ctx: { 
+            pool: poolId.slice(0, 8) + '…', 
+            tickCurrent, 
+            tickSpacing,
+            arraysFound: existingArrays.length,
+            nearestOffset: existingArrays.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))[0]?.offset
+          }
+        });
+      }
     }
     
-    // Batch check existence
-    const pdaKeys = tickArrayPdas.map(p => p.pda);
-    const infos = await connection.getMultipleAccountsInfo(pdaKeys);
-    
+    // Categorize arrays into lower, center, upper
     const lower: string[] = [];
     let center: string | undefined;
     const upper: string[] = [];
     
-    for (let i = 0; i < tickArrayPdas.length; i++) {
-      const info = infos[i];
-      if (info && info.owner.equals(program) && info.data.length > 0) {
-        const { offset, pda } = tickArrayPdas[i];
-        const addr = pda.toBase58();
-        
-        if (offset === 0) {
-          center = addr;
-        } else if (offset < 0) {
-          lower.push(addr);
+    for (const arr of existingArrays) {
+      if (arr.offset === 0) {
+        center = arr.address;
+      } else if (arr.offset < 0) {
+        lower.push(arr.address);
+      } else {
+        upper.push(arr.address);
+      }
+    }
+    
+    // If center doesn't exist but we have other arrays, pick the nearest one as center
+    if (!center && existingArrays.length > 0) {
+      existingArrays.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset));
+      const nearest = existingArrays[0];
+      center = nearest.address;
+      
+      // Recategorize relative to the new center
+      lower.length = 0;
+      upper.length = 0;
+      for (const arr of existingArrays) {
+        if (arr.address === center) continue;
+        if (arr.offset < nearest.offset) {
+          lower.push(arr.address);
         } else {
-          upper.push(addr);
+          upper.push(arr.address);
         }
       }
+      
+      logger.debug('raydium.sdk.fetch.center_from_nearest', {
+        cat: 'cache',
+        ctx: { 
+          pool: poolId.slice(0, 8), 
+          tickCurrent, 
+          tickSpacing,
+          originalCenterIdx: centerIdx,
+          nearestOffset: nearest.offset,
+          totalArrays: existingArrays.length,
+        }
+      });
+    } else if (!center && existingArrays.length === 0) {
+      logger.warn('raydium.sdk.fetch.no_tick_arrays', {
+        cat: 'cache',
+        ctx: { pool: poolId, tickCurrent, tickSpacing, centerIdx, searchedRange: tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12 }
+      });
     }
     
     const fetchDurationMs = Date.now() - startTime;
@@ -710,36 +881,52 @@ async function fetchRaydiumPoolManual(
     const centerStart = centerIdx * ticksInArray;
     const delta = ticksInArray;
     
-    // Derive tick arrays for range [-5, +5]
-    const RANGE = 5;
-    const tickArrayPdas: Array<{ offset: number; pda: PublicKey }> = [];
+    // Adaptive range based on tick spacing
+    const INITIAL_RANGE = tickSpacing <= 2 ? 12 : tickSpacing <= 10 ? 8 : 5;
     
-    for (let i = -RANGE; i <= RANGE; i++) {
-      const startTick = centerStart + (i * delta);
-      const pda = deriveRaydiumTickArrayPda(poolPk, startTick, program);
-      tickArrayPdas.push({ offset: i, pda });
+    // Search for tick arrays in initial range
+    let existingArrays = await searchRaydiumTickArrays(
+      connection, poolPk, centerStart, delta, INITIAL_RANGE, program
+    );
+    
+    // If no tick arrays found, try extended search
+    if (existingArrays.length === 0) {
+      const EXTENDED_RANGE = tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12;
+      existingArrays = await searchRaydiumTickArrays(
+        connection, poolPk, centerStart, delta, EXTENDED_RANGE, program
+      );
     }
     
-    // Batch check existence
-    const pdaKeys = tickArrayPdas.map(p => p.pda);
-    const infos = await connection.getMultipleAccountsInfo(pdaKeys);
-    
+    // Categorize arrays into lower, center, upper
     const lower: string[] = [];
     let center: string | undefined;
     const upper: string[] = [];
     
-    for (let i = 0; i < tickArrayPdas.length; i++) {
-      const info = infos[i];
-      if (info && info.owner.equals(program) && info.data.length > 0) {
-        const { offset, pda } = tickArrayPdas[i];
-        const addr = pda.toBase58();
-        
-        if (offset === 0) {
-          center = addr;
-        } else if (offset < 0) {
-          lower.push(addr);
+    for (const arr of existingArrays) {
+      if (arr.offset === 0) {
+        center = arr.address;
+      } else if (arr.offset < 0) {
+        lower.push(arr.address);
+      } else {
+        upper.push(arr.address);
+      }
+    }
+    
+    // If center doesn't exist but we have other arrays, pick the nearest one as center
+    if (!center && existingArrays.length > 0) {
+      existingArrays.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset));
+      const nearest = existingArrays[0];
+      center = nearest.address;
+      
+      // Recategorize relative to the new center
+      lower.length = 0;
+      upper.length = 0;
+      for (const arr of existingArrays) {
+        if (arr.address === center) continue;
+        if (arr.offset < nearest.offset) {
+          lower.push(arr.address);
         } else {
-          upper.push(addr);
+          upper.push(arr.address);
         }
       }
     }

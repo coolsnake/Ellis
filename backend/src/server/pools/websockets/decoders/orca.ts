@@ -3,12 +3,21 @@
  * 
  * Handles decoding and WebSocket updates for Orca CLMM (Whirlpool) pools.
  * 
- * Orca uses the Whirlpools SDK for parsing pool account data.
+ * Uses @orca-so/whirlpools-client (v4.0) as the primary decoder,
+ * with fallback to legacy SDK and manual decoding.
  */
 
 import { PublicKey } from '@solana/web3.js';
 import { logger } from '../../../../utils/logger.js';
 import { logCatchError, logCatchDebug } from '../../../../utils/errorHandler.js';
+
+// Import new client decoder - lazy loaded to avoid startup issues
+let whirlpoolsClientModule: {
+  decodeWhirlpool: (encodedAccount: any) => any;
+  getWhirlpoolDecoder: () => { decode: (data: Uint8Array) => any };
+  WHIRLPOOL_DISCRIMINATOR: Uint8Array;
+} | null = null;
+let whirlpoolsClientLoadAttempted = false;
 import { anyToBigInt } from '../../precision.js';
 import { processPriceThroughPipeline } from '../../pricePipeline.js';
 import { diffNormalizedPools } from '../../../pools.utils.js';
@@ -253,12 +262,116 @@ function bufferToU128LE(buf: Buffer | Uint8Array): bigint {
 }
 
 /**
- * Decode Orca Whirlpool from account data using the SDK
+ * Load the new @orca-so/whirlpools-client module (v4.0)
+ * This is the preferred decoder as it uses modern @solana/kit types
+ */
+async function loadWhirlpoolsClient(): Promise<typeof whirlpoolsClientModule> {
+  if (whirlpoolsClientModule) return whirlpoolsClientModule;
+  if (whirlpoolsClientLoadAttempted) return null;
+  
+  whirlpoolsClientLoadAttempted = true;
+  
+  try {
+    const client = await import('@orca-so/whirlpools-client');
+    whirlpoolsClientModule = {
+      decodeWhirlpool: (client as any).decodeWhirlpool,
+      getWhirlpoolDecoder: (client as any).getWhirlpoolDecoder,
+      WHIRLPOOL_DISCRIMINATOR: (client as any).WHIRLPOOL_DISCRIMINATOR,
+    };
+    
+    logger.info('orca.decoder.new_client_loaded', {
+      hasDecodeWhirlpool: typeof whirlpoolsClientModule.decodeWhirlpool === 'function',
+      hasGetDecoder: typeof whirlpoolsClientModule.getWhirlpoolDecoder === 'function',
+      hasDiscriminator: !!whirlpoolsClientModule.WHIRLPOOL_DISCRIMINATOR,
+      cat: 'pools'
+    });
+    
+    return whirlpoolsClientModule;
+  } catch (err: any) {
+    logger.warn('orca.decoder.new_client_load_failed', {
+      error: String(err?.message || err),
+      cat: 'pools'
+    });
+    return null;
+  }
+}
+
+/**
+ * Decode using the new @orca-so/whirlpools-client (v4.0)
+ * Returns parsed data with Address (string) types
+ */
+async function decodeWithNewClient(
+  data: Buffer | Uint8Array,
+  poolId: string
+): Promise<{ parsed: any; mintA: string; mintB: string } | null> {
+  const client = await loadWhirlpoolsClient();
+  if (!client || typeof client.getWhirlpoolDecoder !== 'function') {
+    return null;
+  }
+  
+  try {
+    const decoder = client.getWhirlpoolDecoder();
+    const decoded = decoder.decode(data instanceof Buffer ? new Uint8Array(data) : data);
+    
+    if (!decoded) {
+      return null;
+    }
+    
+    // New client returns Address (string) types directly
+    const mintA = typeof decoded.tokenMintA === 'string' 
+      ? decoded.tokenMintA 
+      : decoded.tokenMintA?.toString?.() || '';
+    const mintB = typeof decoded.tokenMintB === 'string' 
+      ? decoded.tokenMintB 
+      : decoded.tokenMintB?.toString?.() || '';
+    
+    if (!mintA || !mintB) {
+      return null;
+    }
+    
+    // Convert to a format compatible with the rest of the codebase
+    // Create PublicKey objects for vaults/oracle for compatibility
+    const parsed = {
+      sqrtPrice: decoded.sqrtPrice,
+      liquidity: decoded.liquidity,
+      tickSpacing: decoded.tickSpacing,
+      tickCurrentIndex: decoded.tickCurrentIndex,
+      feeRate: decoded.feeRate,
+      protocolFeeRate: decoded.protocolFeeRate,
+      tokenMintA: new PublicKey(mintA),
+      tokenMintB: new PublicKey(mintB),
+      tokenVaultA: decoded.tokenVaultA ? new PublicKey(decoded.tokenVaultA) : null,
+      tokenVaultB: decoded.tokenVaultB ? new PublicKey(decoded.tokenVaultB) : null,
+      oracle: decoded.oracle ? new PublicKey(decoded.oracle) : null,
+      // Include raw values for inspection
+      _decodedWithNewClient: true,
+    };
+    
+    logger.debug('orca.decoder.new_client_success', {
+      poolId: poolId.slice(0, 8) + '…',
+      mintA: mintA.slice(0, 8) + '…',
+      mintB: mintB.slice(0, 8) + '…',
+      cat: 'pools'
+    });
+    
+    return { parsed, mintA, mintB };
+  } catch (err: any) {
+    logger.debug('orca.decoder.new_client_decode_error', {
+      poolId: poolId.slice(0, 8) + '…',
+      error: String(err?.message || err),
+      cat: 'pools'
+    });
+    return null;
+  }
+}
+
+/**
+ * Decode Orca Whirlpool from account data
  * 
- * IMPORTANT: ParsableWhirlpool.parse requires a full AccountInfo object with
- * data, owner, executable, and lamports fields. The owner MUST be a PublicKey
- * object, not a string. The SDK validates that the account is owned by the
- * Whirlpool program.
+ * Priority chain:
+ * 1. New @orca-so/whirlpools-client (v4.0) - preferred, modern API
+ * 2. Legacy @orca-so/whirlpools-sdk (v0.16) - fallback
+ * 3. Manual decoding - last resort
  */
 export async function decodeOrcaWhirlpool(
   accountInfo: AccountInfo,
@@ -266,12 +379,27 @@ export async function decodeOrcaWhirlpool(
   accountPubkey?: any
 ): Promise<{ parsed: any; mintA: string; mintB: string } | null> {
   try {
-    // First try SDK-based decoding
+    const data = accountInfo.data;
+    if (!data || data.length === 0) {
+      return null;
+    }
+    
+    // ============================================
+    // PRIORITY 1: New client decoder (v4.0)
+    // ============================================
+    const newClientResult = await decodeWithNewClient(data, poolId);
+    if (newClientResult) {
+      return newClientResult;
+    }
+    
+    // ============================================
+    // PRIORITY 2: Legacy SDK decoder (v0.16)
+    // ============================================
     const sdk = await import('@orca-so/whirlpools-sdk').catch((err) => {
       // Log at info level once to diagnose SDK issues on server
       if (!(decodeOrcaWhirlpool as any)._sdkErrorLogged) {
         (decodeOrcaWhirlpool as any)._sdkErrorLogged = true;
-        logger.info('orca.decoder.sdk_import_error', { 
+        logger.info('orca.decoder.legacy_sdk_import_error', { 
           error: String(err?.message || err),
           stack: err?.stack?.split('\n').slice(0, 3).join(' | '),
           cat: 'pools' 
@@ -295,27 +423,40 @@ export async function decodeOrcaWhirlpool(
             rentEpoch: accountInfo.rentEpoch ?? 0,
           };
           
-          const parsed = ParsableWhirlpool.parse(accountPubkey, sdkAccountInfo);
-          
-          if (parsed) {
-            const mintA = parsed.tokenMintA?.toBase58?.() || '';
-            const mintB = parsed.tokenMintB?.toBase58?.() || '';
+          try {
+            const parsed = ParsableWhirlpool.parse(accountPubkey, sdkAccountInfo);
             
-            if (mintA && mintB) {
-              return { parsed, mintA, mintB };
+            if (parsed) {
+              const mintA = parsed.tokenMintA?.toBase58?.() || '';
+              const mintB = parsed.tokenMintB?.toBase58?.() || '';
+              
+              if (mintA && mintB) {
+                logger.debug('orca.decoder.legacy_sdk_success', {
+                  poolId: poolId.slice(0, 8) + '…',
+                  cat: 'pools'
+                });
+                return { parsed, mintA, mintB };
+              }
             }
+          } catch (parseErr: any) {
+            logger.debug('orca.decoder.legacy_sdk_parse_error', {
+              poolId: poolId.slice(0, 8) + '…',
+              error: String(parseErr?.message || parseErr),
+              cat: 'pools'
+            });
           }
         }
       }
     }
     
-    // Fallback: Manual decoding without SDK
+    // ============================================
+    // PRIORITY 3: Manual decoding (fallback)
+    // ============================================
     logger.debug('orca.decoder.using_manual_fallback', {
       poolId: poolId.slice(0, 8) + '…',
       cat: 'pools'
     });
     
-    const data = accountInfo.data;
     const manualDecoded = decodeWhirlpoolManually(data);
     
     if (!manualDecoded) {

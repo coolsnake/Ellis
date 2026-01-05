@@ -1961,16 +1961,7 @@ export class DexAltManager {
     const accounts: PublicKey[] = [];
     
     try {
-      // Import Orca SDK
-      const sdk = await import('@orca-so/whirlpools-sdk').catch(() => null);
-      if (!sdk || !poolInfo) return accounts;
-
-      const { ParsableWhirlpool } = sdk as any;
-      if (!ParsableWhirlpool || typeof ParsableWhirlpool.parse !== 'function') return accounts;
-
-      // Parse whirlpool state
-      const parsed = ParsableWhirlpool.parse(poolPk, poolInfo);
-      if (!parsed) return accounts;
+      if (!poolInfo?.data) return accounts;
 
       // Helper to convert to PublicKey
       const asPk = (v: any): PublicKey | null => {
@@ -1983,6 +1974,44 @@ export class DexAltManager {
           return null;
         }
       };
+
+      let parsed: any = null;
+      
+      // PRIORITY 1: New @orca-so/whirlpools-client (v4.0)
+      try {
+        const newClient = await import('@orca-so/whirlpools-client').catch(() => null);
+        if (newClient && typeof (newClient as any).getWhirlpoolDecoder === 'function') {
+          const decoder = (newClient as any).getWhirlpoolDecoder();
+          const dataBuffer = poolInfo.data instanceof Buffer ? new Uint8Array(poolInfo.data) : poolInfo.data;
+          const decoded = decoder.decode(dataBuffer);
+          if (decoded && decoded.tokenMintA && decoded.tokenMintB) {
+            parsed = {
+              tokenVaultA: decoded.tokenVaultA,
+              tokenVaultB: decoded.tokenVaultB,
+              tokenMintA: decoded.tokenMintA,
+              tokenMintB: decoded.tokenMintB,
+              oracle: decoded.oracle,
+              whirlpoolsConfig: decoded.whirlpoolsConfig,
+              rewardInfos: decoded.rewardInfos || [],
+            };
+          }
+        }
+      } catch {}
+      
+      // PRIORITY 2: Legacy @orca-so/whirlpools-sdk (v0.16)
+      if (!parsed) {
+        const sdk = await import('@orca-so/whirlpools-sdk').catch(() => null);
+        if (sdk) {
+          const { ParsableWhirlpool } = sdk as any;
+          if (ParsableWhirlpool && typeof ParsableWhirlpool.parse === 'function') {
+            try {
+              parsed = ParsableWhirlpool.parse(poolPk, poolInfo);
+            } catch {}
+          }
+        }
+      }
+      
+      if (!parsed) return accounts;
 
       // Extract whirlpool accounts
       const tokenVaultA = asPk(parsed.tokenVaultA);

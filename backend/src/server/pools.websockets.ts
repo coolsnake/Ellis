@@ -2294,10 +2294,46 @@ function runWebsocketRefreshLoop(): void {
               let ok = false;
               try {
                 const pk58 = toB58Any(pk);
-                const sdk = await import('@orca-so/whirlpools-sdk').catch(() => null);
-                if (!sdk) { throw new Error('orca sdk missing'); }
-                const { ParsableWhirlpool } = sdk as any;
-                const parsed = ParsableWhirlpool.parse(pk, info);
+                let parsed: any = null;
+                
+                // PRIORITY 1: New @orca-so/whirlpools-client (v4.0)
+                try {
+                  const newClient = await import('@orca-so/whirlpools-client').catch(() => null);
+                  if (newClient && typeof (newClient as any).getWhirlpoolDecoder === 'function') {
+                    const decoder = (newClient as any).getWhirlpoolDecoder();
+                    const dataBuffer = info.data instanceof Buffer ? new Uint8Array(info.data) : info.data;
+                    const decoded = decoder.decode(dataBuffer);
+                    if (decoded && decoded.tokenMintA && decoded.tokenMintB) {
+                      // Convert to format compatible with rest of code (PublicKey objects)
+                      parsed = {
+                        tokenMintA: { toBase58: () => decoded.tokenMintA },
+                        tokenMintB: { toBase58: () => decoded.tokenMintB },
+                        sqrtPrice: decoded.sqrtPrice,
+                        liquidity: decoded.liquidity,
+                        tickSpacing: decoded.tickSpacing,
+                        tickCurrentIndex: decoded.tickCurrentIndex,
+                        feeRate: decoded.feeRate,
+                        tokenVaultA: decoded.tokenVaultA ? { toBase58: () => decoded.tokenVaultA } : null,
+                        tokenVaultB: decoded.tokenVaultB ? { toBase58: () => decoded.tokenVaultB } : null,
+                        _decodedWithNewClient: true,
+                      };
+                    }
+                  }
+                } catch {}
+                
+                // PRIORITY 2: Legacy @orca-so/whirlpools-sdk (v0.16)
+                if (!parsed) {
+                  const sdk = await import('@orca-so/whirlpools-sdk').catch(() => null);
+                  if (sdk) {
+                    const { ParsableWhirlpool } = sdk as any;
+                    if (ParsableWhirlpool && typeof ParsableWhirlpool.parse === 'function') {
+                      try {
+                        parsed = ParsableWhirlpool.parse(pk, info);
+                      } catch {}
+                    }
+                  }
+                }
+                
                 if (!parsed) {
                   // Log when parsing fails silently - this helps diagnose why events aren't being processed
                   try {
@@ -3700,32 +3736,137 @@ function runWebsocketRefreshLoop(): void {
               return;
             }
             
-            const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
-            const ParsableWhirlpool = sdkAny?.ParsableWhirlpool;
-            const PDAUtil = sdkAny?.PDAUtil;
-            
-            if (!ParsableWhirlpool || typeof ParsableWhirlpool.parse !== 'function') {
-              logger.info('orca.attach.no_sdk', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-              return;
-            }
-            
             let whirlpoolData: any = null;
-            try { 
-              whirlpoolData = ParsableWhirlpool.parse(pk, acc);
-              logger.info('orca.attach.parsed', { 
+            let decoderUsed = 'none';
+            
+            // ============================================
+            // PRIORITY 1: New @orca-so/whirlpools-client (v4.0)
+            // ============================================
+            try {
+              const newClient = await import('@orca-so/whirlpools-client').catch(() => null);
+              if (newClient && typeof (newClient as any).getWhirlpoolDecoder === 'function') {
+                const decoder = (newClient as any).getWhirlpoolDecoder();
+                const dataBuffer = acc.data instanceof Buffer ? new Uint8Array(acc.data) : acc.data;
+                const decoded = decoder.decode(dataBuffer);
+                
+                if (decoded && decoded.tokenVaultA && decoded.tokenVaultB) {
+                  // Convert string addresses to PublicKey objects for compatibility
+                  whirlpoolData = {
+                    tokenVaultA: new web3.PublicKey(decoded.tokenVaultA),
+                    tokenVaultB: new web3.PublicKey(decoded.tokenVaultB),
+                    oracle: decoded.oracle ? new web3.PublicKey(decoded.oracle) : null,
+                    tickSpacing: decoded.tickSpacing,
+                    tickCurrentIndex: decoded.tickCurrentIndex,
+                    tokenMintA: new web3.PublicKey(decoded.tokenMintA),
+                    tokenMintB: new web3.PublicKey(decoded.tokenMintB),
+                  };
+                  decoderUsed = 'new_client';
+                  logger.info('orca.attach.new_client_success', { 
+                    pool: poolAddr.slice(0,8)+'…', 
+                    cat: 'pools' 
+                  });
+                }
+              }
+            } catch (newClientErr: any) {
+              logger.debug('orca.attach.new_client_fail', { 
                 pool: poolAddr.slice(0,8)+'…', 
-                dataKeys: Object.keys(whirlpoolData || {}),
-                hasTokenVaultA: !!whirlpoolData?.tokenVaultA,
-                hasTokenVaultB: !!whirlpoolData?.tokenVaultB,
-                hasOracle: !!whirlpoolData?.oracle,
-                hasTickSpacing: whirlpoolData?.tickSpacing !== undefined,
-                hasTickCurrentIndex: whirlpoolData?.tickCurrentIndex !== undefined,
+                error: String(newClientErr?.message || newClientErr),
                 cat: 'pools' 
               });
-            } catch (err) { 
-              logger.info('orca.attach.parse_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+            }
+            
+            // ============================================
+            // PRIORITY 2: Legacy @orca-so/whirlpools-sdk (v0.16)
+            // ============================================
+            if (!whirlpoolData) {
+              const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+              const ParsableWhirlpool = sdkAny?.ParsableWhirlpool;
+              
+              if (ParsableWhirlpool && typeof ParsableWhirlpool.parse === 'function') {
+                try { 
+                  whirlpoolData = ParsableWhirlpool.parse(pk, acc);
+                  if (whirlpoolData) {
+                    decoderUsed = 'legacy_sdk';
+                  }
+                } catch (err: any) { 
+                  logger.debug('orca.attach.legacy_sdk_parse_fail', { 
+                    pool: poolAddr.slice(0,8)+'…', 
+                    error: String(err?.message || err), 
+                    cat: 'pools' 
+                  });
+                }
+              }
+            }
+            
+            // ============================================
+            // PRIORITY 3: Manual decoding (fallback)
+            // ============================================
+            if (!whirlpoolData) {
+              try {
+                // Manual decode using known offsets
+                const data = Buffer.from(acc.data);
+                const DISCRIMINATOR = Buffer.from([63, 149, 209, 12, 225, 128, 99, 9]);
+                
+                if (data.length >= 300 && data.subarray(0, 8).equals(DISCRIMINATOR)) {
+                  let offset = 8 + 32 + 1 + 2 + 2 + 2 + 2 + 16 + 16 + 4 + 8 + 8; // = 101
+                  const tokenMintA = new web3.PublicKey(data.subarray(offset, offset + 32)); offset += 32;
+                  const tokenMintB = new web3.PublicKey(data.subarray(offset, offset + 32)); offset += 32;
+                  const tokenVaultA = new web3.PublicKey(data.subarray(offset, offset + 32)); offset += 32;
+                  const tokenVaultB = new web3.PublicKey(data.subarray(offset, offset + 32)); offset += 32;
+                  
+                  // Skip feeGrowthGlobalA(16), feeGrowthGlobalB(16), rewardLastUpdatedTimestamp(8), rewardInfos(384)
+                  offset += 16 + 16 + 8 + 384;
+                  const oracle = data.length >= offset + 32 
+                    ? new web3.PublicKey(data.subarray(offset, offset + 32))
+                    : null;
+                  
+                  // Read tickSpacing and tickCurrentIndex from earlier offsets
+                  const tickSpacing = data.readUInt16LE(8 + 32 + 1);
+                  const tickCurrentIndex = data.readInt32LE(8 + 32 + 1 + 2 + 2 + 2 + 2 + 16 + 16);
+                  
+                  whirlpoolData = {
+                    tokenVaultA,
+                    tokenVaultB,
+                    oracle,
+                    tickSpacing,
+                    tickCurrentIndex,
+                    tokenMintA,
+                    tokenMintB,
+                  };
+                  decoderUsed = 'manual';
+                  logger.info('orca.attach.manual_decode_success', { 
+                    pool: poolAddr.slice(0,8)+'…', 
+                    cat: 'pools' 
+                  });
+                }
+              } catch (manualErr: any) {
+                logger.debug('orca.attach.manual_decode_fail', { 
+                  pool: poolAddr.slice(0,8)+'…', 
+                  error: String(manualErr?.message || manualErr),
+                  cat: 'pools' 
+                });
+              }
+            }
+            
+            if (!whirlpoolData) {
+              logger.info('orca.attach.all_decoders_failed', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
               return;
             }
+            
+            logger.info('orca.attach.parsed', { 
+              pool: poolAddr.slice(0,8)+'…', 
+              decoder: decoderUsed,
+              hasTokenVaultA: !!whirlpoolData?.tokenVaultA,
+              hasTokenVaultB: !!whirlpoolData?.tokenVaultB,
+              hasOracle: !!whirlpoolData?.oracle,
+              hasTickSpacing: whirlpoolData?.tickSpacing !== undefined,
+              hasTickCurrentIndex: whirlpoolData?.tickCurrentIndex !== undefined,
+              cat: 'pools' 
+            });
+            
+            // Get PDAUtil for tick array derivation (still need legacy SDK for this)
+            const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+            const PDAUtil = sdkAny?.PDAUtil;
             
             // Subscribe to vaults
             const vaultA = whirlpoolData?.tokenVaultA;

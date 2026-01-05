@@ -1244,19 +1244,47 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     
     // Precheck: ensure pool contains input mint to avoid zero-out quotes
     try {
-      const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
-      if (sdkAny && hop.poolId && hop.inputMint) {
+      if (hop.poolId && hop.inputMint) {
         const { PublicKey } = await import('@solana/web3.js');
         // Use stripped poolId for PublicKey creation
         const pk = new PublicKey(poolIdStripped);
         // Use account cache instead of direct RPC call
         const { accountCache } = await import('../utils/accountCache.js');
         const acc = await accountCache.getAccountInfo(pk);
-        const ParsableWhirlpool = (sdkAny as any).ParsableWhirlpool;
-        const parsed = acc ? (ParsableWhirlpool as any).parse(pk, acc) : null;
-        if (parsed) {
-          const mintA = parsed.tokenMintA?.toBase58?.();
-          const mintB = parsed.tokenMintB?.toBase58?.();
+        
+        let mintA: string | undefined;
+        let mintB: string | undefined;
+        
+        // PRIORITY 1: New @orca-so/whirlpools-client (v4.0)
+        if (acc?.data) {
+          try {
+            const newClient = await import('@orca-so/whirlpools-client').catch(() => null);
+            if (newClient && typeof (newClient as any).getWhirlpoolDecoder === 'function') {
+              const decoder = (newClient as any).getWhirlpoolDecoder();
+              const dataBuffer = acc.data instanceof Buffer ? new Uint8Array(acc.data) : acc.data;
+              const decoded = decoder.decode(dataBuffer);
+              if (decoded && decoded.tokenMintA && decoded.tokenMintB) {
+                mintA = decoded.tokenMintA;
+                mintB = decoded.tokenMintB;
+              }
+            }
+          } catch {}
+        }
+        
+        // PRIORITY 2: Legacy @orca-so/whirlpools-sdk (v0.16)
+        if (!mintA || !mintB) {
+          const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+          if (sdkAny && acc) {
+            const ParsableWhirlpool = (sdkAny as any).ParsableWhirlpool;
+            const parsed = ParsableWhirlpool?.parse?.(pk, acc);
+            if (parsed) {
+              mintA = parsed.tokenMintA?.toBase58?.();
+              mintB = parsed.tokenMintB?.toBase58?.();
+            }
+          }
+        }
+        
+        if (mintA && mintB) {
           const inMint = String(hop.inputMint);
           try { logger.debug('orca.whirlpool.pool.tokens', { cat: 'tx', ctx: { pool: String(hop.poolId), mintA, mintB, inputMint: inMint } }); } catch (e) { logCatchError('ix.build', e); }
           if (inMint !== mintA && inMint !== mintB) {
