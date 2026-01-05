@@ -3750,11 +3750,30 @@ function runWebsocketRefreshLoop(): void {
                 const decoded = decoder.decode(dataBuffer);
                 
                 if (decoded && decoded.tokenVaultA && decoded.tokenVaultB) {
+                  // The new client might not return oracle - extract it manually from account data
+                  // Oracle is at offset: 8 (disc) + 32 (config) + 1 (bump) + 2 (tickSpacing) + 2 (tickSpacingSeed) 
+                  //   + 2 (feeRate) + 2 (protocolFeeRate) + 16 (liquidity) + 16 (sqrtPrice) + 4 (tickCurrentIndex)
+                  //   + 8 (protocolFeeOwedA) + 8 (protocolFeeOwedB) + 32 (mintA) + 32 (mintB) + 32 (vaultA) + 32 (vaultB)
+                  //   + 16 (feeGrowthA) + 16 (feeGrowthB) + 8 (rewardTimestamp) + 384 (rewardInfos) = 653 bytes
+                  let oraclePk: any = null;
+                  try {
+                    const data = Buffer.from(dataBuffer);
+                    const ORACLE_OFFSET = 8 + 32 + 1 + 2 + 2 + 2 + 2 + 16 + 16 + 4 + 8 + 8 + 32 + 32 + 32 + 32 + 16 + 16 + 8 + 384;
+                    if (data.length >= ORACLE_OFFSET + 32) {
+                      const oracleBytes = data.subarray(ORACLE_OFFSET, ORACLE_OFFSET + 32);
+                      // Check if oracle is not all zeros (default/empty)
+                      const isZero = oracleBytes.every(b => b === 0);
+                      if (!isZero) {
+                        oraclePk = new web3.PublicKey(oracleBytes);
+                      }
+                    }
+                  } catch {}
+                  
                   // Convert string addresses to PublicKey objects for compatibility
                   whirlpoolData = {
                     tokenVaultA: new web3.PublicKey(decoded.tokenVaultA),
                     tokenVaultB: new web3.PublicKey(decoded.tokenVaultB),
-                    oracle: decoded.oracle ? new web3.PublicKey(decoded.oracle) : null,
+                    oracle: oraclePk,
                     tickSpacing: decoded.tickSpacing,
                     tickCurrentIndex: decoded.tickCurrentIndex,
                     tokenMintA: new web3.PublicKey(decoded.tokenMintA),
@@ -3763,6 +3782,7 @@ function runWebsocketRefreshLoop(): void {
                   decoderUsed = 'new_client';
                   logger.info('orca.attach.new_client_success', { 
                     pool: poolAddr.slice(0,8)+'…', 
+                    hasOracle: !!oraclePk,
                     cat: 'pools' 
                   });
                 }
@@ -3865,8 +3885,29 @@ function runWebsocketRefreshLoop(): void {
             });
             
             // Get PDAUtil for tick array derivation (still need legacy SDK for this)
-            const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
-            const PDAUtil = sdkAny?.PDAUtil;
+            let sdkAny: any = null;
+            let PDAUtil: any = null;
+            let TickUtil: any = null;
+            
+            try {
+              sdkAny = await import('@orca-so/whirlpools-sdk');
+              PDAUtil = sdkAny?.PDAUtil;
+              TickUtil = sdkAny?.TickUtil;
+              
+              if (!PDAUtil) {
+                logger.debug('orca.attach.sdk_loaded_no_pdautil', { 
+                  pool: poolAddr.slice(0,8)+'…',
+                  sdkKeys: Object.keys(sdkAny || {}).slice(0, 20),
+                  cat: 'pools' 
+                });
+              }
+            } catch (sdkErr: any) {
+              logger.warn('orca.attach.sdk_import_error', { 
+                pool: poolAddr.slice(0,8)+'…',
+                error: String(sdkErr?.message || sdkErr),
+                cat: 'pools' 
+              });
+            }
             
             // Subscribe to vaults
             const vaultA = whirlpoolData?.tokenVaultA;
@@ -3905,44 +3946,95 @@ function runWebsocketRefreshLoop(): void {
             // Subscribe to active tick arrays
             const tickSpacing = whirlpoolData?.tickSpacing;
             const currentTick = whirlpoolData?.tickCurrentIndex;
-            logger.info('orca.tickarrays.attempting', { pool: poolAddr.slice(0,8)+'…', tickSpacing, currentTick, hasPDAUtil: !!PDAUtil, cat: 'pools' });
+            logger.info('orca.tickarrays.attempting', { pool: poolAddr.slice(0,8)+'…', tickSpacing, currentTick, hasPDAUtil: !!PDAUtil, hasTickUtil: !!TickUtil, cat: 'pools' });
             
-            if (tickSpacing !== undefined && currentTick !== undefined && PDAUtil) {
+            // Helper: Calculate start tick index manually (same logic as TickUtil.getStartTickIndex)
+            const getStartTickIndexManual = (tick: number, spacing: number, offset: number): number => {
+              const ticksInArray = spacing * 88; // TICK_ARRAY_SIZE = 88
+              let startTickIndex = Math.floor(tick / ticksInArray) * ticksInArray;
+              if (offset !== 0) {
+                startTickIndex += offset * ticksInArray;
+              }
+              return startTickIndex;
+            };
+            
+            // Helper: Derive tick array PDA manually
+            const deriveTickArrayPda = (programId: any, whirlpoolPk: any, startTick: number): any => {
               try {
-                const TickUtil = sdkAny?.TickUtil || (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
-                const orcaProgramId = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+                const startTickBuffer = Buffer.alloc(4);
+                startTickBuffer.writeInt32LE(startTick, 0);
+                const [pda] = web3.PublicKey.findProgramAddressSync(
+                  [Buffer.from('tick_array'), whirlpoolPk.toBuffer(), startTickBuffer],
+                  programId
+                );
+                return pda;
+              } catch {
+                return null;
+              }
+            };
+            
+            const orcaProgramId = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+            
+            if (tickSpacing !== undefined && currentTick !== undefined && (PDAUtil || true)) {
+              try {
+                // Try to load TickUtil from SDK, or use manual calculation
+                if (!TickUtil && sdkAny) {
+                  TickUtil = (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
+                }
                 
-                if (TickUtil && typeof TickUtil.getStartTickIndex === 'function') {
-                  let tickArrayCount = 0;
-                  const tickArrayAddresses: { lower?: string; center?: string; upper?: string } = {};
-                  
-                  for (let offset = -1; offset <= 1; offset++) {
-                    try {
-                      const startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
+                // Use SDK utilities if available, otherwise use manual derivation
+                const useManualDerivation = !TickUtil || typeof TickUtil.getStartTickIndex !== 'function' || !PDAUtil;
+                
+                let tickArrayCount = 0;
+                const tickArrayAddresses: { lower?: string; center?: string; upper?: string } = {};
+                
+                for (let offset = -1; offset <= 1; offset++) {
+                  try {
+                    let startTick: number;
+                    let tickArrayPk: any = null;
+                    
+                    if (useManualDerivation) {
+                      // Use manual derivation
+                      startTick = getStartTickIndexManual(currentTick, tickSpacing, offset);
+                      tickArrayPk = deriveTickArrayPda(orcaProgramId, pk, startTick);
+                    } else {
+                      // Use SDK utilities
+                      startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
                       const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, pk, startTick);
-                      
-                      if (tickArrayPda?.publicKey) {
-                        const id = await subscribeAccountWithRetry(tickArrayPda.publicKey, handle);
-                        subs.push({ kind: 'account', id });
-                        targetedSourceByAccount.set(tickArrayPda.publicKey.toBase58(), 'orca');
-                        debugLogTargeted('orca', tickArrayPda.publicKey.toBase58(), { kind: 'tick_array', offset });
-                        derivedAccountToPool.set(tickArrayPda.publicKey.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
-                        
-                        // Store tick array address by offset
-                        const address = tickArrayPda.publicKey.toBase58();
-                        if (offset === -1) tickArrayAddresses.lower = address;
-                        else if (offset === 0) tickArrayAddresses.center = address;
-                        else if (offset === 1) tickArrayAddresses.upper = address;
-                        
-                        tickArrayCount++;
-                      }
-                    } catch (err) {
-                      logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
+                      tickArrayPk = tickArrayPda?.publicKey || null;
                     }
+                    
+                    if (tickArrayPk) {
+                      const id = await subscribeAccountWithRetry(tickArrayPk, handle);
+                      subs.push({ kind: 'account', id });
+                      targetedSourceByAccount.set(tickArrayPk.toBase58(), 'orca');
+                      debugLogTargeted('orca', tickArrayPk.toBase58(), { kind: 'tick_array', offset });
+                      derivedAccountToPool.set(tickArrayPk.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
+                      
+                      // Store tick array address by offset
+                      const address = tickArrayPk.toBase58();
+                      if (offset === -1) tickArrayAddresses.lower = address;
+                      else if (offset === 0) tickArrayAddresses.center = address;
+                      else if (offset === 1) tickArrayAddresses.upper = address;
+                      
+                      tickArrayCount++;
+                    }
+                  } catch (err) {
+                    logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
                   }
-                  
-                  // Cache tick array addresses in execution cache
-                  // Include tickSpacing for boundary crossing detection
+                }
+                
+                if (useManualDerivation && tickArrayCount > 0) {
+                  logger.info('orca.tickarrays.manual_derivation', { 
+                    pool: poolAddr.slice(0,8)+'…', 
+                    count: tickArrayCount,
+                    cat: 'pools' 
+                  });
+                }
+                
+                // Cache tick array addresses in execution cache
+                // Include tickSpacing for boundary crossing detection
+                if (tickArrayCount > 0) {
                   try {
                     const { executionCache } = await import('../execution/cache.js');
                     const existing = executionCache.getHot(poolAddr);
@@ -3962,16 +4054,14 @@ function runWebsocketRefreshLoop(): void {
                       cat: 'pools' 
                     });
                   } catch {}
-                  
-                  logger.info('orca.tickarrays.subscribed', { pool: poolAddr.slice(0,8)+'…', count: tickArrayCount, cat: 'pools' });
-                } else {
-                  logger.info('orca.tickarrays.no_tickutil', { pool: poolAddr.slice(0,8)+'…', hasTickUtil: !!TickUtil, cat: 'pools' });
                 }
+                
+                logger.info('orca.tickarrays.subscribed', { pool: poolAddr.slice(0,8)+'…', count: tickArrayCount, useManual: useManualDerivation, cat: 'pools' });
               } catch (err) {
                 logger.info('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) });
               }
             } else {
-              logger.info('orca.tickarrays.skipped', { pool: poolAddr.slice(0,8)+'…', reason: !tickSpacing ? 'no_spacing' : !currentTick ? 'no_tick' : 'no_pda', cat: 'pools' });
+              logger.info('orca.tickarrays.skipped', { pool: poolAddr.slice(0,8)+'…', reason: !tickSpacing ? 'no_spacing' : 'no_tick', cat: 'pools' });
             }
             
             logger.info('orca.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });

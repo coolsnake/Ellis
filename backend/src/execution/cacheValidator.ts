@@ -779,6 +779,8 @@ export interface PoolValidationResult {
     bitmapExtension?: string;  // Meteora
     exBitmap?: string;         // Raydium
     ammConfig?: string;        // Raydium - required for swaps
+    observationState?: string | null;        // Raydium - observation state address
+    observationExistsOnChain?: boolean;      // Raydium - whether observation exists
     feeBps?: number;           // Fee in basis points
   };
 }
@@ -1255,6 +1257,68 @@ export async function validatePoolCache(
         if (!cachedAmmConfig) {
           issues.push('Missing ammConfig - required for swap transactions');
         }
+        
+        // Validate observation_state exists on-chain (required for Raydium swap)
+        // Observation state PDA: ["observation", pool_id]
+        let cachedObservation = stat?.observation_state || null;
+        let derivedObservationPda: string | null = null;
+        let observationExistsOnChain = false;
+        
+        try {
+          const poolPk = new PublicKey(basePoolId);
+          const [pda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('observation'), poolPk.toBuffer()],
+            RAYDIUM_CLMM_PROGRAM
+          );
+          derivedObservationPda = pda.toBase58();
+          
+          // Check if observation account exists on-chain
+          const info = await withRpcLimit(
+            () => connection.getAccountInfo(pda),
+            1,
+            { module: RPC_MODULE, method: 'getAccountInfo:observation' }
+          );
+          observationExistsOnChain = !!info && info.owner.equals(RAYDIUM_CLMM_PROGRAM);
+          
+          if (observationExistsOnChain) {
+            // Update cache with validated observation state
+            if (!cachedObservation || cachedObservation !== derivedObservationPda) {
+              const existingStatic = executionCache.getStatic(basePoolId) || {};
+              executionCache.setStatic(basePoolId, {
+                ...existingStatic,
+                observation_state: derivedObservationPda,
+              });
+              cachedObservation = derivedObservationPda;
+              
+              logger.debug('cache.observation.validated', {
+                cat: 'cache',
+                poolId: basePoolId.slice(0, 8),
+                observation: derivedObservationPda.slice(0, 8),
+              });
+            }
+          } else {
+            // Observation doesn't exist - pool cannot be swapped!
+            issues.push(`observation_state does not exist on-chain - pool cannot be swapped`);
+            
+            // Clear any stale cached observation
+            if (cachedObservation) {
+              const existingStatic = executionCache.getStatic(basePoolId) || {};
+              executionCache.setStatic(basePoolId, {
+                ...existingStatic,
+                observation_state: undefined,
+              });
+              cachedObservation = null;
+            }
+          }
+        } catch (e: any) {
+          issues.push(`Failed to validate observation_state: ${e.message}`);
+        }
+        
+        result.cacheData = {
+          ...result.cacheData,
+          observationState: cachedObservation,
+          observationExistsOnChain,
+        };
       }
       
       // Add Orca eligibility validation based on center tick array existence

@@ -1025,12 +1025,17 @@ async function extractDexAccounts(
         const hasExBitmapEarly = !!exBitmapFromCacheEarly && exBitmapFromCacheEarly !== 'none';
         
         // Detect which instruction variant to use:
-        // - swap_v2: Token-2022 tokens (requires Token-2022 Program, Memo Program, Mints)
-        // - swap: Standard SPL tokens (optimized, 11-12 accounts)
+        // - swap_v2: Token-2022 tokens OR unvalidated pools (safer fallback)
+        // - swap: Standard SPL tokens with VALIDATED accounts (optimized, 11-12 accounts)
         //   - With exBitmap: 12 accounts
         //   - Without exBitmap: 11 accounts
         const hasToken2022 = hop.inputTokenProgram === 'token-2022' || hop.outputTokenProgram === 'token-2022';
-        const raydiumNeedsSwapV2 = hasToken2022;
+        
+        // Only use optimized swap instruction when:
+        // 1. NOT Token-2022 (swap doesn't support it)
+        // 2. ExBitmap is from cache (if the pool uses it)
+        // Otherwise use swap_v2 which handles more account variations
+        const raydiumNeedsSwapV2 = hasToken2022 || !hasExBitmapEarly;
         
         // Get ammConfig from hop or cache - CRITICAL: cannot be derived, must come from pool data
         const ammConfigAddr = hop.ammConfig || stat?.amm_config;
@@ -1043,10 +1048,16 @@ async function extractDexAccounts(
         }
         const ammConfig = ammConfigAddr ? new PublicKey(ammConfigAddr) : poolId;
         
-        // Derive observation state PDA if not cached
-        const observationState = hop.observationId 
-          ? new PublicKey(hop.observationId)
-          : deriveRaydiumObservationPda(poolId, programIdKey);
+        // Observation state - MUST be from cache (validated to exist on-chain)
+        // DO NOT derive PDAs as they may not exist on-chain, causing swap failures
+        const cachedObservation = hop.observationId || stat?.observation_state;
+        if (!cachedObservation) {
+          throw new Error(
+            `RAYDIUM_CLMM_OBSERVATION_MISSING: Pool ${hop.poolId} missing validated observation_state. ` +
+            `Run /arb/pools/revalidate?dex=raydium to validate pool accounts.`
+          );
+        }
+        const observationState = new PublicKey(cachedObservation);
         
         // Use the early exBitmap check results for consistency
         const exBitmapFromCache = exBitmapFromCacheEarly;
@@ -1080,13 +1091,13 @@ async function extractDexAccounts(
           poolId: hop.poolId,
           // Swap variant selection
           swapVariant: raydiumNeedsSwapV2 ? 'swap_v2' : 'swap',
-          swapVariantReason: hasToken2022 ? 'token2022' : (hasExBitmap ? 'spl_with_exbitmap' : 'spl_no_exbitmap'),
+          swapVariantReason: hasToken2022 ? 'token2022' : (hasExBitmapEarly ? 'spl_with_exbitmap' : 'spl_no_exbitmap'),
           inputTokenProgram: hop.inputTokenProgram || 'spl-token',
           outputTokenProgram: hop.outputTokenProgram || 'spl-token',
           ammConfig: ammConfig.toBase58(),
           ammConfigSource: ammConfigAddr ? 'cache' : 'fallback',
           observation: observationState.toBase58(),
-          observationSource: hop.observationId ? 'cache' : 'derived',
+          observationSource: 'cache',
           exBitmap: hasExBitmap ? exBitmapPda.toBase58() : 'not_included',
           exBitmapExists: hasExBitmap,
           exBitmapSource: exBitmapFromCache ? 'cache' : 'none',
