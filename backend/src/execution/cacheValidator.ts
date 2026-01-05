@@ -986,6 +986,8 @@ export async function validatePoolCache(
             currentTickIndex: currentTick,
             tickSpacing,
             liquidityOutsideRange: true, // Flag for future validations
+            needsTickArrayValidation: false, // Clear flag - pool is validated
+            tickArraysValidatedAt: Date.now(),
           });
           
           result.valid = true;
@@ -2263,6 +2265,8 @@ export async function refreshInvalidPools(
                   liquidity: validatedState.liquidity,
                   tickArrays: undefined, // Will be derived at swap time
                   liquidityOutsideRange: true, // Flag for swap builder
+                  needsTickArrayValidation: false, // Clear flag - pool is validated
+                  tickArraysValidatedAt: Date.now(),
                   // Don't set noLiquidityValidatedAt - pool is tradeable!
                 });
                 
@@ -3404,7 +3408,35 @@ async function validatePoolTickArrays(
     // Use the existing fetchFreshTickDataAndValidate function
     const result = await fetchFreshTickDataAndValidate(connection, poolId, dex);
     
-    if (result?.tickArrays) {
+    if (!result) {
+      return false;
+    }
+    
+    // Handle pools with liquidity outside search range
+    // These pools ARE tradeable - set the flag and clear needsTickArrayValidation
+    if (result.liquidityOutsideRange) {
+      const existing = executionCache.getHot(poolId) || {};
+      executionCache.setHot(poolId, {
+        ...existing,
+        currentTickIndex: result.currentTick,
+        tickSpacing: result.tickSpacing,
+        liquidityOutsideRange: true,
+        needsTickArrayValidation: false, // Clear flag - pool is validated
+        tickArraysValidatedAt: Date.now(),
+      });
+      
+      logger.debug('cacheValidator.reactive.liquidity_outside_range', {
+        cat: 'cache',
+        poolId: poolId.slice(0, 8) + '…',
+        dex,
+        currentTick: result.currentTick,
+        liquidity: result.liquidity?.slice(0, 16),
+      });
+      
+      return true; // Successfully validated - just no tick arrays in search range
+    }
+    
+    if (result.tickArrays) {
       // Store validated arrays in cache
       executionCache.setValidatedTickArrays(poolId, {
         center: result.tickArrays.center,
