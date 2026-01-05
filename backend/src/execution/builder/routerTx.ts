@@ -1123,16 +1123,10 @@ async function extractDexAccounts(
           outputMint: hop.outputMint,
         });
         
-        // CRITICAL: Tick arrays must be passed in DIRECTIONAL order for Raydium CLMM:
-        // - A→B (isAtoB=true, tick decreases): [center, lower, upper] - lower first (primary direction)
-        // - B→A (isAtoB=false, tick increases): [center, upper, lower] - upper first (primary direction)
-        // All three tick arrays are passed; the program uses them based on swap traversal.
-        //
-        // Account layout depends on instruction variant AND whether exBitmap exists:
-        // swap (SPL-only):
-        //   - WITH exBitmap (13 accounts): 0-8 fixed, 9 exBitmap, 10-11 tickArrays, 12 program
-        //   - WITHOUT exBitmap (12 accounts): 0-8 fixed, 9-10 tickArrays, 11 program
-        // swap_v2 (Token-2022):
+        // Account layout depends on instruction variant:
+        // swap (SPL-only, 12 accounts):
+        //   0-8: fixed accounts, 9: tickArray (center), 10: exBitmap (REQUIRED!), 11: program
+        // swap_v2 (Token-2022, 17-18 accounts):
         //   - WITH exBitmap (18 accounts): 0-12 fixed, 13 exBitmap, 14-16 tickArrays, 17 program
         //   - WITHOUT exBitmap (17 accounts): 0-12 fixed, 13-15 tickArrays, 16 program
         {
@@ -1140,49 +1134,51 @@ async function extractDexAccounts(
           const rayTickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
           const rayTickArray2 = isAtoB ? hop.tickArrayUpper : hop.tickArrayLower;
           
-          // CRITICAL: Validate tick arrays exist before building instruction
-          const missingTickArrays: string[] = [];
-          if (!rayTickArray0) missingTickArrays.push('center');
-          if (!rayTickArray1) missingTickArrays.push(isAtoB ? 'lower' : 'upper');
-          if (!rayTickArray2) missingTickArrays.push(isAtoB ? 'upper' : 'lower');
-          
-          if (missingTickArrays.length > 0) {
+          // Validate tick arrays exist before building instruction
+          // swap needs only center tick array; swap_v2 needs all 3
+          if (!rayTickArray0) {
             throw new Error(
-              `RAYDIUM_CLMM_TICK_ARRAYS_MISSING: Pool ${hop.poolId} missing tick arrays [${missingTickArrays.join(', ')}]. ` +
+              `RAYDIUM_CLMM_TICK_ARRAYS_MISSING: Pool ${hop.poolId} missing center tick array. ` +
               `Pool needs validation. The reactive cacheValidator should populate these automatically.`
-            );
-          }
-          
-          // CRITICAL: Check for duplicate tick arrays - causes "already mutably borrowed" panic
-          // Raydium CLMM tries to borrow all 3 tick arrays mutably. If any are the same address,
-          // the second borrow fails with BorrowError. This happens when pool is at array boundary.
-          const duplicateArrays: string[] = [];
-          if (rayTickArray0 === rayTickArray1) duplicateArrays.push('center===array1');
-          if (rayTickArray0 === rayTickArray2) duplicateArrays.push('center===array2');
-          if (rayTickArray1 === rayTickArray2) duplicateArrays.push('array1===array2');
-          
-          if (duplicateArrays.length > 0) {
-            // Log the issue and skip this pool - duplicate tick arrays cause on-chain panic
-            logger.warn('routerTx.raydium.duplicate_tick_arrays', {
-              cat: 'tx',
-              poolId: hop.poolId,
-              duplicates: duplicateArrays,
-              center: rayTickArray0?.slice(0, 8) + '…',
-              array1: rayTickArray1?.slice(0, 8) + '…',
-              array2: rayTickArray2?.slice(0, 8) + '…',
-              isAtoB,
-              hint: 'Pool has duplicate tick arrays (at boundary?). Skipping to avoid BorrowError.',
-            });
-            throw new Error(
-              `RAYDIUM_CLMM_DUPLICATE_TICK_ARRAYS: Pool ${hop.poolId} has duplicate tick arrays [${duplicateArrays.join(', ')}]. ` +
-              `This causes BorrowError on-chain. Pool may be at tick array boundary.`
             );
           }
           
           if (raydiumNeedsSwapV2) {
             // =================================================================
             // swap_v2: Token-2022 compatible (17-18 accounts)
+            // Requires 3 tick arrays
             // =================================================================
+            const missingTickArrays: string[] = [];
+            if (!rayTickArray1) missingTickArrays.push(isAtoB ? 'lower' : 'upper');
+            if (!rayTickArray2) missingTickArrays.push(isAtoB ? 'upper' : 'lower');
+            
+            if (missingTickArrays.length > 0) {
+              throw new Error(
+                `RAYDIUM_CLMM_TICK_ARRAYS_MISSING: Pool ${hop.poolId} missing tick arrays [${missingTickArrays.join(', ')}]. ` +
+                `Pool needs validation for swap_v2.`
+              );
+            }
+            
+            // Check for duplicate tick arrays - causes "already mutably borrowed" panic
+            const duplicateArrays: string[] = [];
+            if (rayTickArray0 === rayTickArray1) duplicateArrays.push('center===array1');
+            if (rayTickArray0 === rayTickArray2) duplicateArrays.push('center===array2');
+            if (rayTickArray1 === rayTickArray2) duplicateArrays.push('array1===array2');
+            
+            if (duplicateArrays.length > 0) {
+              logger.warn('routerTx.raydium.duplicate_tick_arrays', {
+                cat: 'tx',
+                poolId: hop.poolId,
+                duplicates: duplicateArrays,
+                isAtoB,
+                hint: 'Pool has duplicate tick arrays (at boundary?). Skipping to avoid BorrowError.',
+              });
+              throw new Error(
+                `RAYDIUM_CLMM_DUPLICATE_TICK_ARRAYS: Pool ${hop.poolId} has duplicate tick arrays [${duplicateArrays.join(', ')}]. ` +
+                `This causes BorrowError on-chain.`
+              );
+            }
+            
             // Fixed accounts (0-12)
             accounts.push(
               wallet,                                                              // 0: Payer (signer)
@@ -1221,8 +1217,20 @@ async function extractDexAccounts(
             }
           } else {
             // =================================================================
-            // swap: Standard SPL tokens only (12-13 accounts)
+            // swap: Standard SPL tokens only (12 accounts)
+            // Based on actual mainnet transactions, swap requires:
+            // - Only 1 tick array (center)
+            // - exBitmap is REQUIRED (always included)
             // =================================================================
+            
+            // Validate exBitmap exists - it's required for swap!
+            if (!hasExBitmap || !exBitmapFromCache || exBitmapFromCache === 'none') {
+              throw new Error(
+                `RAYDIUM_CLMM_EXBITMAP_REQUIRED: Pool ${hop.poolId} missing exBitmap. ` +
+                `The swap instruction requires tick array bitmap extension.`
+              );
+            }
+            
             // Fixed accounts (0-8) - no Token2022, Memo, or Mints
             accounts.push(
               wallet,                                                              // 0: Payer (signer)
@@ -1234,25 +1242,10 @@ async function extractDexAccounts(
               new PublicKey(outputVault),                                          // 6: Output Vault
               observationState,                                                    // 7: Observation State
               TOKEN_PROGRAM_ID,                                                    // 8: Token Program
+              new PublicKey(rayTickArray0),                                        // 9: Tick Array (center) - only 1 needed!
+              exBitmapPda,                                                         // 10: Tick Array Bitmap Extension (REQUIRED!)
+              programIdKey,                                                        // 11: Raydium CLMM Program
             );
-            
-            // Remaining accounts depend on whether exBitmap exists
-            if (hasExBitmap) {
-              // WITH exBitmap: 13 accounts total
-              accounts.push(
-                exBitmapPda,                                                       // 9: Tick Array Bitmap Extension
-                new PublicKey(rayTickArray0),                                      // 10: Tick Array 0 (center)
-                new PublicKey(rayTickArray1),                                      // 11: Tick Array 1
-                programIdKey,                                                      // 12: Raydium CLMM Program
-              );
-            } else {
-              // WITHOUT exBitmap: 12 accounts total
-              accounts.push(
-                new PublicKey(rayTickArray0),                                      // 9: Tick Array 0 (center)
-                new PublicKey(rayTickArray1),                                      // 10: Tick Array 1
-                programIdKey,                                                      // 11: Raydium CLMM Program
-              );
-            }
           }
           
           // Debug logging to verify account positions
@@ -1270,7 +1263,7 @@ async function extractDexAccounts(
           });
         }
         // CRITICAL: Return early for Raydium to avoid padding by getAccountsNeededForDex
-        // Variable accounts based on instruction variant and exBitmap presence
+        // Variable accounts based on instruction variant
         return accounts;
 
       case DexType.Meteora:

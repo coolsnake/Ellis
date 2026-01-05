@@ -7,15 +7,10 @@
 //! The DEX program ID is passed as the last account to support both devnet and mainnet.
 //!
 //! ## Swap Instructions
-//! - `swap`: Original instruction for standard SPL tokens (12-13 accounts)
+//! - `swap`: Original instruction for standard SPL tokens (12 accounts)
 //! - `swap_v2`: Token-2022 compatible instruction (17-18 accounts, includes Memo Program)
 //!
 //! The off-chain builder determines which variant to use based on token programs.
-//!
-//! ## Account Layouts
-//! Each instruction supports two layouts based on exBitmap (tick_array_bitmap_extension) presence:
-//! - WITH exBitmap: Pools with wide tick ranges need the bitmap extension
-//! - WITHOUT exBitmap: Standard pools without bitmap extension - tick arrays shift down by 1
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
@@ -36,11 +31,9 @@ pub const SWAP_V2_ACCOUNTS_NEEDED_NO_EXBITMAP: usize = 17;
 // swap Account Counts (Standard SPL tokens only)
 // =============================================================================
 
-/// Number of accounts for swap WITH exBitmap (13 accounts: 12 to Raydium + 1 program ID)
-pub const SWAP_ACCOUNTS_NEEDED: usize = 13;
-
-/// Number of accounts for swap WITHOUT exBitmap (12 accounts: 11 to Raydium + 1 program ID)
-pub const SWAP_ACCOUNTS_NEEDED_NO_EXBITMAP: usize = 12;
+/// Number of accounts for swap (12 accounts: 11 to Raydium + 1 program ID)
+/// Note: swap ALWAYS requires exBitmap (tick array bitmap extension)
+pub const SWAP_ACCOUNTS_NEEDED: usize = 12;
 
 // Legacy aliases for backward compatibility
 pub const ACCOUNTS_NEEDED: usize = SWAP_V2_ACCOUNTS_NEEDED;
@@ -74,12 +67,12 @@ pub struct SwapParams {
 /// Execute a swap on Raydium CLMM
 ///
 /// Automatically detects whether to use `swap` or `swap_v2` based on account count:
-/// - 12-13 accounts: Use `swap` for standard SPL tokens
+/// - 12 accounts: Use `swap` for standard SPL tokens
 /// - 17-18 accounts: Use `swap_v2` for Token-2022 compatible swaps
 ///
-/// ## `swap` instruction layout (standard SPL tokens):
+/// ## `swap` instruction layout (standard SPL tokens, 12 accounts total):
 ///
-/// WITH exBitmap (13 accounts total, 12 to Raydium):
+/// Based on actual mainnet transactions, the `swap` instruction requires:
 /// 0. `[signer]` Payer
 /// 1. `[]` AMM Config
 /// 2. `[writable]` Pool State
@@ -89,23 +82,8 @@ pub struct SwapParams {
 /// 6. `[writable]` Output Vault
 /// 7. `[writable]` Observation State
 /// 8. `[]` Token Program
-/// 9. `[writable]` Tick Array Bitmap Extension (exBitmap)
-/// 10. `[writable]` Tick Array 0 (center)
-/// 11. `[writable]` Tick Array 1 (directional)
-/// 12. `[]` Raydium CLMM Program ID
-///
-/// WITHOUT exBitmap (12 accounts total, 11 to Raydium):
-/// 0. `[signer]` Payer
-/// 1. `[]` AMM Config
-/// 2. `[writable]` Pool State
-/// 3. `[writable]` Input Token Account (user)
-/// 4. `[writable]` Output Token Account (user)
-/// 5. `[writable]` Input Vault
-/// 6. `[writable]` Output Vault
-/// 7. `[writable]` Observation State
-/// 8. `[]` Token Program
-/// 9. `[writable]` Tick Array 0 (center)
-/// 10. `[writable]` Tick Array 1 (directional)
+/// 9. `[writable]` Tick Array (center - only ONE tick array needed)
+/// 10. `[writable]` Tick Array Bitmap Extension (exBitmap - REQUIRED!)
 /// 11. `[]` Raydium CLMM Program ID
 ///
 /// ## `swap_v2` instruction layout (Token-2022 compatible):
@@ -156,7 +134,7 @@ pub fn swap(
 ) -> Result<()> {
     // Detect which instruction variant to use based on account count
     // swap_v2: 17-18 accounts (Token-2022 compatible, includes memo/mints)
-    // swap: 12-13 accounts (Standard SPL tokens only)
+    // swap: 12 accounts (Standard SPL tokens only)
     let use_swap_v2 = accounts.len() >= SWAP_V2_ACCOUNTS_NEEDED_NO_EXBITMAP;
 
     if use_swap_v2 {
@@ -224,14 +202,15 @@ pub fn swap(
              amount_in, min_amount_out, has_exbitmap);
     } else {
         // =========================================================================
-        // swap: Standard SPL tokens (12-13 accounts)
+        // swap: Standard SPL tokens (12 accounts)
+        // Layout: payer, ammConfig, pool, userIn, userOut, vaultIn, vaultOut,
+        //         observation, tokenProgram, tickArray, exBitmap, programId
         // =========================================================================
-        let has_exbitmap = accounts.len() >= SWAP_ACCOUNTS_NEEDED;
-        let required = if has_exbitmap { SWAP_ACCOUNTS_NEEDED } else { SWAP_ACCOUNTS_NEEDED_NO_EXBITMAP };
+        let required = SWAP_ACCOUNTS_NEEDED;
         
         if accounts.len() < required {
-            msg!("Raydium swap: Insufficient accounts. Expected {} (exBitmap={}), got {}", 
-                 required, has_exbitmap, accounts.len());
+            msg!("Raydium swap: Insufficient accounts. Expected {}, got {}", 
+                 required, accounts.len());
             return Err(ArbRouterError::InvalidAccount.into());
         }
 
@@ -249,20 +228,16 @@ pub fn swap(
         let program_idx = required - 1;
         let dex_program_id = *accounts[program_idx].key;
 
-        // Build account metas for swap
-        // Writable accounts:
-        // - WITH exBitmap: 2-7 (pool, ATAs, vaults, observation), 9-11 (exBitmap + tickArrays)
-        // - WITHOUT exBitmap: 2-7 (pool, ATAs, vaults, observation), 9-10 (tickArrays only)
+        // Build account metas for swap (12 accounts)
+        // Writable accounts: 2-7 (pool, ATAs, vaults, observation), 9-10 (tickArray, exBitmap)
         let account_metas: Vec<AccountMeta> = accounts[..program_idx]
             .iter()
             .enumerate()
             .map(|(i, acc)| {
                 let is_signer = i == 0;
-                let is_writable = if has_exbitmap {
-                    matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11)
-                } else {
-                    matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10)
-                };
+                // Writable: pool(2), userIn(3), userOut(4), vaultIn(5), vaultOut(6), 
+                //           observation(7), tickArray(9), exBitmap(10)
+                let is_writable = matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10);
                 
                 if is_signer {
                     AccountMeta::new(*acc.key, true)
@@ -283,8 +258,7 @@ pub fn swap(
         let account_infos: Vec<AccountInfo> = accounts[..required].to_vec();
         invoke(&ix, &account_infos)?;
 
-        msg!("Raydium CLMM swap executed: {} in, min {} out (exBitmap={})", 
-             amount_in, min_amount_out, has_exbitmap);
+        msg!("Raydium CLMM swap executed: {} in, min {} out", amount_in, min_amount_out);
     }
 
     Ok(())

@@ -1,9 +1,43 @@
-import { writeFile, mkdir, stat, rename } from 'fs/promises';
+import { writeFile, mkdir, stat, rename, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { CONFIG } from './config.js';
 
 const LOG_DIR_SAFE = (CONFIG as any)?.logDir || resolve('backend', 'logs');
+
+// Cache for token symbol lookups
+let jupTokenCache: Map<string, string> | null = null;
+
+async function loadJupTokenSymbols(): Promise<Map<string, string>> {
+  if (jupTokenCache) return jupTokenCache;
+  
+  jupTokenCache = new Map();
+  try {
+    const jupPath = (CONFIG as any)?.jupTokensPath || resolve('backend', 'config', 'jupTokens.json');
+    const content = await readFile(jupPath, 'utf-8');
+    const tokens = JSON.parse(content) as Array<{ address: string; symbol: string }>;
+    for (const t of tokens) {
+      if (t.address && t.symbol) {
+        jupTokenCache.set(t.address, t.symbol);
+      }
+    }
+  } catch {
+    // Fallback to common tokens if file load fails
+    jupTokenCache.set('So11111111111111111111111111111111111111112', 'SOL');
+    jupTokenCache.set('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'USDC');
+    jupTokenCache.set('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', 'USDT');
+    jupTokenCache.set('J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', 'JitoSOL');
+    jupTokenCache.set('jupSoLaHXQiZZTSfEWMTRRgpnyFm8f6sZdosWBjx93v', 'JupSOL');
+  }
+  return jupTokenCache;
+}
+
+function getMintSymbol(mint: string, symbolMap: Map<string, string>): string {
+  const symbol = symbolMap.get(mint);
+  if (symbol) return symbol;
+  // Fallback: truncate mint for unknown tokens
+  return mint.slice(0, 6);
+}
 
 const FILES = {
   simulate: resolve(LOG_DIR_SAFE, 'tx-sims.jsonl'),
@@ -70,11 +104,37 @@ export async function writeTxFullDump(
     (payload.hops ? Array.from(new Set(payload.hops.map((h: any) => h.dex).filter(Boolean))) : []) ||
     [];
   
-  // Create unique filename: timestamp-traceId-signature-status.json
+  // Extract token path for readable filename
+  // Priority: opportunity.path > plan.path > hops mints > payload.path
+  const tokenPath: string[] = payload.opportunity?.path 
+    || payload.plan?.path 
+    || payload.path 
+    || [];
+  
+  // Build token symbols string for filename (e.g., "SOL-USDC-JitoSOL")
+  let tokenPathStr = '';
+  if (tokenPath.length > 0) {
+    try {
+      const symbolMap = await loadJupTokenSymbols();
+      const symbols = tokenPath.map(mint => getMintSymbol(mint, symbolMap));
+      // Limit to 5 tokens to avoid overly long filenames
+      const displaySymbols = symbols.slice(0, 5);
+      if (symbols.length > 5) displaySymbols.push('...');
+      tokenPathStr = displaySymbols.join('-');
+      // Sanitize: remove any characters that might be problematic in filenames
+      tokenPathStr = tokenPathStr.replace(/[^a-zA-Z0-9\-_.]/g, '');
+    } catch {
+      // Fallback if symbol lookup fails
+      tokenPathStr = `${tokenPath.length}hops`;
+    }
+  }
+  
+  // Create unique filename: timestamp-tokenPath-traceId-status.json
+  // Format: 1704412800000-SOL-USDC-JitoSOL-abc123def-success.json
   const timestamp = Date.now();
-  const idPart = String(traceId).slice(0, 16); // Truncate long IDs
-  const sigPart = signature ? `-${String(signature).slice(0, 8)}` : '';
-  const filename = `${timestamp}-${idPart}${sigPart}-${status}.json`;
+  const idPart = String(traceId).slice(0, 12); // Truncate long IDs
+  const pathPart = tokenPathStr ? `-${tokenPathStr}` : '';
+  const filename = `${timestamp}${pathPart}-${idPart}-${status}.json`;
   const file = resolve(dir, filename);
   
   // Enrich payload with metadata and ensure all opportunity data is included

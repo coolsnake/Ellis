@@ -115,82 +115,88 @@ export async function writeConsolidatedSessionLog(): Promise<string | null> {
 export function getTxRelatedLogs(traceId: string | undefined, startTime?: number, endTime?: number, maxLogs: number = 200): SessionLogEvent[] {
   try {
     const relevant: SessionLogEvent[] = [];
+    
+    // STRICT patterns - only capture logs DIRECTLY related to transaction execution
     const txPatterns = [
-      // Transaction lifecycle patterns
-      /^tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc|ix\.coerce|ix\.coerce\.skip|ix\.coerce\.err)/i,
-      /tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc)/i,
+      // Transaction lifecycle patterns (specific execution phases only)
+      /^tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc|ix\.coerce)/i,
       // DEX-specific instruction builder patterns
-      /^(raydium|orca|meteora)\.(clmm|amm|dlmm|whirlpool)\./i,
-      /ix\.build\.(raydium|orca|meteora)/i,
+      /^(raydium|orca|meteora|pumpswap)\.(clmm|amm|dlmm|whirlpool)\./i,
+      /ix\.build\.(raydium|orca|meteora|pumpswap)/i,
       // SDK account verification patterns (explicitly match these)
       /\.sdk\.(account|accounts)\.(missing|verified|verify)/i,
-      // Account verification patterns
-      /\.(account|accounts|verification|verify|missing|exists)\./i,
-      // Instruction details
-      /\.(ix\.|instruction)/i,
-      /\.(builder|build|swap)/i,
-      // Arb executor patterns - capture opportunity acceptance and execution logs
-      /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_check|opportunity_data|cycle_closed|balance_check|filtered|resolving_plan)/i,
-      /arb\.executor\./i,
-      // Jito patterns
-      /arb\.jito\./i,
+      // Instruction details (specific to building)
+      /\.(ix\.|instruction)\.(ready|built|build|coerce)/i,
+      /\.swap\.(quote|built|ready)/i,
+      // Arb executor patterns - ONLY execution-specific logs (not config/status)
+      /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_data|cycle_closed|balance_check_passed|resolving_plan|sizing|flashloan|build)/i,
+      // Jito execution patterns
+      /^arb\.jito\.(bundle|tip|send)/i,
     ];
     
-    // Exclusion patterns - filter out graph sync/push logs
+    // EXCLUSION patterns - filter out non-execution logs
     const excludePatterns = [
-      /^arb\.push/i,           // Graph push operations
-      /arb\.push\.ack/i,       // Graph push acknowledgments
-      /arb\.sync/i,            // Graph sync operations
-      /graph\.(push|sync|version|update)/i,  // Graph state updates
-      /queue_depth/i,          // Queue depth logs
-      /wantversion/i,          // Version synchronization
-      /push_success|push_failed/i,  // Push operation status
-      /kind.*diff/i,           // Graph diff operations
-      /acked.*true/i,          // Acknowledgment logs
+      // Graph sync/push operations
+      /^arb\.push/i,
+      /arb\.push\.ack/i,
+      /arb\.sync/i,
+      /graph\.(push|sync|version|update)/i,
+      /queue_depth/i,
+      /wantversion/i,
+      /push_success|push_failed/i,
+      /kind.*diff/i,
+      /acked.*true/i,
+      // Config and status logs (NOT execution-specific)
+      /arb\.executor\.config/i,           // Config changes
+      /arb\.executor\.(starting|stopped|already_running)/i,  // Lifecycle status
+      /arb\.executor\.status/i,           // Periodic status updates
+      /arb\.executor\.ws\./i,             // WebSocket connection logs
+      /arb\.executor\.batch_(received|skipped|rate_limited|processed)/i,  // Batch processing meta
+      /arb\.executor\.opportunity_check/i,  // Pre-filter checks (not actual execution)
+      /arb\.executor\.filtered/i,         // Filtered opportunities (not executed)
+      /arb\.executor\.(tracker|notify|quarantine|api\.)/i,  // Infrastructure logs
+      /arb\.executor\.jito_tip_feed/i,    // Tip feed status
+      /arb\.executor\.wallet_cache/i,     // Wallet caching
     ];
     
     // Iterate backwards through recent events (most recent first)
     // Events are stored chronologically, so we start from the end
-    // Increase window to capture all logs from the entire execution lifecycle
-    const eventsToCheck = Math.min(_sessionEvents.length, maxLogs * 10); // Check more to find all related logs
+    const eventsToCheck = Math.min(_sessionEvents.length, maxLogs * 5);
     const startIdx = Math.max(0, _sessionEvents.length - eventsToCheck);
     
     for (let i = _sessionEvents.length - 1; i >= startIdx; i--) {
       const event = _sessionEvents[i];
       if (!event) continue;
       
-      const msg = String(event.message || '').toLowerCase();
+      const msg = String(event.message || '');
       const ctx = event.context || {};
-      const ctxStr = JSON.stringify(ctx).toLowerCase();
+      const ctxStr = JSON.stringify(ctx);
       
-      // Skip if matches exclusion patterns (graph sync/push logs)
+      // FIRST: Check exclusion patterns (always skip these regardless of traceId)
       const shouldExclude = excludePatterns.some(p => p.test(msg) || p.test(ctxStr));
       if (shouldExclude) continue;
       
-      // PRIMARY CHECK: Direct traceId match in context (most reliable)
-      // This captures all logs that were explicitly tagged with the traceId
+      // PRIMARY CHECK: Direct traceId match in context (REQUIRED for inclusion)
+      // This ensures only logs explicitly tagged with this traceId are captured
       const hasDirectTraceId = traceId && (
         (ctx as any).traceId === traceId ||
         (ctx as any).txId === traceId ||
         ((ctx as any).ctx && ((ctx as any).ctx.traceId === traceId || (ctx as any).ctx.txId === traceId))
       );
       
-      // SECONDARY CHECK: traceId substring in context or message
+      // SECONDARY CHECK: traceId substring in context (for logs that embed traceId)
       const hasTraceIdSubstring = traceId && (
-        ctxStr.includes(traceId.toLowerCase()) ||
-        msg.includes(traceId.toLowerCase())
+        ctxStr.includes(traceId) ||
+        msg.includes(traceId)
       );
       
-      // FALLBACK CHECK: Pattern matching for tx.* category logs without traceId
-      // Only used when we have a traceId to avoid pulling in unrelated logs
-      const matchesPattern = traceId && txPatterns.some(p => p.test(msg) || p.test(ctxStr));
+      // STRICT PATTERN CHECK: Only include if BOTH traceId matches AND pattern is execution-related
+      // This prevents capturing random logs that happen to be in the time window
+      const matchesExecutionPattern = txPatterns.some(p => p.test(msg));
       
-      // Check if cat is 'tx' or 'arb' (transaction/arbitrage category)
-      // But only include arb logs that are executor-related, not graph sync
-      const isTxCat = event.cat === 'tx' || (event.cat === 'arb' && /arb\.executor\.|arb\.jito\./i.test(msg));
-      
-      // Prioritize direct traceId matches, then substring matches, then pattern matches for tx category
-      if (hasDirectTraceId || hasTraceIdSubstring || (matchesPattern && isTxCat)) {
+      // Only include if we have a traceId correlation AND it's an execution-related log
+      // OR if it has a direct traceId match (which means it was intentionally tagged)
+      if (hasDirectTraceId || (hasTraceIdSubstring && matchesExecutionPattern)) {
         relevant.unshift(event); // Add to beginning to maintain chronological order
         if (relevant.length >= maxLogs) break;
       }

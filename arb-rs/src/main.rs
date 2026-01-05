@@ -4058,64 +4058,82 @@ async fn arb_graph_update(
         // NO buffering - we applied directly
     }
     
-    // Apply additions directly to live_graph
+    // Apply additions directly to live_graph using insert_bidirectional_edges
+    // to ensure proper rate inversion and bidirectional edge creation
     if let Some(added) = req.added_edges {
         let n = added.len();
         for e in added.iter() {
             let dex = e.dex.as_deref().unwrap_or("");
-            let rate = e.price_a_per_b.unwrap_or(1.0);
-            let data = EdgeData {
-                rate_effective: rate,
-                fee_bps: e.fee_bps.unwrap_or(0),
-                liquidity: e.liquidity.unwrap_or(0.0),
-                dex: dex.to_string(),
-                pool_id: e.pool_id.clone().unwrap_or_default(),
-                liquidity_display: e.liquidity_display.unwrap_or(0.0),
-                native_mint_a: e.native_mint_a.clone(),
-                native_mint_b: e.native_mint_b.clone(),
-                native_decimals_a: e.native_decimals_a,
-                native_decimals_b: e.native_decimals_b,
-                native_account_a: e.native_account_a.clone(),
-                native_account_b: e.native_account_b.clone(),
-                native_reserve_a_raw: e.native_reserve_a_raw.clone(),
-                native_reserve_b_raw: e.native_reserve_b_raw.clone(),
-            };
-            s.live_graph.upsert_edge(dex, &e.source, &e.target, data);
+            let price = e.price_a_per_b.unwrap_or(0.0);
+            let pool_id = e.pool_id.clone().unwrap_or_default();
+            let fee_bps = e.fee_bps.unwrap_or(0);
+            let liquidity = e.liquidity.unwrap_or(0.0);
+            let liquidity_display = e.liquidity_display.unwrap_or(0.0);
+
+            // Use insert_bidirectional_edges to correctly:
+            // 1. Invert price to get rate_effective (1/price * (1-fee))
+            // 2. Apply fees
+            // 3. Create both forward and reverse edges
+            insert_bidirectional_edges(
+                &mut s.live_graph,
+                dex,
+                &e.source,
+                &e.target,
+                &pool_id,
+                fee_bps,
+                liquidity,
+                liquidity_display,
+                price,
+                e.native_mint_a.clone(),
+                e.native_mint_b.clone(),
+                e.native_decimals_a,
+                e.native_decimals_b,
+                e.native_account_a.clone(),
+                e.native_account_b.clone(),
+                e.native_reserve_a_raw.clone(),
+                e.native_reserve_b_raw.clone(),
+            );
             changed_mints.push(e.source.clone());
             changed_mints.push(e.target.clone());
         }
-        tracing::info!(added = n, "arb.graph.diff: applied additions to live_graph");
-        // NO buffering - we applied directly
+        tracing::info!(added = n, "arb.graph.diff: applied additions to live_graph (bidirectional)");
     }
-    
-    // Apply updates directly to live_graph (same as additions - upsert handles update)
+
+    // Apply updates directly to live_graph using insert_bidirectional_edges
     if let Some(updated) = req.updated_edges {
         let n = updated.len();
         for e in updated.iter() {
             let dex = e.dex.as_deref().unwrap_or("");
-            let rate = e.price_a_per_b.unwrap_or(1.0);
-            let data = EdgeData {
-                rate_effective: rate,
-                fee_bps: e.fee_bps.unwrap_or(0),
-                liquidity: e.liquidity.unwrap_or(0.0),
-                dex: dex.to_string(),
-                pool_id: e.pool_id.clone().unwrap_or_default(),
-                liquidity_display: e.liquidity_display.unwrap_or(0.0),
-                native_mint_a: e.native_mint_a.clone(),
-                native_mint_b: e.native_mint_b.clone(),
-                native_decimals_a: e.native_decimals_a,
-                native_decimals_b: e.native_decimals_b,
-                native_account_a: e.native_account_a.clone(),
-                native_account_b: e.native_account_b.clone(),
-                native_reserve_a_raw: e.native_reserve_a_raw.clone(),
-                native_reserve_b_raw: e.native_reserve_b_raw.clone(),
-            };
-            s.live_graph.upsert_edge(dex, &e.source, &e.target, data);
+            let price = e.price_a_per_b.unwrap_or(0.0);
+            let pool_id = e.pool_id.clone().unwrap_or_default();
+            let fee_bps = e.fee_bps.unwrap_or(0);
+            let liquidity = e.liquidity.unwrap_or(0.0);
+            let liquidity_display = e.liquidity_display.unwrap_or(0.0);
+
+            // Use insert_bidirectional_edges for updates as well
+            insert_bidirectional_edges(
+                &mut s.live_graph,
+                dex,
+                &e.source,
+                &e.target,
+                &pool_id,
+                fee_bps,
+                liquidity,
+                liquidity_display,
+                price,
+                e.native_mint_a.clone(),
+                e.native_mint_b.clone(),
+                e.native_decimals_a,
+                e.native_decimals_b,
+                e.native_account_a.clone(),
+                e.native_account_b.clone(),
+                e.native_reserve_a_raw.clone(),
+                e.native_reserve_b_raw.clone(),
+            );
             changed_mints.push(e.source.clone());
             changed_mints.push(e.target.clone());
         }
-        tracing::info!(updated = n, changed_mints = changed_mints.len(), "arb.graph.diff: applied updates to live_graph");
-        // NO buffering - we applied directly
+        tracing::info!(updated = n, changed_mints = changed_mints.len(), "arb.graph.diff: applied updates to live_graph (bidirectional)");
     }
     
     // Increment live_graph_version
