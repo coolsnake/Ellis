@@ -499,11 +499,23 @@ export async function fetchOrcaPoolViaSdk(
         }
       });
     } else if (!center && existingArrays.length === 0) {
-      // Log at debug level - these are typically empty pools or pools with liquidity far outside any reasonable range
-      // Not actionable, so don't spam warn logs
-      logger.debug('orca.sdk.fetch.no_tick_arrays', {
+      // No tick arrays found - log with more detail for diagnosis
+      // Pools that are actively traded should have tick arrays, so this is worth investigating
+      const searchedRange = tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15;
+      const ticksInArrayValue = ORCA_TICK_ARRAY_SIZE * tickSpacing;
+      const tickRangeSearched = searchedRange * ticksInArrayValue;
+      
+      logger.info('orca.sdk.fetch.no_tick_arrays', {
         cat: 'cache',
-        ctx: { pool: poolId, currentTick, tickSpacing, centerIdx, searchedRange: tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15 }
+        ctx: { 
+          pool: poolId, 
+          currentTick, 
+          tickSpacing, 
+          centerIdx,
+          searchedRange,
+          tickRangeSearched: `±${tickRangeSearched} ticks`,
+          liquidityHex: liquidity?.slice(0, 16) || 'unknown',
+        }
       });
     }
     
@@ -876,6 +888,42 @@ export async function fetchRaydiumPoolViaSdk(
     const sqrtPriceX64 = String(state.sqrtPriceX64 ?? '0');
     const liquidity = String(state.liquidity ?? '0');
     
+    // Extract ammConfig and observationState from decoded state or raw account data
+    let ammConfig: string | undefined;
+    let observationState: string | undefined;
+    
+    // Try to get from decoded state first
+    const ammConfigPk = state.ammConfig ?? state.amm_config ?? state.config;
+    if (ammConfigPk) {
+      try {
+        ammConfig = typeof ammConfigPk === 'string' ? ammConfigPk 
+          : ammConfigPk.toBase58?.() ?? new PublicKey(ammConfigPk).toBase58();
+      } catch {}
+    }
+    
+    const observationPk = state.observationId ?? state.observation_id ?? state.observationKey ?? state.observation_key;
+    if (observationPk) {
+      try {
+        observationState = typeof observationPk === 'string' ? observationPk
+          : observationPk.toBase58?.() ?? new PublicKey(observationPk).toBase58();
+      } catch {}
+    }
+    
+    // Fallback: extract from raw account data if not in decoded state
+    if (!ammConfig && accountInfo.data.length >= 40) {
+      try {
+        const ammConfigBytes = accountInfo.data.slice(8, 40); // After 8-byte discriminator
+        ammConfig = new PublicKey(ammConfigBytes).toBase58();
+      } catch {}
+    }
+    
+    if (!observationState && accountInfo.data.length >= 233) {
+      try {
+        const observationBytes = accountInfo.data.slice(201, 233); // At offset 201
+        observationState = new PublicKey(observationBytes).toBase58();
+      } catch {}
+    }
+    
     // Extract tick array bitmap if available (array of 16 u64 values)
     const tickArrayBitmap = state.tickArrayBitmap ?? state.tick_array_bitmap;
     const hasBitmap = Array.isArray(tickArrayBitmap) && tickArrayBitmap.length === 16;
@@ -938,15 +986,15 @@ export async function fetchRaydiumPoolViaSdk(
         });
       } else {
         // Bitmap says no tick arrays are initialized in range
-        // Check if center is outside bitmap range (±512), if so fall back to RPC search
         if (Math.abs(centerIdx) >= RAYDIUM_BITMAP_RANGE) {
           logger.debug('raydium.sdk.fetch.center_outside_bitmap', {
             cat: 'cache',
             ctx: { pool: poolId.slice(0, 8) + '…', centerIdx, bitmapRange: RAYDIUM_BITMAP_RANGE }
           });
-          // Fall through to RPC-based search below
         } else {
-          logger.debug('raydium.sdk.fetch.bitmap_empty', {
+          // Bitmap shows empty in range - will fall back to RPC search
+          // (bitmap could be stale or tick arrays might exist outside checked range)
+          logger.debug('raydium.sdk.fetch.bitmap_empty_fallback_rpc', {
             cat: 'cache',
             ctx: { pool: poolId.slice(0, 8) + '…', centerIdx, searchRange: SEARCH_RANGE }
           });
@@ -954,8 +1002,11 @@ export async function fetchRaydiumPoolViaSdk(
       }
     }
     
-    // Fall back to RPC-based search if bitmap not available or yielded no results
-    if (existingArrays.length === 0 && (!hasBitmap || Math.abs(centerIdx) >= RAYDIUM_BITMAP_RANGE)) {
+    // Fall back to RPC-based search if:
+    // - No bitmap available
+    // - Center is outside bitmap range (±512)
+    // - Bitmap returned empty results (could be stale)
+    if (existingArrays.length === 0) {
       // Adaptive range based on tick spacing (Raydium arrays are 60 ticks vs Orca's 88)
       const INITIAL_RANGE = tickSpacing <= 2 ? 12 : tickSpacing <= 10 ? 8 : 5;
       
@@ -1044,11 +1095,23 @@ export async function fetchRaydiumPoolViaSdk(
         }
       });
     } else if (!center && existingArrays.length === 0) {
-      // Log at debug level - these are typically empty pools or pools with liquidity far outside any reasonable range
-      // Not actionable, so don't spam warn logs
-      logger.debug('raydium.sdk.fetch.no_tick_arrays', {
+      // No tick arrays found - log with more detail for diagnosis
+      const searchedRange = tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12;
+      const tickRangeSearched = searchedRange * RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
+      
+      logger.info('raydium.sdk.fetch.no_tick_arrays', {
         cat: 'cache',
-        ctx: { pool: poolId, tickCurrent, tickSpacing, centerIdx, searchedRange: tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12 }
+        ctx: { 
+          pool: poolId, 
+          tickCurrent, 
+          tickSpacing, 
+          centerIdx,
+          searchedRange,
+          tickRangeSearched: `±${tickRangeSearched} ticks`,
+          hasBitmap,
+          ammConfig: ammConfig?.slice(0, 12),
+          observationState: observationState?.slice(0, 12),
+        }
       });
     }
     
@@ -1073,6 +1136,8 @@ export async function fetchRaydiumPoolViaSdk(
       tickSpacing,
       sqrtPriceX64,
       liquidity,
+      ammConfig,
+      observationState,
       tickArrays: center ? { center, lower, upper } : undefined,
       lastFetched: Date.now(),
       fetchDurationMs,

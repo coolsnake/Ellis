@@ -1363,6 +1363,11 @@ export async function validatePoolCache(
           tickArrayIndex = Math.floor(orcaCurrentTick / ticksInArray);
         }
         
+        // Check if any arrays were found at all
+        const hasAnyArrays = result.tickArrayValidation?.center?.exists ||
+                            result.tickArrayValidation?.lower?.exists ||
+                            result.tickArrayValidation?.upper?.exists;
+        
         const orcaEligibility: OrcaTickEligibility = {
           currentTick: orcaCurrentTick,
           tickSpacing: orcaTickSpacing,
@@ -1373,7 +1378,22 @@ export async function validatePoolCache(
         
         if (!centerArrayExists) {
           orcaEligibility.issue = 'Pool ineligible: center tick array does not exist on-chain';
-          // Note: this issue is already added above in the tick array validation
+          
+          // Log diagnostic info for ineligible pools
+          logger.info('cache.validation.orca.ineligible', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8) + '…',
+              currentTick: orcaCurrentTick,
+              tickSpacing: orcaTickSpacing,
+              tickArrayIndex,
+              hasAnyArrays,
+              // Include what the SDK fetcher found
+              centerAddress: result.tickArrayValidation?.center?.address?.slice(0, 12),
+              lowerExists: result.tickArrayValidation?.lower?.exists,
+              upperExists: result.tickArrayValidation?.upper?.exists,
+            }
+          });
         }
         
         result.orcaTickEligibility = orcaEligibility;
