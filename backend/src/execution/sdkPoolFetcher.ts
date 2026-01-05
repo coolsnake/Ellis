@@ -39,9 +39,23 @@ try {
 }
 
 // Pre-import Orca SDK components
+let OrcaWhirlpoolContext: any = null;
+let OrcaBuildWhirlpoolClient: any = null;
+let OrcaSwapQuoteByInputToken: any = null;
+let OrcaPercentage: any = null;
+
 try {
   const orcaSdk = await import('@orca-so/whirlpools-sdk');
   OrcaPDAUtil = (orcaSdk as any).PDAUtil;
+  OrcaWhirlpoolContext = (orcaSdk as any).WhirlpoolContext;
+  OrcaBuildWhirlpoolClient = (orcaSdk as any).buildWhirlpoolClient;
+  OrcaSwapQuoteByInputToken = (orcaSdk as any).swapQuoteByInputToken;
+  
+  // Also import Percentage from common-sdk
+  try {
+    const commonSdk = await import('@orca-so/common-sdk');
+    OrcaPercentage = (commonSdk as any).Percentage;
+  } catch { /* ignore */ }
 } catch {
   // Will fall back to manual derivation
 }
@@ -201,6 +215,9 @@ export interface ValidatedPoolState {
   // Metadata
   lastFetched: number;
   fetchDurationMs: number;
+  // Flag indicating pool has liquidity but tick arrays are outside search range
+  // Pool is still tradeable - swap will derive arrays at execution time
+  liquidityOutsideRange?: boolean;
 }
 
 /**
@@ -296,6 +313,84 @@ async function searchOrcaTickArrays(
 }
 
 /**
+ * Try to discover Orca tick arrays by performing a mock swap quote.
+ * The SDK's swap quote internally finds the correct tick arrays.
+ * 
+ * @param connection Solana connection
+ * @param poolId Pool address
+ * @param tokenAMint Token A mint (from pool state)
+ * @param tokenBMint Token B mint (from pool state)
+ * @returns Tick array addresses if successful, null otherwise
+ */
+async function discoverOrcaTickArraysViaSdkQuote(
+  connection: Connection,
+  poolId: string,
+  tokenAMint?: string,
+  tokenBMint?: string,
+): Promise<{ tickArray0: string; tickArray1: string; tickArray2: string } | null> {
+  // Check if SDK components are available
+  if (!OrcaWhirlpoolContext || !OrcaBuildWhirlpoolClient || !OrcaSwapQuoteByInputToken || !OrcaPercentage) {
+    return null;
+  }
+  
+  if (!tokenAMint || !tokenBMint) {
+    return null;
+  }
+  
+  try {
+    // Create a minimal context (we just need the pool fetcher, not a real wallet)
+    const dummyWallet = { publicKey: new PublicKey('11111111111111111111111111111111') };
+    
+    const ctx = OrcaWhirlpoolContext.from(
+      connection,
+      dummyWallet,
+      ORCA_WHIRLPOOL_PROGRAM,
+      {
+        userDefaultBuildOptions: {
+          defaultBuildOption: { maxSupportedTransactionVersion: 'legacy' },
+        },
+      },
+    );
+    
+    const client = OrcaBuildWhirlpoolClient(ctx);
+    const pool = await client.getPool(new PublicKey(poolId));
+    
+    // Try a small swap quote to discover tick arrays
+    // We use a very small amount (1 token in base units) to minimize computation
+    const BN = (await import('bn.js')).default;
+    const smallAmount = new BN(1000); // Small amount for quote
+    const slippage = OrcaPercentage.fromFraction(100, 10000); // 1% slippage
+    
+    const quote = await OrcaSwapQuoteByInputToken(
+      pool,
+      new PublicKey(tokenAMint),
+      smallAmount,
+      slippage,
+      ORCA_WHIRLPOOL_PROGRAM,
+      ctx.fetcher,
+    );
+    
+    // Extract tick arrays from the quote
+    if (quote && quote.tickArray0 && quote.tickArray1 && quote.tickArray2) {
+      return {
+        tickArray0: quote.tickArray0.toBase58(),
+        tickArray1: quote.tickArray1.toBase58(),
+        tickArray2: quote.tickArray2.toBase58(),
+      };
+    }
+    
+    return null;
+  } catch (e) {
+    // Quote failed - likely no liquidity or other issue
+    logger.debug('orca.sdk.quote.discovery_failed', {
+      cat: 'cache',
+      ctx: { pool: poolId.slice(0, 8) + '…', error: (e as Error).message?.slice(0, 100) }
+    });
+    return null;
+  }
+}
+
+/**
  * Fetch Orca Whirlpool state using SDK
  * Returns validated tick arrays that actually exist on-chain
  * 
@@ -304,6 +399,7 @@ async function searchOrcaTickArrays(
  * Uses adaptive search range based on tick spacing:
  * - Smaller tick spacing = wider search (pools with tickSpacing=1 need more coverage)
  * - Falls back to extended search if no tick arrays found in initial range
+ * - Falls back to SDK quote discovery if liquidity exists but search fails
  */
 export async function fetchOrcaPoolViaSdk(
   connection: Connection,
@@ -353,8 +449,8 @@ export async function fetchOrcaPoolViaSdk(
         });
         
         // Manual decoding fallback
-        const data = Buffer.from(accountInfo.data);
-        let offset = 8; // Skip discriminator
+    const data = Buffer.from(accountInfo.data);
+    let offset = 8; // Skip discriminator
         offset += 32 + 1; // Skip whirlpoolsConfig, whirlpoolBump
         
         tickSpacing = data.readUInt16LE(offset);
@@ -377,16 +473,16 @@ export async function fetchOrcaPoolViaSdk(
       offset += 32 + 1; // Skip whirlpoolsConfig, whirlpoolBump
       
       tickSpacing = data.readUInt16LE(offset);
-      offset += 2 + 2 + 2 + 2; // Skip tickSpacingSeed, feeRate, protocolFeeRate
-      
-      const liquidityBuf = data.subarray(offset, offset + 16);
+    offset += 2 + 2 + 2 + 2; // Skip tickSpacingSeed, feeRate, protocolFeeRate
+    
+    const liquidityBuf = data.subarray(offset, offset + 16);
       liquidity = Buffer.from(liquidityBuf).reverse().toString('hex');
-      offset += 16;
-      
-      const sqrtPriceBuf = data.subarray(offset, offset + 16);
+    offset += 16;
+    
+    const sqrtPriceBuf = data.subarray(offset, offset + 16);
       sqrtPriceX64 = Buffer.from(sqrtPriceBuf).reverse().toString('hex');
-      offset += 16;
-      
+    offset += 16;
+    
       currentTick = data.readInt32LE(offset);
     }
     
@@ -417,8 +513,9 @@ export async function fetchOrcaPoolViaSdk(
     
     // SUGGESTION 2: If no tick arrays found, try extended search
     // This catches pools where liquidity is concentrated far from current tick
+    const EXTENDED_RANGE = tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15;
+    
     if (existingArrays.length === 0) {
-      const EXTENDED_RANGE = tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15;
       
       logger.debug('orca.sdk.fetch.extended_search', {
         cat: 'cache',
@@ -450,6 +547,48 @@ export async function fetchOrcaPoolViaSdk(
       }
     }
     
+    // SUGGESTION 3: If still no tick arrays and centerIdx is far from 0, search around origin
+    // Many pools have liquidity near tick 0 but price has drifted far from initial
+    if (existingArrays.length === 0 && Math.abs(centerIdx) > EXTENDED_RANGE) {
+      const ORIGIN_RANGE = tickSpacing <= 2 ? 30 : 15;
+      
+      logger.debug('orca.sdk.fetch.origin_search', {
+        cat: 'cache',
+        ctx: { 
+          pool: poolId.slice(0, 8) + '…', 
+          currentTick, 
+          tickSpacing, 
+          centerIdx,
+          originRange: ORIGIN_RANGE,
+        }
+      });
+      
+      // Search around tick array index 0 (near tick 0)
+      const originArrays = await searchOrcaTickArrays(
+        connection, poolPk, 0, ticksInArray, ORIGIN_RANGE
+      );
+      
+      if (originArrays.length > 0) {
+        // Adjust offsets to be relative to actual centerIdx
+        existingArrays = originArrays.map(arr => ({
+          ...arr,
+          offset: arr.offset - centerIdx, // Offset from our actual center
+        }));
+        
+        logger.info('orca.sdk.fetch.found_at_origin', {
+          cat: 'cache',
+          ctx: { 
+            pool: poolId.slice(0, 8) + '…', 
+            currentTick, 
+            tickSpacing,
+            centerIdx,
+            arraysFound: existingArrays.length,
+            foundIndices: originArrays.map(a => a.offset).slice(0, 5),
+          }
+        });
+      }
+    }
+    
     // Categorize arrays into lower, center, upper
     const lower: string[] = [];
     let center: string | undefined;
@@ -460,7 +599,7 @@ export async function fetchOrcaPoolViaSdk(
         center = arr.address;
       } else if (arr.offset < 0) {
         lower.push(arr.address);
-      } else {
+        } else {
         upper.push(arr.address);
       }
     }
@@ -499,24 +638,70 @@ export async function fetchOrcaPoolViaSdk(
         }
       });
     } else if (!center && existingArrays.length === 0) {
-      // No tick arrays found - log with more detail for diagnosis
-      // Pools that are actively traded should have tick arrays, so this is worth investigating
-      const searchedRange = tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15;
-      const ticksInArrayValue = ORCA_TICK_ARRAY_SIZE * tickSpacing;
-      const tickRangeSearched = searchedRange * ticksInArrayValue;
+      // No tick arrays found in search range
+      // Check if pool actually has liquidity before giving up
+      const hasLiquidity = liquidity && liquidity !== '0' && liquidity !== '0x0' && 
+        (() => { try { return BigInt('0x' + liquidity) > 0n; } catch { return false; } })();
       
-      logger.info('orca.sdk.fetch.no_tick_arrays', {
+      if (hasLiquidity) {
+        // Pool has liquidity but tick arrays are outside search range
+        // This happens with full-range positions where boundaries are at extreme indices
+        // Try SDK quote discovery to find the actual tick arrays
+        logger.debug('orca.sdk.fetch.trying_quote_discovery', {
         cat: 'cache',
-        ctx: { 
-          pool: poolId, 
-          currentTick, 
-          tickSpacing, 
-          centerIdx,
-          searchedRange,
-          tickRangeSearched: `±${tickRangeSearched} ticks`,
-          liquidityHex: liquidity?.slice(0, 16) || 'unknown',
+          ctx: { pool: poolId.slice(0, 8) + '…', currentTick, tickSpacing, centerIdx }
+        });
+        
+        const sdkTickArrays = await discoverOrcaTickArraysViaSdkQuote(connection, poolId);
+        
+        if (sdkTickArrays) {
+          // SDK successfully found tick arrays
+          center = sdkTickArrays.tickArray0;
+          lower.push(sdkTickArrays.tickArray1);
+          upper.push(sdkTickArrays.tickArray2);
+          
+          logger.info('orca.sdk.fetch.discovered_via_quote', {
+            cat: 'cache',
+            ctx: {
+              pool: poolId.slice(0, 8) + '…',
+              currentTick,
+              tickSpacing,
+              tickArray0: sdkTickArrays.tickArray0.slice(0, 12) + '…',
+            }
+          });
+        } else {
+          // SDK quote failed but pool has liquidity
+          // Return valid state without tick arrays - swap will derive them at execution time
+          logger.info('orca.sdk.fetch.liquidity_outside_range', {
+            cat: 'cache',
+            ctx: {
+              pool: poolId.slice(0, 8) + '…',
+              currentTick,
+              tickSpacing,
+              centerIdx,
+              liquidityHex: liquidity?.slice(0, 16),
+              note: 'Tick arrays likely at position boundaries outside search range'
+            }
+          });
         }
-      });
+      } else {
+        // Pool genuinely has no liquidity
+        const searchedRange = tickSpacing <= 2 ? 50 : tickSpacing <= 8 ? 30 : 15;
+        const ticksInArrayValue = ORCA_TICK_ARRAY_SIZE * tickSpacing;
+        const tickRangeSearched = searchedRange * ticksInArrayValue;
+        
+        logger.debug('orca.sdk.fetch.no_liquidity', {
+          cat: 'cache',
+          ctx: { 
+            pool: poolId, 
+            currentTick, 
+            tickSpacing, 
+            centerIdx,
+            searchedRange,
+            tickRangeSearched: `±${tickRangeSearched} ticks`,
+          }
+        });
+      }
     }
     
     logger.debug('orca.sdk.fetch.complete', {
@@ -530,6 +715,11 @@ export async function fetchOrcaPoolViaSdk(
       }
     });
     
+    // Check if we have liquidity but couldn't find tick arrays
+    const hasLiquidity = liquidity && liquidity !== '0' && liquidity !== '0x0' &&
+      (() => { try { return BigInt('0x' + liquidity) > 0n; } catch { return false; } })();
+    const liquidityOutsideRange = hasLiquidity && !center;
+    
     // Return tick arrays if we found any (center is guaranteed if any exist now)
     return {
       poolId,
@@ -542,6 +732,7 @@ export async function fetchOrcaPoolViaSdk(
       tickArrays: center ? { center, lower, upper } : undefined,
       lastFetched: Date.now(),
       fetchDurationMs,
+      liquidityOutsideRange,
     };
   } catch (e) {
     logCatchError('sdkPoolFetcher.orca', e);
@@ -956,18 +1147,18 @@ export async function fetchRaydiumPoolViaSdk(
         
         for (const tickArrayIdx of allInitializedIndices) {
           const startTick = tickArrayIdx * ticksInArray;
-          const pda = deriveRaydiumTickArrayPda(poolPk, startTick, program);
+      const pda = deriveRaydiumTickArrayPda(poolPk, startTick, program);
           tickArrayPdas.push({ offset: tickArrayIdx - centerIdx, pda, tickArrayIdx });
-        }
-        
+    }
+    
         // Verify on-chain (bitmap could be stale) but only for known-initialized arrays
-        const pdaKeys = tickArrayPdas.map(p => p.pda);
-        const infos = await connection.getMultipleAccountsInfo(pdaKeys);
-        
-        for (let i = 0; i < tickArrayPdas.length; i++) {
-          const info = infos[i];
-          if (info && info.owner.equals(program) && info.data.length > 0) {
-            const { offset, pda } = tickArrayPdas[i];
+    const pdaKeys = tickArrayPdas.map(p => p.pda);
+    const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+    
+    for (let i = 0; i < tickArrayPdas.length; i++) {
+      const info = infos[i];
+      if (info && info.owner.equals(program) && info.data.length > 0) {
+        const { offset, pda } = tickArrayPdas[i];
             existingArrays.push({ offset, address: pda.toBase58(), pda });
           }
         }
@@ -985,7 +1176,7 @@ export async function fetchRaydiumPoolViaSdk(
             foundIndices: existingArrays.map(a => a.offset + centerIdx).slice(0, 10),
           }
         });
-      } else {
+        } else {
         // Bitmap shows NO tick arrays initialized anywhere in range -512 to +511
         logger.debug('raydium.sdk.fetch.bitmap_completely_empty', {
           cat: 'cache',
@@ -1095,24 +1286,47 @@ export async function fetchRaydiumPoolViaSdk(
         }
       });
     } else if (!center && existingArrays.length === 0) {
-      // No tick arrays found - log with more detail for diagnosis
-      const searchedRange = tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12;
-      const tickRangeSearched = searchedRange * RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
+      // No tick arrays found in search range
+      // Check if pool actually has liquidity before marking as empty
+      const hasLiquidity = liquidity && liquidity !== '0' && 
+        (() => { try { return BigInt(liquidity) > 0n; } catch { return false; } })();
       
-      logger.info('raydium.sdk.fetch.no_tick_arrays', {
-        cat: 'cache',
-        ctx: { 
-          pool: poolId, 
-          tickCurrent, 
-          tickSpacing, 
-          centerIdx,
-          searchedRange,
-          tickRangeSearched: `±${tickRangeSearched} ticks`,
-          hasBitmap,
-          ammConfig: ammConfig?.slice(0, 12),
-          observationState: observationState?.slice(0, 12),
-        }
-      });
+      if (hasLiquidity) {
+        // Pool has liquidity but tick arrays are outside search range
+        // This happens with full-range positions where boundaries are at extreme indices
+        // that require exBitmap (outside ±512 range)
+        logger.info('raydium.sdk.fetch.liquidity_outside_range', {
+          cat: 'cache',
+          ctx: {
+            pool: poolId.slice(0, 8) + '…',
+            tickCurrent,
+            tickSpacing,
+            centerIdx,
+            liquidity: liquidity.slice(0, 16),
+            hasBitmap,
+            note: 'Tick arrays likely at position boundaries outside bitmap range'
+          }
+        });
+      } else {
+        // Pool genuinely has no liquidity
+        const searchedRange = tickSpacing <= 2 ? 40 : tickSpacing <= 10 ? 25 : 12;
+        const tickRangeSearched = searchedRange * RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
+        
+        logger.debug('raydium.sdk.fetch.no_liquidity', {
+          cat: 'cache',
+          ctx: { 
+            pool: poolId, 
+            tickCurrent, 
+            tickSpacing, 
+            centerIdx,
+            searchedRange,
+            tickRangeSearched: `±${tickRangeSearched} ticks`,
+            hasBitmap,
+            ammConfig: ammConfig?.slice(0, 12),
+            observationState: observationState?.slice(0, 12),
+          }
+        });
+      }
     }
     
     const fetchDurationMs = Date.now() - startTime;
@@ -1128,6 +1342,11 @@ export async function fetchRaydiumPoolViaSdk(
       }
     });
     
+    // Check if we have liquidity but couldn't find tick arrays
+    const hasLiquidity = liquidity && liquidity !== '0' &&
+      (() => { try { return BigInt(liquidity) > 0n; } catch { return false; } })();
+    const liquidityOutsideRange = hasLiquidity && !center;
+    
     return {
       poolId,
       dex: 'raydium',
@@ -1141,6 +1360,7 @@ export async function fetchRaydiumPoolViaSdk(
       tickArrays: center ? { center, lower, upper } : undefined,
       lastFetched: Date.now(),
       fetchDurationMs,
+      liquidityOutsideRange,
     };
   } catch (e) {
     logCatchError('sdkPoolFetcher.raydium', e);

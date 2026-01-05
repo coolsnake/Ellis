@@ -799,6 +799,8 @@ export interface PoolValidationResult {
   feeValidation?: FeeValidation;                          // Fee BPS validation
   issues: string[];
   valid: boolean;
+  noLiquidityPool?: boolean;                              // Pool validated but has no liquidity
+  liquidityOutsideRange?: boolean;                        // Pool has liquidity but tick arrays outside search range
   // Additional cache data for debugging
   cacheData?: {
     currentTick?: number;
@@ -899,6 +901,44 @@ export async function validatePoolCache(
   if (!stat && !hot) {
     issues.push('No cache entry found');
     return result;
+  }
+  
+  // Check if pool was flagged as "liquidity outside search range"
+  // These pools ARE tradeable - tick arrays will be derived at swap time
+  if (hot?.liquidityOutsideRange && hot?.liquidity) {
+    result.valid = true;
+    result.liquidityOutsideRange = true;
+    logger.debug('cache.validation.pool_with_distant_liquidity', {
+      cat: 'cache',
+      ctx: {
+        poolId: basePoolId.slice(0, 8) + '…',
+        dex,
+        liquidity: hot.liquidity?.toString()?.slice(0, 16),
+      }
+    });
+    return result;
+  }
+  
+  // Check if pool was recently validated as "no liquidity"
+  // Skip re-validation to prevent infinite loop (re-check after 5 minutes)
+  const NO_LIQUIDITY_RECHECK_MS = 5 * 60 * 1000; // 5 minutes
+  if (hot?.noLiquidityValidatedAt) {
+    const timeSinceValidation = Date.now() - hot.noLiquidityValidatedAt;
+    if (timeSinceValidation < NO_LIQUIDITY_RECHECK_MS) {
+      // Mark as valid (already validated, just no liquidity)
+      result.valid = true;
+      result.noLiquidityPool = true;
+      logger.debug('cache.validation.skip_no_liquidity_pool', {
+        cat: 'cache',
+        ctx: {
+          poolId: basePoolId.slice(0, 8) + '…',
+          dex,
+          validatedAgoMs: timeSinceValidation,
+          recheckInMs: NO_LIQUIDITY_RECHECK_MS - timeSinceValidation,
+        }
+      });
+      return result;
+    }
   }
   
   try {
@@ -2175,12 +2215,69 @@ export async function refreshInvalidPools(
               });
               return { success: true, poolId: pool.poolId };
             } else if (validatedState.currentTick !== undefined) {
-              // Pool was fetched but no tick arrays found on-chain
-              return { 
-                success: false, 
-                poolId: pool.poolId, 
-                error: `No tick arrays found on-chain (tick: ${validatedState.currentTick}, spacing: ${validatedState.tickSpacing})` 
-              };
+              // Pool was fetched but no tick arrays found in search range
+              const existing = executionCache.getHot(pool.poolId) || {};
+              
+              if (validatedState.liquidityOutsideRange) {
+                // Pool HAS liquidity but tick arrays are outside our search range
+                // This happens with full-range positions at extreme indices
+                // The pool IS tradeable - swap will derive arrays at execution time
+                executionCache.setHot(pool.poolId, {
+                  ...existing,
+                  currentTickIndex: validatedState.currentTick,
+                  tickSpacing: validatedState.tickSpacing,
+                  liquidity: validatedState.liquidity,
+                  tickArrays: undefined, // Will be derived at swap time
+                  liquidityOutsideRange: true, // Flag for swap builder
+                  // Don't set noLiquidityValidatedAt - pool is tradeable!
+                });
+                
+                logger.info('cache.refresh.pool.liquidity_outside_range', {
+                  cat: 'cache',
+                  ctx: {
+                    poolId: pool.poolId,
+                    dex: pool.dex,
+                    currentTick: validatedState.currentTick,
+                    tickSpacing: validatedState.tickSpacing,
+                    liquidity: validatedState.liquidity?.slice(0, 16),
+                  }
+                });
+                
+                // Return success - pool is valid, just needs arrays derived at swap time
+                return { 
+                  success: true, 
+                  poolId: pool.poolId,
+                  liquidityOutsideRange: true,
+                };
+              } else {
+                // Pool genuinely has no liquidity
+                // Mark as validated to prevent re-checking on every cycle
+                executionCache.setHot(pool.poolId, {
+                  ...existing,
+                  currentTickIndex: validatedState.currentTick,
+                  tickSpacing: validatedState.tickSpacing,
+                  tickArrays: undefined, // Explicitly set to undefined (no arrays)
+                  noLiquidityValidatedAt: Date.now(), // Mark when we validated this
+                });
+                
+                logger.debug('cache.refresh.pool.no_liquidity', {
+                  cat: 'cache',
+                  ctx: {
+                    poolId: pool.poolId,
+                    dex: pool.dex,
+                    currentTick: validatedState.currentTick,
+                    tickSpacing: validatedState.tickSpacing,
+                  }
+                });
+                
+                // Return success:true because we successfully validated - just no liquidity
+                // This prevents the pool from being re-queued as "invalid"
+                return { 
+                  success: true, 
+                  poolId: pool.poolId,
+                  noLiquidity: true,
+                };
+              }
             }
             
             if (validatedState.binArrays) {

@@ -124,6 +124,13 @@ type PoolHot = {
     lowerData?: Buffer;
     upperData?: Buffer;
   };
+  // Validation state flags
+  // noLiquidityValidatedAt: Pool was validated and found to have no liquidity
+  // Re-check after timeout to handle pools that gain liquidity
+  noLiquidityValidatedAt?: number;
+  // liquidityOutsideRange: Pool has liquidity but tick arrays are outside search range
+  // Pool is still tradeable - swap builder will derive arrays at execution time
+  liquidityOutsideRange?: boolean;
 };
 
 type WithExpiry<T> = { value: T; expiresAt: number };
