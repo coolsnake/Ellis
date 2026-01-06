@@ -139,8 +139,14 @@ async function fetchFreshTickDataAndValidate(
       : 0;
     
     const derivationFieldsValid = tickSpacing > 0 && tickSpacing <= 1000;
-    const cacheWasStale = cachedTick !== currentTick || cachedSpacing !== tickSpacing;
-    
+    // Only consider cache "stale" if we had a cached value to compare against
+    // Otherwise it's just "unpopulated", not "stale"
+    const hadCachedTick = cachedTick !== undefined;
+    const hadCachedSpacing = cachedSpacing !== undefined;
+    const tickChanged = hadCachedTick && cachedTick !== currentTick;
+    const spacingChanged = hadCachedSpacing && cachedSpacing !== tickSpacing;
+    const cacheWasStale = tickChanged || spacingChanged;
+
     const derivationValidation: DerivationValidation = {
       currentTick: {
         cached: cachedTick,
@@ -364,10 +370,15 @@ async function fetchFreshBinDataAndValidate(
     const activeBinArrayIdxChanged = cachedBinArrayIdx !== undefined && cachedBinArrayIdx !== freshBinArrayIdx;
     
     const activeIdDrift = cachedActiveId !== undefined ? Math.abs(activeId - cachedActiveId) : 0;
-    
+
     const derivationFieldsValid = binStep > 0 && binStep <= 10000;
-    const cacheWasStale = cachedActiveId !== activeId || cachedBinStep !== binStep;
-    
+    // Only consider cache "stale" if we had a cached value to compare against
+    const hadCachedActiveId = cachedActiveId !== undefined;
+    const hadCachedBinStep = cachedBinStep !== undefined;
+    const activeIdChanged = hadCachedActiveId && cachedActiveId !== activeId;
+    const binStepChanged = hadCachedBinStep && cachedBinStep !== binStep;
+    const cacheWasStale = activeIdChanged || binStepChanged;
+
     const derivationValidation: DerivationValidation = {
       activeId: {
         cached: cachedActiveId,
@@ -1430,34 +1441,55 @@ export async function validatePoolCache(
       // Add Orca eligibility validation based on center tick array existence
       if (dex === 'orca') {
         const orcaCurrentTick = result.cacheData?.currentTick;
-        const orcaTickSpacing = result.cacheData?.tickSpacing || 1;
+        const rawTickSpacing = result.cacheData?.tickSpacing;
+
+        // Validate tick spacing - valid Orca tick spacings are typically 1, 2, 4, 8, 16, 64, 128
+        // Any value > 1000 is definitely invalid (likely corrupted cache data)
+        const isValidTickSpacing = rawTickSpacing !== undefined &&
+                                   rawTickSpacing > 0 &&
+                                   rawTickSpacing <= 1000;
+        const orcaTickSpacing = isValidTickSpacing ? rawTickSpacing : 1;
+
+        if (!isValidTickSpacing && rawTickSpacing !== undefined) {
+          logger.warn('cache.validation.orca.invalid_tick_spacing', {
+            cat: 'cache',
+            ctx: {
+              poolId: basePoolId.slice(0, 8) + '…',
+              rawTickSpacing,
+              usingDefault: 1,
+              note: 'Tick spacing out of valid range, likely corrupted cache data'
+            }
+          });
+        }
+
         const centerArrayExists = result.tickArrayValidation?.center?.exists ?? false;
-        
+
         // Calculate tick array index for tracking
         let tickArrayIndex: number | undefined;
-        if (orcaCurrentTick !== undefined) {
+        if (orcaCurrentTick !== undefined && isValidTickSpacing) {
           const ticksInArray = ORCA_TICK_ARRAY_SIZE * orcaTickSpacing;
           tickArrayIndex = Math.floor(orcaCurrentTick / ticksInArray);
         }
-        
+
         // Check if any arrays were found at all
         const hasAnyArrays = result.tickArrayValidation?.center?.exists ||
                             result.tickArrayValidation?.lower?.exists ||
                             result.tickArrayValidation?.upper?.exists;
-        
+
         const orcaEligibility: OrcaTickEligibility = {
           currentTick: orcaCurrentTick,
           tickSpacing: orcaTickSpacing,
           tickArrayIndex,
           centerArrayExists,
-          isEligibleForTrading: centerArrayExists,
+          isEligibleForTrading: centerArrayExists && isValidTickSpacing,
         };
-        
+
         if (!centerArrayExists) {
           orcaEligibility.issue = 'Pool ineligible: center tick array does not exist on-chain';
-          
-          // Log diagnostic info for ineligible pools
-          logger.info('cache.validation.orca.ineligible', {
+
+          // Only log at debug level for pools with invalid tick spacing (likely not real pools)
+          const logLevel = isValidTickSpacing ? 'info' : 'debug';
+          logger[logLevel]('cache.validation.orca.ineligible', {
             cat: 'cache',
             ctx: {
               poolId: basePoolId.slice(0, 8) + '…',
@@ -1465,6 +1497,7 @@ export async function validatePoolCache(
               tickSpacing: orcaTickSpacing,
               tickArrayIndex,
               hasAnyArrays,
+              invalidTickSpacing: !isValidTickSpacing,
               // Include what the SDK fetcher found
               centerAddress: result.tickArrayValidation?.center?.address?.slice(0, 12),
               lowerExists: result.tickArrayValidation?.lower?.exists,
@@ -1472,7 +1505,7 @@ export async function validatePoolCache(
             }
           });
         }
-        
+
         result.orcaTickEligibility = orcaEligibility;
       }
     } else if (dex === 'meteora') {
@@ -2393,7 +2426,8 @@ export async function refreshInvalidPools(
                   }
                 }
 
-                logger.info('cache.refresh.pool.liquidity_outside_range', {
+                // Log at debug level since this is expected for certain pools
+                logger.debug('cache.refresh.pool.liquidity_outside_range', {
                   cat: 'cache',
                   ctx: {
                     poolId: pool.poolId,

@@ -672,7 +672,8 @@ export async function fetchOrcaPoolViaSdk(
         } else {
           // SDK quote failed but pool has liquidity
           // Return valid state without tick arrays - swap will derive them at execution time
-          logger.info('orca.sdk.fetch.liquidity_outside_range', {
+          // Log at debug level since this is expected for certain pools
+          logger.debug('orca.sdk.fetch.liquidity_outside_range', {
             cat: 'cache',
             ctx: {
               pool: poolId.slice(0, 8) + '…',
@@ -1295,7 +1296,8 @@ export async function fetchRaydiumPoolViaSdk(
         // Pool has liquidity but tick arrays are outside search range
         // This happens with full-range positions where boundaries are at extreme indices
         // that require exBitmap (outside ±512 range)
-        logger.info('raydium.sdk.fetch.liquidity_outside_range', {
+        // Log at debug level since this is expected for certain pools
+        logger.debug('raydium.sdk.fetch.liquidity_outside_range', {
           cat: 'cache',
           ctx: {
             pool: poolId.slice(0, 8) + '…',
