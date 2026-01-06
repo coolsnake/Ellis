@@ -2326,17 +2326,19 @@ export async function refreshInvalidPools(
                   const cachedPool = findPoolInCache(pool.poolId);
                   if (cachedPool?.pool) {
                     const poolData = cachedPool.pool as any;
-                    const mintA = poolData.mint_a || poolData.mintA;
-                    const mintB = poolData.mint_b || poolData.mintB;
-                    const decimalsA = poolData.decimals_a ?? poolData.decimalsA;
-                    const decimalsB = poolData.decimals_b ?? poolData.decimalsB;
+                    // CRITICAL: Use NATIVE mints and decimals for price calculation
+                    // sqrtPriceX64 from chain is always in native orientation
+                    const nativeMintA = poolData.native_mint_a || poolData.mint_a || poolData.mintA;
+                    const nativeMintB = poolData.native_mint_b || poolData.mint_b || poolData.mintB;
+                    const nativeDecimalsA = poolData.native_decimals_a ?? poolData.decimals_a ?? poolData.decimalsA;
+                    const nativeDecimalsB = poolData.native_decimals_b ?? poolData.decimals_b ?? poolData.decimalsB;
 
-                    if (mintA && mintB && Number.isFinite(decimalsA) && Number.isFinite(decimalsB)) {
+                    if (nativeMintA && nativeMintB && Number.isFinite(nativeDecimalsA) && Number.isFinite(nativeDecimalsB)) {
                       const processed = processPriceThroughPipeline({
-                        mintA,
-                        mintB,
-                        decimalsA,
-                        decimalsB,
+                        mintA: nativeMintA,
+                        mintB: nativeMintB,
+                        decimalsA: nativeDecimalsA,
+                        decimalsB: nativeDecimalsB,
                         poolId: pool.poolId,
                         dex: pool.dex === 'orca' ? 'Orca' : 'Raydium',
                         poolType: 'clmm',
@@ -2417,17 +2419,19 @@ export async function refreshInvalidPools(
                     const cachedPool = findPoolInCache(pool.poolId);
                     if (cachedPool?.pool) {
                       const poolData = cachedPool.pool as any;
-                      const mintA = poolData.mint_a || poolData.mintA;
-                      const mintB = poolData.mint_b || poolData.mintB;
-                      const decimalsA = poolData.decimals_a ?? poolData.decimalsA;
-                      const decimalsB = poolData.decimals_b ?? poolData.decimalsB;
+                      // CRITICAL: Use NATIVE mints and decimals for price calculation
+                      // sqrtPriceX64 from chain is always in native orientation
+                      const nativeMintA = poolData.native_mint_a || poolData.mint_a || poolData.mintA;
+                      const nativeMintB = poolData.native_mint_b || poolData.mint_b || poolData.mintB;
+                      const nativeDecimalsA = poolData.native_decimals_a ?? poolData.decimals_a ?? poolData.decimalsA;
+                      const nativeDecimalsB = poolData.native_decimals_b ?? poolData.decimals_b ?? poolData.decimalsB;
 
-                      if (mintA && mintB && Number.isFinite(decimalsA) && Number.isFinite(decimalsB)) {
+                      if (nativeMintA && nativeMintB && Number.isFinite(nativeDecimalsA) && Number.isFinite(nativeDecimalsB)) {
                         const processed = processPriceThroughPipeline({
-                          mintA,
-                          mintB,
-                          decimalsA,
-                          decimalsB,
+                          mintA: nativeMintA,
+                          mintB: nativeMintB,
+                          decimalsA: nativeDecimalsA,
+                          decimalsB: nativeDecimalsB,
                           poolId: pool.poolId,
                           dex: pool.dex === 'orca' ? 'Orca' : 'Raydium',
                           poolType: 'clmm',
@@ -2541,27 +2545,26 @@ export async function refreshInvalidPools(
                   const cachedPool = findPoolInCache(pool.poolId);
                   if (cachedPool?.pool) {
                     const poolData = cachedPool.pool as any;
-                    const mintA = poolData.mint_a || poolData.mintA;
-                    const mintB = poolData.mint_b || poolData.mintB;
-                    const decimalsA = poolData.decimals_a ?? poolData.decimalsA;
-                    const decimalsB = poolData.decimals_b ?? poolData.decimalsB;
-                    // Meteora uses tokenXMint/tokenYMint for native ordering
-                    const tokenXMint = poolData.native_mint_a || poolData.tokenXMint || mintA;
-                    const tokenYMint = poolData.native_mint_b || poolData.tokenYMint || mintB;
+                    // CRITICAL: Use NATIVE mints and decimals for price calculation
+                    // activeId/binStep from chain is always in native orientation
+                    const nativeMintA = poolData.native_mint_a || poolData.tokenXMint || poolData.mint_a || poolData.mintA;
+                    const nativeMintB = poolData.native_mint_b || poolData.tokenYMint || poolData.mint_b || poolData.mintB;
+                    const nativeDecimalsA = poolData.native_decimals_a ?? poolData.decimals_a ?? poolData.decimalsA;
+                    const nativeDecimalsB = poolData.native_decimals_b ?? poolData.decimals_b ?? poolData.decimalsB;
 
-                    if (mintA && mintB && Number.isFinite(decimalsA) && Number.isFinite(decimalsB)) {
+                    if (nativeMintA && nativeMintB && Number.isFinite(nativeDecimalsA) && Number.isFinite(nativeDecimalsB)) {
                       const processed = processPriceThroughPipeline({
-                        mintA,
-                        mintB,
-                        decimalsA,
-                        decimalsB,
+                        mintA: nativeMintA,
+                        mintB: nativeMintB,
+                        decimalsA: nativeDecimalsA,
+                        decimalsB: nativeDecimalsB,
                         poolId: pool.poolId,
                         dex: 'Meteora',
                         poolType: 'clmm',
                         activeId: validatedState.activeId,
                         binStep: validatedState.binStep,
-                        tokenXMint,
-                        tokenYMint,
+                        tokenXMint: nativeMintA,
+                        tokenYMint: nativeMintB,
                       });
 
                       if (processed && processed.priceForward > 0) {
@@ -2776,41 +2779,42 @@ export async function refreshAllPoolPrices(
           const cachedPool = findPoolInCache(pool.id);
           if (cachedPool?.pool) {
             const poolData = cachedPool.pool as any;
-            const mintA = poolData.mint_a || poolData.mintA;
-            const mintB = poolData.mint_b || poolData.mintB;
-            const decimalsA = poolData.decimals_a ?? poolData.decimalsA;
-            const decimalsB = poolData.decimals_b ?? poolData.decimalsB;
 
-            if (mintA && mintB && Number.isFinite(decimalsA) && Number.isFinite(decimalsB)) {
+            // CRITICAL: Use NATIVE mints and decimals for price calculation
+            // The sqrtPriceX64/activeId from chain is in native order, so we must pass
+            // native mints to processPriceThroughPipeline for correct canonicalization
+            const nativeMintA = poolData.native_mint_a || poolData.mint_a || poolData.mintA;
+            const nativeMintB = poolData.native_mint_b || poolData.mint_b || poolData.mintB;
+            const nativeDecimalsA = poolData.native_decimals_a ?? poolData.decimals_a ?? poolData.decimalsA;
+            const nativeDecimalsB = poolData.native_decimals_b ?? poolData.decimals_b ?? poolData.decimalsB;
+
+            if (nativeMintA && nativeMintB && Number.isFinite(nativeDecimalsA) && Number.isFinite(nativeDecimalsB)) {
               let processed = null;
 
               if ((dex === 'orca' || dex === 'raydium') && validatedState.sqrtPriceX64) {
                 processed = processPriceThroughPipeline({
-                  mintA,
-                  mintB,
-                  decimalsA,
-                  decimalsB,
+                  mintA: nativeMintA,
+                  mintB: nativeMintB,
+                  decimalsA: nativeDecimalsA,
+                  decimalsB: nativeDecimalsB,
                   poolId: pool.id,
                   dex: dex === 'orca' ? 'Orca' : 'Raydium',
                   poolType: 'clmm',
                   sqrtPriceX64: BigInt(validatedState.sqrtPriceX64),
                 });
               } else if (dex === 'meteora' && validatedState.activeId !== undefined) {
-                const tokenXMint = poolData.native_mint_a || poolData.tokenXMint || mintA;
-                const tokenYMint = poolData.native_mint_b || poolData.tokenYMint || mintB;
-
                 processed = processPriceThroughPipeline({
-                  mintA,
-                  mintB,
-                  decimalsA,
-                  decimalsB,
+                  mintA: nativeMintA,
+                  mintB: nativeMintB,
+                  decimalsA: nativeDecimalsA,
+                  decimalsB: nativeDecimalsB,
                   poolId: pool.id,
                   dex: 'Meteora',
                   poolType: 'clmm',
                   activeId: validatedState.activeId,
                   binStep: validatedState.binStep,
-                  tokenXMint,
-                  tokenYMint,
+                  tokenXMint: nativeMintA,
+                  tokenYMint: nativeMintB,
                 });
               }
 

@@ -287,33 +287,37 @@ export async function buildDirectArbTx(
             usedFlashLoan: result.usedFlashLoan,
           };
         } else {
-          // Router build failed - log why and fall through to local build
-          logger.warn('tx.build.router_build_failed', {
+          // Router build failed - throw error, no fallback to local builders
+          const errorMsg = result.error || 'No instructions generated';
+          logger.error('tx.build.router_build_failed', {
             cat: 'tx',
             traceId,
             usedRouter: result.usedRouter,
             instructionCount: result.instructions.length,
-            error: result.error || 'No instructions generated',
+            error: errorMsg,
           });
+          throw new Error(`Router build failed: ${errorMsg}`);
         }
       } else {
-        // Router not configured - log and fall through to local build
-        logger.warn('tx.build.router_not_configured', {
+        // Router not configured but was requested - throw error, no fallback
+        const errorMsg = `Router requested but not configured (enabled=${routerConfig.enabled}, hasProgramId=${!!routerConfig.programId})`;
+        logger.error('tx.build.router_not_configured', {
           cat: 'tx',
           traceId,
           routerEnabled: routerConfig.enabled,
           hasProgramId: !!routerConfig.programId,
-          hint: 'Enable router in Router Config panel and deploy the router program',
+          error: errorMsg,
         });
+        throw new Error(errorMsg);
       }
-      // Fall through to normal build if router not available
     } catch (routerErr: any) {
-      logger.warn('tx.build.router_fallback', {
+      // Router error - re-throw, no fallback to local builders
+      logger.error('tx.build.router_error', {
         cat: 'tx',
         error: routerErr.message,
         traceId,
       });
-      // Fall through to normal build
+      throw routerErr;
     }
   }
   

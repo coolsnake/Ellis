@@ -3868,31 +3868,10 @@ function runWebsocketRefreshLoop(): void {
               cat: 'pools' 
             });
             
-            // Get PDAUtil for tick array derivation (still need legacy SDK for this)
-            let sdkAny: any = null;
-            let PDAUtil: any = null;
-            let TickUtil: any = null;
-            
-            try {
-              sdkAny = await import('@orca-so/whirlpools-sdk');
-              PDAUtil = sdkAny?.PDAUtil;
-              TickUtil = sdkAny?.TickUtil;
-              
-              if (!PDAUtil) {
-                logger.debug('orca.attach.sdk_loaded_no_pdautil', { 
-                  pool: poolAddr.slice(0,8)+'…',
-                  sdkKeys: Object.keys(sdkAny || {}).slice(0, 20),
-                  cat: 'pools' 
-                });
-              }
-            } catch (sdkErr: any) {
-              logger.warn('orca.attach.sdk_import_error', { 
-                pool: poolAddr.slice(0,8)+'…',
-                error: String(sdkErr?.message || sdkErr),
-                cat: 'pools' 
-              });
-            }
-            
+            // Note: We use manual PDA derivation for tick arrays instead of the SDK
+            // The SDK import can fail with "Account not found: AdaptiveFeeTier" for some pools
+            // Manual derivation is more reliable and doesn't require network calls during import
+
             // Subscribe to vaults
             const vaultA = whirlpoolData?.tokenVaultA;
             const vaultB = whirlpoolData?.tokenVaultB;
@@ -3957,7 +3936,7 @@ function runWebsocketRefreshLoop(): void {
             // Subscribe to active tick arrays
             const tickSpacing = whirlpoolData?.tickSpacing;
             const currentTick = whirlpoolData?.tickCurrentIndex;
-            logger.info('orca.tickarrays.attempting', { pool: poolAddr.slice(0,8)+'…', tickSpacing, currentTick, hasPDAUtil: !!PDAUtil, hasTickUtil: !!TickUtil, cat: 'pools' });
+            logger.info('orca.tickarrays.attempting', { pool: poolAddr.slice(0,8)+'…', tickSpacing, currentTick, cat: 'pools' });
             
             // Helper: Calculate start tick index manually (same logic as TickUtil.getStartTickIndex)
             const getStartTickIndexManual = (tick: number, spacing: number, offset: number): number => {
@@ -3984,35 +3963,17 @@ function runWebsocketRefreshLoop(): void {
               }
             };
             
-            if (tickSpacing !== undefined && currentTick !== undefined && (PDAUtil || true)) {
+            if (tickSpacing !== undefined && currentTick !== undefined) {
               try {
-                // Try to load TickUtil from SDK, or use manual calculation
-                if (!TickUtil && sdkAny) {
-                  TickUtil = (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
-                }
-                
-                // Use SDK utilities if available, otherwise use manual derivation
-                const useManualDerivation = !TickUtil || typeof TickUtil.getStartTickIndex !== 'function' || !PDAUtil;
-                
                 let tickArrayCount = 0;
                 const tickArrayAddresses: { lower?: string; center?: string; upper?: string } = {};
-                
+
                 for (let offset = -1; offset <= 1; offset++) {
                   try {
-                    let startTick: number;
-                    let tickArrayPk: any = null;
-                    
-                    if (useManualDerivation) {
-                      // Use manual derivation
-                      startTick = getStartTickIndexManual(currentTick, tickSpacing, offset);
-                      tickArrayPk = deriveTickArrayPda(orcaProgramId, pk, startTick);
-                    } else {
-                      // Use SDK utilities
-                      startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
-                      const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, pk, startTick);
-                      tickArrayPk = tickArrayPda?.publicKey || null;
-                    }
-                    
+                    // Use manual derivation (more reliable than SDK which can fail on import)
+                    const startTick = getStartTickIndexManual(currentTick, tickSpacing, offset);
+                    const tickArrayPk = deriveTickArrayPda(orcaProgramId, pk, startTick);
+
                     if (tickArrayPk) {
                       const id = await subscribeAccountWithRetry(tickArrayPk, handle);
                       subs.push({ kind: 'account', id });
@@ -4031,14 +3992,6 @@ function runWebsocketRefreshLoop(): void {
                   } catch (err) {
                     logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
                   }
-                }
-                
-                if (useManualDerivation && tickArrayCount > 0) {
-                  logger.info('orca.tickarrays.manual_derivation', { 
-                    pool: poolAddr.slice(0,8)+'…', 
-                    count: tickArrayCount,
-                    cat: 'pools' 
-                  });
                 }
                 
                 // Cache tick array addresses in execution cache

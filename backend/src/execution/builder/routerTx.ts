@@ -32,6 +32,7 @@ import {
   RouteStep,
 } from '../../router/index.js';
 import { loadRouterConfig, isFlashLoanAvailable } from '../../server/routerConfigStore.js';
+import { getSdkQuoteAccountsForPlan, type SdkProvidedAccounts } from './sdkQuoteBuilder.js';
 
 // ============================================================================
 // Constants
@@ -144,6 +145,11 @@ export async function buildRouterTransaction(
     const programId = new PublicKey(routerConfig.programId);
     const mode = config?.mode ?? routerConfig.executionMode ?? ExecutionMode.Auto;
     const minProfit = config?.minProfit ?? 0n;
+
+    // SDK Quote mode: use DEX SDKs to get accurate tick/bin arrays
+    if (mode === ExecutionMode.SdkQuote) {
+      return buildSdkQuoteRouterTx(plan, wallet, programId, minProfit);
+    }
 
     // Determine if we should use flash loan
     const shouldUseFlashLoan = await shouldUseFlashLoanMode(mode, plan, routerConfig);
@@ -834,8 +840,355 @@ async function buildDirectRouterTx(
 }
 
 /**
+ * Build router transaction using SDK quote methods for accurate tick/bin arrays.
+ *
+ * This mode calls DEX SDKs (Orca, Raydium, Meteora) to get validated accounts
+ * rather than relying on cached values. This is slower but more accurate.
+ *
+ * No fallback to cache - fails fast if SDK quote fails.
+ */
+async function buildSdkQuoteRouterTx(
+  plan: ExecutionPlan,
+  wallet: { publicKey: PublicKey },
+  programId: PublicKey,
+  minProfit: bigint
+): Promise<RouterTxResult> {
+  const instructions: TransactionInstruction[] = [];
+
+  try {
+    logger.info('routerTx.sdkQuote.start', {
+      cat: 'tx',
+      ctx: {
+        hops: plan.hops.length,
+        poolIds: plan.hops.map(h => h.poolId.slice(0, 8) + '...'),
+      },
+    });
+
+    // Get SDK-provided accounts for all hops (fail fast if any SDK call fails)
+    const sdkResult = await getSdkQuoteAccountsForPlan(plan.hops);
+
+    if (!sdkResult.success) {
+      logger.error('routerTx.sdkQuote.failed', {
+        cat: 'tx',
+        error: sdkResult.error,
+      });
+      return {
+        usedRouter: false,
+        instructions: [],
+        usedFlashLoan: false,
+        error: `SDK quote failed: ${sdkResult.error}`,
+      };
+    }
+
+    // Enrich hops with SDK-provided accounts
+    for (let i = 0; i < plan.hops.length; i++) {
+      const hop = plan.hops[i];
+      const sdkAccounts = sdkResult.results[i].accounts;
+
+      // Apply SDK accounts to hop (these override cache values)
+      applysdkAccountsToHop(hop, sdkAccounts);
+
+      logger.debug('routerTx.sdkQuote.hop.enriched', {
+        cat: 'tx',
+        ctx: {
+          hopIndex: i,
+          dex: hop.dex,
+          poolId: hop.poolId.slice(0, 8) + '...',
+          sdkAccountsApplied: Object.keys(sdkAccounts).filter(k => (sdkAccounts as any)[k] !== undefined),
+        },
+      });
+    }
+
+    // Now build the transaction using the SDK-enriched hops
+    // Reuse the direct router tx logic with enriched hop data
+
+    // Handle SOL wrapping if input is SOL
+    const inputIsSol = isSolMint(plan.hops[0].inputMint);
+    const outputIsSol = isSolMint(plan.hops[plan.hops.length - 1].outputMint);
+
+    if (inputIsSol) {
+      const wrapAmount = Number(plan.hops[0].amountInRaw);
+      const { ixs: wrapIxs, wsolAta } = buildWrapSolIxs(wallet.publicKey, wallet.publicKey, wrapAmount);
+      instructions.push(...wrapIxs);
+      plan.hops[0].userSourceAta = wsolAta.toBase58();
+    }
+
+    // Determine user token account for execute instruction
+    const inputTokenProgram = plan.hops[0].inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    const inputMint = new PublicKey(plan.hops[0].inputMint);
+    const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
+
+    // Create ATAs for intermediate tokens
+    const connection = getConnection();
+    const atasToCreate: { mint: PublicKey; tokenProgram: PublicKey }[] = [];
+
+    // Input token ATA
+    atasToCreate.push({ mint: inputMint, tokenProgram: inputTokenProgram });
+
+    // Intermediate token ATAs
+    for (let i = 0; i < plan.hops.length - 1; i++) {
+      const hop = plan.hops[i];
+      const intermediateMint = new PublicKey(hop.outputMint);
+      const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022'
+        ? TOKEN_2022_PROGRAM_ID
+        : TOKEN_PROGRAM_ID;
+
+      if (hop.outputMint !== plan.hops[0].inputMint) {
+        atasToCreate.push({ mint: intermediateMint, tokenProgram: intermediateTokenProgram });
+      }
+    }
+
+    // Check which ATAs need to be created
+    const ataAddresses = atasToCreate.map(({ mint, tokenProgram }) =>
+      getAssociatedTokenAddressSync(mint, wallet.publicKey, false, tokenProgram)
+    );
+    const ataInfos = await withRpcLimit(
+      () => connection.getMultipleAccountsInfo(ataAddresses),
+      Math.ceil(ataAddresses.length / 5),
+      { module: 'routerTx', method: 'getMultipleAccountsInfo:sdkQuoteATAs' }
+    );
+
+    let atasCreated = 0;
+    for (let i = 0; i < atasToCreate.length; i++) {
+      if (!ataInfos[i]) {
+        const { mint, tokenProgram } = atasToCreate[i];
+        const ataAddress = getAssociatedTokenAddressSync(mint, wallet.publicKey, false, tokenProgram);
+        instructions.push(
+          createAssociatedTokenAccountInstruction(
+            wallet.publicKey,
+            ataAddress,
+            wallet.publicKey,
+            mint,
+            tokenProgram
+          )
+        );
+        atasCreated++;
+      }
+    }
+
+    if (atasCreated > 0) {
+      logger.info('routerTx.sdkQuote.atas.created', {
+        cat: 'tx',
+        atasCreated,
+        totalChecked: atasToCreate.length,
+      });
+    }
+
+    // Build route steps with SDK-enriched accounts
+    const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteStepsWithSdkAccounts(
+      plan.hops,
+      wallet.publicKey,
+      sdkResult.results.map(r => r.accounts)
+    );
+
+    // Build execute instruction
+    const executeIx = buildExecuteIx(
+      wallet.publicKey,
+      userTokenAccount,
+      { steps, accountsPerStep, minProfit, initialBalances },
+      dexAccounts,
+      programId
+    );
+    instructions.push(executeIx);
+
+    // Unwrap WSOL if output is SOL
+    if (outputIsSol) {
+      const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet.publicKey, false, TOKEN_PROGRAM_ID);
+      const closeIx = createCloseAccountInstruction(wsolAta, wallet.publicKey, wallet.publicKey);
+      instructions.push(closeIx);
+    }
+
+    logger.info('routerTx.sdkQuote.built', {
+      cat: 'tx',
+      code: LogCode.TX_BUILD_OK,
+      ctx: {
+        hops: plan.hops.length,
+        steps: plan.hops.length,
+        instructionCount: instructions.length,
+      },
+    });
+
+    return {
+      usedRouter: true,
+      instructions,
+      usedFlashLoan: false,
+    };
+  } catch (err: any) {
+    logCatchError('routerTx.sdkQuote.build', err);
+    return {
+      usedRouter: false,
+      instructions: [],
+      usedFlashLoan: false,
+      error: err.message,
+    };
+  }
+}
+
+/**
+ * Apply SDK-provided accounts to a hop, overriding any cached values
+ */
+function applysdkAccountsToHop(hop: DirectHop, sdkAccounts: SdkProvidedAccounts): void {
+  // Orca accounts
+  if (sdkAccounts.tickArray0) {
+    (hop as any).tickArray0 = sdkAccounts.tickArray0;
+  }
+  if (sdkAccounts.tickArray1) {
+    (hop as any).tickArray1 = sdkAccounts.tickArray1;
+  }
+  if (sdkAccounts.tickArray2) {
+    (hop as any).tickArray2 = sdkAccounts.tickArray2;
+  }
+  if (sdkAccounts.oracle) {
+    (hop as any).oracle = sdkAccounts.oracle;
+  }
+
+  // Raydium accounts
+  if (sdkAccounts.tickArrayLower) {
+    hop.tickArrayLower = sdkAccounts.tickArrayLower;
+  }
+  if (sdkAccounts.tickArrayCenter) {
+    hop.tickArrayCenter = sdkAccounts.tickArrayCenter;
+  }
+  if (sdkAccounts.tickArrayUpper) {
+    hop.tickArrayUpper = sdkAccounts.tickArrayUpper;
+  }
+  if (sdkAccounts.observationState) {
+    hop.observationId = sdkAccounts.observationState;
+  }
+  if (sdkAccounts.exBitmap) {
+    (hop as any).exBitmap = sdkAccounts.exBitmap;
+  }
+  if (sdkAccounts.ammConfig) {
+    hop.ammConfig = sdkAccounts.ammConfig;
+  }
+
+  // Meteora accounts
+  if (sdkAccounts.binArrays && sdkAccounts.binArrays.length > 0) {
+    (hop as any).binArrays = sdkAccounts.binArrays;
+    hop.binArrayLower = sdkAccounts.binArrayLower || sdkAccounts.binArrays[0];
+    hop.binArrayUpper = sdkAccounts.binArrayUpper || sdkAccounts.binArrays[sdkAccounts.binArrays.length - 1];
+  }
+  if (sdkAccounts.activeId !== undefined) {
+    hop.activeId = sdkAccounts.activeId;
+  }
+
+  // Common vault accounts
+  if (sdkAccounts.vaultA) {
+    hop.vaultA = sdkAccounts.vaultA;
+  }
+  if (sdkAccounts.vaultB) {
+    hop.vaultB = sdkAccounts.vaultB;
+  }
+}
+
+/**
+ * Build route steps using SDK-provided accounts
+ * Similar to buildRouteSteps but uses SDK accounts for tick/bin arrays
+ */
+async function buildRouteStepsWithSdkAccounts(
+  hops: DirectHop[],
+  wallet: PublicKey,
+  sdkAccountsList: SdkProvidedAccounts[]
+): Promise<{
+  steps: RouteStep[];
+  dexAccounts: PublicKey[];
+  accountsPerStep: number[];
+  initialBalances: bigint[];
+}> {
+  const steps: RouteStep[] = [];
+  const dexAccounts: PublicKey[] = [];
+  const accountsPerStep: number[] = [];
+  const initialBalances: bigint[] = [];
+
+  // Fetch cached wallet balances
+  let walletBalances: { sol: number; tokens: Record<string, number> } | null = null;
+  try {
+    walletBalances = await getBalances(wallet);
+  } catch (e) {
+    logger.warn('routerTx.buildRouteStepsWithSdk.getBalances.failed', {
+      cat: 'tx',
+      error: String((e as Error)?.message || e),
+    });
+  }
+
+  for (let i = 0; i < hops.length; i++) {
+    const hop = hops[i];
+    const sdkAccounts = sdkAccountsList[i];
+    const dexType = dexNameToType(hop.dex, hop.variant);
+
+    // First hop: use specified amount, subsequent hops: use 0 for dynamic propagation
+    const amountIn = i === 0
+      ? BigInt(hop.amountInRaw.toString())
+      : 0n;
+
+    // Compute swap direction from pool's native mint ordering
+    const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
+    const poolMintA = stat?.native_mint_a || stat?.mint_a;
+    const aToB = hop.inputMint === poolMintA;
+
+    steps.push({
+      dexType,
+      amountIn,
+      minAmountOut: BigInt(hop.minOutRaw.toString()),
+      aToB,
+    });
+
+    // Compute initial balance for dynamic amount propagation
+    let initialBalance = 0n;
+    if (i > 0 && walletBalances) {
+      const inputMint = hop.inputMint;
+      const inputDecimals = hop.inputDecimals ?? 6;
+      const uiBalance = inputMint === SOL_MINT
+        ? walletBalances.sol
+        : (walletBalances.tokens[inputMint] ?? 0);
+
+      if (uiBalance > 0) {
+        initialBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
+      }
+    }
+    initialBalances.push(initialBalance);
+
+    // Extract DEX accounts using SDK-provided values
+    const hopAccounts = await extractDexAccountsWithSdk(hop, dexType, wallet, sdkAccounts);
+    dexAccounts.push(...hopAccounts);
+    accountsPerStep.push(hopAccounts.length);
+
+    logger.debug('routerTx.buildRouteStepsWithSdk.step', {
+      cat: 'tx',
+      ctx: {
+        hopIndex: i,
+        dex: hop.dex,
+        amountIn: amountIn.toString(),
+        accountCount: hopAccounts.length,
+        aToB,
+        usedSdkAccounts: Object.keys(sdkAccounts).filter(k => (sdkAccounts as any)[k] !== undefined).length,
+      },
+    });
+  }
+
+  return { steps, dexAccounts, accountsPerStep, initialBalances };
+}
+
+/**
+ * Extract DEX accounts, preferring SDK-provided values over cache
+ * This is a wrapper around extractDexAccounts that applies SDK overrides first
+ */
+async function extractDexAccountsWithSdk(
+  hop: DirectHop,
+  dexType: DexType,
+  wallet: PublicKey,
+  sdkAccounts: SdkProvidedAccounts
+): Promise<PublicKey[]> {
+  // Apply SDK accounts to hop before extraction
+  applysdkAccountsToHop(hop, sdkAccounts);
+
+  // Use the standard extractDexAccounts which will now use the SDK-provided values
+  return extractDexAccounts(hop, dexType, wallet);
+}
+
+/**
  * Build route steps from execution plan hops
- * 
+ *
  * For dynamic amount propagation:
  * - First hop uses the specified amountInRaw
  * - Subsequent hops use amountIn=0, which tells the on-chain router to

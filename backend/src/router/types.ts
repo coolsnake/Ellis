@@ -51,6 +51,8 @@ export enum ExecutionMode {
   FlashLoan = 'flash_loan',
   /** Auto - use flash loan if vault has funds, otherwise direct */
   Auto = 'auto',
+  /** SDK Quote mode - use DEX SDK quote methods to get accurate tick/bin arrays */
+  SdkQuote = 'sdk_quote',
 }
 
 // ============================================================================

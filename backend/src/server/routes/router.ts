@@ -1117,15 +1117,16 @@ export function createRouterRouter(io: SocketIOServer): Router {
 
   /**
    * POST /router/test-execute - PRODUCTION-LIKE: Test execution pipeline with caches
-   * 
+   *
    * Use this to test the actual execution code path. Uses pool/execution caches
    * just like real arbitrage execution. Supports N-hop routes.
-   * 
+   *
    * Request body:
    * - hops: Array of { poolId, dex, inputMint, outputMint }
    * - amountIn: Raw amount in base units (string)
    * - minProfit: Minimum profit in base units (can be negative for testing)
    * - simulate: If true, simulate only; if false, send transaction
+   * - mode: Execution mode - 'direct', 'flash_loan', 'auto', or 'sdk_quote' (optional, defaults to router config)
    */
   api.post('/router/test-execute', async (req: Request, res: Response) => {
     try {
@@ -1134,6 +1135,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         amountIn,
         minProfit = '0',
         simulate = true,
+        mode, // Optional: 'direct', 'flash_loan', 'auto', 'sdk_quote'
       }: {
         hops: Array<{
           poolId: string;
@@ -1144,6 +1146,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         amountIn: string;
         minProfit: string;
         simulate: boolean;
+        mode?: string;
       } = req.body;
 
       if (!hops || !Array.isArray(hops) || hops.length === 0) {
@@ -1164,20 +1167,27 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const wallet = await ensureWallet(CONFIG.walletPath);
       const connection = getRouterConnection(routerConfig.cluster);
 
+      // Determine execution mode - use provided mode, fall back to config, then default to Direct
+      const executionMode = mode && Object.values(ExecutionMode).includes(mode as ExecutionMode)
+        ? (mode as ExecutionMode)
+        : (routerConfig.executionMode || ExecutionMode.Direct);
+
       logger.info('router.test-execute.start', {
         cat: 'router',
         hops: hops.length,
         amountIn,
         minProfit,
         simulate,
+        mode: executionMode,
         programId: routerConfig.programId,
       });
 
-      emit('router:test-execute:start', { 
-        hops: hops.length, 
-        amountIn, 
-        simulate, 
-        timestamp: Date.now() 
+      emit('router:test-execute:start', {
+        hops: hops.length,
+        amountIn,
+        simulate,
+        mode: executionMode,
+        timestamp: Date.now()
       });
 
       // Import build functions
@@ -1261,7 +1271,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const txResult = await buildRouterTransaction(
         executionPlan,
         { publicKey: wallet.publicKey, secretKey: wallet.secretKey },
-        { mode: ExecutionMode.Direct }
+        { mode: executionMode }
       );
 
       if (txResult.error || txResult.instructions.length === 0) {
@@ -1418,6 +1428,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         return res.json({
           success,
           simulated: true,
+          mode: executionMode,
           error: simResult.value.err ? JSON.stringify(simResult.value.err) : null,
           logs: simResult.value.logs,
           unitsConsumed: simResult.value.unitsConsumed,
@@ -1471,6 +1482,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
           return res.json({
             success,
             simulated: false,
+            mode: executionMode,
             signature,
             error: confirmation.value.err ? JSON.stringify(confirmation.value.err) : null,
             txSize,
