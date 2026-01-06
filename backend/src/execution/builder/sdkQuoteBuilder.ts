@@ -76,11 +76,9 @@ export interface SdkQuoteResult {
 // Cached SDK Imports
 // ============================================================================
 
-// Orca SDK components
-let OrcaWhirlpoolContext: any = null;
-let OrcaBuildWhirlpoolClient: any = null;
-let OrcaSwapQuoteByInputToken: any = null;
-let OrcaPercentage: any = null;
+// Orca SDK v4 components (uses @solana/kit)
+let OrcaSwapInstructions: any = null;
+let OrcaSetRpc: any = null;
 let orcaSdkInitialized = false;
 
 // Raydium SDK components
@@ -93,18 +91,18 @@ let MeteoraDLMM: any = null;
 let meteoraSdkInitialized = false;
 
 /**
- * Initialize Orca SDK components (lazy loaded)
+ * Initialize Orca SDK v4 components (lazy loaded)
+ * The new SDK uses @solana/kit instead of @solana/web3.js
  */
 async function initOrcaSdk(): Promise<boolean> {
-  // Don't skip on previous failure - allow retry
-  if (orcaSdkInitialized && OrcaSwapQuoteByInputToken) return true;
+  if (orcaSdkInitialized && OrcaSwapInstructions) return true;
   orcaSdkInitialized = true;
 
   try {
-    logger.info('sdkQuoteBuilder.orca.init.starting', { cat: 'tx' });
-    const orcaSdk = await import('@orca-so/whirlpools-sdk');
+    logger.info('sdkQuoteBuilder.orca.init.starting', { cat: 'tx', sdk: 'v4' });
+    const orcaSdk = await import('@orca-so/whirlpools');
 
-    // Log all available keys for debugging
+    // Log available exports
     const allKeys = Object.keys(orcaSdk);
     logger.info('sdkQuoteBuilder.orca.init.module_keys', {
       cat: 'tx',
@@ -112,29 +110,21 @@ async function initOrcaSdk(): Promise<boolean> {
       totalKeys: allKeys.length,
     });
 
-    OrcaWhirlpoolContext = (orcaSdk as any).WhirlpoolContext;
-    OrcaBuildWhirlpoolClient = (orcaSdk as any).buildWhirlpoolClient;
-    OrcaSwapQuoteByInputToken = (orcaSdk as any).swapQuoteByInputToken;
+    OrcaSwapInstructions = (orcaSdk as any).swapInstructions;
+    OrcaSetRpc = (orcaSdk as any).setRpc;
 
-    // Log what we found
     logger.info('sdkQuoteBuilder.orca.init.components', {
       cat: 'tx',
-      hasContext: !!OrcaWhirlpoolContext,
-      hasBuildClient: !!OrcaBuildWhirlpoolClient,
-      hasSwapQuote: !!OrcaSwapQuoteByInputToken,
+      hasSwapInstructions: !!OrcaSwapInstructions,
+      hasSetRpc: !!OrcaSetRpc,
     });
 
-    try {
-      const commonSdk = await import('@orca-so/common-sdk');
-      OrcaPercentage = (commonSdk as any).Percentage;
-    } catch { /* ignore */ }
-
-    if (!OrcaWhirlpoolContext || !OrcaBuildWhirlpoolClient || !OrcaSwapQuoteByInputToken) {
-      logger.warn('sdkQuoteBuilder.orca.init.missing_components', { cat: 'tx' });
+    if (!OrcaSwapInstructions) {
+      logger.warn('sdkQuoteBuilder.orca.init.missing_swapInstructions', { cat: 'tx' });
       return false;
     }
 
-    logger.info('sdkQuoteBuilder.orca.init.success', { cat: 'tx' });
+    logger.info('sdkQuoteBuilder.orca.init.success', { cat: 'tx', sdk: 'v4' });
     return true;
   } catch (e: any) {
     logger.error('sdkQuoteBuilder.orca.init.error', {
@@ -260,11 +250,69 @@ async function initMeteoraSdk(): Promise<boolean> {
 }
 
 // ============================================================================
-// Orca SDK Quote
+// Orca SDK Quote (v4 - uses @solana/kit)
 // ============================================================================
 
 /**
- * Get Orca Whirlpool accounts via SDK quote
+ * Create an RPC adapter for @solana/kit from @solana/web3.js Connection
+ * The new SDK expects @solana/kit style RPC
+ */
+function createKitRpcAdapter(connection: Connection): any {
+  // The new SDK's swapInstructions needs an RPC with specific methods
+  // We create a minimal adapter that wraps our web3.js connection
+  return {
+    getAccountInfo: async (address: string, config?: any) => {
+      const pubkey = new PublicKey(address);
+      const info = await connection.getAccountInfo(pubkey, config?.commitment);
+      if (!info) return { value: null };
+      return {
+        value: {
+          data: info.data,
+          executable: info.executable,
+          lamports: BigInt(info.lamports),
+          owner: info.owner.toBase58(),
+          rentEpoch: info.rentEpoch ? BigInt(info.rentEpoch) : 0n,
+        },
+      };
+    },
+    getMultipleAccounts: async (addresses: string[], config?: any) => {
+      const pubkeys = addresses.map(a => new PublicKey(a));
+      const infos = await connection.getMultipleAccountsInfo(pubkeys, config?.commitment);
+      return {
+        value: infos.map(info => {
+          if (!info) return null;
+          return {
+            data: info.data,
+            executable: info.executable,
+            lamports: BigInt(info.lamports),
+            owner: info.owner.toBase58(),
+            rentEpoch: info.rentEpoch ? BigInt(info.rentEpoch) : 0n,
+          };
+        }),
+      };
+    },
+    getMinimumBalanceForRentExemption: async (dataLength: bigint) => {
+      const balance = await connection.getMinimumBalanceForRentExemption(Number(dataLength));
+      return { value: BigInt(balance) };
+    },
+    getEpochInfo: async () => {
+      const info = await connection.getEpochInfo();
+      return {
+        value: {
+          absoluteSlot: BigInt(info.absoluteSlot),
+          blockHeight: BigInt(info.blockHeight ?? 0),
+          epoch: BigInt(info.epoch),
+          slotIndex: BigInt(info.slotIndex),
+          slotsInEpoch: BigInt(info.slotsInEpoch),
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Get Orca Whirlpool accounts via SDK v4 quote
+ * The new SDK uses @solana/kit types, we adapt our web3.js connection
  */
 async function getOrcaSdkQuote(
   connection: Connection,
@@ -274,84 +322,86 @@ async function getOrcaSdkQuote(
 
   try {
     const sdkAvailable = await initOrcaSdk();
-    if (!sdkAvailable || !OrcaSwapQuoteByInputToken || !OrcaWhirlpoolContext || !OrcaBuildWhirlpoolClient) {
+    if (!sdkAvailable || !OrcaSwapInstructions) {
       return {
         success: false,
         accounts: {},
-        error: 'Orca SDK not available',
+        error: 'Orca SDK v4 not available',
       };
     }
 
-    // Create a minimal context
-    const dummyWallet = { publicKey: new PublicKey('11111111111111111111111111111111') };
-
-    const ctx = OrcaWhirlpoolContext.from(
-      connection,
-      dummyWallet,
-      ORCA_WHIRLPOOL_PROGRAM,
-      {
-        userDefaultBuildOptions: {
-          defaultBuildOption: { maxSupportedTransactionVersion: 'legacy' },
-        },
-      },
-    );
-
-    const client = OrcaBuildWhirlpoolClient(ctx);
-    const pool = await client.getPool(new PublicKey(poolId));
-
-    // Get the pool data for vaults
-    const poolData = pool.getData();
+    // Create RPC adapter for @solana/kit
+    const rpc = createKitRpcAdapter(connection);
 
     // Use swap amount from hop (or a minimal amount for account discovery)
-    const BN = (await import('bn.js')).default;
     const amountIn = hop.amountInRaw && hop.amountInRaw > 0n
-      ? new BN(hop.amountInRaw.toString())
-      : new BN(1000); // Minimal amount for discovery
+      ? hop.amountInRaw
+      : 1000n; // Minimal amount for discovery
 
-    // Default slippage (1%)
-    const slippage = OrcaPercentage
-      ? OrcaPercentage.fromFraction(100, 10000)
-      : { numerator: new BN(100), denominator: new BN(10000) };
-
-    const quote = await OrcaSwapQuoteByInputToken(
-      pool,
-      new PublicKey(hop.inputMint),
-      amountIn,
-      slippage,
-      ORCA_WHIRLPOOL_PROGRAM,
-      ctx.fetcher,
+    // Call swapInstructions with exact-in parameters
+    // The SDK v4 uses Address (string) instead of PublicKey
+    const swapResult = await OrcaSwapInstructions(
+      rpc,
+      { inputAmount: amountIn, mint: hop.inputMint },
+      poolId, // pool address as string
+      100, // 1% slippage tolerance in bps
     );
 
-    if (!quote || !quote.tickArray0) {
+    if (!swapResult || !swapResult.instructions || swapResult.instructions.length === 0) {
       return {
         success: false,
         accounts: {},
-        error: 'Orca SDK quote returned no tick arrays',
+        error: 'Orca SDK v4 returned no instructions',
       };
     }
 
+    // Extract tick arrays from the swap instruction accounts
+    // The swap instruction typically has tick arrays in specific positions
+    // Orca swap instruction accounts: [tokenProgram, tokenAuthority, whirlpool, tokenOwnerAccountA,
+    //   tokenVaultA, tokenOwnerAccountB, tokenVaultB, tickArray0, tickArray1, tickArray2, oracle]
+    const swapIx = swapResult.instructions.find((ix: any) =>
+      ix.programAddress === ORCA_WHIRLPOOL_PROGRAM.toBase58()
+    );
+
+    if (!swapIx || !swapIx.accounts || swapIx.accounts.length < 11) {
+      return {
+        success: false,
+        accounts: {},
+        error: 'Orca SDK v4 swap instruction has unexpected format',
+      };
+    }
+
+    // Extract accounts from the instruction (addresses are already strings in @solana/kit)
+    const ixAccounts = swapIx.accounts;
     const accounts: SdkProvidedAccounts = {
-      tickArray0: quote.tickArray0.toBase58(),
-      tickArray1: quote.tickArray1?.toBase58(),
-      tickArray2: quote.tickArray2?.toBase58(),
-      oracle: poolData.oracle?.toBase58(),
-      vaultA: poolData.tokenVaultA?.toBase58(),
-      vaultB: poolData.tokenVaultB?.toBase58(),
+      // Tick arrays are typically at indices 7, 8, 9
+      tickArray0: typeof ixAccounts[7] === 'string' ? ixAccounts[7] : ixAccounts[7]?.address,
+      tickArray1: typeof ixAccounts[8] === 'string' ? ixAccounts[8] : ixAccounts[8]?.address,
+      tickArray2: typeof ixAccounts[9] === 'string' ? ixAccounts[9] : ixAccounts[9]?.address,
+      // Oracle is typically at index 10
+      oracle: typeof ixAccounts[10] === 'string' ? ixAccounts[10] : ixAccounts[10]?.address,
+      // Vaults at indices 4 and 6
+      vaultA: typeof ixAccounts[4] === 'string' ? ixAccounts[4] : ixAccounts[4]?.address,
+      vaultB: typeof ixAccounts[6] === 'string' ? ixAccounts[6] : ixAccounts[6]?.address,
     };
+
+    // Get quoted amount from the result
+    const quotedAmountOut = swapResult.quote?.tokenEstB ?? swapResult.quote?.estimatedAmountOut;
 
     logger.info('sdkQuoteBuilder.orca.quote.success', {
       cat: 'tx',
       ctx: {
         poolId: poolId.slice(0, 8) + '...',
         tickArray0: accounts.tickArray0?.slice(0, 12) + '...',
-        quotedOut: quote.estimatedAmountOut?.toString(),
+        quotedOut: quotedAmountOut?.toString(),
+        ixAccountCount: ixAccounts.length,
       },
     });
 
     return {
       success: true,
       accounts,
-      quotedAmountOut: quote.estimatedAmountOut ? BigInt(quote.estimatedAmountOut.toString()) : undefined,
+      quotedAmountOut: quotedAmountOut ? BigInt(quotedAmountOut.toString()) : undefined,
     };
   } catch (e) {
     logCatchError('sdkQuoteBuilder.orca.quote', e);

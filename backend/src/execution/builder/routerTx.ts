@@ -1378,17 +1378,15 @@ async function extractDexAccounts(
         const hasExBitmapEarly = !!exBitmapFromCacheEarly && exBitmapFromCacheEarly !== 'none';
         
         // Detect which instruction variant to use:
-        // - swap_v2: Token-2022 tokens OR unvalidated pools (safer fallback)
-        // - swap: Standard SPL tokens with VALIDATED accounts (optimized, 11-12 accounts)
+        // - swap_v2: Token-2022 tokens (required for Token-2022 support, 17-18 accounts)
+        // - swap: Standard SPL tokens (optimized, 11-12 accounts)
         //   - With exBitmap: 12 accounts
         //   - Without exBitmap: 11 accounts
         const hasToken2022 = hop.inputTokenProgram === 'token-2022' || hop.outputTokenProgram === 'token-2022';
-        
-        // Only use optimized swap instruction when:
-        // 1. NOT Token-2022 (swap doesn't support it)
-        // 2. ExBitmap is from cache (if the pool uses it)
-        // Otherwise use swap_v2 which handles more account variations
-        const raydiumNeedsSwapV2 = hasToken2022 || !hasExBitmapEarly;
+
+        // Use swap_v2 ONLY for Token-2022 tokens
+        // Standard SPL-token pools use the simpler swap instruction
+        const raydiumNeedsSwapV2 = hasToken2022;
         
         // Get ammConfig from hop or cache - CRITICAL: cannot be derived, must come from pool data
         const ammConfigAddr = hop.ammConfig || stat?.amm_config;
