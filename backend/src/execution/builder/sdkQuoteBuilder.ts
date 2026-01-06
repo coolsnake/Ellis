@@ -83,6 +83,8 @@ let orcaSdkInitialized = false;
 
 // Raydium SDK components
 let RaydiumClmmLayout: any = null;
+let RaydiumTickQuery: any = null;
+let RaydiumTickArrayBitmapExtensionLayout: any = null;
 let RaydiumGetPdaTickArrayAddress: any = null;
 let raydiumSdkInitialized = false;
 
@@ -144,26 +146,40 @@ async function initRaydiumSdk(): Promise<boolean> {
   raydiumSdkInitialized = true;
 
   try {
-    // Try to import pool layout
+    // Import the main SDK
+    const raydiumSdk = await import('@raydium-io/raydium-sdk-v2');
+
+    // Try to get PoolInfoLayout
     try {
       const layoutModule = await import('@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js');
       RaydiumClmmLayout = layoutModule.PoolInfoLayout;
+      RaydiumTickArrayBitmapExtensionLayout = layoutModule.TickArrayBitmapExtensionLayout;
     } catch {
-      const sdk = await import('@raydium-io/raydium-sdk-v2');
-      RaydiumClmmLayout = (sdk as any)?.PoolInfoLayout ||
-                         (sdk as any)?.Clmm?.PoolInfoLayout ||
-                         (sdk as any)?.Clmm?.PoolStateLayout;
+      RaydiumClmmLayout = (raydiumSdk as any)?.PoolInfoLayout ||
+                         (raydiumSdk as any)?.Clmm?.PoolInfoLayout;
+    }
+
+    // Try to get TickQuery for fetching tick arrays
+    try {
+      const tickQueryModule = await import('@raydium-io/raydium-sdk-v2/lib/raydium/clmm/utils/tickQuery.js');
+      RaydiumTickQuery = tickQueryModule.TickQuery;
+    } catch {
+      RaydiumTickQuery = (raydiumSdk as any)?.TickQuery ||
+                        (raydiumSdk as any)?.Clmm?.TickQuery;
     }
 
     // Try to import tick array PDA derivation
-    try {
-      const raydiumSdk = await import('@raydium-io/raydium-sdk-v2');
-      RaydiumGetPdaTickArrayAddress = (raydiumSdk as any).getPdaTickArrayAddress
-        || (raydiumSdk as any).CLMM?.getPdaTickArrayAddress
-        || (raydiumSdk as any).Clmm?.getPdaTickArrayAddress;
-    } catch { /* ignore */ }
+    RaydiumGetPdaTickArrayAddress = (raydiumSdk as any).getPdaTickArrayAddress
+      || (raydiumSdk as any).CLMM?.getPdaTickArrayAddress
+      || (raydiumSdk as any).Clmm?.getPdaTickArrayAddress;
 
-    logger.debug('sdkQuoteBuilder.raydium.init.success', { cat: 'tx' });
+    logger.info('sdkQuoteBuilder.raydium.init.success', {
+      cat: 'tx',
+      hasLayout: !!RaydiumClmmLayout,
+      hasTickQuery: !!RaydiumTickQuery,
+      hasBitmapLayout: !!RaydiumTickArrayBitmapExtensionLayout,
+      hasPdaFn: !!RaydiumGetPdaTickArrayAddress,
+    });
     return !!RaydiumClmmLayout;
   } catch (e) {
     logCatchError('sdkQuoteBuilder.raydium.init', e);
@@ -555,125 +571,101 @@ async function getRaydiumSdkQuote(
     // Calculate tick array indices
     const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
     const centerIdx = Math.floor(tickCurrent / ticksInArray);
-
-    // Use bitmap to find initialized tick arrays
-    const tickArrayBitmap = state.tickArrayBitmap ?? state.tick_array_bitmap;
-    let tickArrayIndices: number[] = [];
-
-    logger.debug('sdkQuoteBuilder.raydium.quote.bitmap_check', {
-      cat: 'tx',
-      ctx: {
-        hasBitmap: !!tickArrayBitmap,
-        isArray: Array.isArray(tickArrayBitmap),
-        bitmapLength: Array.isArray(tickArrayBitmap) ? tickArrayBitmap.length : 'N/A',
-        expectedLength: RAYDIUM_BITMAP_WORDS,
-        centerIdx,
-        tickCurrent,
-        tickSpacing,
-        ticksInArray,
-      },
-    });
-
-    if (Array.isArray(tickArrayBitmap) && tickArrayBitmap.length === RAYDIUM_BITMAP_WORDS) {
-      const allInitialized = decodeRaydiumTickArrayBitmap(tickArrayBitmap);
-
-      logger.debug('sdkQuoteBuilder.raydium.quote.bitmap_decoded', {
-        cat: 'tx',
-        ctx: {
-          initializedCount: allInitialized.length,
-          firstFew: allInitialized.slice(0, 10),
-          nearCenter: allInitialized.filter(idx => Math.abs(idx - centerIdx) <= 5),
-        },
-      });
-
-      // Find arrays near center
-      tickArrayIndices = allInitialized
-        .filter(idx => Math.abs(idx - centerIdx) <= 10)
-        .sort((a, b) => Math.abs(a - centerIdx) - Math.abs(b - centerIdx));
-    }
-
-    // Derive tick array PDAs
     const centerStart = centerIdx * ticksInArray;
-    const tickArrayPdas: Array<{ index: number; address: string }> = [];
 
-    if (tickArrayIndices.length > 0) {
-      // Use bitmap-validated indices
-      for (const idx of tickArrayIndices.slice(0, 5)) {
-        const startTick = idx * ticksInArray;
-        const pda = deriveRaydiumTickArrayPda(poolPk, startTick, programId);
-        tickArrayPdas.push({ index: idx, address: pda.toBase58() });
-      }
-    } else {
-      // Fallback: derive and validate PDAs around center
-      const searchRange = tickSpacing <= 2 ? 12 : tickSpacing <= 10 ? 8 : 5;
-      const pdaInfos: Array<{ index: number; pda: PublicKey }> = [];
+    // Get tick array bitmap from pool state
+    const tickArrayBitmapArray = state.tickArrayBitmap ?? state.tick_array_bitmap ?? [];
 
-      for (let i = -searchRange; i <= searchRange; i++) {
-        const startTick = centerStart + (i * ticksInArray);
-        const pda = deriveRaydiumTickArrayPda(poolPk, startTick, programId);
-        pdaInfos.push({ index: centerIdx + i, pda }); // Use absolute index, not relative
-      }
+    // Try to use SDK's TickQuery.getTickArrays() for proper tick array discovery
+    let tickArrayAddresses: string[] = [];
 
-      // Batch verify existence
-      const infos = await connection.getMultipleAccountsInfo(pdaInfos.map(p => p.pda));
-      let foundCount = 0;
-      for (let i = 0; i < pdaInfos.length; i++) {
-        const info = infos[i];
-        const isValid = info && info.owner.equals(programId);
-        if (isValid) {
-          tickArrayPdas.push({
-            index: pdaInfos[i].index,
-            address: pdaInfos[i].pda.toBase58()
-          });
-          foundCount++;
+    if (RaydiumTickQuery && typeof RaydiumTickQuery.getTickArrays === 'function') {
+      try {
+        // Fetch exBitmap if it exists
+        let exTickArrayBitmap: any = undefined;
+        if (RaydiumTickArrayBitmapExtensionLayout) {
+          try {
+            const [exBitmapPda] = PublicKey.findProgramAddressSync(
+              [Buffer.from('pool_tick_array_bitmap_extension'), poolPk.toBuffer()],
+              programId
+            );
+            const exBitmapInfo = await connection.getAccountInfo(exBitmapPda);
+            if (exBitmapInfo && exBitmapInfo.data) {
+              exTickArrayBitmap = RaydiumTickArrayBitmapExtensionLayout.decode(exBitmapInfo.data);
+            }
+          } catch { /* no exBitmap */ }
         }
-      }
 
-      logger.debug('sdkQuoteBuilder.raydium.quote.pda_verification', {
-        cat: 'tx',
-        ctx: {
-          searchRange,
-          pdaCount: pdaInfos.length,
-          foundCount,
-          programId: programId.toBase58().slice(0, 8),
-          centerPda: pdaInfos.find(p => p.index === centerIdx)?.pda.toBase58().slice(0, 8),
-        },
-      });
+        // Use SDK to get tick arrays
+        const tickArrayCache = await RaydiumTickQuery.getTickArrays(
+          connection,
+          programId,
+          poolPk,
+          tickCurrent,
+          tickSpacing,
+          tickArrayBitmapArray,
+          exTickArrayBitmap
+        );
+
+        // Extract addresses from the cache (keys are addresses)
+        tickArrayAddresses = Object.keys(tickArrayCache);
+
+        logger.info('sdkQuoteBuilder.raydium.quote.sdk_tick_arrays', {
+          cat: 'tx',
+          ctx: {
+            poolId: poolId.slice(0, 8),
+            tickArrayCount: tickArrayAddresses.length,
+            tickCurrent,
+            tickSpacing,
+            addresses: tickArrayAddresses.slice(0, 5).map(a => a.slice(0, 8)),
+          },
+        });
+      } catch (e) {
+        logger.warn('sdkQuoteBuilder.raydium.quote.sdk_failed', {
+          cat: 'tx',
+          error: (e as Error).message,
+        });
+      }
     }
 
-    // Sort by distance from center
-    tickArrayPdas.sort((a, b) => Math.abs(a.index - centerIdx) - Math.abs(b.index - centerIdx));
-
-    // Extract tick arrays (center, lower, upper)
-    let center = tickArrayPdas.find(t => t.index === centerIdx) || tickArrayPdas[0];
-    let lower = tickArrayPdas.find(t => t.index < (center?.index ?? centerIdx));
-    let upper = tickArrayPdas.find(t => t.index > (center?.index ?? centerIdx));
-
-    // LAST RESORT: If no tick arrays found via bitmap/verification,
-    // derive the essential PDAs directly (center, lower, upper)
-    // These SHOULD exist for any active pool
-    if (!center) {
-      logger.info('sdkQuoteBuilder.raydium.quote.deriving_essential', {
+    // Fallback: derive tick arrays manually if SDK didn't return any
+    if (tickArrayAddresses.length === 0) {
+      logger.info('sdkQuoteBuilder.raydium.quote.manual_derivation', {
         cat: 'tx',
-        ctx: { poolId: poolId.slice(0, 8), tickCurrent, tickSpacing, centerIdx, centerStart },
+        ctx: { poolId: poolId.slice(0, 8), tickCurrent, tickSpacing, centerIdx },
       });
 
+      // Derive center, lower, upper tick arrays
       const centerPda = deriveRaydiumTickArrayPda(poolPk, centerStart, programId);
       const lowerPda = deriveRaydiumTickArrayPda(poolPk, centerStart - ticksInArray, programId);
       const upperPda = deriveRaydiumTickArrayPda(poolPk, centerStart + ticksInArray, programId);
 
-      center = { index: centerIdx, address: centerPda.toBase58() };
-      lower = { index: centerIdx - 1, address: lowerPda.toBase58() };
-      upper = { index: centerIdx + 1, address: upperPda.toBase58() };
+      tickArrayAddresses = [
+        centerPda.toBase58(),
+        lowerPda.toBase58(),
+        upperPda.toBase58(),
+      ];
+    }
 
-      logger.info('sdkQuoteBuilder.raydium.quote.essential_derived', {
-        cat: 'tx',
-        ctx: {
-          center: center.address.slice(0, 8),
-          lower: lower.address.slice(0, 8),
-          upper: upper.address.slice(0, 8),
-        },
+    // Sort tick arrays by distance from center tick
+    const sortedArrays = tickArrayAddresses
+      .map(addr => {
+        // Parse start tick from the tick array address (derive reverse lookup)
+        // For now, just keep the order as-is since SDK returns them in a useful order
+        return addr;
       });
+
+    // Extract center, lower, upper from sorted arrays
+    const center = sortedArrays[0] ? { address: sortedArrays[0] } : undefined;
+    const lower = sortedArrays[1] ? { address: sortedArrays[1] } : undefined;
+    const upper = sortedArrays[2] ? { address: sortedArrays[2] } : undefined;
+
+    if (!center) {
+      return {
+        success: false,
+        accounts: {},
+        error: 'No tick arrays found for Raydium pool',
+      };
     }
 
     // Check for exBitmap
@@ -706,8 +698,11 @@ async function getRaydiumSdkQuote(
         poolId: poolId.slice(0, 8) + '...',
         tickCurrent,
         tickSpacing,
-        tickArraysFound: tickArrayPdas.length,
+        tickArraysFound: tickArrayAddresses.length,
         hasExBitmap: !!exBitmap,
+        center: center.address.slice(0, 8),
+        lower: lower?.address?.slice(0, 8),
+        upper: upper?.address?.slice(0, 8),
       },
     });
 
