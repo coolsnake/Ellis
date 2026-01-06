@@ -12,9 +12,12 @@
  */
 
 import { Connection, PublicKey } from '@solana/web3.js';
+import { address } from '@solana/kit';
+import { rpcFromUrl } from '@orca-so/tx-sender';
 import { logger } from '../../utils/logger.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection } from '../../wallet/wallet.js';
+import { CONFIG } from '../../utils/config.js';
 import type { DirectHop } from '../types.js';
 
 // ============================================================================
@@ -340,7 +343,7 @@ function createKitRpcAdapter(connection: Connection): any {
 
 /**
  * Get Orca Whirlpool accounts via SDK v4 quote
- * The new SDK uses @solana/kit types, we adapt our web3.js connection
+ * Uses rpcFromUrl from @orca-so/tx-sender for proper @solana/kit compatibility
  */
 async function getOrcaSdkQuote(
   connection: Connection,
@@ -358,20 +361,26 @@ async function getOrcaSdkQuote(
       };
     }
 
-    // Create RPC adapter for @solana/kit
-    const rpc = createKitRpcAdapter(connection);
+    // Use proper @solana/kit RPC from tx-sender (like ix.ts does)
+    // This avoids issues with custom RPC adapter type mismatches
+    const rpcUrl = String(CONFIG.readRpcUrl || CONFIG.rpcUrl || '').trim();
+    const rpc = rpcFromUrl(rpcUrl);
 
     // Use swap amount from hop (or a minimal amount for account discovery)
+    // Ensure it's a native bigint (not BN or other object)
     const amountIn = hop.amountInRaw && hop.amountInRaw > 0n
-      ? hop.amountInRaw
+      ? BigInt(hop.amountInRaw.toString())
       : 1000n; // Minimal amount for discovery
 
-    // Call swapInstructions with exact-in parameters
-    // The SDK v4 uses Address (string) instead of PublicKey
+    // Convert to proper @solana/kit Address types
+    const poolAddress = address(poolId);
+    const inputMint = address(hop.inputMint);
+
+    // Call swapInstructions with proper @solana/kit types
     const swapResult = await OrcaSwapInstructions(
       rpc,
-      { inputAmount: amountIn, mint: hop.inputMint },
-      poolId, // pool address as string
+      { inputAmount: amountIn, mint: inputMint },
+      poolAddress,
       100, // 1% slippage tolerance in bps
     );
 
@@ -593,15 +602,17 @@ async function getRaydiumSdkQuote(
     const vaultB = state.tokenVault1?.toBase58?.() || state.token_vault_1?.toBase58?.();
 
     // Calculate tick array indices
+    // The "center" tick array contains the current tick and MUST be provided first for swaps
     const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
     const centerIdx = Math.floor(tickCurrent / ticksInArray);
-    const centerStart = centerIdx * ticksInArray;
+    const currentTickArrayStart = centerIdx * ticksInArray;
 
     // Get tick array bitmap from pool state
     const tickArrayBitmapArray = state.tickArrayBitmap ?? state.tick_array_bitmap ?? [];
 
     // Try to use SDK's TickQuery.getTickArrays() for proper tick array discovery
-    let tickArrayAddresses: string[] = [];
+    // The SDK returns an object keyed by start tick index (as string)
+    let tickArrayMap = new Map<number, string>();
 
     if (RaydiumTickQuery && typeof RaydiumTickQuery.getTickArrays === 'function') {
       try {
@@ -631,44 +642,35 @@ async function getRaydiumSdkQuote(
           exTickArrayBitmap
         );
 
-        // Extract addresses from the cache - handle different SDK return formats
-        // The SDK may return Map, object with address keys, or object with entry values containing addresses
+        // Extract addresses from the cache
+        // The SDK returns an object keyed by start tick index (e.g., "-20400")
         const rawKeys = Object.keys(tickArrayCache);
 
         for (const key of rawKeys) {
-          let validAddress: string | null = null;
+          // Parse the start tick index from the key
+          const startTick = parseInt(key, 10);
+          if (isNaN(startTick)) continue;
 
-          // Try key as address first (if it's valid base58)
-          if (key && key.length >= 32 && key.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(key)) {
+          const entry = tickArrayCache[key];
+          if (!entry) continue;
+
+          // Extract address from entry - it might have publicKey, address, or be the address itself
+          const addr = entry.publicKey ?? entry.address ?? entry;
+          let addressStr: string | null = null;
+
+          if (typeof addr === 'string' && addr.length >= 32 && addr.length <= 44) {
             try {
-              new PublicKey(key); // Validate it's a valid PublicKey
-              validAddress = key;
+              new PublicKey(addr);
+              addressStr = addr;
             } catch { /* not valid */ }
+          } else if (typeof addr?.toBase58 === 'function') {
+            addressStr = addr.toBase58();
+          } else if (addr instanceof PublicKey) {
+            addressStr = addr.toBase58();
           }
 
-          // If key wasn't valid, try to extract address from the cache entry
-          if (!validAddress) {
-            const entry = tickArrayCache[key];
-            if (entry) {
-              // Entry might have publicKey or address property
-              const addr = entry.publicKey ?? entry.address ?? entry;
-              if (addr) {
-                if (typeof addr === 'string' && addr.length >= 32 && addr.length <= 44) {
-                  try {
-                    new PublicKey(addr);
-                    validAddress = addr;
-                  } catch { /* not valid */ }
-                } else if (typeof addr.toBase58 === 'function') {
-                  validAddress = addr.toBase58();
-                } else if (addr instanceof PublicKey) {
-                  validAddress = addr.toBase58();
-                }
-              }
-            }
-          }
-
-          if (validAddress && !tickArrayAddresses.includes(validAddress)) {
-            tickArrayAddresses.push(validAddress);
+          if (addressStr) {
+            tickArrayMap.set(startTick, addressStr);
           }
         }
 
@@ -677,10 +679,11 @@ async function getRaydiumSdkQuote(
           ctx: {
             poolId: poolId.slice(0, 8),
             rawKeyCount: rawKeys.length,
-            validTickArrayCount: tickArrayAddresses.length,
+            validTickArrayCount: tickArrayMap.size,
             tickCurrent,
             tickSpacing,
-            addresses: tickArrayAddresses.slice(0, 5).map(a => a.slice(0, 8)),
+            currentTickArrayStart,
+            addresses: Array.from(tickArrayMap.values()).slice(0, 5).map(a => a.slice(0, 8)),
             sampleRawKey: rawKeys[0]?.slice(0, 20),
           },
         });
@@ -692,45 +695,48 @@ async function getRaydiumSdkQuote(
       }
     }
 
-    // Fallback: derive tick arrays manually if SDK didn't return any
-    if (tickArrayAddresses.length === 0) {
+    // Get the center tick array (the one containing the current tick)
+    // This MUST be provided first for Raydium CLMM swaps
+    let centerAddress = tickArrayMap.get(currentTickArrayStart);
+    let lowerAddress = tickArrayMap.get(currentTickArrayStart - ticksInArray);
+    let upperAddress = tickArrayMap.get(currentTickArrayStart + ticksInArray);
+
+    // Fallback: derive tick arrays manually if SDK didn't return the center
+    if (!centerAddress) {
       logger.info('sdkQuoteBuilder.raydium.quote.manual_derivation', {
         cat: 'tx',
-        ctx: { poolId: poolId.slice(0, 8), tickCurrent, tickSpacing, centerIdx },
+        ctx: { 
+          poolId: poolId.slice(0, 8), 
+          tickCurrent, 
+          tickSpacing, 
+          currentTickArrayStart,
+          sdkMapSize: tickArrayMap.size,
+          sdkStartTicks: Array.from(tickArrayMap.keys()).slice(0, 5),
+        },
       });
 
       // Derive center, lower, upper tick arrays
-      const centerPda = deriveRaydiumTickArrayPda(poolPk, centerStart, programId);
-      const lowerPda = deriveRaydiumTickArrayPda(poolPk, centerStart - ticksInArray, programId);
-      const upperPda = deriveRaydiumTickArrayPda(poolPk, centerStart + ticksInArray, programId);
-
-      tickArrayAddresses = [
-        centerPda.toBase58(),
-        lowerPda.toBase58(),
-        upperPda.toBase58(),
-      ];
+      centerAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart, programId).toBase58();
+      if (!lowerAddress) {
+        lowerAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart - ticksInArray, programId).toBase58();
+      }
+      if (!upperAddress) {
+        upperAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart + ticksInArray, programId).toBase58();
+      }
+    } else {
+      // SDK provided center, derive any missing adjacent arrays
+      if (!lowerAddress) {
+        lowerAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart - ticksInArray, programId).toBase58();
+      }
+      if (!upperAddress) {
+        upperAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart + ticksInArray, programId).toBase58();
+      }
     }
 
-    // Sort tick arrays by distance from center tick
-    const sortedArrays = tickArrayAddresses
-      .map(addr => {
-        // Parse start tick from the tick array address (derive reverse lookup)
-        // For now, just keep the order as-is since SDK returns them in a useful order
-        return addr;
-      });
-
-    // Extract center, lower, upper from sorted arrays
-    const center = sortedArrays[0] ? { address: sortedArrays[0] } : undefined;
-    const lower = sortedArrays[1] ? { address: sortedArrays[1] } : undefined;
-    const upper = sortedArrays[2] ? { address: sortedArrays[2] } : undefined;
-
-    if (!center) {
-      return {
-        success: false,
-        accounts: {},
-        error: 'No tick arrays found for Raydium pool',
-      };
-    }
+    // Create center, lower, upper objects
+    const center = { address: centerAddress };
+    const lower = lowerAddress ? { address: lowerAddress } : undefined;
+    const upper = upperAddress ? { address: upperAddress } : undefined;
 
     // Check for exBitmap
     let exBitmap: string | undefined;
