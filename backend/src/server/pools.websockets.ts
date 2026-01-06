@@ -4018,7 +4018,7 @@ function runWebsocketRefreshLoop(): void {
                   } catch {}
                 }
                 
-                logger.info('orca.tickarrays.subscribed', { pool: poolAddr.slice(0,8)+'…', count: tickArrayCount, useManual: useManualDerivation, cat: 'pools' });
+                logger.info('orca.tickarrays.subscribed', { pool: poolAddr.slice(0,8)+'…', count: tickArrayCount, cat: 'pools' });
               } catch (err) {
                 logger.info('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) });
               }

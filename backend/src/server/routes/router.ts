@@ -1193,7 +1193,6 @@ export function createRouterRouter(io: SocketIOServer): Router {
       // Import build functions
       const { buildRouterTransaction } = await import('../../execution/builder/routerTx.js');
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
-      const { ExecutionMode } = await import('../../router/types.js');
 
       // Build path array for resolver (N+1 tokens for N hops)
       const path: string[] = [hops[0].inputMint];
