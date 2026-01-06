@@ -2691,7 +2691,8 @@ export async function refreshAllPoolPrices(
     fetchMeteoraPoolViaSdk
   } = await import('./sdkPoolFetcher.js');
 
-  const concurrency = options?.concurrency ?? 10;
+  // Reduced concurrency to respect RPC rate limits (was 10)
+  const concurrency = options?.concurrency ?? 5;
   let updated = 0;
   let failed = 0;
   const errors: string[] = [];

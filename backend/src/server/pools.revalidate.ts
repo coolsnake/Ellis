@@ -259,12 +259,12 @@ export async function revalidateAllPools(
 
     // === PHASE 3: Refresh prices for ALL pools (not just invalid ones) ===
     // This ensures all pools have fresh on-chain prices even if their tick arrays were valid
+    // Run sequentially to avoid RPC 429 rate limits (each DEX refresh makes many RPC calls)
     const priceLimit = validateAll ? undefined : limit;
-    const [orcaPrices, raydiumPrices, meteoraPrices] = await Promise.all([
-      refreshAllPoolPrices(connection, 'orca', { concurrency, limit: priceLimit }),
-      refreshAllPoolPrices(connection, 'raydium', { concurrency, limit: priceLimit }),
-      refreshAllPoolPrices(connection, 'meteora', { concurrency, limit: priceLimit }),
-    ]);
+    
+    const orcaPrices = await refreshAllPoolPrices(connection, 'orca', { concurrency, limit: priceLimit });
+    const raydiumPrices = await refreshAllPoolPrices(connection, 'raydium', { concurrency, limit: priceLimit });
+    const meteoraPrices = await refreshAllPoolPrices(connection, 'meteora', { concurrency, limit: priceLimit });
 
     const totalPricesUpdated = orcaPrices.updated + raydiumPrices.updated + meteoraPrices.updated;
 

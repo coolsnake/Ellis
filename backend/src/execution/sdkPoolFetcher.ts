@@ -14,6 +14,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { logger } from '../utils/logger.js';
 import { logCatchError } from '../utils/errorHandler.js';
+import { withRpcLimit } from '../utils/rpcLimiter.js';
 
 // Cache SDK imports for performance
 let RaydiumClmmLayout: any = null;
@@ -295,9 +296,13 @@ async function searchOrcaTickArrays(
     tickArrayPdas.push({ offset: i, pda, startTick });
   }
   
-  // Batch check which tick arrays exist
+  // Batch check which tick arrays exist (rate limited)
   const pdaKeys = tickArrayPdas.map(p => p.pda);
-  const accountInfos = await connection.getMultipleAccountsInfo(pdaKeys);
+  const accountInfos = await withRpcLimit(
+    () => connection.getMultipleAccountsInfo(pdaKeys),
+    Math.ceil(pdaKeys.length / 10),  // Weight based on number of accounts
+    { module: 'cache', method: 'getMultipleAccountsInfo.orca.tickArrays' }
+  );
   
   const existingArrays: Array<{ offset: number; address: string; pda: PublicKey }> = [];
   
@@ -409,8 +414,12 @@ export async function fetchOrcaPoolViaSdk(
   const poolPk = new PublicKey(poolId);
   
   try {
-    // Fetch pool account directly
-    const accountInfo = await connection.getAccountInfo(poolPk);
+    // Fetch pool account directly (rate limited)
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: 'cache', method: 'getAccountInfo.orca' }
+    );
     if (!accountInfo || !accountInfo.data) {
       return null;
     }
@@ -872,9 +881,13 @@ async function deriveBinArraysWithValidation(
     } catch {}
   }
   
-  // Batch check existence
+  // Batch check existence (rate limited)
   const pdaKeys = arrays.map(a => a.pda);
-  const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+  const infos = await withRpcLimit(
+    () => connection.getMultipleAccountsInfo(pdaKeys),
+    Math.ceil(pdaKeys.length / 10),
+    { module: 'cache', method: 'getMultipleAccountsInfo.meteora.binArrays' }
+  );
   
   const validated: Array<{ index: number; address: string }> = [];
   for (let i = 0; i < arrays.length; i++) {
@@ -919,9 +932,13 @@ async function deriveBinArraysManual(
     } catch {}
   }
   
-  // Batch check
+  // Batch check (rate limited)
   const pdaKeys = arrays.map(a => a.pda);
-  const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+  const infos = await withRpcLimit(
+    () => connection.getMultipleAccountsInfo(pdaKeys),
+    Math.ceil(pdaKeys.length / 10),
+    { module: 'cache', method: 'getMultipleAccountsInfo.meteora.binArraysManual' }
+  );
   
   const validated: Array<{ index: number; address: string }> = [];
   for (let i = 0; i < arrays.length; i++) {
@@ -944,8 +961,12 @@ async function fetchMeteoraPoolManual(
   const poolPk = new PublicKey(poolId);
   
   try {
-    // Fetch and decode pool account
-    const accountInfo = await connection.getAccountInfo(poolPk);
+    // Fetch and decode pool account (rate limited)
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: 'cache', method: 'getAccountInfo.meteora.manual' }
+    );
     if (!accountInfo || !accountInfo.data) return null;
     
     // Import SDK just for decoding
@@ -1003,9 +1024,13 @@ async function searchRaydiumTickArrays(
     tickArrayPdas.push({ offset: i, pda });
   }
   
-  // Batch check existence
+  // Batch check existence (rate limited)
   const pdaKeys = tickArrayPdas.map(p => p.pda);
-  const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+  const infos = await withRpcLimit(
+    () => connection.getMultipleAccountsInfo(pdaKeys),
+    Math.ceil(pdaKeys.length / 10),
+    { module: 'cache', method: 'getMultipleAccountsInfo.raydium.tickArrays' }
+  );
   
   const existingArrays: Array<{ offset: number; address: string; pda: PublicKey }> = [];
   
@@ -1038,8 +1063,12 @@ export async function fetchRaydiumPoolViaSdk(
   const program = programId ? new PublicKey(programId) : RAYDIUM_CLMM_PROGRAM;
   
   try {
-    // Fetch pool account
-    const accountInfo = await connection.getAccountInfo(poolPk);
+    // Fetch pool account (rate limited)
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: 'cache', method: 'getAccountInfo.raydium' }
+    );
     if (!accountInfo || !accountInfo.data) {
       logger.debug('raydium.sdk.fetch.no_account', { cat: 'cache', ctx: { pool: poolId } });
       return null;
@@ -1152,9 +1181,13 @@ export async function fetchRaydiumPoolViaSdk(
           tickArrayPdas.push({ offset: tickArrayIdx - centerIdx, pda, tickArrayIdx });
     }
     
-        // Verify on-chain (bitmap could be stale) but only for known-initialized arrays
+        // Verify on-chain (bitmap could be stale) but only for known-initialized arrays (rate limited)
     const pdaKeys = tickArrayPdas.map(p => p.pda);
-    const infos = await connection.getMultipleAccountsInfo(pdaKeys);
+    const infos = await withRpcLimit(
+      () => connection.getMultipleAccountsInfo(pdaKeys),
+      Math.ceil(pdaKeys.length / 10),
+      { module: 'cache', method: 'getMultipleAccountsInfo.raydium.bitmapVerify' }
+    );
     
     for (let i = 0; i < tickArrayPdas.length; i++) {
       const info = infos[i];
@@ -1401,7 +1434,11 @@ async function fetchRaydiumPoolManual(
   
   let rawData: Uint8Array;
   if (!accountData) {
-    const accountInfo = await connection.getAccountInfo(poolPk);
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: 'cache', method: 'getAccountInfo.raydium.manual' }
+    );
     if (!accountInfo || !accountInfo.data) return null;
     rawData = accountInfo.data;
   } else {
