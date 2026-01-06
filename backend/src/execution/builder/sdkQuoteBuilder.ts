@@ -930,6 +930,12 @@ async function getMeteoraSdkQuote(
     }
 
     // Get bin arrays - try SDK first, then manual derivation
+    // OPTIMIZATION: Only keep bin arrays near the active bin to reduce transaction size
+    // routerTx will select the correct directional subset based on swap direction
+    const BIN_ARRAY_SIZE = 70;
+    const activeIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
+    const MAX_BIN_ARRAY_RANGE = 3; // Keep 3 arrays in each direction (7 total max)
+    
     let binArrayAddresses: string[] = [];
 
     // Try getting bin arrays from dlmmPool if available
@@ -937,24 +943,43 @@ async function getMeteoraSdkQuote(
       try {
         const binArrays = await dlmmPool.getBinArrays();
         if (Array.isArray(binArrays)) {
-          binArrayAddresses = binArrays.map((ba: any) => {
-            const addr = typeof ba.publicKey?.toBase58 === 'function'
-              ? ba.publicKey.toBase58()
-              : String(ba.publicKey || ba.address);
-            return addr;
+          const totalFromSdk = binArrays.length;
+          
+          // SDK returns ALL bin arrays - filter to those near active bin for efficiency
+          binArrayAddresses = binArrays
+            .map((ba: any) => {
+              const addr = typeof ba.publicKey?.toBase58 === 'function'
+                ? ba.publicKey.toBase58()
+                : String(ba.publicKey || ba.address);
+              // Try to get the bin array index from the account data
+              const binArrayIndex = ba.account?.index ?? ba.index ?? null;
+              return { addr, index: binArrayIndex };
+            })
+            .filter((item: { addr: string; index: number | null }) => {
+              // If we have index info, filter to nearby arrays only
+              if (typeof item.index === 'number') {
+                return Math.abs(item.index - activeIndex) <= MAX_BIN_ARRAY_RANGE;
+              }
+              return true; // Keep if we can't determine index
+            })
+            .map((item: { addr: string }) => item.addr)
+            .slice(0, 7); // Hard cap at 7 bin arrays
+            
+          logger.debug('sdkQuoteBuilder.meteora.quote.bin_arrays_from_sdk', { 
+            cat: 'tx', 
+            totalFromSdk,
+            filtered: binArrayAddresses.length,
+            activeIndex,
           });
-          logger.debug('sdkQuoteBuilder.meteora.quote.bin_arrays_from_sdk', { cat: 'tx', count: binArrayAddresses.length });
         }
       } catch (e) {
         logger.debug('sdkQuoteBuilder.meteora.quote.getBinArrays_failed', { cat: 'tx', error: (e as Error).message });
       }
     }
 
-    // Fallback: derive bin arrays manually
+    // Fallback: derive bin arrays manually with optimized range
     if (binArrayAddresses.length === 0) {
-      const BIN_ARRAY_SIZE = 70;
-      const activeIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
-      const RANGE = 5;
+      const RANGE = MAX_BIN_ARRAY_RANGE; // Use same range as SDK filtering (was 5, now 3)
 
       const BN = (await import('bn.js')).default;
       const derivedArrays: PublicKey[] = [];
@@ -981,7 +1006,12 @@ async function getMeteoraSdkQuote(
           binArrayAddresses.push(derivedArrays[i].toBase58());
         }
       }
-      logger.debug('sdkQuoteBuilder.meteora.quote.bin_arrays_manual', { cat: 'tx', count: binArrayAddresses.length });
+      logger.debug('sdkQuoteBuilder.meteora.quote.bin_arrays_manual', { 
+        cat: 'tx', 
+        derived: derivedArrays.length,
+        verified: binArrayAddresses.length,
+        activeIndex,
+      });
     }
 
     if (binArrayAddresses.length === 0) {
@@ -1001,11 +1031,15 @@ async function getMeteoraSdkQuote(
       vaultB = lbPair?.reserveY?.toBase58?.() || lbPair?.reserve_y?.toBase58?.();
     }
 
+    // Cap bin arrays to prevent transaction bloat
+    // routerTx will select the correct directional subset based on swap direction
+    const cappedBinArrays = binArrayAddresses.slice(0, 7);
+    
     const accounts: SdkProvidedAccounts = {
-      binArrays: binArrayAddresses,
+      binArrays: cappedBinArrays,
       activeId,
-      binArrayLower: binArrayAddresses[0],
-      binArrayUpper: binArrayAddresses[binArrayAddresses.length - 1],
+      binArrayLower: cappedBinArrays[0],
+      binArrayUpper: cappedBinArrays[cappedBinArrays.length - 1],
       vaultA,
       vaultB,
     };
@@ -1016,7 +1050,7 @@ async function getMeteoraSdkQuote(
         poolId: poolId.slice(0, 8) + '...',
         activeId,
         binStep,
-        binArraysFound: binArrayAddresses.length,
+        binArraysProvided: cappedBinArrays.length,
       },
     });
 
