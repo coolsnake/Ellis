@@ -256,6 +256,7 @@ async function initMeteoraSdk(): Promise<boolean> {
 /**
  * Create an RPC adapter for @solana/kit from @solana/web3.js Connection
  * The new SDK expects @solana/kit style RPC with .send() builder pattern
+ * Data must be returned as Uint8Array (not Buffer) and encoded as base64
  */
 function createKitRpcAdapter(connection: Connection): any {
   // @solana/kit uses a builder pattern: rpc.method(args).send()
@@ -266,9 +267,11 @@ function createKitRpcAdapter(connection: Connection): any {
         const pubkey = new PublicKey(address);
         const info = await connection.getAccountInfo(pubkey, config?.commitment);
         if (!info) return { value: null };
+        // @solana/kit expects data as [base64String, encoding] tuple
+        const dataBase64 = Buffer.from(info.data).toString('base64');
         return {
           value: {
-            data: info.data,
+            data: [dataBase64, 'base64'] as [string, string],
             executable: info.executable,
             lamports: BigInt(info.lamports),
             owner: info.owner.toBase58(),
@@ -284,8 +287,9 @@ function createKitRpcAdapter(connection: Connection): any {
         return {
           value: infos.map(info => {
             if (!info) return null;
+            const dataBase64 = Buffer.from(info.data).toString('base64');
             return {
-              data: info.data,
+              data: [dataBase64, 'base64'] as [string, string],
               executable: info.executable,
               lamports: BigInt(info.lamports),
               owner: info.owner.toBase58(),
@@ -556,8 +560,31 @@ async function getRaydiumSdkQuote(
     const tickArrayBitmap = state.tickArrayBitmap ?? state.tick_array_bitmap;
     let tickArrayIndices: number[] = [];
 
+    logger.debug('sdkQuoteBuilder.raydium.quote.bitmap_check', {
+      cat: 'tx',
+      ctx: {
+        hasBitmap: !!tickArrayBitmap,
+        isArray: Array.isArray(tickArrayBitmap),
+        bitmapLength: Array.isArray(tickArrayBitmap) ? tickArrayBitmap.length : 'N/A',
+        expectedLength: RAYDIUM_BITMAP_WORDS,
+        centerIdx,
+        tickCurrent,
+        tickSpacing,
+        ticksInArray,
+      },
+    });
+
     if (Array.isArray(tickArrayBitmap) && tickArrayBitmap.length === RAYDIUM_BITMAP_WORDS) {
       const allInitialized = decodeRaydiumTickArrayBitmap(tickArrayBitmap);
+
+      logger.debug('sdkQuoteBuilder.raydium.quote.bitmap_decoded', {
+        cat: 'tx',
+        ctx: {
+          initializedCount: allInitialized.length,
+          firstFew: allInitialized.slice(0, 10),
+          nearCenter: allInitialized.filter(idx => Math.abs(idx - centerIdx) <= 5),
+        },
+      });
 
       // Find arrays near center
       tickArrayIndices = allInitialized
@@ -584,35 +611,69 @@ async function getRaydiumSdkQuote(
       for (let i = -searchRange; i <= searchRange; i++) {
         const startTick = centerStart + (i * ticksInArray);
         const pda = deriveRaydiumTickArrayPda(poolPk, startTick, programId);
-        pdaInfos.push({ index: i, pda });
+        pdaInfos.push({ index: centerIdx + i, pda }); // Use absolute index, not relative
       }
 
       // Batch verify existence
       const infos = await connection.getMultipleAccountsInfo(pdaInfos.map(p => p.pda));
+      let foundCount = 0;
       for (let i = 0; i < pdaInfos.length; i++) {
-        if (infos[i] && infos[i]!.owner.equals(programId)) {
+        const info = infos[i];
+        const isValid = info && info.owner.equals(programId);
+        if (isValid) {
           tickArrayPdas.push({
             index: pdaInfos[i].index,
             address: pdaInfos[i].pda.toBase58()
           });
+          foundCount++;
         }
       }
+
+      logger.debug('sdkQuoteBuilder.raydium.quote.pda_verification', {
+        cat: 'tx',
+        ctx: {
+          searchRange,
+          pdaCount: pdaInfos.length,
+          foundCount,
+          programId: programId.toBase58().slice(0, 8),
+          centerPda: pdaInfos.find(p => p.index === centerIdx)?.pda.toBase58().slice(0, 8),
+        },
+      });
     }
 
     // Sort by distance from center
     tickArrayPdas.sort((a, b) => Math.abs(a.index - centerIdx) - Math.abs(b.index - centerIdx));
 
     // Extract tick arrays (center, lower, upper)
-    const center = tickArrayPdas.find(t => t.index === centerIdx) || tickArrayPdas[0];
-    const lower = tickArrayPdas.find(t => t.index < (center?.index ?? centerIdx));
-    const upper = tickArrayPdas.find(t => t.index > (center?.index ?? centerIdx));
+    let center = tickArrayPdas.find(t => t.index === centerIdx) || tickArrayPdas[0];
+    let lower = tickArrayPdas.find(t => t.index < (center?.index ?? centerIdx));
+    let upper = tickArrayPdas.find(t => t.index > (center?.index ?? centerIdx));
 
+    // LAST RESORT: If no tick arrays found via bitmap/verification,
+    // derive the essential PDAs directly (center, lower, upper)
+    // These SHOULD exist for any active pool
     if (!center) {
-      return {
-        success: false,
-        accounts: {},
-        error: 'No tick arrays found for Raydium pool',
-      };
+      logger.info('sdkQuoteBuilder.raydium.quote.deriving_essential', {
+        cat: 'tx',
+        ctx: { poolId: poolId.slice(0, 8), tickCurrent, tickSpacing, centerIdx, centerStart },
+      });
+
+      const centerPda = deriveRaydiumTickArrayPda(poolPk, centerStart, programId);
+      const lowerPda = deriveRaydiumTickArrayPda(poolPk, centerStart - ticksInArray, programId);
+      const upperPda = deriveRaydiumTickArrayPda(poolPk, centerStart + ticksInArray, programId);
+
+      center = { index: centerIdx, address: centerPda.toBase58() };
+      lower = { index: centerIdx - 1, address: lowerPda.toBase58() };
+      upper = { index: centerIdx + 1, address: upperPda.toBase58() };
+
+      logger.info('sdkQuoteBuilder.raydium.quote.essential_derived', {
+        cat: 'tx',
+        ctx: {
+          center: center.address.slice(0, 8),
+          lower: lower.address.slice(0, 8),
+          upper: upper.address.slice(0, 8),
+        },
+      });
     }
 
     // Check for exBitmap
