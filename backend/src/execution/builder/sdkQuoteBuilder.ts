@@ -672,7 +672,7 @@ async function getMeteoraSdkQuote(
         if (accountInfo && accountInfo.data) {
           // Try to read activeId and binStep from known offsets
           // LbPair layout: activeId is at offset 136 (i32), binStep is at offset 140 (u16)
-          const data = accountInfo.data;
+          const data = Buffer.from(accountInfo.data);
           if (data.length >= 142) {
             activeId = data.readInt32LE(136);
             binStep = data.readUInt16LE(140);
