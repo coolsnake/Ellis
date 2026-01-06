@@ -174,8 +174,18 @@ async function fetchFreshTickDataAndValidate(
         currentTickIndex: currentTick,
         tickSpacing,
       });
+
+      // Also update static cache with fresh tick_spacing to fix any corrupted values
+      const existingStatic = executionCache.getStatic(basePoolId) || {};
+      if (existingStatic.tick_spacing !== tickSpacing) {
+        executionCache.setStatic(basePoolId, {
+          ...existingStatic,
+          tick_spacing: tickSpacing,
+        });
+      }
+
       derivationValidation.cacheUpdated = true;
-      
+
       logger.info('cache.derivation.tick_updated', {
         cat: 'cache',
         ctx: {
@@ -406,8 +416,18 @@ async function fetchFreshBinDataAndValidate(
         activeId,
         binStep,
       });
+
+      // Also update static cache with fresh binStep to fix any corrupted values
+      const existingStatic = executionCache.getStatic(basePoolId) || {};
+      if (existingStatic.binStep !== binStep) {
+        executionCache.setStatic(basePoolId, {
+          ...existingStatic,
+          binStep,
+        });
+      }
+
       derivationValidation.cacheUpdated = true;
-      
+
       logger.info('cache.derivation.activeId_updated', {
         cat: 'cache',
         ctx: {
@@ -1001,7 +1021,16 @@ export async function validatePoolCache(
             needsTickArrayValidation: false, // Clear flag - pool is validated
             tickArraysValidatedAt: Date.now(),
           });
-          
+
+          // Also update static cache with fresh tick_spacing to fix any corrupted values
+          const existingStatic = executionCache.getStatic(basePoolId) || {};
+          if (existingStatic.tick_spacing !== tickSpacing) {
+            executionCache.setStatic(basePoolId, {
+              ...existingStatic,
+              tick_spacing: tickSpacing,
+            });
+          }
+
           result.valid = true;
           result.liquidityOutsideRange = true;
           
@@ -1022,7 +1051,7 @@ export async function validatePoolCache(
         
         if (tickArrays && validation?.center?.exists) {
           // Successfully validated with fresh data - update all caches
-          
+
           // Update hot cache with fresh tick and arrays
           const existingHot = executionCache.getHot(basePoolId) || {};
           executionCache.setHot(basePoolId, {
@@ -1031,11 +1060,12 @@ export async function validatePoolCache(
             tickSpacing,
             tickArrays,
           });
-          
-          // Also update static cache tick arrays for consistency
-          const existingStat = executionCache.getStatic(basePoolId) || {};
+
+          // Also update static cache with fresh tick_spacing and tick arrays
+          // This ensures any corrupted tick_spacing values get corrected
+          const existingStatic = executionCache.getStatic(basePoolId) || {};
           executionCache.setStatic(basePoolId, {
-            ...existingStat,
+            ...existingStatic,
             tick_spacing: tickSpacing,
             tickArrayLower: Array.isArray(tickArrays.lower) ? tickArrays.lower[0] : tickArrays.lower,
             tickArrayCenter: tickArrays.center,
