@@ -1280,7 +1280,7 @@ export async function validatePoolCache(
         try {
           const poolPk = new PublicKey(basePoolId);
           const [pda] = PublicKey.findProgramAddressSync(
-            [Buffer.from('exaccount'), poolPk.toBuffer()],
+            [Buffer.from('pool_tick_array_bitmap_extension'), poolPk.toBuffer()],
             RAYDIUM_CLMM_PROGRAM
           );
           derivedExBitmapPda = pda.toBase58();
@@ -3237,7 +3237,7 @@ export async function validateAndRefreshRaydiumExBitmaps(
     try {
       const poolPk = new PublicKey(pool.id);
       const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('exaccount'), poolPk.toBuffer()],
+        [Buffer.from('pool_tick_array_bitmap_extension'), poolPk.toBuffer()],
         RAYDIUM_CLMM_PROGRAM
       );
       poolsWithPda.push({ pool, poolPk, pda });
@@ -3397,7 +3397,7 @@ export async function validatePoolRaydiumExBitmap(
   try {
     const poolPk = new PublicKey(basePoolId);
     const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('exaccount'), poolPk.toBuffer()],
+      [Buffer.from('pool_tick_array_bitmap_extension'), poolPk.toBuffer()],
       RAYDIUM_CLMM_PROGRAM
     );
     const derivedPdaStr = pda.toBase58();

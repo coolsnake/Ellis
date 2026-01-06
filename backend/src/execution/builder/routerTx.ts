@@ -117,11 +117,12 @@ function deriveRaydiumObservationPda(poolId: PublicKey, programId: PublicKey = R
 /**
  * Derive Raydium CLMM tick array bitmap extension PDA (exBitmap)
  * This is required for pools with large tick ranges to track initialized tick arrays.
- * Seeds: ["exaccount", pool_id] (NOT "tick_array_bitmap_extension")
+ * Seeds: ["pool_tick_array_bitmap_extension", pool_id]
+ * Note: This matches the SDK's getPdaExBitmapAccount function
  */
 function deriveRaydiumExBitmapPda(poolId: PublicKey, programId: PublicKey = RAYDIUM_CLMM_PROGRAM): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
-    [Buffer.from('exaccount'), poolId.toBuffer()],
+    [Buffer.from('pool_tick_array_bitmap_extension'), poolId.toBuffer()],
     programId
   );
   return pda;

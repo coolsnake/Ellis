@@ -10,7 +10,7 @@ import { calculateProfitBasedTip, type TipResult } from './arbTip.js';
 import { sendToBlockEngine } from './jitoClient.js';
 import { startTipFeed } from './jitoTipCache.js';
 import { CONFIG } from '../utils/config.js';
-import { ensureWallet } from '../wallet/wallet.js';
+import { ensureWallet, getBalances, getConnection } from '../wallet/wallet.js';
 import {
   initializeTracker,
   setQuarantineConfig,
@@ -20,6 +20,18 @@ import {
   hasQuarantinedPool,
 } from './poolFailureTracker.js';
 import { analyzeTransactionFailure } from './poolFailureAnalyzer.js';
+// PERF: Static imports to avoid dynamic import overhead in hot paths
+import { buildTransactionSummary } from '../server/arb.build.worker.compute.js';
+import { writeTxFullDump } from '../utils/txTrace.js';
+import { getTxRelatedLogs } from '../utils/sessionLogs.js';
+import { buildRouterTransaction } from './builder/routerTx.js';
+import { ExecutionMode } from '../router/types.js';
+import { loadJitoConfig } from '../server/jitoConfigStore.js';
+import { getPriceByMint } from '../server/priceStore.js';
+import { calculateOptimalSizeFromOpportunity } from './optimalSizing.js';
+import { loadRouterConfig } from '../server/routerConfigStore.js';
+import { deriveVaultPda, fetchVault } from '../router/sdk.js';
+import { PublicKey } from '@solana/web3.js';
 
 interface Opportunity {
   path: string[];
@@ -139,6 +151,13 @@ interface ExecutionState {
   failedExecutions: number;
 }
 
+// PERF: Balance cache to avoid RPC calls on every opportunity check
+interface BalanceCache {
+  balances: { sol: number; tokens: Record<string, number> } | null;
+  fetchedAt: number;
+}
+const BALANCE_CACHE_TTL_MS = 5000; // 5 seconds - balances don't change that fast
+
 export class ArbExecutor {
   private config: ExecutorConfig;
   private state: ExecutionState;
@@ -148,6 +167,8 @@ export class ArbExecutor {
   private statusTimer: NodeJS.Timeout | null = null; // For periodic status logging
   private running = false;
   private walletPublicKey: any = null; // Cached wallet for balance checks
+  // PERF: Cache balances to avoid RPC calls on every opportunity
+  private balanceCache: BalanceCache = { balances: null, fetchedAt: 0 };
 
   constructor(config: ExecutorConfig) {
     this.config = config;
@@ -183,8 +204,7 @@ export class ArbExecutor {
 
     // Cache wallet public key for balance checks
     try {
-      const { ensureWallet } = await import('../wallet/wallet.js');
-      const { CONFIG } = await import('../utils/config.js');
+      // PERF: Use static imports instead of dynamic imports
       const wallet = await ensureWallet(CONFIG.walletPath);
       this.walletPublicKey = wallet.publicKey;
       logger.debug('arb.executor.wallet_cached', { cat: 'arb', publicKey: wallet.publicKey.toBase58() });
@@ -510,13 +530,26 @@ export class ArbExecutor {
     // Balance validation (skip if flashloans enabled for flashloanable tokens)
     if (this.config.requireStartBalance !== false && this.walletPublicKey) {
       try {
-        const { getBalances } = await import('../wallet/wallet.js');
-        const balances = await getBalances(this.walletPublicKey);
+        // PERF: Use cached balances to avoid RPC calls on every opportunity
+        const balances = await this.getCachedBalances();
         const startToken = opp.path[0];
+        const SOL_MINT = 'So11111111111111111111111111111111111111112';
+        const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
         
-        if (startToken) {
-          const SOL_MINT = 'So11111111111111111111111111111111111111112';
-          const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+        if (!balances) {
+          // Can't validate balance - continue anyway if flashloan available
+          const canUseFlashloan = this.config.flashloanSettings?.enabled && 
+            (startToken === SOL_MINT || startToken === USDC_MINT);
+          if (!canUseFlashloan) {
+            logger.info('arb.executor.filtered', {
+              cat: 'arb',
+              reason: 'balance_unknown',
+              path: pathStr,
+            });
+            return false;
+          }
+          // Flashloan available, skip balance check
+        } else if (startToken) {
           const balance = startToken === SOL_MINT 
             ? balances.sol 
             : (balances.tokens[startToken] || 0);
@@ -786,7 +819,7 @@ export class ArbExecutor {
 
         // Build transaction using the same method as arb routes - pass traceId
         // Pass useRouter config to use on-chain router when enabled
-        const { buildTransactionSummary } = await import('../server/arb.build.worker.compute.js');
+        // PERF: Use static import instead of dynamic import
         built = await buildTransactionSummary(plan, undefined, {
           useRouter: this.config.useRouter,
           routerExecutionMode: this.config.routerExecutionMode,
@@ -809,13 +842,13 @@ export class ArbExecutor {
         }
       } catch (buildError: any) {
         // Log build/resolution failure to execute-attempts
+        // PERF: Use static imports and non-blocking write
         try {
-          const { writeTxFullDump } = await import('../utils/txTrace.js');
-          const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
           const dexes = Array.from(new Set((executionDexes || []).filter(Boolean)));
           const txLogs = getTxRelatedLogs(traceId, Date.now() - 30000, Date.now(), 500);
           
-          await writeTxFullDump('preflight', {
+          // PERF: Non-blocking - don't await the file write
+          void writeTxFullDump('preflight', {
             id: traceId,
             txId: traceId,
             traceId,
@@ -888,8 +921,7 @@ export class ArbExecutor {
         });
         
         try {
-          const { buildRouterTransaction } = await import('./builder/routerTx.js');
-          const { ExecutionMode } = await import('../router/types.js');
+          // PERF: Use static imports instead of dynamic imports
           const kp = await ensureWallet(CONFIG.walletPath);
           
           const routerResult = await buildRouterTransaction(plan, kp, {
@@ -974,14 +1006,13 @@ export class ArbExecutor {
         });
         
         // Log full dump with opportunity data
+        // PERF: Use static imports and non-blocking write
         try {
-          const { writeTxFullDump } = await import('../utils/txTrace.js');
-          const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
           const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
           const txLogs = getTxRelatedLogs(traceId, Date.now() - 30000, Date.now(), 500);
           
-          // Write single consolidated file instead of one per DEX
-          await writeTxFullDump('preflight', {
+          // PERF: Non-blocking - don't await the file write
+          void writeTxFullDump('preflight', {
             id: traceId,
             txId: traceId,
             traceId,
@@ -1109,7 +1140,7 @@ export class ArbExecutor {
 
         // Always use Jito parallel sending when Jito is enabled (not just when we have a tip)
         // Use the same config source as tip calculation for consistency
-        const { loadJitoConfig } = await import('../server/jitoConfigStore.js');
+        // PERF: Use static import instead of dynamic import
         const jitoCfg = await loadJitoConfig();
         const jitoEnabled = jitoCfg.enabled;
 
@@ -1139,14 +1170,13 @@ export class ArbExecutor {
         signature = sendResult?.signature || null;
 
         // Log full dump with opportunity data
+        // PERF: Use static imports and non-blocking write
         try {
-          const { writeTxFullDump } = await import('../utils/txTrace.js');
-          const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
           const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
           const txLogs = getTxRelatedLogs(traceId, Date.now() - 60000, Date.now(), 500);
           
-          // Write single consolidated file instead of one per DEX
-          await writeTxFullDump('execute', {
+          // PERF: Non-blocking - don't await the file write
+          void writeTxFullDump('execute', {
             id: traceId,
             txId: traceId,
             traceId,
@@ -1298,9 +1328,8 @@ export class ArbExecutor {
       const errorMsg = e?.message || (e instanceof Error ? e.toString() : JSON.stringify(e));
       
       // Log to execute-attempts even on failure
+      // PERF: Use static imports and non-blocking write
       try {
-        const { writeTxFullDump } = await import('../utils/txTrace.js');
-        const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
         const txLogs = getTxRelatedLogs(traceId, Date.now() - 60000, Date.now(), 500);
         
         // Try to get plan and built if they exist (might be undefined if error occurred early)
@@ -1309,7 +1338,8 @@ export class ArbExecutor {
         const execCfg = (e as any)?.execCfg || null;
         const executionDexes = opp.hop_dexes || opp.dexes || [];
         
-        await writeTxFullDump('execute', {
+        // PERF: Non-blocking - don't await the file write
+        void writeTxFullDump('execute', {
           id: traceId,
           txId: traceId,
           traceId,
@@ -1513,9 +1543,12 @@ export class ArbExecutor {
     if (!isFlashloanable || !flashloanEnabled) {
       try {
         if (this.walletPublicKey) {
-          const { getBalances } = await import('../wallet/wallet.js');
-          const { getPriceByMint } = await import('../server/priceStore.js');
-          const balances = await getBalances(this.walletPublicKey);
+          // PERF: Use cached balances to avoid RPC calls
+          const balances = await this.getCachedBalances();
+          if (!balances) {
+            // Can't determine balance, use minimum size
+            return minSize;
+          }
           
           const balance = startToken === SOL_MINT 
             ? balances.sol 
@@ -1565,8 +1598,7 @@ export class ArbExecutor {
     // For optimal methods, try to use the analytical/iterative calculator
     if (method === 'optimal_analytical' || method === 'optimal_iterative') {
       try {
-        const { calculateOptimalSizeFromOpportunity } = await import('./optimalSizing.js');
-        
+        // PERF: Use static import instead of dynamic import
         const result = await calculateOptimalSizeFromOpportunity(
           opp as any,
           minSize,
@@ -1689,17 +1721,17 @@ export class ArbExecutor {
     let walletBalanceUsd = 0;
     try {
       if (this.walletPublicKey) {
-        const { getBalances } = await import('../wallet/wallet.js');
-        const { getPriceByMint } = await import('../server/priceStore.js');
-        const balances = await getBalances(this.walletPublicKey);
-        
-        const balance = startToken === SOL_MINT 
-          ? balances.sol 
-          : (balances.tokens[startToken] || 0);
-        
-        // Convert to USD
-        const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
-        walletBalanceUsd = balance * price;
+        // PERF: Use cached balances to avoid RPC calls
+        const balances = await this.getCachedBalances();
+        if (balances) {
+          const balance = startToken === SOL_MINT 
+            ? balances.sol 
+            : (balances.tokens[startToken] || 0);
+          
+          // Convert to USD
+          const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+          walletBalanceUsd = balance * price;
+        }
       }
     } catch (e) {
       logger.warn('arb.executor.flashloan.balance_check_failed', {
@@ -1753,12 +1785,7 @@ export class ArbExecutor {
    */
   private async checkVaultBalance(mint: string, requiredUsd: number): Promise<boolean> {
     try {
-      const { loadRouterConfig } = await import('../server/routerConfigStore.js');
-      const { deriveVaultPda, fetchVault } = await import('../router/sdk.js');
-      const { getConnection } = await import('../wallet/wallet.js');
-      const { getPriceByMint } = await import('../server/priceStore.js');
-      const { PublicKey } = await import('@solana/web3.js');
-      
+      // PERF: Use static imports instead of dynamic imports
       const routerConfig = await loadRouterConfig();
       if (!routerConfig.enabled || !routerConfig.vaultOwner) {
         return false;
@@ -1809,6 +1836,35 @@ export class ArbExecutor {
   private getOpportunityKey(opp: Opportunity): string {
     const sortedDexes = [...opp.dexes].sort();
     return `${opp.path.join('->')}|${sortedDexes.join(',')}`;
+  }
+
+  /**
+   * PERF: Get cached balances to avoid RPC calls on every opportunity check.
+   * Fetches fresh balances if cache is stale (older than BALANCE_CACHE_TTL_MS).
+   */
+  private async getCachedBalances(): Promise<{ sol: number; tokens: Record<string, number> } | null> {
+    const now = Date.now();
+    
+    // Return cached balances if still fresh
+    if (this.balanceCache.balances && (now - this.balanceCache.fetchedAt) < BALANCE_CACHE_TTL_MS) {
+      return this.balanceCache.balances;
+    }
+    
+    // Fetch fresh balances
+    if (!this.walletPublicKey) return null;
+    
+    try {
+      const balances = await getBalances(this.walletPublicKey);
+      this.balanceCache = { balances, fetchedAt: now };
+      return balances;
+    } catch (e) {
+      logger.warn('arb.executor.balance_cache.fetch_failed', {
+        cat: 'arb',
+        error: String((e as any)?.message || e),
+      });
+      // Return stale cache if available, otherwise null
+      return this.balanceCache.balances;
+    }
   }
 
   private cleanupState(): void {

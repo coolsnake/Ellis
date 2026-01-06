@@ -7,6 +7,9 @@ import { LogCode } from '../utils/logging.js';
 import { getTxRelatedLogs } from '../utils/sessionLogs.js';
 import { optimizeAccountOrder } from '../execution/utils/accountOrdering.js';
 import { dexAltManager } from './utils/altManager.js';
+// PERF: Static import to avoid dynamic import overhead in hot path
+import { writeTxFullDump } from '../utils/txTrace.js';
+import { getFreshBlockhashOrFetch, getLastValidBlockHeight } from '../utils/blockhash.js';
 
 const TX_DEBUG_COERCION = !!((CONFIG as any)?.tx?.debugIxCoercion);
 
@@ -54,8 +57,8 @@ async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: 
   const now = Date.now();
   
   // Try the shared blockhash system first (updated more frequently by drift/other runners)
+  // PERF: Use static imports instead of dynamic imports
   try {
-    const { getFreshBlockhashOrFetch, getLastValidBlockHeight } = await import('../utils/blockhash.js');
     const bh = await getFreshBlockhashOrFetch(500); // Accept up to 500ms old - fresher blockhash for better landing
     if (bh) {
       const lvbh = getLastValidBlockHeight();
@@ -833,13 +836,13 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
       }); 
     } catch {}
   }
+  // PERF: Non-blocking write using static import
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);
     const txLogs = getTxRelatedLogs(txId, Date.now() - 10000, Date.now(), 200);
-    const { writeTxFullDump } = await import('../utils/txTrace.js');
-    // Write single consolidated file instead of one per DEX
-    await writeTxFullDump('preflight', {
+    // Write single consolidated file instead of one per DEX (non-blocking)
+    void writeTxFullDump('preflight', {
       txId,
       id: txId,
       kind: 'sender.preflight',
@@ -1367,13 +1370,13 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
       });
     } catch {}
   }
+  // PERF: Non-blocking write using static import
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);
     const txLogs = getTxRelatedLogs(txId, Date.now() - 20000, Date.now(), 300);
-    const { writeTxFullDump } = await import('../utils/txTrace.js');
-    // Write single consolidated file instead of one per DEX
-    await writeTxFullDump('execute', {
+    // Write single consolidated file instead of one per DEX (non-blocking)
+    void writeTxFullDump('execute', {
       txId,
       id: txId,
       kind: 'sender.execute',

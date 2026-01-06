@@ -89,7 +89,13 @@ let RaydiumClmmLayout: any = null;
 let RaydiumTickQuery: any = null;
 let RaydiumTickArrayBitmapExtensionLayout: any = null;
 let RaydiumGetPdaTickArrayAddress: any = null;
+let RaydiumPoolUtils: any = null;
+let RaydiumGetPdaExBitmapAccount: any = null;
 let raydiumSdkInitialized = false;
+
+// Raydium constants for exBitmap determination
+const RAYDIUM_TICK_ARRAY_SIZE_CONST = 60;
+const RAYDIUM_TICK_ARRAY_BITMAP_SIZE_CONST = 512;
 
 // Meteora SDK component
 let MeteoraDLMM: any = null;
@@ -176,12 +182,20 @@ async function initRaydiumSdk(): Promise<boolean> {
       || (raydiumSdk as any).CLMM?.getPdaTickArrayAddress
       || (raydiumSdk as any).Clmm?.getPdaTickArrayAddress;
 
+    // Import PoolUtils for isOverflowDefaultTickarrayBitmap
+    RaydiumPoolUtils = (raydiumSdk as any).PoolUtils;
+
+    // Import getPdaExBitmapAccount for proper exBitmap PDA derivation
+    RaydiumGetPdaExBitmapAccount = (raydiumSdk as any).getPdaExBitmapAccount;
+
     logger.info('sdkQuoteBuilder.raydium.init.success', {
       cat: 'tx',
       hasLayout: !!RaydiumClmmLayout,
       hasTickQuery: !!RaydiumTickQuery,
       hasBitmapLayout: !!RaydiumTickArrayBitmapExtensionLayout,
       hasPdaFn: !!RaydiumGetPdaTickArrayAddress,
+      hasPoolUtils: !!RaydiumPoolUtils,
+      hasExBitmapPda: !!RaydiumGetPdaExBitmapAccount,
     });
     return !!RaydiumClmmLayout;
   } catch (e) {
@@ -653,26 +667,80 @@ async function getRaydiumSdkQuote(
     // Get tick array bitmap from pool state
     const tickArrayBitmapArray = state.tickArrayBitmap ?? state.tick_array_bitmap ?? [];
 
+    // Determine if exBitmap is needed using SDK's PoolUtils (computational - no RPC!)
+    // exBitmap is required when tick arrays are outside the default bitmap range
+    // Default bitmap covers: [-tickSpacing * 60 * 512, +tickSpacing * 60 * 512)
+    let needsExBitmap = false;
+    let exBitmapPda: PublicKey | null = null;
+    let exBitmapAddress: string | undefined;
+    let exTickArrayBitmap: any = undefined;
+
+    // Derive exBitmap PDA using SDK or manual derivation
+    if (RaydiumGetPdaExBitmapAccount) {
+      try {
+        const result = RaydiumGetPdaExBitmapAccount(programId, poolPk);
+        exBitmapPda = result.publicKey;
+      } catch {
+        // Fallback to manual derivation with correct seed
+        [exBitmapPda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('pool_tick_array_bitmap_extension'), poolPk.toBuffer()],
+          programId
+        );
+      }
+    } else {
+      // Manual derivation with correct seed
+      [exBitmapPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('pool_tick_array_bitmap_extension'), poolPk.toBuffer()],
+        programId
+      );
+    }
+
+    // Use SDK's computational method to check if exBitmap is needed (no RPC!)
+    if (RaydiumPoolUtils && typeof RaydiumPoolUtils.isOverflowDefaultTickarrayBitmap === 'function') {
+      try {
+        needsExBitmap = RaydiumPoolUtils.isOverflowDefaultTickarrayBitmap(tickSpacing, [tickCurrent]);
+        logger.debug('sdkQuoteBuilder.raydium.exBitmap.sdkCheck', {
+          cat: 'tx',
+          ctx: { poolId: poolId.slice(0, 8), tickCurrent, tickSpacing, needsExBitmap },
+        });
+      } catch (e) {
+        // Fallback to manual calculation
+        const maxTickInBitmap = tickSpacing * RAYDIUM_TICK_ARRAY_SIZE_CONST * RAYDIUM_TICK_ARRAY_BITMAP_SIZE_CONST;
+        needsExBitmap = tickCurrent < -maxTickInBitmap || tickCurrent >= maxTickInBitmap;
+      }
+    } else {
+      // Manual calculation if SDK method not available
+      const maxTickInBitmap = tickSpacing * RAYDIUM_TICK_ARRAY_SIZE_CONST * RAYDIUM_TICK_ARRAY_BITMAP_SIZE_CONST;
+      needsExBitmap = tickCurrent < -maxTickInBitmap || tickCurrent >= maxTickInBitmap;
+    }
+
+    // Only fetch exBitmap if it's actually needed
+    if (needsExBitmap && exBitmapPda && RaydiumTickArrayBitmapExtensionLayout) {
+      try {
+        const exBitmapInfo = await connection.getAccountInfo(exBitmapPda);
+        if (exBitmapInfo && exBitmapInfo.data) {
+          exTickArrayBitmap = RaydiumTickArrayBitmapExtensionLayout.decode(exBitmapInfo.data);
+          exBitmapAddress = exBitmapPda.toBase58();
+          logger.debug('sdkQuoteBuilder.raydium.exBitmap.fetched', {
+            cat: 'tx',
+            ctx: { poolId: poolId.slice(0, 8), exBitmap: exBitmapAddress.slice(0, 8) },
+          });
+        } else {
+          // exBitmap needed but doesn't exist - this is an error condition
+          logger.warn('sdkQuoteBuilder.raydium.exBitmap.needed_but_missing', {
+            cat: 'tx',
+            ctx: { poolId: poolId.slice(0, 8), tickCurrent, tickSpacing, exBitmapPda: exBitmapPda.toBase58() },
+          });
+        }
+      } catch { /* exBitmap doesn't exist */ }
+    }
+
     // Try to use SDK's TickQuery.getTickArrays() for proper tick array discovery
     // The SDK returns an object keyed by start tick index (as string)
     let tickArrayMap = new Map<number, string>();
 
     if (RaydiumTickQuery && typeof RaydiumTickQuery.getTickArrays === 'function') {
       try {
-        // Fetch exBitmap if it exists
-        let exTickArrayBitmap: any = undefined;
-        if (RaydiumTickArrayBitmapExtensionLayout) {
-          try {
-            const [exBitmapPda] = PublicKey.findProgramAddressSync(
-              [Buffer.from('pool_tick_array_bitmap_extension'), poolPk.toBuffer()],
-              programId
-            );
-            const exBitmapInfo = await connection.getAccountInfo(exBitmapPda);
-            if (exBitmapInfo && exBitmapInfo.data) {
-              exTickArrayBitmap = RaydiumTickArrayBitmapExtensionLayout.decode(exBitmapInfo.data);
-            }
-          } catch { /* no exBitmap */ }
-        }
 
         // Use SDK to get tick arrays
         const tickArrayCache = await RaydiumTickQuery.getTickArrays(
@@ -781,26 +849,15 @@ async function getRaydiumSdkQuote(
     const lower = lowerAddress ? { address: lowerAddress } : undefined;
     const upper = upperAddress ? { address: upperAddress } : undefined;
 
-    // Check for exBitmap
-    let exBitmap: string | undefined;
-    try {
-      const [exBitmapPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('exaccount'), poolPk.toBuffer()],
-        programId
-      );
-      const exBitmapInfo = await connection.getAccountInfo(exBitmapPda);
-      if (exBitmapInfo && exBitmapInfo.owner.equals(programId)) {
-        exBitmap = exBitmapPda.toBase58();
-      }
-    } catch { /* ignore */ }
-
+    // exBitmap is already computed above using SDK's isOverflowDefaultTickarrayBitmap
+    // Only include it if it's actually needed AND exists on-chain
     const accounts: SdkProvidedAccounts = {
       tickArrayCenter: center.address,
       tickArrayLower: lower?.address,
       tickArrayUpper: upper?.address,
       observationState,
       ammConfig,
-      exBitmap,
+      exBitmap: exBitmapAddress, // Only set if needed AND fetched successfully
       vaultA,
       vaultB,
     };
@@ -812,7 +869,9 @@ async function getRaydiumSdkQuote(
         tickCurrent,
         tickSpacing,
         tickArraysFound: tickArrayMap.size,
-        hasExBitmap: !!exBitmap,
+        needsExBitmap,
+        hasExBitmap: !!exBitmapAddress,
+        exBitmapMethod: RaydiumPoolUtils ? 'sdk' : 'manual',
         center: center.address.slice(0, 8),
         lower: lower?.address?.slice(0, 8),
         upper: upper?.address?.slice(0, 8),

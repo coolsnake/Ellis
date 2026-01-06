@@ -129,7 +129,7 @@ export async function deriveRaydiumClmmCacheFields(
             const programPk = new PK(programIdStr);
             const poolPk = new PK(poolId);
             const [exBitmapPda] = PK.findProgramAddressSync(
-                [Buffer.from('exaccount'), poolPk.toBuffer()],
+                [Buffer.from('pool_tick_array_bitmap_extension'), poolPk.toBuffer()],
                 programPk
             );
             exBitmap = exBitmapPda.toBase58();
