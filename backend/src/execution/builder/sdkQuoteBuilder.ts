@@ -393,14 +393,17 @@ async function getOrcaSdkQuote(
     }
 
     // Extract tick arrays from the swap instruction accounts
-    // The swap instruction typically has tick arrays in specific positions
-    // Orca swap instruction accounts: [tokenProgram, tokenAuthority, whirlpool, tokenOwnerAccountA,
-    //   tokenVaultA, tokenOwnerAccountB, tokenVaultB, tickArray0, tickArray1, tickArray2, oracle]
+    // SDK may return Swap (11 accounts) or SwapV2 (15+ accounts) instructions
+    // Swap: [tokenProgram, tokenAuthority, whirlpool, tokenOwnerAccountA, tokenVaultA, 
+    //        tokenOwnerAccountB, tokenVaultB, tickArray0, tickArray1, tickArray2, oracle]
+    // SwapV2: [tokenProgramA, tokenProgramB, memoProgram, tokenAuthority, whirlpool, tokenMintA,
+    //          tokenMintB, tokenOwnerAccountA, tokenVaultA, tokenOwnerAccountB, tokenVaultB,
+    //          tickArray0, tickArray1, tickArray2, oracle]
     const swapIx = swapResult.instructions.find((ix: any) =>
       ix.programAddress === ORCA_WHIRLPOOL_PROGRAM.toBase58()
     );
 
-    if (!swapIx || !swapIx.accounts || swapIx.accounts.length < 11) {
+    if (!swapIx || !swapIx.accounts) {
       return {
         success: false,
         accounts: {},
@@ -408,24 +411,62 @@ async function getOrcaSdkQuote(
       };
     }
 
-    // Extract accounts from the instruction (addresses are already strings in @solana/kit)
-    const ixAccounts = swapIx.accounts;
-    const accounts: SdkProvidedAccounts = {
-      // Tick arrays are typically at indices 7, 8, 9
-      tickArray0: typeof ixAccounts[7] === 'string' ? ixAccounts[7] : ixAccounts[7]?.address,
-      tickArray1: typeof ixAccounts[8] === 'string' ? ixAccounts[8] : ixAccounts[8]?.address,
-      tickArray2: typeof ixAccounts[9] === 'string' ? ixAccounts[9] : ixAccounts[9]?.address,
-      // Oracle is typically at index 10
-      oracle: typeof ixAccounts[10] === 'string' ? ixAccounts[10] : ixAccounts[10]?.address,
-      // Vaults at indices 4 and 6
-      vaultA: typeof ixAccounts[4] === 'string' ? ixAccounts[4] : ixAccounts[4]?.address,
-      vaultB: typeof ixAccounts[6] === 'string' ? ixAccounts[6] : ixAccounts[6]?.address,
+    // Helper to extract address from various formats
+    const extractAddress = (acct: any): string | undefined => {
+      if (!acct) return undefined;
+      if (typeof acct === 'string') return acct;
+      if (typeof acct.address === 'string') return acct.address;
+      if (typeof acct.toBase58 === 'function') return acct.toBase58();
+      return undefined;
     };
 
+    // Extract accounts - first try named properties (SDK v4 format), then fall back to indices
+    const ixAccounts = swapIx.accounts;
+    const isSwapV2 = Array.isArray(ixAccounts) && ixAccounts.length >= 15;
+
+    // Account indices differ between Swap and SwapV2
+    // Swap:   tickArray0=7,  tickArray1=8,  tickArray2=9,  oracle=10, vaultA=4, vaultB=6
+    // SwapV2: tickArray0=11, tickArray1=12, tickArray2=13, oracle=14, vaultA=8, vaultB=10
+    const tickArray0Idx = isSwapV2 ? 11 : 7;
+    const tickArray1Idx = isSwapV2 ? 12 : 8;
+    const tickArray2Idx = isSwapV2 ? 13 : 9;
+    const oracleIdx = isSwapV2 ? 14 : 10;
+    const vaultAIdx = isSwapV2 ? 8 : 4;
+    const vaultBIdx = isSwapV2 ? 10 : 6;
+
+    const accounts: SdkProvidedAccounts = {
+      // Try named properties first (SDK may return object with named accounts)
+      tickArray0: extractAddress(ixAccounts.tickArray0) ?? extractAddress(ixAccounts[tickArray0Idx]),
+      tickArray1: extractAddress(ixAccounts.tickArray1) ?? extractAddress(ixAccounts[tickArray1Idx]),
+      tickArray2: extractAddress(ixAccounts.tickArray2) ?? extractAddress(ixAccounts[tickArray2Idx]),
+      oracle: extractAddress(ixAccounts.oracle) ?? extractAddress(ixAccounts[oracleIdx]),
+      vaultA: extractAddress(ixAccounts.tokenVaultA) ?? extractAddress(ixAccounts[vaultAIdx]),
+      vaultB: extractAddress(ixAccounts.tokenVaultB) ?? extractAddress(ixAccounts[vaultBIdx]),
+    };
+
+    // Log account extraction for debugging
+    logger.debug('sdkQuoteBuilder.orca.quote.accounts_extracted', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        isSwapV2,
+        accountCount: Array.isArray(ixAccounts) ? ixAccounts.length : Object.keys(ixAccounts).length,
+        hasNamedOracle: !!ixAccounts.oracle,
+        oracleIdx,
+        extractedOracle: accounts.oracle?.slice(0, 12) + '...',
+        extractedTickArrays: [
+          accounts.tickArray0?.slice(0, 8),
+          accounts.tickArray1?.slice(0, 8),
+          accounts.tickArray2?.slice(0, 8),
+        ],
+      },
+    });
+
     // Get quoted amount from the result - handle various SDK return formats
+    // SDK v4 ExactInSwapQuote has: tokenIn, tokenEstOut, tokenMinOut, tradeFee, etc.
     let quotedAmountOut: bigint | undefined;
     try {
-      const rawQuote = swapResult.quote?.tokenEstB ?? swapResult.quote?.estimatedAmountOut ?? swapResult.quote?.amountOut;
+      const rawQuote = swapResult.quote?.tokenEstOut ?? swapResult.quote?.tokenEstB ?? swapResult.quote?.estimatedAmountOut ?? swapResult.quote?.amountOut;
       if (rawQuote !== undefined && rawQuote !== null) {
         // Handle different possible formats: bigint, number, string, BN-like object
         if (typeof rawQuote === 'bigint') {
@@ -454,8 +495,10 @@ async function getOrcaSdkQuote(
       ctx: {
         poolId: poolId.slice(0, 8) + '...',
         tickArray0: accounts.tickArray0?.slice(0, 12) + '...',
+        oracle: accounts.oracle?.slice(0, 12) + '...',
         quotedOut: quotedAmountOut?.toString(),
-        ixAccountCount: ixAccounts.length,
+        ixAccountCount: Array.isArray(ixAccounts) ? ixAccounts.length : Object.keys(ixAccounts).length,
+        isSwapV2,
       },
     });
 

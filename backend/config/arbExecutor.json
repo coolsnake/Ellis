@@ -11,6 +11,8 @@
   "maxExecutionsPerMinute": 10,
   "blacklistedPaths": [],
   "requireStartBalance": true,
+  "useRouter": true,
+  "routerExecutionMode": "sdk_quote",
   "quarantineSettings": {
     "enabled": true,
     "maxFailures": 5,
