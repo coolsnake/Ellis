@@ -96,11 +96,22 @@ let meteoraSdkInitialized = false;
  * Initialize Orca SDK components (lazy loaded)
  */
 async function initOrcaSdk(): Promise<boolean> {
-  if (orcaSdkInitialized) return !!OrcaSwapQuoteByInputToken;
+  // Don't skip on previous failure - allow retry
+  if (orcaSdkInitialized && OrcaSwapQuoteByInputToken) return true;
   orcaSdkInitialized = true;
 
   try {
+    logger.info('sdkQuoteBuilder.orca.init.starting', { cat: 'tx' });
     const orcaSdk = await import('@orca-so/whirlpools-sdk');
+
+    // Log all available keys for debugging
+    const allKeys = Object.keys(orcaSdk);
+    logger.info('sdkQuoteBuilder.orca.init.module_keys', {
+      cat: 'tx',
+      keys: allKeys.slice(0, 20),
+      totalKeys: allKeys.length,
+    });
+
     OrcaWhirlpoolContext = (orcaSdk as any).WhirlpoolContext;
     OrcaBuildWhirlpoolClient = (orcaSdk as any).buildWhirlpoolClient;
     OrcaSwapQuoteByInputToken = (orcaSdk as any).swapQuoteByInputToken;
@@ -111,7 +122,6 @@ async function initOrcaSdk(): Promise<boolean> {
       hasContext: !!OrcaWhirlpoolContext,
       hasBuildClient: !!OrcaBuildWhirlpoolClient,
       hasSwapQuote: !!OrcaSwapQuoteByInputToken,
-      sdkKeys: Object.keys(orcaSdk).slice(0, 10),
     });
 
     try {
@@ -126,8 +136,12 @@ async function initOrcaSdk(): Promise<boolean> {
 
     logger.info('sdkQuoteBuilder.orca.init.success', { cat: 'tx' });
     return true;
-  } catch (e) {
-    logCatchError('sdkQuoteBuilder.orca.init', e);
+  } catch (e: any) {
+    logger.error('sdkQuoteBuilder.orca.init.error', {
+      cat: 'tx',
+      error: e?.message || String(e),
+      stack: e?.stack?.slice(0, 500),
+    });
     return false;
   }
 }
@@ -171,20 +185,61 @@ async function initRaydiumSdk(): Promise<boolean> {
  * Initialize Meteora SDK components (lazy loaded)
  */
 async function initMeteoraSdk(): Promise<boolean> {
-  if (meteoraSdkInitialized) return !!MeteoraDLMM;
+  // Don't skip on previous failure - allow retry
+  if (meteoraSdkInitialized && MeteoraDLMM) return true;
   meteoraSdkInitialized = true;
 
   try {
+    logger.info('sdkQuoteBuilder.meteora.init.starting', { cat: 'tx' });
     const meteoraModule = await import('@meteora-ag/dlmm');
-    MeteoraDLMM = (meteoraModule as any).default || (meteoraModule as any).DLMM || meteoraModule;
 
-    // Log what we found
-    logger.info('sdkQuoteBuilder.meteora.init.components', {
+    // Log all keys for debugging
+    const allKeys = Object.keys(meteoraModule);
+    logger.info('sdkQuoteBuilder.meteora.init.module_keys', {
+      cat: 'tx',
+      keys: allKeys.slice(0, 20),
+      totalKeys: allKeys.length,
+      hasDefault: 'default' in meteoraModule,
+      defaultType: typeof (meteoraModule as any).default,
+    });
+
+    // Try multiple ways to find the DLMM class
+    const defaultExport = (meteoraModule as any).default;
+    const dlmmNamed = (meteoraModule as any).DLMM;
+
+    // Check if default export has create method
+    if (defaultExport && typeof defaultExport.create === 'function') {
+      MeteoraDLMM = defaultExport;
+      logger.info('sdkQuoteBuilder.meteora.init.found_default', { cat: 'tx' });
+    }
+    // Check if DLMM named export has create method
+    else if (dlmmNamed && typeof dlmmNamed.create === 'function') {
+      MeteoraDLMM = dlmmNamed;
+      logger.info('sdkQuoteBuilder.meteora.init.found_named', { cat: 'tx' });
+    }
+    // Check if default export is the class itself (callable)
+    else if (defaultExport && typeof defaultExport === 'function') {
+      MeteoraDLMM = defaultExport;
+      logger.info('sdkQuoteBuilder.meteora.init.found_class', { cat: 'tx' });
+    }
+    // Last resort: check for createProgram
+    else if ((meteoraModule as any).createProgram) {
+      // Store the module for alternative approach
+      MeteoraDLMM = meteoraModule;
+      logger.info('sdkQuoteBuilder.meteora.init.found_createProgram', { cat: 'tx' });
+    }
+
+    // Log what we ended up with
+    const hasCreate = MeteoraDLMM && (
+      typeof MeteoraDLMM.create === 'function' ||
+      typeof MeteoraDLMM.createProgram === 'function'
+    );
+    logger.info('sdkQuoteBuilder.meteora.init.result', {
       cat: 'tx',
       hasDLMM: !!MeteoraDLMM,
-      hasCreate: !!(MeteoraDLMM?.create || MeteoraDLMM?.DLMM?.create),
-      moduleKeys: Object.keys(meteoraModule).slice(0, 10),
-      dlmmKeys: MeteoraDLMM ? Object.keys(MeteoraDLMM).slice(0, 10) : [],
+      hasCreate,
+      dlmmType: typeof MeteoraDLMM,
+      dlmmKeys: MeteoraDLMM ? Object.keys(MeteoraDLMM).slice(0, 15) : [],
     });
 
     if (!MeteoraDLMM) {
@@ -194,8 +249,12 @@ async function initMeteoraSdk(): Promise<boolean> {
 
     logger.info('sdkQuoteBuilder.meteora.init.success', { cat: 'tx' });
     return true;
-  } catch (e) {
-    logCatchError('sdkQuoteBuilder.meteora.init', e);
+  } catch (e: any) {
+    logger.error('sdkQuoteBuilder.meteora.init.error', {
+      cat: 'tx',
+      error: e?.message || String(e),
+      stack: e?.stack?.slice(0, 500),
+    });
     return false;
   }
 }
@@ -571,39 +630,101 @@ async function getMeteoraSdkQuote(
       };
     }
 
-    // Get DLMM.create function
+    // Try different ways to create pool instance
+    let dlmmPool: any = null;
+    let activeId: number = 0;
+    let binStep: number = 0;
+
+    // Method 1: DLMM.create (standard SDK method)
     const createFn = MeteoraDLMM?.create || MeteoraDLMM?.DLMM?.create;
-    if (!createFn) {
+    if (createFn && typeof createFn === 'function') {
+      try {
+        dlmmPool = await createFn(connection, poolPk);
+        logger.debug('sdkQuoteBuilder.meteora.quote.used_create', { cat: 'tx' });
+      } catch (e) {
+        logger.debug('sdkQuoteBuilder.meteora.quote.create_failed', { cat: 'tx', error: (e as Error).message });
+      }
+    }
+
+    // Method 2: createProgram + manual decode (fallback)
+    if (!dlmmPool) {
+      const createProgram = MeteoraDLMM?.createProgram;
+      if (createProgram && typeof createProgram === 'function') {
+        try {
+          const program = createProgram(connection);
+          const accountInfo = await connection.getAccountInfo(poolPk);
+          if (accountInfo && accountInfo.data) {
+            const state = program.coder.accounts.decode('lbPair', accountInfo.data);
+            activeId = Number(state.activeId ?? 0);
+            binStep = Number(state.binStep ?? 0);
+            logger.debug('sdkQuoteBuilder.meteora.quote.used_createProgram', { cat: 'tx', activeId, binStep });
+          }
+        } catch (e) {
+          logger.debug('sdkQuoteBuilder.meteora.quote.createProgram_failed', { cat: 'tx', error: (e as Error).message });
+        }
+      }
+    }
+
+    // Method 3: Direct account fetch and manual decode
+    if (!dlmmPool && activeId === 0) {
+      try {
+        const accountInfo = await connection.getAccountInfo(poolPk);
+        if (accountInfo && accountInfo.data) {
+          // Try to read activeId and binStep from known offsets
+          // LbPair layout: activeId is at offset 136 (i32), binStep is at offset 140 (u16)
+          const data = accountInfo.data;
+          if (data.length >= 142) {
+            activeId = data.readInt32LE(136);
+            binStep = data.readUInt16LE(140);
+            logger.debug('sdkQuoteBuilder.meteora.quote.manual_decode', { cat: 'tx', activeId, binStep });
+          }
+        }
+      } catch (e) {
+        logger.debug('sdkQuoteBuilder.meteora.quote.manual_decode_failed', { cat: 'tx', error: (e as Error).message });
+      }
+    }
+
+    // If we have dlmmPool, use its methods
+    if (dlmmPool) {
+      // Get active bin
+      try {
+        const activeBin = await dlmmPool.getActiveBin();
+        activeId = activeBin?.binId ?? dlmmPool.lbPair?.activeId ?? activeId;
+        binStep = dlmmPool.lbPair?.binStep ?? binStep;
+      } catch { /* use defaults */ }
+    }
+
+    if (activeId === 0) {
       return {
         success: false,
         accounts: {},
-        error: 'Meteora DLMM.create not available',
+        error: 'Could not determine Meteora pool activeId',
       };
     }
 
-    // Create pool instance
-    const dlmmPool = await createFn(connection, poolPk);
-
-    // Get active bin
-    const activeBin = await dlmmPool.getActiveBin();
-    const activeId = activeBin?.binId ?? dlmmPool.lbPair?.activeId;
-    const binStep = dlmmPool.lbPair?.binStep;
-
-    // Get bin arrays from SDK
+    // Get bin arrays - try SDK first, then manual derivation
     let binArrayAddresses: string[] = [];
 
-    try {
-      const binArrays = await dlmmPool.getBinArrays();
-      if (Array.isArray(binArrays)) {
-        binArrayAddresses = binArrays.map((ba: any) => {
-          const addr = typeof ba.publicKey?.toBase58 === 'function'
-            ? ba.publicKey.toBase58()
-            : String(ba.publicKey || ba.address);
-          return addr;
-        });
+    // Try getting bin arrays from dlmmPool if available
+    if (dlmmPool) {
+      try {
+        const binArrays = await dlmmPool.getBinArrays();
+        if (Array.isArray(binArrays)) {
+          binArrayAddresses = binArrays.map((ba: any) => {
+            const addr = typeof ba.publicKey?.toBase58 === 'function'
+              ? ba.publicKey.toBase58()
+              : String(ba.publicKey || ba.address);
+            return addr;
+          });
+          logger.debug('sdkQuoteBuilder.meteora.quote.bin_arrays_from_sdk', { cat: 'tx', count: binArrayAddresses.length });
+        }
+      } catch (e) {
+        logger.debug('sdkQuoteBuilder.meteora.quote.getBinArrays_failed', { cat: 'tx', error: (e as Error).message });
       }
-    } catch (e) {
-      // Fallback: derive bin arrays manually
+    }
+
+    // Fallback: derive bin arrays manually
+    if (binArrayAddresses.length === 0) {
       const BIN_ARRAY_SIZE = 70;
       const activeIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
       const RANGE = 5;
@@ -633,6 +754,7 @@ async function getMeteoraSdkQuote(
           binArrayAddresses.push(derivedArrays[i].toBase58());
         }
       }
+      logger.debug('sdkQuoteBuilder.meteora.quote.bin_arrays_manual', { cat: 'tx', count: binArrayAddresses.length });
     }
 
     if (binArrayAddresses.length === 0) {
@@ -643,10 +765,14 @@ async function getMeteoraSdkQuote(
       };
     }
 
-    // Get vaults from pool data
-    const lbPair = dlmmPool.lbPair;
-    const vaultA = lbPair?.reserveX?.toBase58?.() || lbPair?.reserve_x?.toBase58?.();
-    const vaultB = lbPair?.reserveY?.toBase58?.() || lbPair?.reserve_y?.toBase58?.();
+    // Get vaults from pool data if available
+    let vaultA: string | undefined;
+    let vaultB: string | undefined;
+    if (dlmmPool?.lbPair) {
+      const lbPair = dlmmPool.lbPair;
+      vaultA = lbPair?.reserveX?.toBase58?.() || lbPair?.reserve_x?.toBase58?.();
+      vaultB = lbPair?.reserveY?.toBase58?.() || lbPair?.reserve_y?.toBase58?.();
+    }
 
     const accounts: SdkProvidedAccounts = {
       binArrays: binArrayAddresses,
