@@ -768,7 +768,7 @@ async function getRaydiumSdkQuote(
         poolId: poolId.slice(0, 8) + '...',
         tickCurrent,
         tickSpacing,
-        tickArraysFound: tickArrayAddresses.length,
+        tickArraysFound: tickArrayMap.size,
         hasExBitmap: !!exBitmap,
         center: center.address.slice(0, 8),
         lower: lower?.address?.slice(0, 8),
