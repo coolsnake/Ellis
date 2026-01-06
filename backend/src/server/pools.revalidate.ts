@@ -65,10 +65,10 @@ export async function revalidateDex(
   const includeDecimals = options?.includeDecimals ?? true;
   
   try {
-    const { validatePoolCacheBatch, refreshInvalidPools, validateAndRefreshPoolDecimals } = 
+    const { validatePoolCacheBatch, refreshInvalidPools, validateAndRefreshPoolDecimals, refreshAllPoolPrices } =
       await import('../execution/cacheValidator.js');
     const { getConnection } = await import('../wallet/wallet.js');
-    
+
     const connection = getConnection();
     
     // === PHASE 1: Decimals Validation ===
@@ -107,12 +107,22 @@ export async function revalidateDex(
     // === PHASE 2: Tick/Bin Array Validation ===
     const validation = await validatePoolCacheBatch(connection, dex, { limit });
 
-    // Refresh invalid pools (now includes price revalidation)
+    // Refresh invalid pools (includes price revalidation for invalid pools)
     let refreshResult = { refreshed: 0, failed: 0, errors: [] as string[], pricesUpdated: 0 };
     if (validation.invalidPools > 0) {
       const invalidPools = validation.results.filter(r => !r.valid);
       refreshResult = await refreshInvalidPools(connection, invalidPools, { concurrency });
     }
+
+    // === PHASE 3: Refresh prices for ALL pools (not just invalid ones) ===
+    // This ensures all pools have fresh on-chain prices even if their tick arrays were valid
+    const priceRefreshResult = await refreshAllPoolPrices(connection, dex, {
+      concurrency,
+      limit: validateAll ? undefined : limit,
+    });
+
+    // Total prices updated = invalid pools that got prices + all pools price refresh
+    const totalPricesUpdated = priceRefreshResult.updated;
 
     const result: RevalidationResult = {
       healthPercent: validation.totalPools > 0
@@ -123,7 +133,7 @@ export async function revalidateDex(
       invalidPools: validation.invalidPools,
       refreshed: refreshResult.refreshed,
       failed: refreshResult.failed,
-      pricesUpdated: refreshResult.pricesUpdated,
+      pricesUpdated: totalPricesUpdated,
       durationMs: Date.now() - startTime,
       decimals: decimalsStats,
     };
@@ -163,10 +173,10 @@ export async function revalidateAllPools(
   const includeDecimals = options?.includeDecimals ?? true;
   
   try {
-    const { getCacheHealthSummary, refreshInvalidPools, validateAndRefreshAllDecimals } = 
+    const { getCacheHealthSummary, refreshInvalidPools, validateAndRefreshAllDecimals, refreshAllPoolPrices } =
       await import('../execution/cacheValidator.js');
     const { getConnection } = await import('../wallet/wallet.js');
-    
+
     const connection = getConnection();
     
     logger.info('pools.revalidate.start', {
@@ -241,11 +251,22 @@ export async function revalidateAllPools(
       ...health.meteora.results.filter(r => !r.valid),
     ];
 
-    // Refresh invalid pools (now includes price revalidation)
+    // Refresh invalid pools (includes price revalidation for invalid pools)
     let refreshResult = { refreshed: 0, failed: 0, errors: [] as string[], pricesUpdated: 0 };
     if (allInvalid.length > 0) {
       refreshResult = await refreshInvalidPools(connection, allInvalid, { concurrency });
     }
+
+    // === PHASE 3: Refresh prices for ALL pools (not just invalid ones) ===
+    // This ensures all pools have fresh on-chain prices even if their tick arrays were valid
+    const priceLimit = validateAll ? undefined : limit;
+    const [orcaPrices, raydiumPrices, meteoraPrices] = await Promise.all([
+      refreshAllPoolPrices(connection, 'orca', { concurrency, limit: priceLimit }),
+      refreshAllPoolPrices(connection, 'raydium', { concurrency, limit: priceLimit }),
+      refreshAllPoolPrices(connection, 'meteora', { concurrency, limit: priceLimit }),
+    ]);
+
+    const totalPricesUpdated = orcaPrices.updated + raydiumPrices.updated + meteoraPrices.updated;
 
     const totalPools = health.orca.totalPools + health.raydium.totalPools + health.meteora.totalPools;
     const validPools = health.orca.validPools + health.raydium.validPools + health.meteora.validPools;
@@ -257,7 +278,7 @@ export async function revalidateAllPools(
       invalidPools: totalPools - validPools,
       refreshed: refreshResult.refreshed,
       failed: refreshResult.failed,
-      pricesUpdated: refreshResult.pricesUpdated,
+      pricesUpdated: totalPricesUpdated,
       durationMs: Date.now() - startTime,
       decimals: decimalsStats,
       dex: {
@@ -265,19 +286,19 @@ export async function revalidateAllPools(
           total: health.orca.totalPools,
           valid: health.orca.validPools,
           refreshed: 0, // Individual counts not tracked
-          pricesUpdated: 0,
+          pricesUpdated: orcaPrices.updated,
         },
         raydium: {
           total: health.raydium.totalPools,
           valid: health.raydium.validPools,
           refreshed: 0,
-          pricesUpdated: 0,
+          pricesUpdated: raydiumPrices.updated,
         },
         meteora: {
           total: health.meteora.totalPools,
           valid: health.meteora.validPools,
           refreshed: 0,
-          pricesUpdated: 0,
+          pricesUpdated: meteoraPrices.updated,
         },
       },
     };
@@ -291,8 +312,8 @@ export async function revalidateAllPools(
       const decimalsMsg = decimalsStats
         ? ` decimals_updated=${decimalsStats.poolsUpdated} decimals_missing=${decimalsStats.poolsStillMissing}`
         : '';
-      const pricesMsg = refreshResult.pricesUpdated > 0
-        ? ` prices_updated=${refreshResult.pricesUpdated}`
+      const pricesMsg = totalPricesUpdated > 0
+        ? ` prices_updated=${totalPricesUpdated}`
         : '';
       emit('log', {
         level: 'info',

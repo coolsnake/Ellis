@@ -2668,6 +2668,205 @@ export async function refreshInvalidPools(
 }
 
 /**
+ * Refresh prices for ALL pools in the cache (not just invalid ones)
+ * This fetches fresh sqrtPriceX64/activeId from chain and recalculates prices
+ *
+ * @param connection - Solana connection
+ * @param dex - DEX to refresh prices for
+ * @param options.concurrency - Number of concurrent fetches (default: 10)
+ * @param options.limit - Max pools to refresh (default: all)
+ * @returns Count of pools with prices updated
+ */
+export async function refreshAllPoolPrices(
+  connection: Connection,
+  dex: 'orca' | 'raydium' | 'meteora',
+  options?: { concurrency?: number; limit?: number }
+): Promise<{ total: number; updated: number; failed: number; errors: string[] }> {
+  const {
+    fetchOrcaPoolViaSdk,
+    fetchRaydiumPoolViaSdk,
+    fetchMeteoraPoolViaSdk
+  } = await import('./sdkPoolFetcher.js');
+
+  const concurrency = options?.concurrency ?? 10;
+  let updated = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  // Get all pools from the appropriate cache
+  let pools: Array<{ id: string }> = [];
+  if (dex === 'orca') {
+    const orcaPools = peekOrcaPools();
+    pools = [...orcaPools.clmm];
+  } else if (dex === 'raydium') {
+    const raydiumPools = peekRaydiumPools();
+    pools = [...raydiumPools.clmm];
+  } else if (dex === 'meteora') {
+    const meteoraPools = peekMeteoraPools();
+    pools = [...meteoraPools.clmm];
+  }
+
+  // Apply limit if specified
+  if (options?.limit && options.limit > 0) {
+    pools = pools.slice(0, options.limit);
+  }
+
+  const total = pools.length;
+
+  if (total === 0) {
+    return { total: 0, updated: 0, failed: 0, errors: [] };
+  }
+
+  logger.info('cache.refresh.prices.start', {
+    cat: 'cache',
+    ctx: { dex, total, concurrency }
+  });
+
+  // Process in batches
+  for (let i = 0; i < pools.length; i += concurrency) {
+    const batch = pools.slice(i, i + concurrency);
+
+    const results = await Promise.all(
+      batch.map(async (pool) => {
+        try {
+          let validatedState: any = null;
+
+          // Fetch fresh pool state from chain
+          switch (dex) {
+            case 'orca':
+              validatedState = await fetchOrcaPoolViaSdk(connection, pool.id);
+              break;
+            case 'raydium':
+              validatedState = await fetchRaydiumPoolViaSdk(connection, pool.id);
+              break;
+            case 'meteora':
+              validatedState = await fetchMeteoraPoolViaSdk(connection, pool.id);
+              break;
+          }
+
+          if (!validatedState) {
+            return { success: false, poolId: pool.id, error: 'Failed to fetch pool state' };
+          }
+
+          // Update execution cache with fresh price data
+          const existingHot = executionCache.getHot(pool.id) || {};
+
+          if (dex === 'orca' || dex === 'raydium') {
+            if (validatedState.sqrtPriceX64) {
+              executionCache.setHot(pool.id, {
+                ...existingHot,
+                sqrtPriceX64: BigInt(validatedState.sqrtPriceX64),
+                currentTickIndex: validatedState.currentTick,
+                tickSpacing: validatedState.tickSpacing,
+                liquidity: validatedState.liquidity ? BigInt(validatedState.liquidity) : existingHot.liquidity,
+              });
+            }
+          } else if (dex === 'meteora') {
+            if (validatedState.activeId !== undefined) {
+              executionCache.setHot(pool.id, {
+                ...existingHot,
+                activeId: validatedState.activeId,
+                binStep: validatedState.binStep,
+              });
+            }
+          }
+
+          // Calculate and update price in pool cache
+          let priceUpdated = false;
+          const cachedPool = findPoolInCache(pool.id);
+          if (cachedPool?.pool) {
+            const poolData = cachedPool.pool as any;
+            const mintA = poolData.mint_a || poolData.mintA;
+            const mintB = poolData.mint_b || poolData.mintB;
+            const decimalsA = poolData.decimals_a ?? poolData.decimalsA;
+            const decimalsB = poolData.decimals_b ?? poolData.decimalsB;
+
+            if (mintA && mintB && Number.isFinite(decimalsA) && Number.isFinite(decimalsB)) {
+              let processed = null;
+
+              if ((dex === 'orca' || dex === 'raydium') && validatedState.sqrtPriceX64) {
+                processed = processPriceThroughPipeline({
+                  mintA,
+                  mintB,
+                  decimalsA,
+                  decimalsB,
+                  poolId: pool.id,
+                  dex: dex === 'orca' ? 'Orca' : 'Raydium',
+                  poolType: 'clmm',
+                  sqrtPriceX64: BigInt(validatedState.sqrtPriceX64),
+                });
+              } else if (dex === 'meteora' && validatedState.activeId !== undefined) {
+                const tokenXMint = poolData.native_mint_a || poolData.tokenXMint || mintA;
+                const tokenYMint = poolData.native_mint_b || poolData.tokenYMint || mintB;
+
+                processed = processPriceThroughPipeline({
+                  mintA,
+                  mintB,
+                  decimalsA,
+                  decimalsB,
+                  poolId: pool.id,
+                  dex: 'Meteora',
+                  poolType: 'clmm',
+                  activeId: validatedState.activeId,
+                  binStep: validatedState.binStep,
+                  tokenXMint,
+                  tokenYMint,
+                });
+              }
+
+              if (processed && processed.priceForward > 0) {
+                if (dex === 'orca' || dex === 'raydium') {
+                  updatePoolCacheFromValidation([{
+                    poolId: pool.id,
+                    dex,
+                    currentTick: validatedState.currentTick,
+                    tickSpacing: validatedState.tickSpacing,
+                    sqrtPriceX64: validatedState.sqrtPriceX64,
+                    liquidity: validatedState.liquidity,
+                    price_a_per_b: processed.priceForward,
+                  }]);
+                } else {
+                  updatePoolCacheFromValidation([{
+                    poolId: pool.id,
+                    dex: 'meteora',
+                    activeId: validatedState.activeId,
+                    binStep: validatedState.binStep,
+                    price_a_per_b: processed.priceForward,
+                  }]);
+                }
+                priceUpdated = true;
+              }
+            }
+          }
+
+          return { success: true, poolId: pool.id, priceUpdated };
+        } catch (err: any) {
+          return { success: false, poolId: pool.id, error: err.message };
+        }
+      })
+    );
+
+    for (const result of results) {
+      if (result.success && (result as any).priceUpdated) {
+        updated++;
+      } else if (!result.success) {
+        failed++;
+        if (result.error) {
+          errors.push(`${result.poolId}: ${result.error}`);
+        }
+      }
+    }
+  }
+
+  logger.info('cache.refresh.prices.complete', {
+    cat: 'cache',
+    ctx: { dex, total, updated, failed }
+  });
+
+  return { total, updated, failed, errors };
+}
+
+/**
  * Bitmap Extension Validation Result for a single pool
  */
 export interface BitmapExtensionRefreshResult {
