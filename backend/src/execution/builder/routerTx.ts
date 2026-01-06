@@ -1750,23 +1750,47 @@ async function extractDexAccounts(
         // Use 5 bin arrays for fine-grained pools (binStep <= 5), 3 for others
         // This prevents error 3005 "Not enough account keys" when swap traverses multiple bin arrays
         const neededBinArrayCount = binStepNum <= 5 ? 5 : 3;
-        
+
         let directionalBinArrays: PublicKey[] = [];
-        
-        // Build N directional bin arrays based on activeId and swap direction
-        // CRITICAL: Meteora swap2 traverses bin arrays starting from the active bin.
-        // We MUST include the active bin array first, then arrays in the swap direction:
-        // - X→Y: price goes DOWN → need arrays at activeIndex, activeIndex-1, activeIndex-2, ...
-        // - Y→X: price goes UP → need arrays at activeIndex, activeIndex+1, activeIndex+2, ...
-        //
-        // IMPORTANT: Derived PDAs might not exist on-chain (no liquidity deposited there).
-        // Error 3007 = "AccountOwnedByWrongProgram" means the PDA is owned by System Program (uninitialized).
-        // We ONLY use derived arrays if they match known-good cached arrays.
-        // Otherwise, we fall back to cached arrays which are verified to exist.
-        
-        const hasKnownArrays = knownBinArrayActive || knownBinArrayLower || knownBinArrayUpper;
-        
-        if (typeof activeId === 'number' && Number.isFinite(activeId) && hasKnownArrays) {
+
+        // PRIORITY 1: Use SDK-provided bin arrays directly if available (SDK Quote mode)
+        // The SDK returns validated bin arrays that cover the swap's price range
+        const sdkBinArrays = (hop as any).binArrays as string[] | undefined;
+        if (sdkBinArrays && sdkBinArrays.length > 0) {
+          // Use SDK-provided arrays directly - they're already validated by the SDK
+          directionalBinArrays = sdkBinArrays
+            .slice(0, Math.max(neededBinArrayCount, sdkBinArrays.length)) // Use at least neededBinArrayCount
+            .map(addr => new PublicKey(addr));
+
+          logger.info('routerTx.meteora.binArrays.fromSdk', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId.slice(0, 8) + '...',
+              sdkArrayCount: sdkBinArrays.length,
+              usedCount: directionalBinArrays.length,
+              binStep: binStepNum,
+              isXtoY,
+              arrays: directionalBinArrays.map(a => a.toBase58().slice(0, 8)),
+            },
+          });
+        }
+
+        // PRIORITY 2: Build N directional bin arrays based on activeId and swap direction (cache-based)
+        // Only used if SDK arrays weren't available
+        if (directionalBinArrays.length === 0) {
+          // CRITICAL: Meteora swap2 traverses bin arrays starting from the active bin.
+          // We MUST include the active bin array first, then arrays in the swap direction:
+          // - X→Y: price goes DOWN → need arrays at activeIndex, activeIndex-1, activeIndex-2, ...
+          // - Y→X: price goes UP → need arrays at activeIndex, activeIndex+1, activeIndex+2, ...
+          //
+          // IMPORTANT: Derived PDAs might not exist on-chain (no liquidity deposited there).
+          // Error 3007 = "AccountOwnedByWrongProgram" means the PDA is owned by System Program (uninitialized).
+          // We ONLY use derived arrays if they match known-good cached arrays.
+          // Otherwise, we fall back to cached arrays which are verified to exist.
+
+          const hasKnownArrays = knownBinArrayActive || knownBinArrayLower || knownBinArrayUpper;
+
+          if (typeof activeId === 'number' && Number.isFinite(activeId) && hasKnownArrays) {
           const BIN_ARRAY_SIZE = 70;
           const activeIndex = Math.floor(activeId / BIN_ARRAY_SIZE);
           
@@ -1882,8 +1906,9 @@ async function extractDexAccounts(
             cat: 'tx',
             ctx: { poolId: hop.poolId, count: directionalBinArrays.length, binStep: binStepNum }
           });
-        }
-        
+          }
+        } // End of: if (directionalBinArrays.length === 0)
+
         // Log the accounts being used for debugging with verification
         logger.info('routerTx.meteora.accounts', {
           cat: 'tx',

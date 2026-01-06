@@ -255,58 +255,66 @@ async function initMeteoraSdk(): Promise<boolean> {
 
 /**
  * Create an RPC adapter for @solana/kit from @solana/web3.js Connection
- * The new SDK expects @solana/kit style RPC
+ * The new SDK expects @solana/kit style RPC with .send() builder pattern
  */
 function createKitRpcAdapter(connection: Connection): any {
-  // The new SDK's swapInstructions needs an RPC with specific methods
-  // We create a minimal adapter that wraps our web3.js connection
+  // @solana/kit uses a builder pattern: rpc.method(args).send()
+  // We create methods that return an object with send() that does the actual call
   return {
-    getAccountInfo: async (address: string, config?: any) => {
-      const pubkey = new PublicKey(address);
-      const info = await connection.getAccountInfo(pubkey, config?.commitment);
-      if (!info) return { value: null };
-      return {
-        value: {
-          data: info.data,
-          executable: info.executable,
-          lamports: BigInt(info.lamports),
-          owner: info.owner.toBase58(),
-          rentEpoch: info.rentEpoch ? BigInt(info.rentEpoch) : 0n,
-        },
-      };
-    },
-    getMultipleAccounts: async (addresses: string[], config?: any) => {
-      const pubkeys = addresses.map(a => new PublicKey(a));
-      const infos = await connection.getMultipleAccountsInfo(pubkeys, config?.commitment);
-      return {
-        value: infos.map(info => {
-          if (!info) return null;
-          return {
+    getAccountInfo: (address: string, config?: any) => ({
+      send: async () => {
+        const pubkey = new PublicKey(address);
+        const info = await connection.getAccountInfo(pubkey, config?.commitment);
+        if (!info) return { value: null };
+        return {
+          value: {
             data: info.data,
             executable: info.executable,
             lamports: BigInt(info.lamports),
             owner: info.owner.toBase58(),
             rentEpoch: info.rentEpoch ? BigInt(info.rentEpoch) : 0n,
-          };
-        }),
-      };
-    },
-    getMinimumBalanceForRentExemption: async (dataLength: bigint) => {
-      const balance = await connection.getMinimumBalanceForRentExemption(Number(dataLength));
-      return { value: BigInt(balance) };
-    },
-    getEpochInfo: async () => {
-      const info = await connection.getEpochInfo();
-      return {
-        value: {
-          absoluteSlot: BigInt(info.absoluteSlot),
-          blockHeight: BigInt(info.blockHeight ?? 0),
-          epoch: BigInt(info.epoch),
-          slotIndex: BigInt(info.slotIndex),
-          slotsInEpoch: BigInt(info.slotsInEpoch),
-        },
-      };
-    },
+          },
+        };
+      },
+    }),
+    getMultipleAccounts: (addresses: string[], config?: any) => ({
+      send: async () => {
+        const pubkeys = addresses.map((a: string) => new PublicKey(a));
+        const infos = await connection.getMultipleAccountsInfo(pubkeys, config?.commitment);
+        return {
+          value: infos.map(info => {
+            if (!info) return null;
+            return {
+              data: info.data,
+              executable: info.executable,
+              lamports: BigInt(info.lamports),
+              owner: info.owner.toBase58(),
+              rentEpoch: info.rentEpoch ? BigInt(info.rentEpoch) : 0n,
+            };
+          }),
+        };
+      },
+    }),
+    getMinimumBalanceForRentExemption: (dataLength: bigint) => ({
+      send: async () => {
+        const balance = await connection.getMinimumBalanceForRentExemption(Number(dataLength));
+        return { value: BigInt(balance) };
+      },
+    }),
+    getEpochInfo: () => ({
+      send: async () => {
+        const info = await connection.getEpochInfo();
+        return {
+          value: {
+            absoluteSlot: BigInt(info.absoluteSlot),
+            blockHeight: BigInt(info.blockHeight ?? 0),
+            epoch: BigInt(info.epoch),
+            slotIndex: BigInt(info.slotIndex),
+            slotsInEpoch: BigInt(info.slotsInEpoch),
+          },
+        };
+      },
+    }),
   };
 }
 
