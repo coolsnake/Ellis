@@ -1267,10 +1267,12 @@ export function createRouterRouter(io: SocketIOServer): Router {
       });
 
       // Build the router transaction (returns instructions, not a full transaction)
+      // Parse minProfit as BigInt - negative values allow testing without requiring profit
+      const minProfitBigInt = BigInt(minProfit || '0');
       const txResult = await buildRouterTransaction(
         executionPlan,
         { publicKey: wallet.publicKey, secretKey: wallet.secretKey },
-        { mode: executionMode }
+        { mode: executionMode, minProfit: minProfitBigInt }
       );
 
       if (txResult.error || txResult.instructions.length === 0) {

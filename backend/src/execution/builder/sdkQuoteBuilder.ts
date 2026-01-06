@@ -105,12 +105,26 @@ async function initOrcaSdk(): Promise<boolean> {
     OrcaBuildWhirlpoolClient = (orcaSdk as any).buildWhirlpoolClient;
     OrcaSwapQuoteByInputToken = (orcaSdk as any).swapQuoteByInputToken;
 
+    // Log what we found
+    logger.info('sdkQuoteBuilder.orca.init.components', {
+      cat: 'tx',
+      hasContext: !!OrcaWhirlpoolContext,
+      hasBuildClient: !!OrcaBuildWhirlpoolClient,
+      hasSwapQuote: !!OrcaSwapQuoteByInputToken,
+      sdkKeys: Object.keys(orcaSdk).slice(0, 10),
+    });
+
     try {
       const commonSdk = await import('@orca-so/common-sdk');
       OrcaPercentage = (commonSdk as any).Percentage;
     } catch { /* ignore */ }
 
-    logger.debug('sdkQuoteBuilder.orca.init.success', { cat: 'tx' });
+    if (!OrcaWhirlpoolContext || !OrcaBuildWhirlpoolClient || !OrcaSwapQuoteByInputToken) {
+      logger.warn('sdkQuoteBuilder.orca.init.missing_components', { cat: 'tx' });
+      return false;
+    }
+
+    logger.info('sdkQuoteBuilder.orca.init.success', { cat: 'tx' });
     return true;
   } catch (e) {
     logCatchError('sdkQuoteBuilder.orca.init', e);
@@ -163,8 +177,23 @@ async function initMeteoraSdk(): Promise<boolean> {
   try {
     const meteoraModule = await import('@meteora-ag/dlmm');
     MeteoraDLMM = (meteoraModule as any).default || (meteoraModule as any).DLMM || meteoraModule;
-    logger.debug('sdkQuoteBuilder.meteora.init.success', { cat: 'tx' });
-    return !!MeteoraDLMM;
+
+    // Log what we found
+    logger.info('sdkQuoteBuilder.meteora.init.components', {
+      cat: 'tx',
+      hasDLMM: !!MeteoraDLMM,
+      hasCreate: !!(MeteoraDLMM?.create || MeteoraDLMM?.DLMM?.create),
+      moduleKeys: Object.keys(meteoraModule).slice(0, 10),
+      dlmmKeys: MeteoraDLMM ? Object.keys(MeteoraDLMM).slice(0, 10) : [],
+    });
+
+    if (!MeteoraDLMM) {
+      logger.warn('sdkQuoteBuilder.meteora.init.missing_dlmm', { cat: 'tx' });
+      return false;
+    }
+
+    logger.info('sdkQuoteBuilder.meteora.init.success', { cat: 'tx' });
+    return true;
   } catch (e) {
     logCatchError('sdkQuoteBuilder.meteora.init', e);
     return false;
