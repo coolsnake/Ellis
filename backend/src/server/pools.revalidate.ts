@@ -26,12 +26,13 @@ export interface RevalidationResult {
   invalidPools: number;
   refreshed: number;
   failed: number;
+  pricesUpdated: number;
   durationMs: number;
   decimals?: DecimalsValidationStats;
   dex?: {
-    orca: { total: number; valid: number; refreshed: number };
-    raydium: { total: number; valid: number; refreshed: number };
-    meteora: { total: number; valid: number; refreshed: number };
+    orca: { total: number; valid: number; refreshed: number; pricesUpdated: number };
+    raydium: { total: number; valid: number; refreshed: number; pricesUpdated: number };
+    meteora: { total: number; valid: number; refreshed: number; pricesUpdated: number };
   };
 }
 
@@ -105,33 +106,34 @@ export async function revalidateDex(
     
     // === PHASE 2: Tick/Bin Array Validation ===
     const validation = await validatePoolCacheBatch(connection, dex, { limit });
-    
-    // Refresh invalid pools
-    let refreshResult = { refreshed: 0, failed: 0, errors: [] as string[] };
+
+    // Refresh invalid pools (now includes price revalidation)
+    let refreshResult = { refreshed: 0, failed: 0, errors: [] as string[], pricesUpdated: 0 };
     if (validation.invalidPools > 0) {
       const invalidPools = validation.results.filter(r => !r.valid);
       refreshResult = await refreshInvalidPools(connection, invalidPools, { concurrency });
     }
-    
+
     const result: RevalidationResult = {
-      healthPercent: validation.totalPools > 0 
-        ? Math.round((validation.validPools / validation.totalPools) * 100) 
+      healthPercent: validation.totalPools > 0
+        ? Math.round((validation.validPools / validation.totalPools) * 100)
         : 100,
       totalPools: validation.totalPools,
       validPools: validation.validPools,
       invalidPools: validation.invalidPools,
       refreshed: refreshResult.refreshed,
       failed: refreshResult.failed,
+      pricesUpdated: refreshResult.pricesUpdated,
       durationMs: Date.now() - startTime,
       decimals: decimalsStats,
     };
-    
+
     logger.info('pools.revalidate.dex.complete', {
       dex,
       ...result,
       cat: 'pools'
     });
-    
+
     return result;
   } catch (err: any) {
     logger.error('pools.revalidate.dex.failed', { 
@@ -238,16 +240,16 @@ export async function revalidateAllPools(
       ...health.raydium.results.filter(r => !r.valid),
       ...health.meteora.results.filter(r => !r.valid),
     ];
-    
-    // Refresh invalid pools
-    let refreshResult = { refreshed: 0, failed: 0, errors: [] as string[] };
+
+    // Refresh invalid pools (now includes price revalidation)
+    let refreshResult = { refreshed: 0, failed: 0, errors: [] as string[], pricesUpdated: 0 };
     if (allInvalid.length > 0) {
       refreshResult = await refreshInvalidPools(connection, allInvalid, { concurrency });
     }
-    
+
     const totalPools = health.orca.totalPools + health.raydium.totalPools + health.meteora.totalPools;
     const validPools = health.orca.validPools + health.raydium.validPools + health.meteora.validPools;
-    
+
     const result: RevalidationResult = {
       healthPercent: health.overallHealthPercent,
       totalPools,
@@ -255,6 +257,7 @@ export async function revalidateAllPools(
       invalidPools: totalPools - validPools,
       refreshed: refreshResult.refreshed,
       failed: refreshResult.failed,
+      pricesUpdated: refreshResult.pricesUpdated,
       durationMs: Date.now() - startTime,
       decimals: decimalsStats,
       dex: {
@@ -262,37 +265,43 @@ export async function revalidateAllPools(
           total: health.orca.totalPools,
           valid: health.orca.validPools,
           refreshed: 0, // Individual counts not tracked
+          pricesUpdated: 0,
         },
         raydium: {
           total: health.raydium.totalPools,
           valid: health.raydium.validPools,
           refreshed: 0,
+          pricesUpdated: 0,
         },
         meteora: {
           total: health.meteora.totalPools,
           valid: health.meteora.validPools,
           refreshed: 0,
+          pricesUpdated: 0,
         },
       },
     };
-    
+
     logger.info('pools.revalidate.all.complete', {
       ...result,
       cat: 'pools'
     });
-    
+
     try {
-      const decimalsMsg = decimalsStats 
+      const decimalsMsg = decimalsStats
         ? ` decimals_updated=${decimalsStats.poolsUpdated} decimals_missing=${decimalsStats.poolsStillMissing}`
+        : '';
+      const pricesMsg = refreshResult.pricesUpdated > 0
+        ? ` prices_updated=${refreshResult.pricesUpdated}`
         : '';
       emit('log', {
         level: 'info',
-        message: `pools:revalidate complete health=${result.healthPercent}% refreshed=${result.refreshed}${decimalsMsg}`,
+        message: `pools:revalidate complete health=${result.healthPercent}% refreshed=${result.refreshed}${pricesMsg}${decimalsMsg}`,
         timestamp: new Date().toISOString(),
         context: { cat: 'pools' }
       });
     } catch {}
-    
+
     return result;
   } catch (err: any) {
     logger.error('pools.revalidate.all.failed', { 

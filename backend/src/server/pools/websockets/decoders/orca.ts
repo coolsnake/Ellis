@@ -135,7 +135,7 @@ function decodeWhirlpoolManually(inputData: Buffer | Uint8Array): {
   tokenMintB: PublicKey;
   tokenVaultA: PublicKey;
   tokenVaultB: PublicKey;
-  oracle: PublicKey;
+  oracle: PublicKey | null;  // Oracle is a derived PDA, not stored in account
 } | null {
   try {
     // Ensure we have a proper Node.js Buffer with all methods
@@ -224,14 +224,9 @@ function decodeWhirlpoolManually(inputData: Buffer | Uint8Array): {
     // Skip rewardInfos (3 * 128 bytes = 384 bytes)
     offset += 384;
     
-    // oracle (32 bytes) - may be at different offset depending on version
-    // Try to read if there's enough data
-    let oracle: PublicKey;
-    if (data.length >= offset + 32) {
-      oracle = new PublicKey(data.subarray(offset, offset + 32));
-    } else {
-      oracle = PublicKey.default;
-    }
+    // Note: Oracle is NOT stored in the Whirlpool account!
+    // It's a separate PDA derived from seeds: ["oracle", whirlpool_address]
+    // Use getOracleAddress(whirlpoolAddress) from @orca-so/whirlpools-client to derive it.
     
     return {
       tickSpacing,
@@ -243,7 +238,8 @@ function decodeWhirlpoolManually(inputData: Buffer | Uint8Array): {
       tokenMintB,
       tokenVaultA,
       tokenVaultB,
-      oracle,
+      // Oracle is a derived PDA, not stored in account
+      oracle: null,
     };
   } catch (e) {
     return null;
@@ -330,7 +326,9 @@ async function decodeWithNewClient(
     }
     
     // Convert to a format compatible with the rest of the codebase
-    // Create PublicKey objects for vaults/oracle for compatibility
+    // Note: Oracle is NOT stored in the Whirlpool account - it's a separate PDA
+    // derived from seeds: ["oracle", whirlpool_address]. Callers should use
+    // getOracleAddress(whirlpoolAddress) from @orca-so/whirlpools-client to derive it.
     const parsed = {
       sqrtPrice: decoded.sqrtPrice,
       liquidity: decoded.liquidity,
@@ -342,7 +340,8 @@ async function decodeWithNewClient(
       tokenMintB: new PublicKey(mintB),
       tokenVaultA: decoded.tokenVaultA ? new PublicKey(decoded.tokenVaultA) : null,
       tokenVaultB: decoded.tokenVaultB ? new PublicKey(decoded.tokenVaultB) : null,
-      oracle: decoded.oracle ? new PublicKey(decoded.oracle) : null,
+      // Oracle is a derived PDA, not stored in account. Set to null here.
+      oracle: null,
       // Include raw values for inspection
       _decodedWithNewClient: true,
     };

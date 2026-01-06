@@ -70,10 +70,10 @@ export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.da
 export function peekPumpswapPools(): PoolsPayload { return pumpswapCache.data || { amm: [], clmm: [] }; }
 
 /**
- * Update pool objects in cache with validated tick/activeId data.
+ * Update pool objects in cache with validated tick/activeId data and optionally price data.
  * This ensures snapshots save fresh data, not stale cached values.
- * 
- * @param updates - Array of pool updates with fresh tick/activeId values
+ *
+ * @param updates - Array of pool updates with fresh tick/activeId values and optional price data
  * @returns Number of pools updated
  */
 export function updatePoolCacheFromValidation(
@@ -89,29 +89,36 @@ export function updatePoolCacheFromValidation(
     tickArrayUpper?: string;
     binArrayLower?: string;
     binArrayUpper?: string;
+    // Price-related fields for full state revalidation
+    sqrtPriceX64?: string;
+    liquidity?: string;
+    price_a_per_b?: number;
   }>
-): { updated: number; byDex: Record<string, number> } {
+): { updated: number; byDex: Record<string, number>; pricesUpdated: number } {
   let updated = 0;
+  let pricesUpdated = 0;
   const byDex: Record<string, number> = { orca: 0, raydium: 0, meteora: 0 };
-  
+
   for (const update of updates) {
     const { poolId, dex, currentTick, activeId, tickSpacing, binStep,
             tickArrayLower, tickArrayCenter, tickArrayUpper,
-            binArrayLower, binArrayUpper } = update;
-    
+            binArrayLower, binArrayUpper,
+            sqrtPriceX64, liquidity, price_a_per_b } = update;
+
     let cache: { data: PoolsPayload | null } | null = null;
-    
+
     if (dex === 'orca') cache = orcaCache;
     else if (dex === 'raydium') cache = raydiumCache;
     else if (dex === 'meteora') cache = meteoraCache;
-    
+
     if (!cache?.data?.clmm) continue;
-    
+
     const pool = cache.data.clmm.find(p => p.id === poolId);
     if (!pool) continue;
-    
+
     let poolUpdated = false;
-    
+    let priceUpdated = false;
+
     // Update tick/activeId
     if (dex === 'meteora' && activeId !== undefined) {
       (pool as any).active_id = activeId;
@@ -121,7 +128,7 @@ export function updatePoolCacheFromValidation(
       (pool as any).tick_current_index = currentTick;
       poolUpdated = true;
     }
-    
+
     // Update tick spacing / bin step
     if (tickSpacing !== undefined) {
       pool.tick_spacing = tickSpacing;
@@ -129,7 +136,7 @@ export function updatePoolCacheFromValidation(
     if (dex === 'meteora' && binStep !== undefined) {
       (pool as any).bin_step = binStep;
     }
-    
+
     // Update tick arrays (Orca/Raydium) - ALWAYS update to clear stale data
     // Use null (not undefined) so values serialize to JSON and don't get lost on save/load
     if (dex === 'orca' || dex === 'raydium') {
@@ -139,21 +146,40 @@ export function updatePoolCacheFromValidation(
       (pool as any).tick_array_upper = tickArrayUpper ?? null;
       poolUpdated = true;
     }
-    
+
     // Update bin arrays (Meteora) - ALWAYS update to clear stale data
     if (dex === 'meteora') {
       (pool as any).bin_array_lower = binArrayLower ?? null;
       (pool as any).bin_array_upper = binArrayUpper ?? null;
       poolUpdated = true;
     }
-    
+
+    // Update price-related fields (for full state revalidation)
+    if (sqrtPriceX64 !== undefined) {
+      (pool as any).sqrt_price_x64 = Number(sqrtPriceX64);
+      (pool as any).sqrt_price_x64_raw = sqrtPriceX64;
+      priceUpdated = true;
+    }
+
+    if (liquidity !== undefined) {
+      (pool as any).liquidity = Number(liquidity);
+      (pool as any).liquidity_raw = liquidity;
+      priceUpdated = true;
+    }
+
+    if (price_a_per_b !== undefined && Number.isFinite(price_a_per_b) && price_a_per_b > 0) {
+      pool.price_a_per_b = price_a_per_b;
+      priceUpdated = true;
+    }
+
     // Update timestamp
-    if (poolUpdated) {
+    if (poolUpdated || priceUpdated) {
       pool.updated_ms = Date.now();
       updated++;
       byDex[dex]++;
+      if (priceUpdated) pricesUpdated++;
     }
   }
-  
-  return { updated, byDex };
+
+  return { updated, byDex, pricesUpdated };
 }

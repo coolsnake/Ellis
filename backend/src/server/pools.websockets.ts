@@ -3742,38 +3742,23 @@ function runWebsocketRefreshLoop(): void {
             // ============================================
             // PRIORITY 1: New @orca-so/whirlpools-client (v4.0)
             // ============================================
+            let newClient: any = null;
             try {
-              const newClient = await import('@orca-so/whirlpools-client').catch(() => null);
+              newClient = await import('@orca-so/whirlpools-client').catch(() => null);
               if (newClient && typeof (newClient as any).getWhirlpoolDecoder === 'function') {
                 const decoder = (newClient as any).getWhirlpoolDecoder();
                 const dataBuffer = acc.data instanceof Buffer ? new Uint8Array(acc.data) : acc.data;
                 const decoded = decoder.decode(dataBuffer);
                 
                 if (decoded && decoded.tokenVaultA && decoded.tokenVaultB) {
-                  // The new client might not return oracle - extract it manually from account data
-                  // Oracle is at offset: 8 (disc) + 32 (config) + 1 (bump) + 2 (tickSpacing) + 2 (tickSpacingSeed) 
-                  //   + 2 (feeRate) + 2 (protocolFeeRate) + 16 (liquidity) + 16 (sqrtPrice) + 4 (tickCurrentIndex)
-                  //   + 8 (protocolFeeOwedA) + 8 (protocolFeeOwedB) + 32 (mintA) + 32 (mintB) + 32 (vaultA) + 32 (vaultB)
-                  //   + 16 (feeGrowthA) + 16 (feeGrowthB) + 8 (rewardTimestamp) + 384 (rewardInfos) = 653 bytes
-                  let oraclePk: any = null;
-                  try {
-                    const data = Buffer.from(dataBuffer);
-                    const ORACLE_OFFSET = 8 + 32 + 1 + 2 + 2 + 2 + 2 + 16 + 16 + 4 + 8 + 8 + 32 + 32 + 32 + 32 + 16 + 16 + 8 + 384;
-                    if (data.length >= ORACLE_OFFSET + 32) {
-                      const oracleBytes = data.subarray(ORACLE_OFFSET, ORACLE_OFFSET + 32);
-                      // Check if oracle is not all zeros (default/empty)
-                      const isZero = oracleBytes.every(b => b === 0);
-                      if (!isZero) {
-                        oraclePk = new web3.PublicKey(oracleBytes);
-                      }
-                    }
-                  } catch {}
+                  // Oracle is NOT stored in the Whirlpool account - it's a derived PDA
+                  // We'll derive it below after parsing the whirlpool data
                   
                   // Convert string addresses to PublicKey objects for compatibility
                   whirlpoolData = {
                     tokenVaultA: new web3.PublicKey(decoded.tokenVaultA),
                     tokenVaultB: new web3.PublicKey(decoded.tokenVaultB),
-                    oracle: oraclePk,
+                    oracle: null, // Will be derived as PDA below
                     tickSpacing: decoded.tickSpacing,
                     tickCurrentIndex: decoded.tickCurrentIndex,
                     tokenMintA: new web3.PublicKey(decoded.tokenMintA),
@@ -3782,7 +3767,6 @@ function runWebsocketRefreshLoop(): void {
                   decoderUsed = 'new_client';
                   logger.info('orca.attach.new_client_success', { 
                     pool: poolAddr.slice(0,8)+'…', 
-                    hasOracle: !!oraclePk,
                     cat: 'pools' 
                   });
                 }
@@ -3927,20 +3911,47 @@ function runWebsocketRefreshLoop(): void {
               }
             }
             
-            // Subscribe to oracle
-            if (whirlpoolData?.oracle) {
-              try {
-                const id = await subscribeAccountWithRetry(whirlpoolData.oracle, handle);
-                subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(whirlpoolData.oracle.toBase58(), 'orca');
-                debugLogTargeted('orca', whirlpoolData.oracle.toBase58(), { kind: 'oracle' });
-                derivedAccountToPool.set(whirlpoolData.oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
-                logger.info('orca.oracle.subscribed', { pool: poolAddr.slice(0,8)+'…', oracle: whirlpoolData.oracle.toBase58().slice(0,8)+'…', cat: 'pools' });
-              } catch (err) {
-                logger.info('orca.oracle.subscribe.fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+            // Get Orca program ID for PDA derivations
+            const orcaProgramId = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+            
+            // Subscribe to oracle - it's a derived PDA, not a field in the Whirlpool account
+            // The Oracle PDA is derived using seeds: ["oracle", whirlpool_address]
+            try {
+              let oraclePk: any = null;
+              
+              // Try using new client's getOracleAddress function
+              if (newClient && typeof (newClient as any).getOracleAddress === 'function') {
+                try {
+                  const oracleResult = await (newClient as any).getOracleAddress(poolAddr);
+                  if (oracleResult && oracleResult[0]) {
+                    oraclePk = new web3.PublicKey(oracleResult[0]);
+                  }
+                } catch {}
               }
-            } else {
-              logger.info('orca.oracle.missing', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              
+              // Fallback: derive Oracle PDA manually
+              if (!oraclePk) {
+                try {
+                  const [derivedOracle] = web3.PublicKey.findProgramAddressSync(
+                    [Buffer.from('oracle'), pk.toBuffer()],
+                    orcaProgramId
+                  );
+                  oraclePk = derivedOracle;
+                } catch {}
+              }
+              
+              if (oraclePk) {
+                const id = await subscribeAccountWithRetry(oraclePk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(oraclePk.toBase58(), 'orca');
+                debugLogTargeted('orca', oraclePk.toBase58(), { kind: 'oracle' });
+                derivedAccountToPool.set(oraclePk.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
+                logger.info('orca.oracle.subscribed', { pool: poolAddr.slice(0,8)+'…', oracle: oraclePk.toBase58().slice(0,8)+'…', cat: 'pools' });
+              } else {
+                logger.info('orca.oracle.derive_failed', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              }
+            } catch (err) {
+              logger.info('orca.oracle.subscribe.fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
             }
             
             // Subscribe to active tick arrays
@@ -3972,8 +3983,6 @@ function runWebsocketRefreshLoop(): void {
                 return null;
               }
             };
-            
-            const orcaProgramId = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
             
             if (tickSpacing !== undefined && currentTick !== undefined && (PDAUtil || true)) {
               try {

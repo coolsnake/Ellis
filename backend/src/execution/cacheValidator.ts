@@ -11,9 +11,10 @@ import { setClmmStatic, getClmmStatic } from './clmmCache.js';
 import { logger } from '../utils/logger.js';
 import { logCatchError } from '../utils/errorHandler.js';
 import { peekRaydiumPools, peekOrcaPools, peekMeteoraPools, peekPumpswapPools, peekMeteoraBalancedPools } from '../server/pools.js';
-import { updatePoolCacheFromValidation } from '../server/pools.cache.js';
+import { updatePoolCacheFromValidation, findPoolInCache } from '../server/pools.cache.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { resolveManyDecimals } from '../server/pools/decimals.js';
+import { processPriceThroughPipeline } from '../server/pools/pricePipeline.js';
 import { updateEligibilityFromBatchValidation } from '../server/pools.websockets.js';
 import { CONFIG } from '../utils/config.js';
 
@@ -2164,22 +2165,24 @@ export async function getCacheHealthSummary(
 
 /**
  * Refresh invalid pools by fetching validated tick/bin arrays via SDK
- * Returns count of pools successfully refreshed
+ * Also refreshes price data (sqrtPriceX64/activeId) and recalculates prices
+ * Returns count of pools successfully refreshed and prices updated
  */
 export async function refreshInvalidPools(
   connection: Connection,
   invalidPools: PoolValidationResult[],
   options?: { concurrency?: number }
-): Promise<{ refreshed: number; failed: number; errors: string[] }> {
-  const { 
-    fetchOrcaPoolViaSdk, 
-    fetchRaydiumPoolViaSdk, 
-    fetchMeteoraPoolViaSdk 
+): Promise<{ refreshed: number; failed: number; errors: string[]; pricesUpdated: number }> {
+  const {
+    fetchOrcaPoolViaSdk,
+    fetchRaydiumPoolViaSdk,
+    fetchMeteoraPoolViaSdk
   } = await import('./sdkPoolFetcher.js');
-  
+
   const concurrency = options?.concurrency ?? 5;
   let refreshed = 0;
   let failed = 0;
+  let pricesUpdated = 0;
   const errors: string[] = [];
   
   // Process in batches
@@ -2224,10 +2227,12 @@ export async function refreshInvalidPools(
             
             executionCache.setStatic(pool.poolId, staticUpdate);
             
-            // Update cache with validated arrays
+            // Update cache with validated arrays AND price data
             if (validatedState.tickArrays) {
               const existing = executionCache.getHot(pool.poolId) || {};
-              executionCache.setHot(pool.poolId, {
+
+              // Include sqrtPriceX64 and liquidity in hot cache update
+              const hotUpdate: any = {
                 ...existing,
                 currentTickIndex: validatedState.currentTick,
                 tickSpacing: validatedState.tickSpacing,
@@ -2236,7 +2241,71 @@ export async function refreshInvalidPools(
                   lower: validatedState.tickArrays.lower,
                   upper: validatedState.tickArrays.upper,
                 },
-              });
+              };
+
+              // Add sqrtPriceX64 if available (for price freshness)
+              if (validatedState.sqrtPriceX64) {
+                hotUpdate.sqrtPriceX64 = BigInt(validatedState.sqrtPriceX64);
+              }
+
+              // Add liquidity if available
+              if (validatedState.liquidity) {
+                hotUpdate.liquidity = BigInt(validatedState.liquidity);
+              }
+
+              executionCache.setHot(pool.poolId, hotUpdate);
+
+              // Calculate and update price in pool cache
+              let priceUpdated = false;
+              if (validatedState.sqrtPriceX64) {
+                try {
+                  // Get pool from cache to access decimals and mints
+                  const cachedPool = findPoolInCache(pool.poolId);
+                  if (cachedPool?.pool) {
+                    const poolData = cachedPool.pool as any;
+                    const mintA = poolData.mint_a || poolData.mintA;
+                    const mintB = poolData.mint_b || poolData.mintB;
+                    const decimalsA = poolData.decimals_a ?? poolData.decimalsA;
+                    const decimalsB = poolData.decimals_b ?? poolData.decimalsB;
+
+                    if (mintA && mintB && Number.isFinite(decimalsA) && Number.isFinite(decimalsB)) {
+                      const processed = processPriceThroughPipeline({
+                        mintA,
+                        mintB,
+                        decimalsA,
+                        decimalsB,
+                        poolId: pool.poolId,
+                        dex: pool.dex === 'orca' ? 'Orca' : 'Raydium',
+                        poolType: 'clmm',
+                        sqrtPriceX64: BigInt(validatedState.sqrtPriceX64),
+                      });
+
+                      if (processed && processed.priceForward > 0) {
+                        // Update pool cache with fresh price
+                        updatePoolCacheFromValidation([{
+                          poolId: pool.poolId,
+                          dex: pool.dex,
+                          currentTick: validatedState.currentTick,
+                          tickSpacing: validatedState.tickSpacing,
+                          tickArrayLower: validatedState.tickArrays.lower?.[0],
+                          tickArrayCenter: validatedState.tickArrays.center,
+                          tickArrayUpper: validatedState.tickArrays.upper?.[0],
+                          sqrtPriceX64: validatedState.sqrtPriceX64,
+                          liquidity: validatedState.liquidity,
+                          price_a_per_b: processed.priceForward,
+                        }]);
+                        priceUpdated = true;
+                      }
+                    }
+                  }
+                } catch (priceErr) {
+                  logger.debug('cache.refresh.price_calc_failed', {
+                    cat: 'cache',
+                    ctx: { poolId: pool.poolId, error: String((priceErr as Error)?.message) }
+                  });
+                }
+              }
+
               logger.debug('cache.refresh.pool.success', {
                 cat: 'cache',
                 ctx: {
@@ -2247,29 +2316,83 @@ export async function refreshInvalidPools(
                     lower: validatedState.tickArrays.lower?.length ?? 0,
                     upper: validatedState.tickArrays.upper?.length ?? 0,
                   },
+                  priceUpdated,
+                  hasSqrtPrice: !!validatedState.sqrtPriceX64,
                 }
               });
-              return { success: true, poolId: pool.poolId };
+              return { success: true, poolId: pool.poolId, priceUpdated };
             } else if (validatedState.currentTick !== undefined) {
               // Pool was fetched but no tick arrays found in search range
               const existing = executionCache.getHot(pool.poolId) || {};
-              
+
               if (validatedState.liquidityOutsideRange) {
                 // Pool HAS liquidity but tick arrays are outside our search range
                 // This happens with full-range positions at extreme indices
                 // The pool IS tradeable - swap will derive arrays at execution time
-                executionCache.setHot(pool.poolId, {
+                const hotUpdate: any = {
                   ...existing,
                   currentTickIndex: validatedState.currentTick,
                   tickSpacing: validatedState.tickSpacing,
-                  liquidity: validatedState.liquidity,
+                  liquidity: validatedState.liquidity ? BigInt(validatedState.liquidity) : existing.liquidity,
                   tickArrays: undefined, // Will be derived at swap time
                   liquidityOutsideRange: true, // Flag for swap builder
                   needsTickArrayValidation: false, // Clear flag - pool is validated
                   tickArraysValidatedAt: Date.now(),
-                  // Don't set noLiquidityValidatedAt - pool is tradeable!
-                });
-                
+                };
+
+                // Add sqrtPriceX64 if available
+                if (validatedState.sqrtPriceX64) {
+                  hotUpdate.sqrtPriceX64 = BigInt(validatedState.sqrtPriceX64);
+                }
+
+                executionCache.setHot(pool.poolId, hotUpdate);
+
+                // Also update price in pool cache if we have sqrtPrice
+                let priceUpdated = false;
+                if (validatedState.sqrtPriceX64) {
+                  try {
+                    const cachedPool = findPoolInCache(pool.poolId);
+                    if (cachedPool?.pool) {
+                      const poolData = cachedPool.pool as any;
+                      const mintA = poolData.mint_a || poolData.mintA;
+                      const mintB = poolData.mint_b || poolData.mintB;
+                      const decimalsA = poolData.decimals_a ?? poolData.decimalsA;
+                      const decimalsB = poolData.decimals_b ?? poolData.decimalsB;
+
+                      if (mintA && mintB && Number.isFinite(decimalsA) && Number.isFinite(decimalsB)) {
+                        const processed = processPriceThroughPipeline({
+                          mintA,
+                          mintB,
+                          decimalsA,
+                          decimalsB,
+                          poolId: pool.poolId,
+                          dex: pool.dex === 'orca' ? 'Orca' : 'Raydium',
+                          poolType: 'clmm',
+                          sqrtPriceX64: BigInt(validatedState.sqrtPriceX64),
+                        });
+
+                        if (processed && processed.priceForward > 0) {
+                          updatePoolCacheFromValidation([{
+                            poolId: pool.poolId,
+                            dex: pool.dex,
+                            currentTick: validatedState.currentTick,
+                            tickSpacing: validatedState.tickSpacing,
+                            sqrtPriceX64: validatedState.sqrtPriceX64,
+                            liquidity: validatedState.liquidity,
+                            price_a_per_b: processed.priceForward,
+                          }]);
+                          priceUpdated = true;
+                        }
+                      }
+                    }
+                  } catch (priceErr) {
+                    logger.debug('cache.refresh.price_calc_failed', {
+                      cat: 'cache',
+                      ctx: { poolId: pool.poolId, error: String((priceErr as Error)?.message) }
+                    });
+                  }
+                }
+
                 logger.info('cache.refresh.pool.liquidity_outside_range', {
                   cat: 'cache',
                   ctx: {
@@ -2278,14 +2401,16 @@ export async function refreshInvalidPools(
                     currentTick: validatedState.currentTick,
                     tickSpacing: validatedState.tickSpacing,
                     liquidity: validatedState.liquidity?.slice(0, 16),
+                    priceUpdated,
                   }
                 });
-                
+
                 // Return success - pool is valid, just needs arrays derived at swap time
-                return { 
-                  success: true, 
+                return {
+                  success: true,
                   poolId: pool.poolId,
                   liquidityOutsideRange: true,
+                  priceUpdated,
                 };
               } else {
                 // Pool genuinely has no liquidity
@@ -2297,7 +2422,7 @@ export async function refreshInvalidPools(
                   tickArrays: undefined, // Explicitly set to undefined (no arrays)
                   noLiquidityValidatedAt: Date.now(), // Mark when we validated this
                 });
-                
+
                 logger.debug('cache.refresh.pool.no_liquidity', {
                   cat: 'cache',
                   ctx: {
@@ -2307,11 +2432,11 @@ export async function refreshInvalidPools(
                     tickSpacing: validatedState.tickSpacing,
                   }
                 });
-                
+
                 // Return success:true because we successfully validated - just no liquidity
                 // This prevents the pool from being re-queued as "invalid"
-                return { 
-                  success: true, 
+                return {
+                  success: true,
                   poolId: pool.poolId,
                   noLiquidity: true,
                 };
@@ -2322,13 +2447,13 @@ export async function refreshInvalidPools(
               const existing = executionCache.getHot(pool.poolId) || {};
               const BIN_ARRAY_SIZE = 70;
               const activeBinArrayIdx = Math.floor((validatedState.activeId || 0) / BIN_ARRAY_SIZE);
-              
+
               // Find lower/upper/active from arrays
               const arrays = validatedState.binArrays.arrays || [];
               const active = arrays.find(a => a.index === activeBinArrayIdx)?.address;
               const lower = arrays.find(a => a.index === activeBinArrayIdx - 1)?.address;
               const upper = arrays.find(a => a.index === activeBinArrayIdx + 1)?.address;
-              
+
               executionCache.setHot(pool.poolId, {
                 ...existing,
                 activeId: validatedState.activeId,
@@ -2338,13 +2463,77 @@ export async function refreshInvalidPools(
                   upper,
                   active,
                   arrays: validatedState.binArrays.arrays,
-                  range: { 
+                  range: {
                     lower: arrays.length > 0 ? Math.min(...arrays.map(a => a.index)) : 0,
                     upper: arrays.length > 0 ? Math.max(...arrays.map(a => a.index)) : 0,
                   },
                 },
               });
-              return { success: true, poolId: pool.poolId };
+
+              // Calculate and update price in pool cache for Meteora DLMM
+              let priceUpdated = false;
+              if (validatedState.activeId !== undefined && validatedState.binStep !== undefined) {
+                try {
+                  const cachedPool = findPoolInCache(pool.poolId);
+                  if (cachedPool?.pool) {
+                    const poolData = cachedPool.pool as any;
+                    const mintA = poolData.mint_a || poolData.mintA;
+                    const mintB = poolData.mint_b || poolData.mintB;
+                    const decimalsA = poolData.decimals_a ?? poolData.decimalsA;
+                    const decimalsB = poolData.decimals_b ?? poolData.decimalsB;
+                    // Meteora uses tokenXMint/tokenYMint for native ordering
+                    const tokenXMint = poolData.native_mint_a || poolData.tokenXMint || mintA;
+                    const tokenYMint = poolData.native_mint_b || poolData.tokenYMint || mintB;
+
+                    if (mintA && mintB && Number.isFinite(decimalsA) && Number.isFinite(decimalsB)) {
+                      const processed = processPriceThroughPipeline({
+                        mintA,
+                        mintB,
+                        decimalsA,
+                        decimalsB,
+                        poolId: pool.poolId,
+                        dex: 'Meteora',
+                        poolType: 'clmm',
+                        activeId: validatedState.activeId,
+                        binStep: validatedState.binStep,
+                        tokenXMint,
+                        tokenYMint,
+                      });
+
+                      if (processed && processed.priceForward > 0) {
+                        updatePoolCacheFromValidation([{
+                          poolId: pool.poolId,
+                          dex: 'meteora',
+                          activeId: validatedState.activeId,
+                          binStep: validatedState.binStep,
+                          binArrayLower: lower,
+                          binArrayUpper: upper,
+                          price_a_per_b: processed.priceForward,
+                        }]);
+                        priceUpdated = true;
+                      }
+                    }
+                  }
+                } catch (priceErr) {
+                  logger.debug('cache.refresh.meteora.price_calc_failed', {
+                    cat: 'cache',
+                    ctx: { poolId: pool.poolId, error: String((priceErr as Error)?.message) }
+                  });
+                }
+              }
+
+              logger.debug('cache.refresh.meteora.success', {
+                cat: 'cache',
+                ctx: {
+                  poolId: pool.poolId,
+                  activeId: validatedState.activeId,
+                  binStep: validatedState.binStep,
+                  binArraysFound: arrays.length,
+                  priceUpdated,
+                }
+              });
+
+              return { success: true, poolId: pool.poolId, priceUpdated };
             }
           }
           
@@ -2364,11 +2553,15 @@ export async function refreshInvalidPools(
     for (const result of results) {
       if (result.success) {
         refreshed++;
+        // Track price updates
+        if ((result as any).priceUpdated) {
+          pricesUpdated++;
+        }
       } else {
         failed++;
         if (result.error) {
           // Mark pools with no liquidity separately - they're not "failures" in the error sense
-          const isNoLiquidity = result.error.includes('No tick arrays found on-chain') || 
+          const isNoLiquidity = result.error.includes('No tick arrays found on-chain') ||
                                result.error.includes('no liquidity');
           if (!isNoLiquidity) {
             errors.push(`${result.poolId}: ${result.error}`);
@@ -2377,27 +2570,28 @@ export async function refreshInvalidPools(
       }
     }
   }
-  
+
   // Categorize failures for better diagnostics
-  const noLiquidityCount = errors.filter(e => 
+  const noLiquidityCount = errors.filter(e =>
     e.includes('No tick arrays found') || e.includes('no liquidity') || e.includes('no arrays found')
   ).length;
-  const actualErrors = errors.filter(e => 
+  const actualErrors = errors.filter(e =>
     !e.includes('No tick arrays found') && !e.includes('no liquidity') && !e.includes('no arrays found')
   );
-  
+
   logger.info('cache.refresh.complete', {
     cat: 'cache',
-    ctx: { 
-      refreshed, 
-      failed, 
+    ctx: {
+      refreshed,
+      failed,
+      pricesUpdated,
       total: invalidPools.length,
       // Break down failures
       noLiquidityPools: failed - actualErrors.length,
       actualErrors: actualErrors.length,
     }
   });
-  
+
   // Log actual errors (not no-liquidity pools) for debugging
   if (actualErrors.length > 0) {
     logger.warn('cache.refresh.errors', {
@@ -2405,8 +2599,8 @@ export async function refreshInvalidPools(
       ctx: { errors: actualErrors.slice(0, 10) } // First 10 errors
     });
   }
-  
-  return { refreshed, failed, errors };
+
+  return { refreshed, failed, errors, pricesUpdated };
 }
 
 /**
