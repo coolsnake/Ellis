@@ -86,7 +86,7 @@ function serializeInstruction(ix: any): SerializedInstruction {
   };
 }
 
-export async function buildTransactionSummary(plan: ExecutionPlan, extraSetupIxs: SerializedInstruction[] | undefined, computeBudget?: { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number; useRouter?: boolean }, traceId?: string): Promise<ArbBuildResult> {
+export async function buildTransactionSummary(plan: ExecutionPlan, extraSetupIxs: SerializedInstruction[] | undefined, computeBudget?: { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number; useRouter?: boolean; routerExecutionMode?: 'direct' | 'flash_loan' | 'auto' | 'sdk_quote' }, traceId?: string): Promise<ArbBuildResult> {
   const additionalIxs = Array.isArray(extraSetupIxs) ? extraSetupIxs : [];
   const extras = additionalIxs.map((ix) => ({
     programId: ix.programId,

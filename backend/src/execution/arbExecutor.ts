@@ -115,6 +115,7 @@ export interface ExecutorConfig {
   };
   // On-chain router settings - route swaps through deployed router program
   useRouter?: boolean;  // Use on-chain router for execution (when enabled and deployed)
+  routerExecutionMode?: 'direct' | 'flash_loan' | 'auto' | 'sdk_quote';  // Router execution mode
   // Pool quarantine settings - automatically quarantine pools that fail repeatedly
   quarantineSettings?: {
     enabled: boolean;
@@ -786,7 +787,10 @@ export class ArbExecutor {
         // Build transaction using the same method as arb routes - pass traceId
         // Pass useRouter config to use on-chain router when enabled
         const { buildTransactionSummary } = await import('../server/arb.build.worker.compute.js');
-        built = await buildTransactionSummary(plan, undefined, { useRouter: this.config.useRouter }, traceId);
+        built = await buildTransactionSummary(plan, undefined, {
+          useRouter: this.config.useRouter,
+          routerExecutionMode: this.config.routerExecutionMode,
+        }, traceId);
 
         // Load execution config
         execCfg = await loadExecConfig();

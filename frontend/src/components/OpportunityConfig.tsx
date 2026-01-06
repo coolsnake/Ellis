@@ -111,6 +111,9 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           if (typeof j.useRouter === 'boolean') {
             set('use_router', j.useRouter);
           }
+          if (j.routerExecutionMode) {
+            set('router_execution_mode', j.routerExecutionMode);
+          }
           // Load quarantine settings
           if (j.quarantineSettings) {
             set('quarantine_enabled', !!j.quarantineSettings.enabled);
@@ -246,6 +249,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             },
             // Router settings - use on-chain router for execution
             useRouter: !!det.use_router,
+            routerExecutionMode: det.router_execution_mode || 'auto',
             // Quarantine settings
             quarantineSettings: {
               enabled: det.quarantine_enabled !== false,
@@ -714,21 +718,54 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-lg font-semibold text-white">On-chain Router Execution</h3>
               <label className="flex items-center gap-2 text-sm">
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   className="w-4 h-4"
-                  checked={!!det.use_router} 
-                  onChange={e=>set('use_router', e.target.checked)} 
+                  checked={!!det.use_router}
+                  onChange={e=>set('use_router', e.target.checked)}
                 />
                 <span className="text-purple-400">Enabled</span>
               </label>
             </div>
-            
-            <p className="text-xs text-gray-400">
-              Route swaps through the deployed on-chain router program instead of building 
-              direct DEX instructions. Required for flashloans. The router must be deployed 
+
+            <p className="text-xs text-gray-400 mb-3">
+              Route swaps through the deployed on-chain router program instead of building
+              direct DEX instructions. Required for flashloans. The router must be deployed
               and enabled in Router Config.
             </p>
+
+            {/* Router Execution Mode - only shown when router is enabled */}
+            {det.use_router && (
+              <div className="mt-3">
+                <label className="block mb-2 text-gray-300 text-sm font-medium">Router Execution Mode</label>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  {[
+                    { value: 'direct', label: 'Direct', desc: 'Your tokens' },
+                    { value: 'flash_loan', label: 'Flash Loan', desc: 'Borrow & repay' },
+                    { value: 'auto', label: 'Auto', desc: 'Smart selection' },
+                    { value: 'sdk_quote', label: 'SDK Quote', desc: 'Accurate arrays' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => set('router_execution_mode', opt.value)}
+                      className={`p-2 rounded border text-sm transition-all ${
+                        (det.router_execution_mode || 'auto') === opt.value
+                          ? 'bg-purple-600/30 border-purple-500 text-purple-300'
+                          : 'bg-gray-600 border-gray-500 text-gray-300 hover:border-gray-400'
+                      }`}
+                    >
+                      <div className="font-medium">{opt.label}</div>
+                      <div className="text-xs text-gray-400">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+                {(det.router_execution_mode || 'auto') === 'sdk_quote' && (
+                  <p className="mt-2 text-xs text-purple-400">
+                    SDK Quote mode calls DEX SDKs to get accurate tick/bin arrays. Slower but more reliable for complex swaps.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Flashloan Settings Section */}

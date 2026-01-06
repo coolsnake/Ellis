@@ -177,6 +177,8 @@ export interface BuildTxOptions {
   useRouter?: boolean;
   /** If using router, force flash loan mode */
   forceFlashLoan?: boolean;
+  /** Router execution mode (direct, flash_loan, auto, sdk_quote) */
+  routerExecutionMode?: 'direct' | 'flash_loan' | 'auto' | 'sdk_quote';
   /** Mode override */
   __modeOverride?: 'direct' | 'simulate';
 }
@@ -201,10 +203,22 @@ export async function buildDirectArbTx(
       
       if (routerConfig.enabled && routerConfig.programId) {
         const { ExecutionMode } = await import('../../router/types.js');
-        const mode = (cb as BuildTxOptions)?.forceFlashLoan 
-          ? ExecutionMode.FlashLoan 
-          : ExecutionMode.Auto;
-          
+        // Determine execution mode: use explicit routerExecutionMode, forceFlashLoan, or default to Auto
+        let mode = ExecutionMode.Auto;
+        const options = cb as BuildTxOptions;
+        if (options?.routerExecutionMode) {
+          // Map string to ExecutionMode enum
+          const modeMap: Record<string, typeof ExecutionMode[keyof typeof ExecutionMode]> = {
+            'direct': ExecutionMode.Direct,
+            'flash_loan': ExecutionMode.FlashLoan,
+            'auto': ExecutionMode.Auto,
+            'sdk_quote': ExecutionMode.SdkQuote,
+          };
+          mode = modeMap[options.routerExecutionMode] || ExecutionMode.Auto;
+        } else if (options?.forceFlashLoan) {
+          mode = ExecutionMode.FlashLoan;
+        }
+
         const result = await buildRouterTransaction(plan, wallet, { mode });
         
         if (result.usedRouter && result.instructions.length > 0) {

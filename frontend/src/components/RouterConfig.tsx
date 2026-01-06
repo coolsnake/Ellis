@@ -5,7 +5,7 @@ interface RouterConfig {
   programId: string | null;
   deployedAt: string | null;
   cluster: 'devnet' | 'mainnet-beta' | 'localnet';
-  executionMode: 'direct' | 'flash_loan' | 'auto';
+  executionMode: 'direct' | 'flash_loan' | 'auto' | 'sdk_quote';
   vaultOwner: string | null;
   flashLoanFeeBps: number;
   enabled: boolean;
@@ -69,7 +69,7 @@ export const RouterConfig: React.FC<RouterConfigProps> = ({
     }
   };
 
-  const handleModeChange = async (mode: 'direct' | 'flash_loan' | 'auto') => {
+  const handleModeChange = async (mode: 'direct' | 'flash_loan' | 'auto' | 'sdk_quote') => {
     if (!config) return;
     setSaving(true);
     setError(null);
@@ -223,6 +223,7 @@ export const RouterConfig: React.FC<RouterConfigProps> = ({
               { value: 'direct', label: 'Direct', desc: 'Execute swaps with your own tokens' },
               { value: 'flash_loan', label: 'Flash Loan', desc: 'Borrow from vault, execute arb, repay with profit' },
               { value: 'auto', label: 'Auto', desc: 'Use flash loan if vault has funds, otherwise direct' },
+              { value: 'sdk_quote', label: 'SDK Quote', desc: 'Use DEX SDK quotes for accurate tick/bin arrays (slower but more reliable)' },
             ] as const).map((option) => (
               <label
                 key={option.value}
