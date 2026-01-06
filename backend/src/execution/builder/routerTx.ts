@@ -49,6 +49,59 @@ const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7g
 const ORCA_TICK_ARRAY_SIZE = 88;
 const RAYDIUM_TICK_ARRAY_SIZE = 60;
 
+// Base58 character set for validation
+const BASE58_CHARS = /^[1-9A-HJ-NP-Za-km-z]+$/;
+
+/**
+ * Validate that a string is a valid base58-encoded Solana address
+ * Returns the validated address or null if invalid
+ */
+function validateBase58Address(address: string | undefined | null, context?: string): string | null {
+  if (!address || typeof address !== 'string') {
+    return null;
+  }
+
+  // Check length (Solana addresses are 32-44 characters in base58)
+  if (address.length < 32 || address.length > 44) {
+    if (context) {
+      logger.warn('routerTx.validateBase58.invalid_length', {
+        cat: 'tx',
+        context,
+        address: address.slice(0, 20),
+        length: address.length,
+      });
+    }
+    return null;
+  }
+
+  // Check for valid base58 characters
+  if (!BASE58_CHARS.test(address)) {
+    if (context) {
+      logger.warn('routerTx.validateBase58.invalid_chars', {
+        cat: 'tx',
+        context,
+        address: address.slice(0, 20),
+      });
+    }
+    return null;
+  }
+
+  // Final validation by creating PublicKey
+  try {
+    new PublicKey(address);
+    return address;
+  } catch {
+    if (context) {
+      logger.warn('routerTx.validateBase58.pubkey_failed', {
+        cat: 'tx',
+        context,
+        address: address.slice(0, 20),
+      });
+    }
+    return null;
+  }
+}
+
 /**
  * Derive Raydium CLMM observation state PDA
  * Seeds: ["observation", pool_id]
@@ -1501,15 +1554,19 @@ async function extractDexAccounts(
         //   - WITH exBitmap (18 accounts): 0-12 fixed, 13 exBitmap, 14-16 tickArrays, 17 program
         //   - WITHOUT exBitmap (17 accounts): 0-12 fixed, 13-15 tickArrays, 16 program
         {
-          const rayTickArray0 = hop.tickArrayCenter;
-          const rayTickArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
-          const rayTickArray2 = isAtoB ? hop.tickArrayUpper : hop.tickArrayLower;
-          
-          // Validate tick arrays exist before building instruction
+          // Validate tick array addresses are valid base58 before use
+          const rayTickArray0 = validateBase58Address(hop.tickArrayCenter, `raydium.tickArrayCenter.${hop.poolId.slice(0, 8)}`);
+          const rawArray1 = isAtoB ? hop.tickArrayLower : hop.tickArrayUpper;
+          const rawArray2 = isAtoB ? hop.tickArrayUpper : hop.tickArrayLower;
+          const rayTickArray1 = validateBase58Address(rawArray1, `raydium.tickArray1.${hop.poolId.slice(0, 8)}`);
+          const rayTickArray2 = validateBase58Address(rawArray2, `raydium.tickArray2.${hop.poolId.slice(0, 8)}`);
+
+          // Validate tick arrays exist and are valid base58 before building instruction
           // swap needs only center tick array; swap_v2 needs all 3
           if (!rayTickArray0) {
             throw new Error(
-              `RAYDIUM_CLMM_TICK_ARRAYS_MISSING: Pool ${hop.poolId} missing center tick array. ` +
+              `RAYDIUM_CLMM_TICK_ARRAYS_INVALID: Pool ${hop.poolId} has invalid/missing center tick array. ` +
+              `Raw value: "${hop.tickArrayCenter?.slice(0, 30) ?? 'undefined'}". ` +
               `Pool needs validation. The reactive cacheValidator should populate these automatically.`
             );
           }
@@ -1735,11 +1792,18 @@ async function extractDexAccounts(
         // - lower2: bin array at activeIndex - 2
         // - upper: bin array at activeIndex + 1
         // - upper2: bin array at activeIndex + 2
-        const knownBinArrayActive = (hop as any).binArrayActive ? new PublicKey((hop as any).binArrayActive) : null;
-        const knownBinArrayLower = hop.binArrayLower ? new PublicKey(hop.binArrayLower) : null;
-        const knownBinArrayLower2 = (hop as any).binArrayLower2 ? new PublicKey((hop as any).binArrayLower2) : null;
-        const knownBinArrayUpper = hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : null;
-        const knownBinArrayUpper2 = (hop as any).binArrayUpper2 ? new PublicKey((hop as any).binArrayUpper2) : null;
+        // Validate base58 addresses before creating PublicKey to prevent "Non-base58 character" errors
+        const validatedActive = validateBase58Address((hop as any).binArrayActive, `meteora.binArrayActive.${hop.poolId.slice(0, 8)}`);
+        const validatedLower = validateBase58Address(hop.binArrayLower, `meteora.binArrayLower.${hop.poolId.slice(0, 8)}`);
+        const validatedLower2 = validateBase58Address((hop as any).binArrayLower2, `meteora.binArrayLower2.${hop.poolId.slice(0, 8)}`);
+        const validatedUpper = validateBase58Address(hop.binArrayUpper, `meteora.binArrayUpper.${hop.poolId.slice(0, 8)}`);
+        const validatedUpper2 = validateBase58Address((hop as any).binArrayUpper2, `meteora.binArrayUpper2.${hop.poolId.slice(0, 8)}`);
+
+        const knownBinArrayActive = validatedActive ? new PublicKey(validatedActive) : null;
+        const knownBinArrayLower = validatedLower ? new PublicKey(validatedLower) : null;
+        const knownBinArrayLower2 = validatedLower2 ? new PublicKey(validatedLower2) : null;
+        const knownBinArrayUpper = validatedUpper ? new PublicKey(validatedUpper) : null;
+        const knownBinArrayUpper2 = validatedUpper2 ? new PublicKey(validatedUpper2) : null;
         
         // Get binStep from hop or static cache to determine how many bin arrays needed
         // Pools with smaller binStep need more bin arrays as each covers a smaller price range
@@ -1757,22 +1821,36 @@ async function extractDexAccounts(
         // The SDK returns validated bin arrays that cover the swap's price range
         const sdkBinArrays = (hop as any).binArrays as string[] | undefined;
         if (sdkBinArrays && sdkBinArrays.length > 0) {
-          // Use SDK-provided arrays directly - they're already validated by the SDK
-          directionalBinArrays = sdkBinArrays
-            .slice(0, Math.max(neededBinArrayCount, sdkBinArrays.length)) // Use at least neededBinArrayCount
-            .map(addr => new PublicKey(addr));
+          // Validate each SDK-provided address before use to prevent "Non-base58 character" errors
+          const validatedArrays: PublicKey[] = [];
+          for (const addr of sdkBinArrays.slice(0, Math.max(neededBinArrayCount, sdkBinArrays.length))) {
+            const validated = validateBase58Address(addr, `meteora.sdkBinArray.${hop.poolId.slice(0, 8)}`);
+            if (validated) {
+              validatedArrays.push(new PublicKey(validated));
+            }
+          }
 
-          logger.info('routerTx.meteora.binArrays.fromSdk', {
-            cat: 'tx',
-            ctx: {
-              poolId: hop.poolId.slice(0, 8) + '...',
+          if (validatedArrays.length > 0) {
+            directionalBinArrays = validatedArrays;
+            logger.info('routerTx.meteora.binArrays.fromSdk', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId.slice(0, 8) + '...',
+                sdkArrayCount: sdkBinArrays.length,
+                validCount: validatedArrays.length,
+                binStep: binStepNum,
+                isXtoY,
+                arrays: directionalBinArrays.map(a => a.toBase58().slice(0, 8)),
+              },
+            });
+          } else {
+            logger.warn('routerTx.meteora.binArrays.sdkAllInvalid', {
+              cat: 'tx',
+              poolId: hop.poolId.slice(0, 8),
               sdkArrayCount: sdkBinArrays.length,
-              usedCount: directionalBinArrays.length,
-              binStep: binStepNum,
-              isXtoY,
-              arrays: directionalBinArrays.map(a => a.toBase58().slice(0, 8)),
-            },
-          });
+              sampleAddr: sdkBinArrays[0]?.slice(0, 20),
+            });
+          }
         }
 
         // PRIORITY 2: Build N directional bin arrays based on activeId and swap direction (cache-based)
@@ -2112,12 +2190,13 @@ async function extractDexAccounts(
         // The third array (even_lower or even_upper) is derived and may not be initialized.
         // Use known-good arrays and duplicate the second one for safety.
         const poolIdStr = hop.poolId.replace(/[#-]rev$/, '');
-        
+
         // Known-good tick arrays from resolver (confirmed to exist via pool cache)
-        const knownCenter = hop.tickArrayCenter || '';
-        const knownLower = hop.tickArrayLower || '';
-        const knownUpper = hop.tickArrayUpper || '';
-        
+        // Validate base58 format before use to prevent "Non-base58 character" errors
+        const knownCenter = validateBase58Address(hop.tickArrayCenter, `orca.tickArrayCenter.${poolIdStr.slice(0, 8)}`) || '';
+        const knownLower = validateBase58Address(hop.tickArrayLower, `orca.tickArrayLower.${poolIdStr.slice(0, 8)}`) || '';
+        const knownUpper = validateBase58Address(hop.tickArrayUpper, `orca.tickArrayUpper.${poolIdStr.slice(0, 8)}`) || '';
+
         // Default: use known-good arrays in directional order
         // tickArray0 = center (contains current tick)
         // tickArray1 = next in direction (lower for A→B, upper for B→A)

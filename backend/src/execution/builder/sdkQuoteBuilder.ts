@@ -413,8 +413,32 @@ async function getOrcaSdkQuote(
       vaultB: typeof ixAccounts[6] === 'string' ? ixAccounts[6] : ixAccounts[6]?.address,
     };
 
-    // Get quoted amount from the result
-    const quotedAmountOut = swapResult.quote?.tokenEstB ?? swapResult.quote?.estimatedAmountOut;
+    // Get quoted amount from the result - handle various SDK return formats
+    let quotedAmountOut: bigint | undefined;
+    try {
+      const rawQuote = swapResult.quote?.tokenEstB ?? swapResult.quote?.estimatedAmountOut ?? swapResult.quote?.amountOut;
+      if (rawQuote !== undefined && rawQuote !== null) {
+        // Handle different possible formats: bigint, number, string, BN-like object
+        if (typeof rawQuote === 'bigint') {
+          quotedAmountOut = rawQuote;
+        } else if (typeof rawQuote === 'number') {
+          quotedAmountOut = BigInt(Math.floor(rawQuote));
+        } else if (typeof rawQuote === 'string') {
+          quotedAmountOut = BigInt(rawQuote);
+        } else if (typeof rawQuote === 'object') {
+          // BN-like object with toString() or value property
+          const strVal = rawQuote.toString?.() ?? rawQuote.value?.toString?.() ?? String(rawQuote);
+          // Clean up any non-numeric characters
+          const numericStr = strVal.replace(/[^0-9-]/g, '');
+          if (numericStr && numericStr !== '-') {
+            quotedAmountOut = BigInt(numericStr);
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore quote extraction errors - we have the accounts which is what we need
+      logger.debug('sdkQuoteBuilder.orca.quote.amount_extraction_failed', { cat: 'tx', error: (e as Error).message });
+    }
 
     logger.info('sdkQuoteBuilder.orca.quote.success', {
       cat: 'tx',
@@ -429,7 +453,7 @@ async function getOrcaSdkQuote(
     return {
       success: true,
       accounts,
-      quotedAmountOut: quotedAmountOut ? BigInt(quotedAmountOut.toString()) : undefined,
+      quotedAmountOut,
     };
   } catch (e) {
     logCatchError('sdkQuoteBuilder.orca.quote', e);
@@ -607,17 +631,57 @@ async function getRaydiumSdkQuote(
           exTickArrayBitmap
         );
 
-        // Extract addresses from the cache (keys are addresses)
-        tickArrayAddresses = Object.keys(tickArrayCache);
+        // Extract addresses from the cache - handle different SDK return formats
+        // The SDK may return Map, object with address keys, or object with entry values containing addresses
+        const rawKeys = Object.keys(tickArrayCache);
+
+        for (const key of rawKeys) {
+          let validAddress: string | null = null;
+
+          // Try key as address first (if it's valid base58)
+          if (key && key.length >= 32 && key.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(key)) {
+            try {
+              new PublicKey(key); // Validate it's a valid PublicKey
+              validAddress = key;
+            } catch { /* not valid */ }
+          }
+
+          // If key wasn't valid, try to extract address from the cache entry
+          if (!validAddress) {
+            const entry = tickArrayCache[key];
+            if (entry) {
+              // Entry might have publicKey or address property
+              const addr = entry.publicKey ?? entry.address ?? entry;
+              if (addr) {
+                if (typeof addr === 'string' && addr.length >= 32 && addr.length <= 44) {
+                  try {
+                    new PublicKey(addr);
+                    validAddress = addr;
+                  } catch { /* not valid */ }
+                } else if (typeof addr.toBase58 === 'function') {
+                  validAddress = addr.toBase58();
+                } else if (addr instanceof PublicKey) {
+                  validAddress = addr.toBase58();
+                }
+              }
+            }
+          }
+
+          if (validAddress && !tickArrayAddresses.includes(validAddress)) {
+            tickArrayAddresses.push(validAddress);
+          }
+        }
 
         logger.info('sdkQuoteBuilder.raydium.quote.sdk_tick_arrays', {
           cat: 'tx',
           ctx: {
             poolId: poolId.slice(0, 8),
-            tickArrayCount: tickArrayAddresses.length,
+            rawKeyCount: rawKeys.length,
+            validTickArrayCount: tickArrayAddresses.length,
             tickCurrent,
             tickSpacing,
             addresses: tickArrayAddresses.slice(0, 5).map(a => a.slice(0, 8)),
+            sampleRawKey: rawKeys[0]?.slice(0, 20),
           },
         });
       } catch (e) {
