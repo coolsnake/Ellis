@@ -1451,25 +1451,39 @@ function runWebsocketRefreshLoop(): void {
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
         let lastRay = 0; let lastOrc = 0;
         let meteoraTargets = new Set<string>();
-        try {
-          const gmod: any = await import('./graph.js');
-          // Use forced snapshot when retargeting (suppressInitialOnce) to ensure fresh data
-          const snap = await gmod.getGraphSnapshot(suppressInitialOnce);
-          const mset = new Set<string>();
-          for (const e of (snap?.edges || [])) {
-            const pid = String((e as any)?.pool_id || '');
-            if (!pid) continue;
-            const base = pid.replace(/[#-]rev$/, '');
-            // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
-            if ((e as any)?.dex === 'Meteora' && isValidPublicKey(base)) {
-              mset.add(base);
+        // In lazy activation mode, use cache directly (graph is empty until pools activate)
+        if (isLazyActivationEnabled()) {
+          try {
+            for (const p of (meteoraCache.data?.clmm || [])) {
+              if (p?.id && isValidPublicKey(String(p.id))) {
+                meteoraTargets.add(String(p.id));
+              }
             }
-          }
-          meteoraTargets = mset;
-          if (meteoraTargets.size > 0) {
-            try { logger.info('pools.ws targets.meteora from graph', { size: meteoraTargets.size, forced: suppressInitialOnce }); } catch {}
-          }
-        } catch {}
+            if (meteoraTargets.size > 0) {
+              try { logger.info('pools.ws targets.meteora from cache (lazy mode)', { size: meteoraTargets.size }); } catch {}
+            }
+          } catch {}
+        } else {
+          try {
+            const gmod: any = await import('./graph.js');
+            // Use forced snapshot when retargeting (suppressInitialOnce) to ensure fresh data
+            const snap = await gmod.getGraphSnapshot(suppressInitialOnce);
+            const mset = new Set<string>();
+            for (const e of (snap?.edges || [])) {
+              const pid = String((e as any)?.pool_id || '');
+              if (!pid) continue;
+              const base = pid.replace(/[#-]rev$/, '');
+              // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+              if ((e as any)?.dex === 'Meteora' && isValidPublicKey(base)) {
+                mset.add(base);
+              }
+            }
+            meteoraTargets = mset;
+            if (meteoraTargets.size > 0) {
+              try { logger.info('pools.ws targets.meteora from graph', { size: meteoraTargets.size, forced: suppressInitialOnce }); } catch {}
+            }
+          } catch {}
+        }
 
         const handle = async (pk: any, info: any) => {
           try {
@@ -4166,25 +4180,39 @@ function runWebsocketRefreshLoop(): void {
           const configPk = new PublicKey(String(CONFIG.orca?.configPubkey));
           const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
           // Build target set from current graph snapshot edges
-          // Force a fresh snapshot to ensure we have the fully filtered graph
+          // In lazy activation mode, use cache directly (graph is empty until pools activate)
           const edgePoolIds = new Set<string>();
-          try {
-            const gmod: any = await import('./graph.js');
-            const snap = await gmod.getGraphSnapshot(true);
-            for (const e of (snap?.edges || [])) {
-              const dex = String((e as any)?.dex || '');
-              if (dex !== 'Orca') continue;
-              const pid = String((e as any)?.pool_id || '');
-              if (pid) {
-                const base = pid.replace(/[#-]rev$/,'');
-                // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
-                if (isValidPublicKey(base)) {
-                  edgePoolIds.add(base);
+          if (isLazyActivationEnabled()) {
+            try {
+              for (const p of (orcaCache.data?.clmm || [])) {
+                if (p?.id && isValidPublicKey(String(p.id))) {
+                  edgePoolIds.add(String(p.id));
                 }
               }
-            }
-            try { logger.info('pools.ws targets.orca from graph', { size: edgePoolIds.size }); } catch {}
-          } catch {}
+              if (edgePoolIds.size > 0) {
+                try { logger.info('pools.ws targets.orca from cache (lazy mode)', { size: edgePoolIds.size }); } catch {}
+              }
+            } catch {}
+          } else {
+            // Force a fresh snapshot to ensure we have the fully filtered graph
+            try {
+              const gmod: any = await import('./graph.js');
+              const snap = await gmod.getGraphSnapshot(true);
+              for (const e of (snap?.edges || [])) {
+                const dex = String((e as any)?.dex || '');
+                if (dex !== 'Orca') continue;
+                const pid = String((e as any)?.pool_id || '');
+                if (pid) {
+                  const base = pid.replace(/[#-]rev$/,'');
+                  // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+                  if (isValidPublicKey(base)) {
+                    edgePoolIds.add(base);
+                  }
+                }
+              }
+              try { logger.info('pools.ws targets.orca from graph', { size: edgePoolIds.size }); } catch {}
+            } catch {}
+          }
           const SOL = 'So11111111111111111111111111111111111111112';
           const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
           const tickSpacings = [8, 16, 32, 64, 128, 256];
@@ -4192,9 +4220,10 @@ function runWebsocketRefreshLoop(): void {
           if (edgePoolIds.size > 0) {
             uniq = Array.from(edgePoolIds);
             targetedWsActive = true;
-          } else {
+          } else if (!isLazyActivationEnabled()) {
             // If no graph edges found, retry with fresh snapshot (like Meteora does)
             // This handles the case where subscriptions start before graph is fully built
+            // Skip retries in lazy mode - graph is intentionally empty
             const maxRetries = Math.max(1, Number(((CONFIG.system as any)?.orcaWsRetryCount) || 2));
             const delayMs = Math.max(200, Number(((CONFIG.system as any)?.orcaWsRetryDelayMs) || 600));
             for (let i = 0; i < maxRetries && edgePoolIds.size === 0; i++) {
@@ -4223,10 +4252,11 @@ function runWebsocketRefreshLoop(): void {
                 await new Promise(r => setTimeout(r, delayMs));
               }
             }
+          }
             
-            // Only fallback to watchlist derivation if graph still has no Orca pools after retries
-            // This should rarely happen if graph is properly built
-            if (uniq.length === 0) {
+          // Only fallback to watchlist derivation if graph still has no Orca pools after retries
+          // This should rarely happen if graph is properly built (or in lazy mode with empty cache)
+          if (uniq.length === 0) {
               try { logger.warn('pools.ws targets.orca no graph edges, using watchlist fallback', { cat: 'pools' }); } catch {}
               const pairs: Array<[string, string]> = [];
               const watchMints: string[] = Array.from(new Set(wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean)));
@@ -4337,29 +4367,36 @@ function runWebsocketRefreshLoop(): void {
         logger.info('pools.ws dex.subscribe.start', { dex: 'raydium', sequential: isSequentialMode, cat: 'pools' });
         try {
           // Prefer graph edge pool ids if available
+          // In lazy activation mode, use cache directly (graph is empty until pools activate)
           const edgePoolIds = new Set<string>();
-          try {
-            const gmod: any = await import('./graph.js');
-            const snap = await gmod.getGraphSnapshot(false);
-            for (const e of (snap?.edges || [])) {
-              const dex = String((e as any)?.dex || '');
-              if (dex !== 'Raydium') continue;
-              const pid = String((e as any)?.pool_id || '');
-              if (pid) {
-                const base = pid.replace(/[#-]rev$/,'');
-                // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
-                if (isValidPublicKey(base)) {
-                  edgePoolIds.add(base);
+          if (!isLazyActivationEnabled()) {
+            try {
+              const gmod: any = await import('./graph.js');
+              const snap = await gmod.getGraphSnapshot(false);
+              for (const e of (snap?.edges || [])) {
+                const dex = String((e as any)?.dex || '');
+                if (dex !== 'Raydium') continue;
+                const pid = String((e as any)?.pool_id || '');
+                if (pid) {
+                  const base = pid.replace(/[#-]rev$/,'');
+                  // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+                  if (isValidPublicKey(base)) {
+                    edgePoolIds.add(base);
+                  }
                 }
               }
-            }
-            try { logger.info('pools.ws targets.raydium from graph', { size: edgePoolIds.size }); } catch {}
-          } catch {}
+              try { logger.info('pools.ws targets.raydium from graph', { size: edgePoolIds.size }); } catch {}
+            } catch {}
+          }
           const rayKnown: string[] = [];
           try { for (const p of (raydiumCache.data?.amm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
           try { for (const p of (raydiumCache.data?.clmm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
           const startTsRay = Date.now();
+          // In lazy mode, edgePoolIds will be empty so we'll use rayKnown (cache)
           const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : rayKnown;
+          if (isLazyActivationEnabled() && rayKnown.length > 0) {
+            try { logger.info('pools.ws targets.raydium from cache (lazy mode)', { size: rayKnown.length }); } catch {}
+          }
           const uniqueRay = Array.from(new Set(base.filter(Boolean)));
           let attachedRay = 0;
           // Rate-limit new attachments per second based on config
@@ -4621,30 +4658,37 @@ function runWebsocketRefreshLoop(): void {
           const pumpswapProg = new web3.PublicKey(PUMPSWAP_PROGRAM_ID);
           
           // Get pool IDs from cache or graph
+          // In lazy activation mode, use cache directly (graph is empty until pools activate)
           const edgePoolIds = new Set<string>();
-          try {
-            const gmod: any = await import('./graph.js');
-            const snap = await gmod.getGraphSnapshot(false);
-            for (const e of (snap?.edges || [])) {
-              const dex = String((e as any)?.dex || '');
-              if (dex !== 'Pumpswap') continue;
-              const pid = String((e as any)?.pool_id || '');
-              if (pid) {
-                const base = pid.replace(/[#-]rev$/,'');
-                // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
-                if (isValidPublicKey(base)) {
-                  edgePoolIds.add(base);
+          if (!isLazyActivationEnabled()) {
+            try {
+              const gmod: any = await import('./graph.js');
+              const snap = await gmod.getGraphSnapshot(false);
+              for (const e of (snap?.edges || [])) {
+                const dex = String((e as any)?.dex || '');
+                if (dex !== 'Pumpswap') continue;
+                const pid = String((e as any)?.pool_id || '');
+                if (pid) {
+                  const base = pid.replace(/[#-]rev$/,'');
+                  // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+                  if (isValidPublicKey(base)) {
+                    edgePoolIds.add(base);
+                  }
                 }
               }
-            }
-            try { logger.info('pools.ws targets.pumpswap from graph', { size: edgePoolIds.size }); } catch {}
-          } catch {}
+              try { logger.info('pools.ws targets.pumpswap from graph', { size: edgePoolIds.size }); } catch {}
+            } catch {}
+          }
           
           const pumpKnown: string[] = [];
           try { for (const p of (pumpswapCache.data?.amm || [])) if (p?.id) pumpKnown.push(String(p.id)); } catch {}
           
           const startTsPump = Date.now();
+          // In lazy mode, edgePoolIds will be empty so we'll use pumpKnown (cache)
           const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : pumpKnown;
+          if (isLazyActivationEnabled() && pumpKnown.length > 0) {
+            try { logger.info('pools.ws targets.pumpswap from cache (lazy mode)', { size: pumpKnown.length }); } catch {}
+          }
           const uniquePump = Array.from(new Set(base.filter(Boolean)));
           let attachedPump = 0;
           
@@ -4764,25 +4808,28 @@ function runWebsocketRefreshLoop(): void {
         logger.info('pools.ws dex.subscribe.start', { dex: 'meteora_balanced', sequential: isSequentialMode, cat: 'pools' });
         try {
           // Get pool IDs from graph edges
+          // In lazy activation mode, use cache directly (graph is empty until pools activate)
           const edgePoolIds = new Set<string>();
-          try {
-            const gmod: any = await import('./graph.js');
-            const snap = await gmod.getGraphSnapshot(false);
-            for (const e of (snap?.edges || [])) {
-              const dex = String((e as any)?.dex || '');
-              // Match MeteoraBalanced, MeteoraBalanced_v1, MeteoraBalanced_v2
-              if (!dex.startsWith('MeteoraBalanced')) continue;
-              const pid = String((e as any)?.pool_id || '');
-              if (pid) {
-                const base = pid.replace(/[#-]rev$/,'');
-                // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
-                if (isValidPublicKey(base)) {
-                  edgePoolIds.add(base);
+          if (!isLazyActivationEnabled()) {
+            try {
+              const gmod: any = await import('./graph.js');
+              const snap = await gmod.getGraphSnapshot(false);
+              for (const e of (snap?.edges || [])) {
+                const dex = String((e as any)?.dex || '');
+                // Match MeteoraBalanced, MeteoraBalanced_v1, MeteoraBalanced_v2
+                if (!dex.startsWith('MeteoraBalanced')) continue;
+                const pid = String((e as any)?.pool_id || '');
+                if (pid) {
+                  const base = pid.replace(/[#-]rev$/,'');
+                  // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+                  if (isValidPublicKey(base)) {
+                    edgePoolIds.add(base);
+                  }
                 }
               }
-            }
-            try { logger.info('pools.ws targets.meteora_balanced from graph', { size: edgePoolIds.size }); } catch {}
-          } catch {}
+              try { logger.info('pools.ws targets.meteora_balanced from graph', { size: edgePoolIds.size }); } catch {}
+            } catch {}
+          }
           
           // Fallback: use cache
           const mbalKnown: string[] = [];
@@ -4793,7 +4840,11 @@ function runWebsocketRefreshLoop(): void {
           } catch {}
           
           const startTsMbal = Date.now();
+          // In lazy mode, edgePoolIds will be empty so we'll use mbalKnown (cache)
           const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : mbalKnown;
+          if (isLazyActivationEnabled() && mbalKnown.length > 0) {
+            try { logger.info('pools.ws targets.meteora_balanced from cache (lazy mode)', { size: mbalKnown.length }); } catch {}
+          }
           const uniqueMbal = Array.from(new Set(base.filter(Boolean)));
           let attachedMbal = 0;
           
