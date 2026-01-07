@@ -1438,9 +1438,12 @@ async function extractDexAccounts(
         //   - Without exBitmap: 11 accounts
         const hasToken2022 = hop.inputTokenProgram === 'token-2022' || hop.outputTokenProgram === 'token-2022';
 
-        // Use swap_v2 ONLY for Token-2022 tokens
-        // Standard SPL-token pools use the simpler swap instruction
-        const raydiumNeedsSwapV2 = hasToken2022;
+        // ALWAYS use swap_v2 for Raydium CLMM swaps
+        // swap_v2 provides 3 tick arrays instead of 1, making it robust against tick drift
+        // between quote time and execution time. The slight overhead (6 extra accounts) is
+        // worth the reliability improvement over the single-tick-array swap instruction.
+        // This prevents InvalidFirstTickArrayAccount (6028) and NotEnoughTickArrayAccount (6027) errors.
+        const raydiumNeedsSwapV2 = true;
         
         // Get ammConfig from hop or cache - CRITICAL: cannot be derived, must come from pool data
         const ammConfigAddr = hop.ammConfig || stat?.amm_config;

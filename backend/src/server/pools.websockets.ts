@@ -4275,7 +4275,6 @@ function runWebsocketRefreshLoop(): void {
                 }
               }
               uniq = Array.from(new Set(poolAddrs));
-            }
           }
           const startTsOrca = Date.now();
           let attached = 0;

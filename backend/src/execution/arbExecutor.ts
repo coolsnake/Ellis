@@ -833,34 +833,19 @@ export class ArbExecutor {
                 effectiveSizeUsd = walletBalanceUsd;
               }
             } else {
-              // Have balance but no price - use raw balance fallback from sizing
-              // The sizing phase already stored this on the opportunity
-              const rawBalanceFallback = (opp as any)._rawBalanceFallback;
-              if (rawBalanceFallback !== undefined) {
-                logger.info('arb.executor.using_raw_balance_fallback', {
-                  cat: 'arb',
-                  traceId,
-                  path: executionPath.join('->'),
-                  startToken: startToken.slice(0, 8) + '...',
-                  balance,
-                  rawBalanceFallback,
-                  reason: 'no_price_data_available',
-                });
-                // Mark that we should use raw size in resolver
-                (opp as any)._useRawSize = true;
-              } else {
-                // No raw balance fallback set - this shouldn't happen if sizing worked
-                // Be conservative and use minimum size
-                const minSafeSize = this.config.dynamicSizing?.minSizeUsd || 1;
-                logger.warn('arb.executor.sizing.no_raw_fallback', {
-                  cat: 'arb',
-                  traceId,
-                  path: executionPath.join('->'),
-                  balance,
-                  fallbackSize: minSafeSize,
-                });
-                effectiveSizeUsd = Math.min(effectiveSizeUsd, minSafeSize);
-              }
+              // Have balance but no price - use FRESH balance for raw size
+              // Don't rely on stale _rawBalanceFallback from sizing phase
+              logger.info('arb.executor.using_raw_balance', {
+                cat: 'arb',
+                traceId,
+                path: executionPath.join('->'),
+                startToken: startToken.slice(0, 8) + '...',
+                balance,
+                reason: 'no_price_data_using_fresh_balance',
+              });
+              // Store fresh balance and mark for raw size in resolver
+              (opp as any)._useRawSize = true;
+              (opp as any)._rawBalanceFallback = balance; // Always use fresh balance
             }
           } else {
             // Cannot verify balance - use minimum safe size or the flashloan check's balance if available
@@ -910,32 +895,48 @@ export class ArbExecutor {
           try {
             // Resolve decimals for the start token
             const decimals = await resolveDecimals(startMint);
-            if (decimals !== undefined) {
-              // Convert whole token balance to raw atoms (use a fraction for safety)
-              const useFraction = 0.95; // Use 95% of balance for safety margin
+            if (decimals !== undefined && decimals >= 0 && decimals <= 18) {
+              // Convert whole token balance to raw atoms
+              // Use 90% of balance for safety margin (accounts for rounding, fees, etc.)
+              const useFraction = 0.90;
               const rawAtoms = BigInt(Math.floor(rawBalance * useFraction * Math.pow(10, decimals)));
               
-              logger.info('arb.executor.using_raw_size', {
-                cat: 'arb',
-                traceId,
-                path: executionPath.join('->'),
-                startMint: startMint.slice(0, 8) + '...',
-                rawBalance,
-                decimals,
-                rawAtoms: rawAtoms.toString(),
-                useFraction,
-              });
-              
-              // Pass raw size instead of USD size
-              resolverInput.size = rawAtoms;
-              // Remove sizeUsd to ensure resolver uses raw size
-              delete resolverInput.sizeUsd;
+              // Sanity check: ensure rawAtoms is positive and reasonable
+              if (rawAtoms > 0n) {
+                logger.info('arb.executor.using_raw_size', {
+                  cat: 'arb',
+                  traceId,
+                  path: executionPath.join('->'),
+                  startMint: startMint.slice(0, 8) + '...',
+                  rawBalance,
+                  decimals,
+                  rawAtoms: rawAtoms.toString(),
+                  useFraction,
+                });
+                
+                // Pass raw size instead of USD size
+                resolverInput.size = rawAtoms;
+                // Remove sizeUsd to ensure resolver uses raw size
+                delete resolverInput.sizeUsd;
+              } else {
+                logger.warn('arb.executor.raw_size_zero', {
+                  cat: 'arb',
+                  traceId,
+                  path: executionPath.join('->'),
+                  rawBalance,
+                  decimals,
+                  reason: 'calculated_raw_atoms_is_zero',
+                });
+                // Don't proceed - balance too small
+                throw new Error('insufficient_balance: calculated raw size is zero');
+              }
             } else {
               logger.warn('arb.executor.decimals_resolve_failed', {
                 cat: 'arb',
                 traceId,
                 path: executionPath.join('->'),
                 startMint: startMint.slice(0, 8) + '...',
+                decimals,
                 fallback: 'using_sizeUsd',
               });
             }
@@ -945,6 +946,7 @@ export class ArbExecutor {
               traceId,
               error: String((e as any)?.message || e),
             });
+            throw e; // Re-throw to prevent execution with wrong size
           }
         }
         
