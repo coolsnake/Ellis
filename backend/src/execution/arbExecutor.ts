@@ -32,6 +32,7 @@ import { calculateOptimalSizeFromOpportunity } from './optimalSizing.js';
 import { loadRouterConfig } from '../server/routerConfigStore.js';
 import { deriveVaultPda, fetchVault } from '../router/sdk.js';
 import { PublicKey } from '@solana/web3.js';
+import { resolveDecimals } from '../server/pools/decimals.js';
 
 interface Opportunity {
   path: string[];
@@ -800,34 +801,66 @@ export class ArbExecutor {
               ? balances.sol 
               : (balances.tokens[startToken] || 0);
             
-            const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
-            const walletBalanceUsd = balance * price;
-            
-            if (walletBalanceUsd <= 0) {
-              // No balance and no flashloan - cannot execute
+            // First check: do we have any balance at all?
+            if (balance <= 0) {
               logger.info('arb.executor.skipped.no_balance', {
                 cat: 'arb',
                 traceId,
                 path: executionPath.join('->'),
                 startToken: startToken.slice(0, 8) + '...',
                 balance,
-                price,
                 requestedSize: sizeUsd,
                 reason: 'zero_balance_no_flashloan',
               });
               throw new Error('insufficient_balance: wallet has no balance for start token and flashloan unavailable');
             }
             
-            if (walletBalanceUsd < effectiveSizeUsd) {
-              logger.debug('arb.executor.sizing.capped_to_wallet', {
-                cat: 'arb',
-                traceId,
-                originalSize: effectiveSizeUsd,
-                walletBalanceUsd,
-                effectiveSize: walletBalanceUsd,
-                reason: 'final_safety_cap',
-              });
-              effectiveSizeUsd = walletBalanceUsd;
+            const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+            
+            if (price > 0) {
+              // Have price data - use USD-based capping
+              const walletBalanceUsd = balance * price;
+              
+              if (walletBalanceUsd < effectiveSizeUsd) {
+                logger.debug('arb.executor.sizing.capped_to_wallet', {
+                  cat: 'arb',
+                  traceId,
+                  originalSize: effectiveSizeUsd,
+                  walletBalanceUsd,
+                  effectiveSize: walletBalanceUsd,
+                  reason: 'final_safety_cap',
+                });
+                effectiveSizeUsd = walletBalanceUsd;
+              }
+            } else {
+              // Have balance but no price - use raw balance fallback from sizing
+              // The sizing phase already stored this on the opportunity
+              const rawBalanceFallback = (opp as any)._rawBalanceFallback;
+              if (rawBalanceFallback !== undefined) {
+                logger.info('arb.executor.using_raw_balance_fallback', {
+                  cat: 'arb',
+                  traceId,
+                  path: executionPath.join('->'),
+                  startToken: startToken.slice(0, 8) + '...',
+                  balance,
+                  rawBalanceFallback,
+                  reason: 'no_price_data_available',
+                });
+                // Mark that we should use raw size in resolver
+                (opp as any)._useRawSize = true;
+              } else {
+                // No raw balance fallback set - this shouldn't happen if sizing worked
+                // Be conservative and use minimum size
+                const minSafeSize = this.config.dynamicSizing?.minSizeUsd || 1;
+                logger.warn('arb.executor.sizing.no_raw_fallback', {
+                  cat: 'arb',
+                  traceId,
+                  path: executionPath.join('->'),
+                  balance,
+                  fallbackSize: minSafeSize,
+                });
+                effectiveSizeUsd = Math.min(effectiveSizeUsd, minSafeSize);
+              }
             }
           } else {
             // Cannot verify balance - use minimum safe size or the flashloan check's balance if available
@@ -857,18 +890,65 @@ export class ArbExecutor {
         
         // Resolve execution plan - pass traceId for complete log correlation
         // Pass minProfitBps to enforce profitability at the final hop for arb cycles
-        plan = await resolveDirectPlan(
-          {
-            path: executionPath,
-            hopPoolIds: opp.hop_pool_ids || [],
-            dexes: executionDexes,
-            sizeUsd: effectiveSizeUsd,
-            slippageBps: this.config.slippageBps,
-            traceId,
-            minProfitBps: this.config.minProfitBps || 0,  // Enforce profitability for arb cycles
-          } as any,
-          {} as any
-        );
+        
+        // Check if we need to use raw size instead of USD size (when price data unavailable)
+        let resolverInput: any = {
+          path: executionPath,
+          hopPoolIds: opp.hop_pool_ids || [],
+          dexes: executionDexes,
+          sizeUsd: effectiveSizeUsd,
+          slippageBps: this.config.slippageBps,
+          traceId,
+          minProfitBps: this.config.minProfitBps || 0,  // Enforce profitability for arb cycles
+        };
+        
+        // If we have raw balance fallback (no price data), convert to raw atoms and pass as `size`
+        if ((opp as any)._useRawSize && (opp as any)._rawBalanceFallback) {
+          const rawBalance = (opp as any)._rawBalanceFallback as number;
+          const startMint = executionPath[0];
+          
+          try {
+            // Resolve decimals for the start token
+            const decimals = await resolveDecimals(startMint);
+            if (decimals !== undefined) {
+              // Convert whole token balance to raw atoms (use a fraction for safety)
+              const useFraction = 0.95; // Use 95% of balance for safety margin
+              const rawAtoms = BigInt(Math.floor(rawBalance * useFraction * Math.pow(10, decimals)));
+              
+              logger.info('arb.executor.using_raw_size', {
+                cat: 'arb',
+                traceId,
+                path: executionPath.join('->'),
+                startMint: startMint.slice(0, 8) + '...',
+                rawBalance,
+                decimals,
+                rawAtoms: rawAtoms.toString(),
+                useFraction,
+              });
+              
+              // Pass raw size instead of USD size
+              resolverInput.size = rawAtoms;
+              // Remove sizeUsd to ensure resolver uses raw size
+              delete resolverInput.sizeUsd;
+            } else {
+              logger.warn('arb.executor.decimals_resolve_failed', {
+                cat: 'arb',
+                traceId,
+                path: executionPath.join('->'),
+                startMint: startMint.slice(0, 8) + '...',
+                fallback: 'using_sizeUsd',
+              });
+            }
+          } catch (e) {
+            logger.warn('arb.executor.raw_size_conversion_failed', {
+              cat: 'arb',
+              traceId,
+              error: String((e as any)?.message || e),
+            });
+          }
+        }
+        
+        plan = await resolveDirectPlan(resolverInput, {} as any);
 
         // Build transaction using the same method as arb routes - pass traceId
         // Pass useRouter config to use on-chain router when enabled
@@ -1644,6 +1724,7 @@ export class ArbExecutor {
     
     // Get wallet balance for non-flashloanable tokens to cap sizing
     let walletBalanceUsd = Infinity; // Default to no cap
+    let rawBalanceFallback: number | undefined; // For when price is unavailable
     if (!isFlashloanable || !flashloanEnabled) {
       try {
         if (this.walletPublicKey) {
@@ -1658,30 +1739,47 @@ export class ArbExecutor {
             ? balances.sol 
             : (balances.tokens[startToken] || 0);
           
-          const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
-          walletBalanceUsd = balance * price;
-          
-          if (walletBalanceUsd <= 0) {
+          // Check if we have any balance at all
+          if (balance <= 0) {
             logger.warn('arb.executor.sizing.no_wallet_balance', {
               cat: 'arb',
               path: opp.path.join('->'),
               startToken: startToken.slice(0, 8) + '...',
               balance,
-              price,
-              isFlashloanable,
+              reason: 'zero_balance',
             });
-            // Can't trade if no balance and no flashloan available
+            // Truly no balance - can't trade
             return 0;
           }
           
-          logger.debug('arb.executor.sizing.wallet_constraint', {
-            cat: 'arb',
-            path: opp.path.join('->'),
-            startToken: startToken.slice(0, 8) + '...',
-            walletBalanceUsd,
-            isFlashloanable,
-            flashloanEnabled,
-          });
+          const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+          
+          if (price > 0) {
+            walletBalanceUsd = balance * price;
+            logger.debug('arb.executor.sizing.wallet_constraint', {
+              cat: 'arb',
+              path: opp.path.join('->'),
+              startToken: startToken.slice(0, 8) + '...',
+              walletBalanceUsd,
+              isFlashloanable,
+              flashloanEnabled,
+            });
+          } else {
+            // Have balance but no price data - skip USD wallet cap, use raw balance fallback
+            // Store raw balance so we can pass it to resolver as token amount
+            rawBalanceFallback = balance;
+            // Store on opportunity so execution can use raw size instead of USD
+            (opp as any)._rawBalanceFallback = balance;
+            (opp as any)._rawBalanceStartToken = startToken;
+            logger.info('arb.executor.sizing.no_price_using_raw_balance', {
+              cat: 'arb',
+              path: opp.path.join('->'),
+              startToken: startToken.slice(0, 8) + '...',
+              balance,
+              reason: 'missing_price_data',
+            });
+            // Keep walletBalanceUsd = Infinity (no USD-based cap)
+          }
         }
       } catch (e) {
         logger.warn('arb.executor.sizing.balance_check_failed', {
@@ -1791,6 +1889,7 @@ export class ArbExecutor {
       flashloanEnabled,
       bottleneckUsd,
       profitBps: opp.net_bps ?? opp.profit_bps,
+      rawBalanceFallback: rawBalanceFallback ?? null,
     });
     
     return sizeUsd;
