@@ -14,6 +14,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { address } from '@solana/kit';
 import { rpcFromUrl } from '@orca-so/tx-sender';
+import BN from 'bn.js';
 import { logger } from '../../utils/logger.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection } from '../../wallet/wallet.js';
@@ -526,7 +527,7 @@ async function getOrcaSdkQuote(
     return {
       success: false,
       accounts: {},
-      error: (e as Error).message,
+      error: e instanceof Error ? e.message : String(e),
     };
   }
 }
@@ -902,7 +903,7 @@ async function getRaydiumSdkQuote(
     return {
       success: false,
       accounts: {},
-      error: (e as Error).message,
+      error: e instanceof Error ? e.message : String(e),
     };
   }
 }
@@ -1055,7 +1056,6 @@ async function getMeteoraSdkQuote(
     if (binArrayAddresses.length === 0) {
       const RANGE = MAX_BIN_ARRAY_RANGE; // Use same range as SDK filtering (was 5, now 3)
 
-      const BN = (await import('bn.js')).default;
       const derivedArrays: PublicKey[] = [];
 
       for (let i = activeIndex - RANGE; i <= activeIndex + RANGE; i++) {
@@ -1137,7 +1137,7 @@ async function getMeteoraSdkQuote(
     return {
       success: false,
       accounts: {},
-      error: (e as Error).message,
+      error: e instanceof Error ? e.message : String(e),
     };
   }
 }
@@ -1196,22 +1196,24 @@ export async function getSdkQuoteAccounts(hop: DirectHop): Promise<SdkQuoteResul
 
 /**
  * Get SDK-provided accounts for all hops in an execution plan
+ * Runs all hop quotes in parallel for reduced latency
  */
 export async function getSdkQuoteAccountsForPlan(
   hops: DirectHop[]
 ): Promise<{ success: boolean; results: SdkQuoteResult[]; error?: string }> {
-  const results: SdkQuoteResult[] = [];
+  // Run all hop SDK quotes in parallel
+  const results = await Promise.all(
+    hops.map(hop => getSdkQuoteAccounts(hop))
+  );
 
-  for (let i = 0; i < hops.length; i++) {
-    const hop = hops[i];
-    const result = await getSdkQuoteAccounts(hop);
-    results.push(result);
-
+  // Check for any failures and return first error found
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
     if (!result.success) {
       return {
         success: false,
         results,
-        error: `Hop ${i} (${hop.dex}/${hop.poolId.slice(0, 8)}...): ${result.error}`,
+        error: `Hop ${i} (${hops[i].dex}/${hops[i].poolId.slice(0, 8)}...): ${result.error}`,
       };
     }
   }
@@ -1220,4 +1222,24 @@ export async function getSdkQuoteAccountsForPlan(
     success: true,
     results,
   };
+}
+
+/**
+ * Pre-warm all SDK imports at startup
+ * This avoids lazy initialization overhead on first execution
+ */
+export async function warmupSdks(): Promise<void> {
+  const startMs = Date.now();
+  
+  await Promise.all([
+    initOrcaSdk(),
+    initRaydiumSdk(),
+    initMeteoraSdk(),
+  ]);
+  
+  const elapsed = Date.now() - startMs;
+  logger.info('sdkQuoteBuilder.warmup.complete', { 
+    cat: 'tx', 
+    elapsed_ms: elapsed,
+  });
 }

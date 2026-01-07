@@ -25,6 +25,7 @@ import { buildTransactionSummary } from '../server/arb.build.worker.compute.js';
 import { writeTxFullDump } from '../utils/txTrace.js';
 import { getTxRelatedLogs } from '../utils/sessionLogs.js';
 import { buildRouterTransaction } from './builder/routerTx.js';
+import { warmupSdks } from './builder/sdkQuoteBuilder.js';
 import { ExecutionMode } from '../router/types.js';
 import { loadJitoConfig } from '../server/jitoConfigStore.js';
 import { getPriceByMint } from '../server/priceStore.js';
@@ -202,6 +203,11 @@ export class ArbExecutor {
     } catch (e) {
       logger.warn('arb.executor.jito_tip_feed_failed', { cat: 'arb', error: String(e?.message || e) });
     }
+
+    // Pre-warm SDK imports (non-blocking) - avoids lazy init overhead on first execution
+    warmupSdks().catch(e => {
+      logger.warn('arb.executor.sdk_warmup_failed', { cat: 'arb', error: String(e?.message || e) });
+    });
 
     // Cache wallet public key for balance checks
     try {

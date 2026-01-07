@@ -749,7 +749,8 @@ async function buildDirectRouterTx(
       const aToB = hop.inputMint === poolMintA;
       const amountIn = BigInt(hop.amountInRaw.toString());
       const minAmountOut = BigInt(hop.minOutRaw.toString());
-      const dexAccounts = await extractDexAccounts(hop, dexType, wallet.publicKey, { allowVariableAccounts: true });
+      // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
+      const dexAccounts = await extractDexAccounts(hop, dexType, wallet.publicKey, { allowVariableAccounts: true, aToB });
       try {
         // Calculate bin array count: swap variant starts at 15, swap2 at 16
         // We use 15 as base since swap is most common (standard SPL tokens)
@@ -1203,7 +1204,8 @@ async function buildRouteStepsWithSdkAccounts(
     initialBalances.push(initialBalance);
 
     // Extract DEX accounts using SDK-provided values
-    const hopAccounts = await extractDexAccountsWithSdk(hop, dexType, wallet, sdkAccounts);
+    // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
+    const hopAccounts = await extractDexAccountsWithSdk(hop, dexType, wallet, sdkAccounts, aToB);
     dexAccounts.push(...hopAccounts);
     accountsPerStep.push(hopAccounts.length);
 
@@ -1231,13 +1233,15 @@ async function extractDexAccountsWithSdk(
   hop: DirectHop,
   dexType: DexType,
   wallet: PublicKey,
-  sdkAccounts: SdkProvidedAccounts
+  sdkAccounts: SdkProvidedAccounts,
+  aToB: boolean
 ): Promise<PublicKey[]> {
   // Apply SDK accounts to hop before extraction
   applysdkAccountsToHop(hop, sdkAccounts);
 
   // Use the standard extractDexAccounts which will now use the SDK-provided values
-  return extractDexAccounts(hop, dexType, wallet);
+  // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
+  return extractDexAccounts(hop, dexType, wallet, { aToB });
 }
 
 /**
@@ -1331,8 +1335,9 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
     }
     initialBalances.push(initialBalance);
 
-    // Collect DEX accounts for this hop - pass wallet for signer account positions
-    const hopAccounts = await extractDexAccounts(hop, dexType, wallet);
+    // Collect DEX accounts for this hop - pass wallet and aToB for consistent direction
+    // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
+    const hopAccounts = await extractDexAccounts(hop, dexType, wallet, { aToB });
     dexAccounts.push(...hopAccounts);
     
     // Track actual account count for this hop (enables variable bin arrays for Meteora)
@@ -1363,7 +1368,7 @@ async function extractDexAccounts(
   hop: DirectHop,
   dexType: DexType,
   wallet: PublicKey,
-  opts?: { allowVariableAccounts?: boolean }
+  opts?: { allowVariableAccounts?: boolean; aToB?: boolean }
 ): Promise<PublicKey[]> {
   const accounts: PublicKey[] = [];
 
@@ -1401,10 +1406,13 @@ async function extractDexAccounts(
     const nativeAccountB = stat?.native_account_b;  // On-chain vault for token_mint_1
     
     // Direction flag uses NATIVE ordering (matches on-chain a_to_b interpretation)
-    // Fallback to canonical only if native is unavailable
-    const isAtoB = nativeMintA 
-      ? (hop.inputMint === nativeMintA) 
-      : (hop.inputMint === poolMintA);
+    // CRITICAL: Use passed aToB if available to ensure consistency with on-chain instruction
+    // This prevents mismatch between direction flag and account ordering if cache changes
+    const isAtoB = opts?.aToB !== undefined
+      ? opts.aToB
+      : (nativeMintA 
+          ? (hop.inputMint === nativeMintA) 
+          : (hop.inputMint === poolMintA));
 
     // Get hot cache for additional pool state (tick arrays, exBitmap, etc.)
     const hot = executionCache.getHot(hop.poolId.replace(/[#-]rev$/, ''));
@@ -2134,10 +2142,10 @@ async function extractDexAccounts(
         //
         // On-chain router auto-detects based on account count (12 vs 15+).
         
-        // CRITICAL: Orca swap direction MUST use NATIVE mint ordering (tokenMintA/tokenMintB)
-        // The on-chain program uses native A/B to determine swap direction
-        // nativeMintA/B were already extracted above for all DEX types
-        const isAtoBOrca = nativeMintA ? (hop.inputMint === nativeMintA) : isAtoB;
+        // CRITICAL: Orca swap direction MUST match the aToB flag passed to on-chain program
+        // Use isAtoB directly (which uses passed opts.aToB if available) to ensure consistency
+        // This prevents mismatch between direction flag and account ordering
+        const isAtoBOrca = isAtoB;
         const userTokenA = isAtoBOrca ? userSourceAta : userDestAta;
         const userTokenB = isAtoBOrca ? userDestAta : userSourceAta;
         
