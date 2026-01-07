@@ -21,6 +21,8 @@ import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 // Import pool eligibility tracking for reactive pool filtering
 import { onPoolTickUpdate } from '../../../pools.websockets.js';
+// Import pool activation tracking for lazy activation mode
+import { tryActivatePool } from '../../../pools.activation.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -656,6 +658,14 @@ async function handleClmmUpdate(
     await scheduleDexApply('raydium', prev);
   }
 
+  // Try to activate pool for lazy activation mode (only activates on first valid price update)
+  const hasValidPrice = !!(
+    processedPrice?.priceForward &&
+    Number.isFinite(processedPrice.priceForward) &&
+    processedPrice.priceForward > 0
+  );
+  tryActivatePool(poolId, 'raydium', hasValidPrice);
+
   return { success: true, pool: item as DecodedPool, delta };
 }
 
@@ -883,6 +893,14 @@ async function handleAmmUpdate(
   if (hasDelta) {
     await scheduleDexApply('raydium', prev);
   }
+
+  // Try to activate pool for lazy activation mode (only activates on first valid price update)
+  const hasValidPriceAmm = !!(
+    finalItem.price_a_per_b &&
+    Number.isFinite(finalItem.price_a_per_b) &&
+    finalItem.price_a_per_b > 0
+  );
+  tryActivatePool(poolId, 'raydium', hasValidPriceAmm);
 
   return { success: true, pool: finalItem as unknown as DecodedPool, delta };
 }

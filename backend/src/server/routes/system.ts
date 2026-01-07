@@ -33,6 +33,13 @@ export function createSystemRouter(_io: SocketIOServer): Router {
 
   api.get('/system/config', async (_req, res) => {
     try {
+      // Get pool activation stats
+      let poolsActivationStats: { enabled: boolean; activatedCount: number; pendingBatchCount: number } | null = null;
+      try {
+        const { getActivationStats } = await import('../pools.activation.js');
+        poolsActivationStats = getActivationStats();
+      } catch {}
+      
       res.json({
         rpcUrl: CONFIG.rpcUrl,
         system: CONFIG.system,
@@ -44,6 +51,10 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         pumpswap: (CONFIG as any).pumpswap,
         sanity: (CONFIG as any).sanity,
         shyft: (CONFIG as any).shyft,
+        pools: {
+          activationMode: (CONFIG.system as any)?.poolActivationMode || 'immediate',
+          activationStats: poolsActivationStats,
+        },
       });
     } catch (e: any) {
       logger.error('server: failed to get system config', { error: String(e?.message || e), cat: 'server' });
@@ -53,7 +64,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
 
   api.post('/system/config', async (req, res) => {
     try {
-      const { rpcUrl, system, fees, raydium, orca, meteora, meteoraBalanced, pumpswap, sanity } = req.body as {
+      const { rpcUrl, system, fees, raydium, orca, meteora, meteoraBalanced, pumpswap, sanity, pools } = req.body as {
         rpcUrl?: string;
         system?: any;
         fees?: any;
@@ -63,6 +74,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         meteoraBalanced?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number };
         pumpswap?: { shyftApiKey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; defaultFeeBps?: number; minLiqBase?: number; pageSize?: number; maxPages?: number; pageDelayMs?: number; enableRpcEnrichment?: boolean; rpcBatchSize?: number; validatePrices?: boolean; validationSamples?: number };
         sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number; sanity_applyRaydiumAmm?: boolean; sanity_applyOrcaClmm?: boolean };
+        pools?: { activationMode?: 'immediate' | 'lazy' };
       };
       if (rpcUrl) CONFIG.rpcUrl = rpcUrl;
       if (system) {
@@ -96,6 +108,20 @@ export function createSystemRouter(_io: SocketIOServer): Router {
       if (meteoraBalanced) (CONFIG as any).meteoraBalanced = { ...(CONFIG as any).meteoraBalanced, ...meteoraBalanced } as any;
       if (pumpswap) (CONFIG as any).pumpswap = { ...(CONFIG as any).pumpswap, ...pumpswap } as any;
       if (sanity) (CONFIG as any).sanity = { ...(CONFIG as any).sanity, ...sanity } as any;
+      
+      // Handle pool activation mode changes
+      if (pools?.activationMode) {
+        try {
+          const { setLazyActivationEnabled } = await import('../pools.activation.js');
+          const enabled = pools.activationMode === 'lazy';
+          setLazyActivationEnabled(enabled);
+          (CONFIG.system as any).poolActivationMode = pools.activationMode;
+          logger.info('server: pool activation mode changed', { mode: pools.activationMode, enabled, cat: 'server' });
+        } catch (activationErr) {
+          logger.warn('server: failed to set pool activation mode', { error: String((activationErr as Error)?.message || activationErr), cat: 'server' });
+        }
+      }
+      
       try {
         if (system && Object.prototype.hasOwnProperty.call(system, 'enableLogging')) {
           setLoggingEnabled(system.enableLogging !== false);

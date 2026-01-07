@@ -24,6 +24,9 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     sanity_applyOrcaClmm: true,
     logMinLevel: 'info',
     logAllowCats: '',
+    // Pool activation mode
+    poolActivationMode: 'immediate' as 'immediate' | 'lazy',
+    poolActivationStats: null as null | { enabled: boolean; activatedCount: number; pendingBatchCount: number },
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +58,9 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             sanity_applyRaydiumAmm: (j?.sanity?.sanity_applyRaydiumAmm ?? true) !== false,
             sanity_applyRaydiumClmm: (j?.sanity?.sanity_applyRaydiumClmm ?? true) !== false,
             sanity_applyOrcaClmm: (j?.sanity?.sanity_applyOrcaClmm ?? true) !== false,
+            // Pool activation mode
+            poolActivationMode: j?.pools?.activationMode || 'immediate',
+            poolActivationStats: j?.pools?.activationStats || null,
           }));
         }
       } catch {}
@@ -88,6 +94,9 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         sanity_applyRaydiumAmm: !!cfg.sanity_applyRaydiumAmm,
         sanity_applyRaydiumClmm: !!cfg.sanity_applyRaydiumClmm,
         sanity_applyOrcaClmm: !!cfg.sanity_applyOrcaClmm,
+      },
+      pools: {
+        activationMode: cfg.poolActivationMode,
       },
     };
     try {
@@ -157,6 +166,38 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sanity_applyRaydiumAmm} onChange={(e)=>set('sanity_applyRaydiumAmm', e.target.checked)} />Apply to Raydium AMM</label>
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sanity_applyRaydiumClmm} onChange={(e)=>set('sanity_applyRaydiumClmm', e.target.checked)} />Apply to Raydium CLMM</label>
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sanity_applyOrcaClmm} onChange={(e)=>set('sanity_applyOrcaClmm', e.target.checked)} />Apply to Orca CLMM</label>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Pool Activation Mode</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm mb-1">Activation Mode</label>
+                <select 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={cfg.poolActivationMode} 
+                  onChange={(e) => set('poolActivationMode', e.target.value)}
+                >
+                  <option value="immediate">Immediate (all pools in graph)</option>
+                  <option value="lazy">Lazy (require first WS update)</option>
+                </select>
+                <div className="text-xs text-gray-300 mt-1">
+                  Lazy mode only adds pools to graph after receiving their first WebSocket update with valid pricing.
+                </div>
+              </div>
+              {cfg.poolActivationStats && (
+                <div className="bg-gray-800 rounded p-3">
+                  <div className="text-sm font-medium mb-2">Activation Status</div>
+                  <div className="text-xs space-y-1">
+                    <div>Mode: <span className={cfg.poolActivationStats.enabled ? 'text-yellow-400' : 'text-green-400'}>
+                      {cfg.poolActivationStats.enabled ? 'LAZY' : 'IMMEDIATE'}
+                    </span></div>
+                    <div>Activated Pools: <span className="text-blue-400">{cfg.poolActivationStats.activatedCount}</span></div>
+                    <div>Pending Batch: <span className="text-gray-400">{cfg.poolActivationStats.pendingBatchCount}</span></div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

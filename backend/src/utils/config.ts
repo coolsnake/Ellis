@@ -247,6 +247,8 @@ export const CONFIG = {
     enablePoolWs: process.env.ENABLE_POOL_WS !== 'false',
     // Pool subscription mode: 'wss' (WebSocket RPC), 'grpc' (Yellowstone gRPC), or 'disabled'
     poolSubscriptionMode: (process.env.POOL_SUBSCRIPTION_MODE as 'wss' | 'grpc' | 'disabled') || 'wss',
+    // Pool activation mode: 'immediate' (all pools in graph) or 'lazy' (only after first WS update)
+    poolActivationMode: (process.env.POOL_ACTIVATION_MODE as 'immediate' | 'lazy') || 'immediate',
     // gRPC stream configuration (Yellowstone/Shyft)
     grpc: {
       endpoint: process.env.GRPC_ENDPOINT || '',

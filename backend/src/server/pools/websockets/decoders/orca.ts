@@ -30,6 +30,8 @@ import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { CONFIG } from '../../../../utils/config.js';
 // Import pool eligibility tracking for reactive pool filtering
 import { onPoolTickUpdate } from '../../../pools.websockets.js';
+// Import pool activation tracking for lazy activation mode
+import { tryActivatePool } from '../../../pools.activation.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -996,6 +998,14 @@ export async function handleOrcaUpdate(
     if (hasDelta) {
       await scheduleDexApply('orca', prev);
     }
+
+    // Try to activate pool for lazy activation mode (only activates on first valid price update)
+    const hasValidPrice = !!(
+      processedPrice?.priceForward &&
+      Number.isFinite(processedPrice.priceForward) &&
+      processedPrice.priceForward > 0
+    );
+    tryActivatePool(poolId, 'orca', hasValidPrice);
 
     return { success: true, pool: clmmItem as DecodedPool, delta };
   } catch (e) {

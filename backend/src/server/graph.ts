@@ -18,6 +18,10 @@ export type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.typ
 import { diffSnapshots } from './graph.diff.js';
 import { findPathInSnapshot } from './graph.path.js';
 import type { PoolsPayload } from './pools/types.js';
+import { isLazyActivationEnabled, filterActivatedPools } from './pools.activation.js';
+// Note: No rebuild callback needed - incremental updates handle pool activation automatically
+// The decoder calls tryActivatePool() BEFORE scheduleDexApply(), so by the time
+// applyPoolUpdates runs, the pool is already marked as activated and will pass the filter.
 
 
 
@@ -297,15 +301,27 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
         return; 
       }
 
+      // Apply lazy activation filter to both prev and next
+      // This ensures only activated pools are included in incremental updates
+      const applyActivationFilter = (payload: PoolsPayload): PoolsPayload => {
+        if (!isLazyActivationEnabled()) return payload;
+        return {
+          amm: filterActivatedPools(payload.amm || []),
+          clmm: filterActivatedPools(payload.clmm || []),
+        };
+      };
+      const filteredPrev = applyActivationFilter(prev);
+      const filteredNext = applyActivationFilter(next);
+
       const priceStore = await import('./priceStore.js');
       const edgeAllow = await loadEdgeAllow();
-      const priceMap = buildPriceMap(priceStore, lastSnapshot, prev, next);
+      const priceMap = buildPriceMap(priceStore, lastSnapshot, filteredPrev, filteredNext);
       const timestampMs = Date.now();
 
       const payload: GraphIncrementalRequest = {
         previousSnapshot: lastSnapshot,
-        previousPools: prev,
-        nextPools: next,
+        previousPools: filteredPrev,
+        nextPools: filteredNext,
         droppedPoolIds: Array.from(droppedPoolIds),
         edgeAllow,
         priceMap,
@@ -528,7 +544,19 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       
       // Pools are already filtered by universe, minPools, and TVL in refreshAllSources
       // Use the cached results directly without re-filtering
-      let ray = rayRaw; let orc = orcRaw; let met = metRaw; let mbl = mblRaw; let pump = pumpRaw;
+      // When lazy activation is enabled, filter to only include activated pools
+      const filterPools = (payload: PoolsPayload): PoolsPayload => {
+        if (!isLazyActivationEnabled()) return payload;
+        return {
+          amm: filterActivatedPools(payload.amm || []),
+          clmm: filterActivatedPools(payload.clmm || []),
+        };
+      };
+      let ray = filterPools(rayRaw);
+      let orc = filterPools(orcRaw);
+      let met = filterPools(metRaw);
+      let mbl = filterPools(mblRaw);
+      let pump = filterPools(pumpRaw);
       // Before building, ensure we actually retained pools after scoping/filters
       try {
         const count =
