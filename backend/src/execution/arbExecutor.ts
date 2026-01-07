@@ -157,7 +157,7 @@ interface BalanceCache {
   balances: { sol: number; tokens: Record<string, number> } | null;
   fetchedAt: number;
 }
-const BALANCE_CACHE_TTL_MS = 5000; // 5 seconds - balances don't change that fast
+const BALANCE_CACHE_TTL_MS = 2000; // 2 seconds - keep cache fresh, but avoid RPC spam
 
 export class ArbExecutor {
   private config: ExecutorConfig;
@@ -209,6 +209,9 @@ export class ArbExecutor {
       const wallet = await ensureWallet(CONFIG.walletPath);
       this.walletPublicKey = wallet.publicKey;
       logger.debug('arb.executor.wallet_cached', { cat: 'arb', publicKey: wallet.publicKey.toBase58() });
+      
+      // Immediately fetch and cache balances on startup
+      await this.refreshBalances();
     } catch (e) {
       logger.warn('arb.executor.wallet_cache_failed', { cat: 'arb', error: String(e?.message || e) });
     }
@@ -792,7 +795,7 @@ export class ArbExecutor {
         let effectiveSizeUsd = sizeUsd;
         
         if (!useFlashloan) {
-          // Get fresh wallet balance for the start token
+          // Get wallet balance for the start token (cached, refreshed after each execution)
           const SOL_MINT = 'So11111111111111111111111111111111111111112';
           const balances = await this.getCachedBalances();
           
@@ -1621,6 +1624,17 @@ export class ArbExecutor {
       }
     } finally {
       this.state.inFlight.delete(oppKey);
+      
+      // Always refresh balances after execution attempt (success or failure)
+      // This ensures we have accurate balance data for the next opportunity
+      // Non-blocking: don't await to avoid slowing down the executor
+      void this.refreshBalances().catch((e) => {
+        logger.warn('arb.executor.post_execution_balance_refresh_failed', {
+          cat: 'arb',
+          traceId,
+          error: String((e as any)?.message || e),
+        });
+      });
     }
   }
 
@@ -2046,12 +2060,14 @@ export class ArbExecutor {
   /**
    * PERF: Get cached balances to avoid RPC calls on every opportunity check.
    * Fetches fresh balances if cache is stale (older than BALANCE_CACHE_TTL_MS).
+   * @param forceRefresh - If true, bypass cache and fetch fresh balances
    */
-  private async getCachedBalances(): Promise<{ sol: number; tokens: Record<string, number> } | null> {
+  private async getCachedBalances(forceRefresh = false): Promise<{ sol: number; tokens: Record<string, number> } | null> {
     const now = Date.now();
+    const cacheAge = now - this.balanceCache.fetchedAt;
     
-    // Return cached balances if still fresh
-    if (this.balanceCache.balances && (now - this.balanceCache.fetchedAt) < BALANCE_CACHE_TTL_MS) {
+    // Return cached balances if still fresh and not forcing refresh
+    if (!forceRefresh && this.balanceCache.balances && cacheAge < BALANCE_CACHE_TTL_MS) {
       return this.balanceCache.balances;
     }
     
@@ -2061,15 +2077,68 @@ export class ArbExecutor {
     try {
       const balances = await getBalances(this.walletPublicKey);
       this.balanceCache = { balances, fetchedAt: now };
+      
+      logger.debug('arb.executor.balance_cache.refreshed', {
+        cat: 'arb',
+        cacheAge,
+        forceRefresh,
+        sol: balances.sol,
+        tokenCount: Object.keys(balances.tokens).length,
+      });
+      
       return balances;
     } catch (e) {
       logger.warn('arb.executor.balance_cache.fetch_failed', {
         cat: 'arb',
         error: String((e as any)?.message || e),
+        cacheAge,
+        hasStaleCache: !!this.balanceCache.balances,
       });
       // Return stale cache if available, otherwise null
       return this.balanceCache.balances;
     }
+  }
+
+  /**
+   * Force refresh wallet balances. Call this:
+   * - On executor startup
+   * - After every execution attempt (success or failure)
+   * This ensures we always have accurate balance data.
+   */
+  private async refreshBalances(): Promise<void> {
+    if (!this.walletPublicKey) {
+      logger.warn('arb.executor.balance_refresh.no_wallet', { cat: 'arb' });
+      return;
+    }
+    
+    try {
+      const balances = await getBalances(this.walletPublicKey);
+      this.balanceCache = { balances, fetchedAt: Date.now() };
+      
+      // Log key balances for visibility
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      const tokenCount = Object.keys(balances.tokens).length;
+      
+      logger.info('arb.executor.balance_refresh.success', {
+        cat: 'arb',
+        sol: balances.sol,
+        usdc: balances.tokens[USDC_MINT] ?? 0,
+        tokenCount,
+      });
+    } catch (e) {
+      logger.error('arb.executor.balance_refresh.failed', {
+        cat: 'arb',
+        error: String((e as any)?.message || e),
+      });
+    }
+  }
+
+  /**
+   * Invalidate the balance cache to force a refresh on next access.
+   */
+  private invalidateBalanceCache(): void {
+    this.balanceCache.fetchedAt = 0;
   }
 
   private cleanupState(): void {
