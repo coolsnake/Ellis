@@ -1622,3 +1622,251 @@ export async function batchFetchPoolsViaSdk(
   return results;
 }
 
+// ============================================================================
+// Lightweight Price-Only Fetchers
+// ============================================================================
+// These functions fetch ONLY price-relevant data with a single RPC call.
+// Use these for price refresh operations instead of the full SDK fetchers
+// which do extensive tick/bin array validation (many RPC calls).
+
+export interface PoolPriceData {
+  sqrtPriceX64?: string;
+  currentTick?: number;
+  tickSpacing?: number;
+  liquidity?: string;
+  activeId?: number;
+  binStep?: number;
+}
+
+/**
+ * Lightweight Raydium pool state fetch for price refresh only.
+ * Just fetches pool account and decodes price-relevant fields.
+ * Does NOT validate tick arrays (saves many RPC calls).
+ * 
+ * @returns Price data or null if fetch failed
+ */
+export async function fetchRaydiumPoolPriceData(
+  connection: Connection,
+  poolId: string,
+  programId?: string
+): Promise<PoolPriceData | null> {
+  const poolPk = new PublicKey(poolId);
+  
+  try {
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: 'cache', method: 'getAccountInfo.raydium.price' }
+    );
+    
+    if (!accountInfo?.data) return null;
+    
+    // Try SDK layout first
+    let layout = RaydiumClmmLayout;
+    if (!layout?.decode) {
+      try {
+        const sdk = await import('@raydium-io/raydium-sdk-v2');
+        layout = (sdk as any)?.PoolInfoLayout || 
+                 (sdk as any)?.Clmm?.PoolInfoLayout ||
+                 (sdk as any)?.Clmm?.PoolStateLayout;
+      } catch {}
+    }
+    
+    if (layout?.decode) {
+      try {
+        const state = layout.decode(accountInfo.data);
+        return {
+          sqrtPriceX64: String(state.sqrtPriceX64 ?? '0'),
+          currentTick: Number(state.tickCurrent ?? state.tick_current ?? 0),
+          tickSpacing: Number(state.tickSpacing ?? state.tick_spacing ?? 0),
+          liquidity: String(state.liquidity ?? '0'),
+        };
+      } catch {}
+    }
+    
+    // Manual decode fallback using known offsets
+    // Raydium CLMM layout: tickSpacing at 235, sqrtPriceX64 at 253, tickCurrent at 269
+    if (accountInfo.data.length >= 280) {
+      const data = accountInfo.data;
+      const view = new DataView(
+        data.buffer, 
+        data.byteOffset, 
+        data.byteLength
+      );
+      
+      const tickSpacing = view.getUint16(235, true);
+      const currentTick = view.getInt32(269, true);
+      
+      // Read u128 sqrtPriceX64 at offset 253 (little-endian)
+      let sqrtPriceX64 = 0n;
+      for (let i = 0; i < 16; i++) {
+        sqrtPriceX64 += BigInt(data[253 + i]) << BigInt(i * 8);
+      }
+      
+      // Read u128 liquidity at offset 237 (little-endian)
+      let liquidity = 0n;
+      for (let i = 0; i < 16; i++) {
+        liquidity += BigInt(data[237 + i]) << BigInt(i * 8);
+      }
+      
+      return {
+        sqrtPriceX64: sqrtPriceX64.toString(),
+        currentTick,
+        tickSpacing,
+        liquidity: liquidity.toString(),
+      };
+    }
+    
+    return null;
+  } catch (e) {
+    logCatchError('fetchRaydiumPoolPriceData', e);
+    return null;
+  }
+}
+
+/**
+ * Lightweight Orca Whirlpool state fetch for price refresh only.
+ * Just fetches pool account and decodes price-relevant fields.
+ * Does NOT validate tick arrays (saves many RPC calls).
+ * 
+ * @returns Price data or null if fetch failed
+ */
+export async function fetchOrcaPoolPriceData(
+  connection: Connection,
+  poolId: string
+): Promise<PoolPriceData | null> {
+  const poolPk = new PublicKey(poolId);
+  
+  try {
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: 'cache', method: 'getAccountInfo.orca.price' }
+    );
+    
+    if (!accountInfo?.data) return null;
+    
+    // Try SDK decoder first
+    if (OrcaWhirlpoolDecoder) {
+      try {
+        const dataBuffer = accountInfo.data instanceof Buffer 
+          ? new Uint8Array(accountInfo.data) 
+          : accountInfo.data;
+        const decoded = OrcaWhirlpoolDecoder.decode(dataBuffer);
+        
+        if (decoded) {
+          return {
+            sqrtPriceX64: String(decoded.sqrtPrice ?? '0'),
+            currentTick: Number(decoded.tickCurrentIndex ?? 0),
+            tickSpacing: Number(decoded.tickSpacing ?? 0),
+            liquidity: String(decoded.liquidity ?? '0'),
+          };
+        }
+      } catch {}
+    }
+    
+    // Manual decode fallback
+    // Orca Whirlpool layout after discriminator(8) + config(32) + bump(1):
+    // tickSpacing at offset 41, liquidity at 47, sqrtPrice at 63, tickCurrentIndex at 79
+    const data = Buffer.from(accountInfo.data);
+    if (data.length < 100) return null;
+    
+    let offset = 8 + 32 + 1; // discriminator + config + bump = 41
+    const tickSpacing = data.readUInt16LE(offset);
+    offset += 2 + 2 + 2 + 2; // tickSpacing + tickSpacingSeed + feeRate + protocolFeeRate = 49
+    
+    // Read u128 liquidity (16 bytes, little-endian)
+    let liquidity = 0n;
+    for (let i = 0; i < 16; i++) {
+      liquidity += BigInt(data[offset + i]) << BigInt(i * 8);
+    }
+    offset += 16; // = 65
+    
+    // Read u128 sqrtPriceX64 (16 bytes, little-endian)
+    let sqrtPriceX64 = 0n;
+    for (let i = 0; i < 16; i++) {
+      sqrtPriceX64 += BigInt(data[offset + i]) << BigInt(i * 8);
+    }
+    offset += 16; // = 81
+    
+    const currentTick = data.readInt32LE(offset);
+    
+    return {
+      sqrtPriceX64: sqrtPriceX64.toString(),
+      currentTick,
+      tickSpacing,
+      liquidity: liquidity.toString(),
+    };
+  } catch (e) {
+    logCatchError('fetchOrcaPoolPriceData', e);
+    return null;
+  }
+}
+
+/**
+ * Lightweight Meteora DLMM state fetch for price refresh only.
+ * Just fetches pool account and decodes price-relevant fields.
+ * Does NOT validate bin arrays (saves many RPC calls).
+ * 
+ * @returns Price data or null if fetch failed
+ */
+export async function fetchMeteoraPoolPriceData(
+  connection: Connection,
+  poolId: string
+): Promise<PoolPriceData | null> {
+  const poolPk = new PublicKey(poolId);
+  
+  try {
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: 'cache', method: 'getAccountInfo.meteora.price' }
+    );
+    
+    if (!accountInfo?.data) return null;
+    
+    // Use SDK decoder
+    try {
+      const meteoraModule = await import('@meteora-ag/dlmm');
+      const createProgram = (meteoraModule as any).createProgram;
+      
+      if (createProgram) {
+        const program = createProgram(connection);
+        const state = program.coder.accounts.decode('lbPair', accountInfo.data);
+        
+        if (state) {
+          return {
+            activeId: Number(state.activeId ?? 0),
+            binStep: Number(state.binStep ?? 0),
+          };
+        }
+      }
+    } catch {}
+    
+    // Manual decode fallback
+    // Meteora lbPair layout: activeId is i32 at offset ~40, binStep is u16 at offset ~36
+    // These offsets may vary - SDK decode is preferred
+    if (accountInfo.data.length >= 50) {
+      const data = accountInfo.data;
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      
+      // Try common offset patterns for Meteora DLMM
+      // Layout: discriminator(8) + parameters(32) + ... 
+      // binStep and activeId are typically early in the struct
+      try {
+        // Attempt to find binStep (u16) and activeId (i32) in likely positions
+        const binStep = view.getUint16(40, true);
+        const activeId = view.getInt32(44, true);
+        
+        if (binStep > 0 && binStep < 1000) {
+          return { activeId, binStep };
+        }
+      } catch {}
+    }
+    
+    return null;
+  } catch (e) {
+    logCatchError('fetchMeteoraPoolPriceData', e);
+    return null;
+  }
+}

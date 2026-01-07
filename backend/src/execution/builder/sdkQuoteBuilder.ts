@@ -695,7 +695,8 @@ async function getRaydiumSdkQuote(
       );
     }
 
-    // Use SDK's computational method to check if exBitmap is needed (no RPC!)
+    // Use SDK's computational method to check if exBitmap is needed FOR THE SWAP (no RPC!)
+    // This determines whether we include exBitmap in the final accounts
     if (RaydiumPoolUtils && typeof RaydiumPoolUtils.isOverflowDefaultTickarrayBitmap === 'function') {
       try {
         needsExBitmap = RaydiumPoolUtils.isOverflowDefaultTickarrayBitmap(tickSpacing, [tickCurrent]);
@@ -714,25 +715,39 @@ async function getRaydiumSdkQuote(
       needsExBitmap = tickCurrent < -maxTickInBitmap || tickCurrent >= maxTickInBitmap;
     }
 
-    // Only fetch exBitmap if it's actually needed
-    if (needsExBitmap && exBitmapPda && RaydiumTickArrayBitmapExtensionLayout) {
+    // ALWAYS try to fetch exBitmap for SDK tick array discovery
+    // The SDK's getTickArrays() internally accesses exTickArrayBitmap properties
+    // even when the swap itself doesn't need it included in accounts
+    let exBitmapExists = false;
+    if (exBitmapPda && RaydiumTickArrayBitmapExtensionLayout) {
       try {
         const exBitmapInfo = await connection.getAccountInfo(exBitmapPda);
         if (exBitmapInfo && exBitmapInfo.data) {
           exTickArrayBitmap = RaydiumTickArrayBitmapExtensionLayout.decode(exBitmapInfo.data);
-          exBitmapAddress = exBitmapPda.toBase58();
+          exBitmapExists = true;
+          // Only set exBitmapAddress if the swap actually needs it
+          if (needsExBitmap) {
+            exBitmapAddress = exBitmapPda.toBase58();
+          }
           logger.debug('sdkQuoteBuilder.raydium.exBitmap.fetched', {
             cat: 'tx',
-            ctx: { poolId: poolId.slice(0, 8), exBitmap: exBitmapAddress.slice(0, 8) },
-          });
-        } else {
-          // exBitmap needed but doesn't exist - this is an error condition
-          logger.warn('sdkQuoteBuilder.raydium.exBitmap.needed_but_missing', {
-            cat: 'tx',
-            ctx: { poolId: poolId.slice(0, 8), tickCurrent, tickSpacing, exBitmapPda: exBitmapPda.toBase58() },
+            ctx: { 
+              poolId: poolId.slice(0, 8), 
+              exBitmap: exBitmapPda.toBase58().slice(0, 8),
+              needsExBitmap,
+              willIncludeInAccounts: needsExBitmap,
+            },
           });
         }
       } catch { /* exBitmap doesn't exist */ }
+    }
+
+    // Warn if exBitmap is needed for swap but doesn't exist
+    if (needsExBitmap && !exBitmapExists) {
+      logger.warn('sdkQuoteBuilder.raydium.exBitmap.needed_but_missing', {
+        cat: 'tx',
+        ctx: { poolId: poolId.slice(0, 8), tickCurrent, tickSpacing, exBitmapPda: exBitmapPda?.toBase58() },
+      });
     }
 
     // Try to use SDK's TickQuery.getTickArrays() for proper tick array discovery

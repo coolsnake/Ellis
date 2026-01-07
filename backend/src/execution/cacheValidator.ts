@@ -2685,10 +2685,12 @@ export async function refreshAllPoolPrices(
   dex: 'orca' | 'raydium' | 'meteora',
   options?: { concurrency?: number; limit?: number }
 ): Promise<{ total: number; updated: number; failed: number; errors: string[] }> {
+  // Use lightweight price-only fetchers (1 RPC call each) instead of full SDK fetchers
+  // which do extensive tick/bin array validation (many RPC calls per pool)
   const {
-    fetchOrcaPoolViaSdk,
-    fetchRaydiumPoolViaSdk,
-    fetchMeteoraPoolViaSdk
+    fetchOrcaPoolPriceData,
+    fetchRaydiumPoolPriceData,
+    fetchMeteoraPoolPriceData
   } = await import('./sdkPoolFetcher.js');
 
   // Reduced concurrency to respect RPC rate limits (was 10)
@@ -2735,16 +2737,16 @@ export async function refreshAllPoolPrices(
         try {
           let validatedState: any = null;
 
-          // Fetch fresh pool state from chain
+          // Fetch fresh pool price data from chain (lightweight, 1 RPC call per pool)
           switch (dex) {
             case 'orca':
-              validatedState = await fetchOrcaPoolViaSdk(connection, pool.id);
+              validatedState = await fetchOrcaPoolPriceData(connection, pool.id);
               break;
             case 'raydium':
-              validatedState = await fetchRaydiumPoolViaSdk(connection, pool.id);
+              validatedState = await fetchRaydiumPoolPriceData(connection, pool.id);
               break;
             case 'meteora':
-              validatedState = await fetchMeteoraPoolViaSdk(connection, pool.id);
+              validatedState = await fetchMeteoraPoolPriceData(connection, pool.id);
               break;
           }
 

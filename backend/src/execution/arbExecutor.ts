@@ -786,20 +786,73 @@ export class ArbExecutor {
           flashloanReason: flashloanCheck.reason,
         });
         
-        // For flashloanable tokens (SOL/USDC): if not using flashloan but wallet has less,
-        // cap to wallet balance. For non-flashloanable tokens, size is already capped
-        // in calculateDynamicSize.
+        // FINAL SAFETY: Cap size to wallet balance unless using flashloan
+        // This is the definitive check that ensures we never try to spend more than we have
         let effectiveSizeUsd = sizeUsd;
-        if (!useFlashloan && flashloanCheck.walletBalanceUsd > 0 && flashloanCheck.walletBalanceUsd < sizeUsd) {
-          effectiveSizeUsd = flashloanCheck.walletBalanceUsd;
-          logger.debug('arb.executor.sizing.capped_to_wallet', {
-            cat: 'arb',
-            traceId,
-            originalSize: sizeUsd,
-            walletBalanceUsd: flashloanCheck.walletBalanceUsd,
-            effectiveSize: effectiveSizeUsd,
-            reason: flashloanCheck.reason,
-          });
+        
+        if (!useFlashloan) {
+          // Get fresh wallet balance for the start token
+          const SOL_MINT = 'So11111111111111111111111111111111111111112';
+          const balances = await this.getCachedBalances();
+          
+          if (balances) {
+            const balance = startToken === SOL_MINT 
+              ? balances.sol 
+              : (balances.tokens[startToken] || 0);
+            
+            const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+            const walletBalanceUsd = balance * price;
+            
+            if (walletBalanceUsd <= 0) {
+              // No balance and no flashloan - cannot execute
+              logger.info('arb.executor.skipped.no_balance', {
+                cat: 'arb',
+                traceId,
+                path: executionPath.join('->'),
+                startToken: startToken.slice(0, 8) + '...',
+                balance,
+                price,
+                requestedSize: sizeUsd,
+                reason: 'zero_balance_no_flashloan',
+              });
+              throw new Error('insufficient_balance: wallet has no balance for start token and flashloan unavailable');
+            }
+            
+            if (walletBalanceUsd < effectiveSizeUsd) {
+              logger.debug('arb.executor.sizing.capped_to_wallet', {
+                cat: 'arb',
+                traceId,
+                originalSize: effectiveSizeUsd,
+                walletBalanceUsd,
+                effectiveSize: walletBalanceUsd,
+                reason: 'final_safety_cap',
+              });
+              effectiveSizeUsd = walletBalanceUsd;
+            }
+          } else {
+            // Cannot verify balance - use minimum safe size or the flashloan check's balance if available
+            if (flashloanCheck.walletBalanceUsd > 0) {
+              effectiveSizeUsd = Math.min(effectiveSizeUsd, flashloanCheck.walletBalanceUsd);
+              logger.debug('arb.executor.sizing.capped_to_flashcheck_balance', {
+                cat: 'arb',
+                traceId,
+                originalSize: sizeUsd,
+                walletBalanceUsd: flashloanCheck.walletBalanceUsd,
+                effectiveSize: effectiveSizeUsd,
+              });
+            } else {
+              // No balance info at all - use minimum safe size
+              const minSafeSize = this.config.dynamicSizing?.minSizeUsd || 1;
+              logger.warn('arb.executor.sizing.balance_unknown', {
+                cat: 'arb',
+                traceId,
+                path: executionPath.join('->'),
+                originalSize: effectiveSizeUsd,
+                fallbackSize: minSafeSize,
+              });
+              effectiveSizeUsd = Math.min(effectiveSizeUsd, minSafeSize);
+            }
+          }
         }
         
         // Resolve execution plan - pass traceId for complete log correlation
@@ -1522,21 +1575,72 @@ export class ArbExecutor {
   private async calculateDynamicSize(opp: Opportunity): Promise<number> {
     const dynamicCfg = this.config.dynamicSizing;
     
-    // If dynamic sizing disabled, use fixed config
-    if (!dynamicCfg?.enabled) {
-      return this.config.sizeUsd || 10;
-    }
-    
-    const minSize = dynamicCfg.minSizeUsd || 5;
-    const maxSize = dynamicCfg.maxSizeUsd || this.config.sizeUsd || 200;
-    const method = dynamicCfg.method || 'heuristic';
-    
-    // Get start token and check wallet balance constraints
+    // Common constants used in both paths
     const SOL_MINT = 'So11111111111111111111111111111111111111112';
     const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const startToken = opp.path[0];
     const isFlashloanable = startToken === SOL_MINT || startToken === USDC_MINT;
     const flashloanEnabled = this.config.flashloanSettings?.enabled ?? false;
+    
+    // If dynamic sizing disabled, use fixed config BUT still cap to wallet balance
+    if (!dynamicCfg?.enabled) {
+      const fixedSize = this.config.sizeUsd || 10;
+      
+      // Still need to check wallet balance for non-flashloanable tokens or when flashloan disabled
+      if (!isFlashloanable || !flashloanEnabled) {
+        try {
+          if (this.walletPublicKey) {
+            const balances = await this.getCachedBalances();
+            if (balances) {
+              const balance = startToken === SOL_MINT 
+                ? balances.sol 
+                : (balances.tokens[startToken] || 0);
+              const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+              const walletBalanceUsd = balance * price;
+              
+              if (walletBalanceUsd <= 0) {
+                logger.warn('arb.executor.sizing.no_balance_fixed', {
+                  cat: 'arb',
+                  path: opp.path.join('->'),
+                  startToken: startToken.slice(0, 8) + '...',
+                  balance,
+                  price,
+                  fixedSize,
+                });
+                return 0; // Cannot trade - no balance
+              }
+              
+              const cappedSize = Math.min(fixedSize, walletBalanceUsd);
+              if (cappedSize < fixedSize) {
+                logger.debug('arb.executor.sizing.fixed_capped_to_wallet', {
+                  cat: 'arb',
+                  path: opp.path.join('->'),
+                  fixedSize,
+                  walletBalanceUsd,
+                  cappedSize,
+                });
+              }
+              return cappedSize;
+            }
+          }
+          // If balance check fails, use minimum safe size
+          return Math.min(fixedSize, 1);
+        } catch (e) {
+          logger.warn('arb.executor.sizing.balance_check_failed_fixed', {
+            cat: 'arb',
+            path: opp.path.join('->'),
+            error: String((e as any)?.message || e),
+          });
+          return Math.min(fixedSize, 1);
+        }
+      }
+      
+      return fixedSize;
+    }
+    
+    const minSize = dynamicCfg.minSizeUsd || 5;
+    const maxSize = dynamicCfg.maxSizeUsd || this.config.sizeUsd || 200;
+    const method = dynamicCfg.method || 'heuristic';
     
     // Get wallet balance for non-flashloanable tokens to cap sizing
     let walletBalanceUsd = Infinity; // Default to no cap
