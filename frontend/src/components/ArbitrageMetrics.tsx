@@ -926,7 +926,13 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     const fetchValidationStatus = async () => {
       try {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (authHeader) headers['Authorization'] = authHeader;
+        try {
+          const s = localStorage.getItem('authCreds');
+          if (s) {
+            const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+            if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+          }
+        } catch {}
         const r = await fetch(`${apiBase}${ROUTES.system.config}`, { headers });
         if (r.ok) {
           const j = await r.json();
@@ -935,7 +941,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
       } catch {}
     };
     fetchValidationStatus();
-  }, [apiBase, authHeader]);
+  }, [apiBase]);
 
   // Subscribe to socket events to refresh metrics on push updates
   React.useEffect(() => {
