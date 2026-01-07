@@ -40,6 +40,15 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         poolsActivationStats = getActivationStats();
       } catch {}
       
+      // Get pool data validation status
+      let poolDataValidationEnabled = true;
+      let reactiveValidationRunning = false;
+      try {
+        const { isPoolDataValidationEnabled, isReactiveValidationRunning } = await import('../../execution/cacheValidator.js');
+        poolDataValidationEnabled = isPoolDataValidationEnabled();
+        reactiveValidationRunning = isReactiveValidationRunning();
+      } catch {}
+      
       res.json({
         rpcUrl: CONFIG.rpcUrl,
         system: CONFIG.system,
@@ -55,6 +64,11 @@ export function createSystemRouter(_io: SocketIOServer): Router {
           activationMode: (CONFIG.system as any)?.poolActivationMode || 'immediate',
           activationStats: poolsActivationStats,
         },
+        // Pool data validation status
+        validation: {
+          poolDataValidationEnabled,
+          reactiveValidationRunning,
+        },
       });
     } catch (e: any) {
       logger.error('server: failed to get system config', { error: String(e?.message || e), cat: 'server' });
@@ -64,7 +78,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
 
   api.post('/system/config', async (req, res) => {
     try {
-      const { rpcUrl, system, fees, raydium, orca, meteora, meteoraBalanced, pumpswap, sanity, pools } = req.body as {
+      const { rpcUrl, system, fees, raydium, orca, meteora, meteoraBalanced, pumpswap, sanity, pools, validation } = req.body as {
         rpcUrl?: string;
         system?: any;
         fees?: any;
@@ -75,6 +89,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         pumpswap?: { shyftApiKey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; defaultFeeBps?: number; minLiqBase?: number; pageSize?: number; maxPages?: number; pageDelayMs?: number; enableRpcEnrichment?: boolean; rpcBatchSize?: number; validatePrices?: boolean; validationSamples?: number };
         sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number; sanity_applyRaydiumAmm?: boolean; sanity_applyOrcaClmm?: boolean };
         pools?: { activationMode?: 'immediate' | 'lazy' };
+        validation?: { poolDataValidationEnabled?: boolean };
       };
       if (rpcUrl) CONFIG.rpcUrl = rpcUrl;
       if (system) {
@@ -119,6 +134,29 @@ export function createSystemRouter(_io: SocketIOServer): Router {
           logger.info('server: pool activation mode changed', { mode: pools.activationMode, enabled, cat: 'server' });
         } catch (activationErr) {
           logger.warn('server: failed to set pool activation mode', { error: String((activationErr as Error)?.message || activationErr), cat: 'server' });
+        }
+      }
+      
+      // Handle pool data validation toggle
+      if (validation?.poolDataValidationEnabled !== undefined) {
+        try {
+          const { setPoolDataValidationEnabled, startReactiveValidation, isReactiveValidationRunning } = 
+            await import('../../execution/cacheValidator.js');
+          const enabled = !!validation.poolDataValidationEnabled;
+          setPoolDataValidationEnabled(enabled);
+          
+          // If enabling and reactive validation is not running, start it
+          if (enabled && !isReactiveValidationRunning()) {
+            const intervalMs = Math.max(250, Number((CONFIG.system as any)?.tickArrayValidatorIntervalMs || 500));
+            startReactiveValidation(intervalMs);
+          }
+          
+          logger.info('server: pool data validation toggled', { enabled, cat: 'server' });
+        } catch (validationErr) {
+          logger.warn('server: failed to toggle pool data validation', { 
+            error: String((validationErr as Error)?.message || validationErr), 
+            cat: 'server' 
+          });
         }
       }
       

@@ -569,6 +569,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [validationExpanded, setValidationExpanded] = React.useState<boolean>(false);
   const [refreshLoading, setRefreshLoading] = React.useState<boolean>(false);
   const [refreshResult, setRefreshResult] = React.useState<any | null>(null);
+  const [validationEnabled, setValidationEnabled] = React.useState<boolean>(true);
+  const [validationToggling, setValidationToggling] = React.useState<boolean>(false);
   
   // Named snapshots state
   const [snapshots, setSnapshots] = React.useState<any[]>([]);
@@ -860,6 +862,36 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     }
   };
 
+  const toggleValidation = async () => {
+    if (validationToggling) return;
+    setValidationToggling(true);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const newValue = !validationEnabled;
+      const r = await fetch(`${apiBase}${ROUTES.system.config}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          validation: { poolDataValidationEnabled: newValue }
+        }),
+      });
+      if (r.ok) {
+        setValidationEnabled(newValue);
+      }
+    } catch (e) {
+      console.error('Failed to toggle validation:', e);
+    } finally {
+      setValidationToggling(false);
+    }
+  };
+
   React.useEffect(() => {
     if (paused) return;
     fetchMetrics();
@@ -888,6 +920,22 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     }).catch(()=>{});
     return () => {};
   }, [paused]);
+
+  // Fetch validation status on mount
+  React.useEffect(() => {
+    const fetchValidationStatus = async () => {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (authHeader) headers['Authorization'] = authHeader;
+        const r = await fetch(`${apiBase}${ROUTES.system.config}`, { headers });
+        if (r.ok) {
+          const j = await r.json();
+          setValidationEnabled(j.validation?.poolDataValidationEnabled ?? true);
+        }
+      } catch {}
+    };
+    fetchValidationStatus();
+  }, [apiBase, authHeader]);
 
   // Subscribe to socket events to refresh metrics on push updates
   React.useEffect(() => {
@@ -1456,8 +1504,19 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             <div className="mt-3 pt-3 border-t border-gray-700">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="text-gray-400 text-xs">Tick/Bin Array Validation</span>
-                  {cacheValidation?.summary ? (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4"
+                      checked={validationEnabled}
+                      onChange={toggleValidation}
+                      disabled={validationToggling}
+                    />
+                    <span className={`text-xs ${validationEnabled ? 'text-gray-300' : 'text-gray-500'}`}>
+                      Pool Data Validation
+                    </span>
+                  </label>
+                  {validationEnabled && cacheValidation?.summary ? (
                     <span className={`text-xs px-2 py-0.5 rounded border ${
                       cacheValidation.summary.overallHealthPercent >= 90 
                         ? 'bg-green-800/40 border-green-700 text-green-300'
@@ -1467,22 +1526,26 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                     }`}>
                       {cacheValidation.summary.overallHealthPercent}% healthy
                     </span>
+                  ) : !validationEnabled ? (
+                    <span className="text-xs px-2 py-0.5 rounded border bg-gray-700 border-gray-600 text-gray-400">
+                      Disabled
+                    </span>
                   ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => runCacheValidation(20)}
-                    disabled={validationLoading || refreshLoading}
+                    disabled={validationLoading || refreshLoading || !validationEnabled}
                     className={`px-2 py-1 text-xs border rounded ${
-                      validationLoading || refreshLoading
+                      validationLoading || refreshLoading || !validationEnabled
                         ? 'bg-gray-700 opacity-50 cursor-not-allowed border-gray-600' 
                         : 'bg-orange-700 hover:bg-orange-600 border-orange-600'
                     }`}
-                    title="Validate tick/bin arrays exist on-chain"
+                    title={validationEnabled ? "Validate tick/bin arrays exist on-chain" : "Enable validation first"}
                   >
                     {validationLoading ? '⏳ Validating...' : '🔍 Validate Cache'}
                   </button>
-                  {cacheValidation && (cacheValidation.summary?.overallHealthPercent < 100 || cacheValidation.invalidPools?.length > 0) ? (
+                  {validationEnabled && cacheValidation && (cacheValidation.summary?.overallHealthPercent < 100 || cacheValidation.invalidPools?.length > 0) ? (
                     <button
                       onClick={refreshInvalidPools}
                       disabled={refreshLoading || validationLoading}

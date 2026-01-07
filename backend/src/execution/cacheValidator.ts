@@ -34,6 +34,41 @@ const METEORA_BIN_ARRAY_SIZE = 70;
 // Bitmap extension range - default bitmap covers bin array indices -512 to +511
 const METEORA_BITMAP_RANGE = 512;
 
+// ============================================================================
+// VALIDATION TOGGLE
+// ============================================================================
+// Runtime toggle for pool data validation - can be changed via setPoolDataValidationEnabled()
+let poolDataValidationEnabled = true;
+
+/**
+ * Check if pool data validation is enabled
+ */
+export function isPoolDataValidationEnabled(): boolean {
+  return poolDataValidationEnabled;
+}
+
+/**
+ * Enable or disable pool data validation at runtime
+ * When disabled, all validation methods return early without doing work
+ */
+export function setPoolDataValidationEnabled(enabled: boolean): void {
+  const wasEnabled = poolDataValidationEnabled;
+  poolDataValidationEnabled = enabled;
+  
+  if (wasEnabled !== enabled) {
+    logger.info('cacheValidator.validation_toggle', {
+      cat: 'cache',
+      enabled,
+      wasEnabled,
+    });
+    
+    // If disabling, also stop reactive validation
+    if (!enabled && reactiveValidationRunning) {
+      stopReactiveValidation();
+    }
+  }
+}
+
 /**
  * Quick check if a Meteora pool is eligible for trading based on activeId.
  * 
@@ -875,6 +910,7 @@ export interface BatchValidationResult {
   results: PoolValidationResult[];
   timestamp: number;
   durationMs: number;
+  skipped?: boolean;                          // True when validation was disabled/skipped
 }
 
 // === DECIMAL VALIDATION TYPES ===
@@ -919,9 +955,22 @@ export async function validatePoolCache(
   poolId: string,
   dex: 'orca' | 'raydium' | 'meteora'
 ): Promise<PoolValidationResult> {
-  const issues: string[] = [];
   const basePoolId = poolId.replace(/[#-]rev$/, '');
   
+  // Early return if validation is disabled
+  if (!poolDataValidationEnabled) {
+    return {
+      poolId: basePoolId,
+      dex,
+      hasCacheEntry: true,
+      hasHotCache: true,
+      hasStaticCache: true,
+      issues: [],
+      valid: true, // Treat as valid when validation disabled
+    };
+  }
+  
+  const issues: string[] = [];
   const stat = executionCache.getStatic(basePoolId);
   const hot = executionCache.getHot(basePoolId);
   
@@ -1955,6 +2004,33 @@ export async function validatePoolCacheBatch(
   dex: 'orca' | 'raydium' | 'meteora',
   options?: { limit?: number; onlyClmm?: boolean }
 ): Promise<BatchValidationResult> {
+  // Early return if validation is disabled
+  if (!poolDataValidationEnabled) {
+    return {
+      totalPools: 0,
+      validPools: 0,
+      invalidPools: 0,
+      poolsWithMissingCenter: 0,
+      poolsWithMissingArrays: 0,
+      poolsWithNoCacheEntry: 0,
+      poolsWithInvalidBitmapExtension: 0,
+      poolsIneligibleDueToBitmapRange: 0,
+      poolsWithInvalidExBitmap: 0,
+      poolsIneligibleDueToExBitmapRange: 0,
+      poolsIneligibleDueToTickArray: 0,
+      poolsWithMissingAmmConfig: 0,
+      poolsWithZeroFee: 0,
+      poolsWithMissingFee: 0,
+      poolsWithStaleDerivedValues: 0,
+      poolsWithDerivationUpdated: 0,
+      poolsNeedingArrayRederivation: 0,
+      results: [],
+      timestamp: Date.now(),
+      durationMs: 0,
+      skipped: true,
+    };
+  }
+  
   const startTime = Date.now();
   // Default to all pools (no limit) - use 0 or Infinity explicitly for all
   const limit = options?.limit === 0 || options?.limit === Infinity ? Infinity : (options?.limit ?? Infinity);
@@ -2236,6 +2312,11 @@ export async function refreshInvalidPools(
   invalidPools: PoolValidationResult[],
   options?: { concurrency?: number }
 ): Promise<{ refreshed: number; failed: number; errors: string[]; pricesUpdated: number }> {
+  // Early return if validation is disabled
+  if (!poolDataValidationEnabled) {
+    return { refreshed: 0, failed: 0, errors: [], pricesUpdated: 0 };
+  }
+  
   const {
     fetchOrcaPoolViaSdk,
     fetchRaydiumPoolViaSdk,
@@ -3935,6 +4016,9 @@ async function validatePoolTickArrays(
  * Main reactive validation loop - processes pools needing validation
  */
 async function runReactiveValidationLoop(): Promise<void> {
+  // Skip if validation is disabled
+  if (!poolDataValidationEnabled) return;
+  
   if (!reactiveValidationRunning || !reactiveValidationConnection) return;
   
   try {
@@ -3979,6 +4063,12 @@ async function runReactiveValidationLoop(): Promise<void> {
  * and validates their tick arrays in the background
  */
 export function startReactiveValidation(intervalMs: number = 100): void {
+  // Check if validation is disabled
+  if (!poolDataValidationEnabled) {
+    logger.info('cacheValidator.reactive.skipped_disabled', { cat: 'cache' });
+    return;
+  }
+  
   if (reactiveValidationRunning) {
     logger.warn('cacheValidator.reactive.already_running', { cat: 'cache' });
     return;
