@@ -41,6 +41,9 @@ import {
   retargetGrpcSubscriptions,
   isGrpcConfigured 
 } from './pools/grpc/index.js';
+// Lazy activation support - clear state when retargeting in lazy mode
+import { isLazyActivationEnabled, clearActivationState } from './pools.activation.js';
+import { clearGraphCache } from './graph.js';
 
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const METEORA_BIN_BITMAP_SIZE = 512;
@@ -1105,6 +1108,26 @@ export function getPoolCacheAges(): { raydium: number; orca: number; meteora: nu
 // Uses sequential subscription with throttling to avoid RPC burst
 export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; meteora: number; meteora_balanced: number; pumpswap: number } }> {
   const subscriptionMode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
+  
+  // When lazy activation is enabled, clear the graph and activation state
+  // This ensures we start fresh and only add pools as they receive updates
+  if (isLazyActivationEnabled()) {
+    logger.info('pools.ws.retarget.lazy_mode_reset', {
+      message: 'Clearing graph and activation state for fresh lazy activation',
+      cat: 'pools'
+    });
+    try {
+      emit('log', {
+        level: 'info',
+        message: 'pools:ws retarget - clearing graph for lazy activation mode',
+        timestamp: new Date().toISOString(),
+        context: { cat: 'pools' }
+      });
+    } catch {}
+    
+    clearActivationState();
+    clearGraphCache();
+  }
   
   // For gRPC mode, use the gRPC retarget function
   if (subscriptionMode === 'grpc') {
