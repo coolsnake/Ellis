@@ -192,6 +192,11 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     throw e;
   }
   // Set amounts and minOuts using per-hop quotes; propagate through hops
+  // Declare variables for arb cycle detection outside try block so they're in scope for return
+  let isArbCycle = false;
+  let initialInputRaw = 0n;
+  let minProfitBps = 0;
+  
   try {
     const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;
     // Determine initial input size:
@@ -410,9 +415,9 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     // Detect if this is an arbitrage cycle (path starts and ends with same token)
     // For arb cycles, we use conservative amount propagation (minOutRaw) to prevent
     // "insufficient funds" errors when intermediate hops have slippage
-    const isArbCycle = path.length >= 3 && path[0] === path[path.length - 1];
-    const initialInputRaw = curIn; // Store for final profitability enforcement
-    const minProfitBps = typeof (input as any).minProfitBps === 'number' 
+    isArbCycle = path.length >= 3 && path[0] === path[path.length - 1];
+    initialInputRaw = curIn; // Store for final profitability enforcement
+    minProfitBps = typeof (input as any).minProfitBps === 'number' 
       ? (input as any).minProfitBps 
       : 0; // Default to break-even if not specified
     

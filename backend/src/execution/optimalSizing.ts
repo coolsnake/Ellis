@@ -163,12 +163,14 @@ export function estimateClmmCapacity(
   // =========================================================================
   // Final Capacity = Minimum of All Constraints
   // =========================================================================
-  const candidates: { factor: ClmmCapacityEstimate['limitingFactor']; value: number }[] = [
-    { factor: 'profit_margin', value: profitConstrainedUsd },
-    { factor: 'active_liquidity', value: liquidityConstrainedUsd },
-    { factor: 'vault_balance', value: vaultConstrainedUsd },
-    { factor: 'tvl', value: tvlConstrainedUsd },
-  ].filter(c => c.value > 0 && Number.isFinite(c.value));
+  type CapacityFactor = ClmmCapacityEstimate['limitingFactor'];
+  const allCandidates: { factor: CapacityFactor; value: number }[] = [
+    { factor: 'profit_margin' as CapacityFactor, value: profitConstrainedUsd },
+    { factor: 'active_liquidity' as CapacityFactor, value: liquidityConstrainedUsd },
+    { factor: 'vault_balance' as CapacityFactor, value: vaultConstrainedUsd },
+    { factor: 'tvl' as CapacityFactor, value: tvlConstrainedUsd },
+  ];
+  const candidates = allCandidates.filter(c => c.value > 0 && Number.isFinite(c.value));
   
   const binding = candidates.length > 0
     ? candidates.reduce((min, c) => c.value < min.value ? c : min)
@@ -608,13 +610,13 @@ export async function buildHopSizingInfo(
 ): Promise<HopSizingInfo[]> {
   const hops: HopSizingInfo[] = [];
   
-  // Import price cache for USD conversions
-  let getPriceByMint: ((mint: string) => { usdc?: number } | undefined) | undefined;
+  // Import price store for USD conversions
+  let getPriceByMint: ((mint: string) => { usdc: number | null; sol: number | null } | undefined) | undefined;
   try {
-    const priceModule = await import('../wallet/priceCache.js');
+    const priceModule = await import('../server/priceStore.js');
     getPriceByMint = priceModule.getPriceByMint;
   } catch {
-    // Price cache not available, will skip USD conversions
+    // Price store not available, will skip USD conversions
   }
   
   try {
