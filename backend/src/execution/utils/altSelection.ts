@@ -32,6 +32,7 @@ const ACCOUNTS_PER_HOP: Record<number, number> = {
 /**
  * Select optimal ALTs for a route
  * Always includes common/flashloan/userPdas ALTs plus pool-specific ALTs
+ * Falls back to including all DEX ALTs when pool-specific coverage is low
  * 
  * @param poolIds Array of pool addresses in the route
  * @param config ALT configuration (optional, will load if not provided)
@@ -54,7 +55,10 @@ export function selectAltsForRoute(
     altAddresses.add(config.alts.userPdas);
   }
 
-  // Add pool-specific ALTs from poolToAlt mapping
+  // Track how many pools have specific ALT coverage
+  let poolsCovered = 0;
+
+  // Add pool-specific ALTs from poolToAlt mapping (O(1) per pool)
   if (config.poolToAlt) {
     for (const poolId of poolIds) {
       // Strip directional suffixes for lookup
@@ -62,6 +66,33 @@ export function selectAltsForRoute(
       const altAddress = config.poolToAlt[cleanPoolId];
       if (altAddress) {
         altAddresses.add(altAddress);
+        poolsCovered++;
+      }
+    }
+  }
+
+  // Fallback: If pool-specific coverage is low, include ALL DEX ALTs
+  // This ensures partial coverage even for unmapped pools
+  const staticAltCount = (config.alts.common ? 1 : 0) + 
+                         (config.alts.flashloan ? 1 : 0) + 
+                         (config.alts.userPdas ? 1 : 0);
+  const hasLowCoverage = poolIds.length > 0 && poolsCovered < poolIds.length;
+  
+  if (hasLowCoverage || altAddresses.size <= staticAltCount) {
+    // Include all DEX ALTs as fallback
+    if (config.dexAlts?.raydium?.addresses) {
+      for (const addr of config.dexAlts.raydium.addresses) {
+        altAddresses.add(addr);
+      }
+    }
+    if (config.dexAlts?.orca?.addresses) {
+      for (const addr of config.dexAlts.orca.addresses) {
+        altAddresses.add(addr);
+      }
+    }
+    if (config.dexAlts?.meteora?.addresses) {
+      for (const addr of config.dexAlts.meteora.addresses) {
+        altAddresses.add(addr);
       }
     }
   }

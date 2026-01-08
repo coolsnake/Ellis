@@ -3079,6 +3079,208 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // ============================================================================
+  // NEW ALT MANAGEMENT ENDPOINTS
+  // ============================================================================
+
+  /**
+   * POST /api/arb/alts/create-all
+   * Create ALTs for ALL pools in the graph for each DEX.
+   * This is a long-running operation and may create multiple ALTs per DEX.
+   */
+  api.post('/arb/alts/create-all', async (req: Request, res: Response) => {
+    try {
+      logger.info('arb.alt.api.create_all.start', { cat: 'tx' });
+      
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      // This operation can take a while - start immediately and stream progress
+      const result = await dexAltManager.createAllAlts();
+      
+      const summary = {
+        common: result.common ? { address: result.common } : null,
+        raydium: {
+          altsCreated: result.raydium.addresses.length,
+          totalPools: result.raydium.totalPools,
+          totalAccounts: result.raydium.totalAccounts,
+        },
+        orca: {
+          altsCreated: result.orca.addresses.length,
+          totalPools: result.orca.totalPools,
+          totalAccounts: result.orca.totalAccounts,
+        },
+        meteora: {
+          altsCreated: result.meteora.addresses.length,
+          totalPools: result.meteora.totalPools,
+          totalAccounts: result.meteora.totalAccounts,
+        },
+        totalAlts: 
+          (result.common ? 1 : 0) +
+          result.raydium.addresses.length +
+          result.orca.addresses.length +
+          result.meteora.addresses.length,
+      };
+      
+      logger.info('arb.alt.api.create_all.complete', { cat: 'tx', ...summary });
+      
+      res.json({ 
+        status: 'success',
+        ...summary,
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.create_all.error', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * GET /api/arb/alts/coverage
+   * Get ALT coverage statistics for pools in the graph.
+   */
+  api.get('/arb/alts/coverage', async (req: Request, res: Response) => {
+    try {
+      const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { getGraphSnapshot } = await import('../graph.js');
+      
+      const config = await loadAltConfig();
+      const snapshot = await getGraphSnapshot();
+      
+      // Count pools by DEX
+      const dexPools: Record<string, Set<string>> = {
+        raydium: new Set<string>(),
+        orca: new Set<string>(),
+        meteora: new Set<string>(),
+        pumpswap: new Set<string>(),
+        other: new Set<string>(),
+      };
+      
+      if (snapshot?.edges) {
+        for (const edge of snapshot.edges) {
+          const poolId = String(edge.pool_id || '');
+          if (!poolId || /[#-]rev$/.test(poolId)) continue;
+          
+          const cleanPoolId = poolId.replace(/-(rev|fwd)$/, '');
+          const dex = String(edge.dex || '').toLowerCase();
+          
+          if (dex === 'raydium') dexPools.raydium.add(cleanPoolId);
+          else if (dex === 'orca') dexPools.orca.add(cleanPoolId);
+          else if (dex === 'meteora') dexPools.meteora.add(cleanPoolId);
+          else if (dex === 'pumpswap') dexPools.pumpswap.add(cleanPoolId);
+          else dexPools.other.add(cleanPoolId);
+        }
+      }
+      
+      // Calculate coverage
+      const poolToAlt = config.poolToAlt || {};
+      const coverage: Record<string, { total: number; covered: number; percent: string }> = {};
+      
+      for (const [dex, pools] of Object.entries(dexPools)) {
+        let covered = 0;
+        for (const poolId of pools) {
+          if (poolToAlt[poolId]) covered++;
+        }
+        coverage[dex] = {
+          total: pools.size,
+          covered,
+          percent: pools.size > 0 ? `${((covered / pools.size) * 100).toFixed(1)}%` : 'N/A',
+        };
+      }
+      
+      // Total coverage
+      const allPools = Object.values(dexPools).reduce((sum, set) => sum + set.size, 0);
+      const allCovered = Object.keys(poolToAlt).length;
+      
+      res.json({
+        total: {
+          pools: allPools,
+          coveredInMapping: allCovered,
+          percent: allPools > 0 ? `${((allCovered / allPools) * 100).toFixed(1)}%` : 'N/A',
+        },
+        byDex: coverage,
+        alts: {
+          common: config.alts.common || null,
+          flashloan: config.alts.flashloan || null,
+          userPdas: config.alts.userPdas || null,
+        },
+        dexAlts: {
+          raydium: config.dexAlts?.raydium?.addresses?.length || 0,
+          orca: config.dexAlts?.orca?.addresses?.length || 0,
+          meteora: config.dexAlts?.meteora?.addresses?.length || 0,
+        },
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.coverage.error', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /api/arb/alts/extend/:dex
+   * Extend ALTs for a specific DEX with new pools from the graph.
+   */
+  api.post('/arb/alts/extend/:dex', async (req: Request, res: Response) => {
+    try {
+      const { dex } = req.params;
+      
+      if (!['raydium', 'orca', 'meteora'].includes(dex)) {
+        return res.status(400).json({ error: 'Invalid DEX. Must be raydium, orca, or meteora.' });
+      }
+      
+      logger.info('arb.alt.api.extend.start', { cat: 'tx', dex });
+      
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      const result = await dexAltManager.createAllDexPoolAlts(dex as 'raydium' | 'orca' | 'meteora');
+      
+      logger.info('arb.alt.api.extend.complete', { 
+        cat: 'tx', 
+        dex, 
+        altsCreated: result.addresses.length,
+        totalPools: result.totalPools,
+      });
+      
+      res.json({
+        status: 'success',
+        dex,
+        altsCreated: result.addresses.length,
+        totalPools: result.totalPools,
+        totalAccounts: result.totalAccounts,
+        altAddresses: result.addresses,
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.extend.error', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /api/arb/alts/common
+   * Create or update the common ALT with wallet ATAs and frequently used accounts.
+   */
+  api.post('/arb/alts/common', async (req: Request, res: Response) => {
+    try {
+      logger.info('arb.alt.api.common.start', { cat: 'tx' });
+      
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      const address = await dexAltManager.createOrUpdateCommonAlt();
+      
+      if (!address) {
+        return res.status(500).json({ error: 'Failed to create common ALT' });
+      }
+      
+      logger.info('arb.alt.api.common.complete', { cat: 'tx', address });
+      
+      res.json({
+        status: 'success',
+        address,
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.common.error', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

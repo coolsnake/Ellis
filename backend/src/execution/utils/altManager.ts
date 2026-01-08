@@ -914,75 +914,85 @@ export class DexAltManager {
    * Collect common accounts that should be in ALTs
    * These are accounts that appear in nearly every transaction
    */
-  private async collectCommonAccounts(): Promise<PublicKey[]> {
+  private async collectCommonAccounts(walletPubkey?: PublicKey): Promise<PublicKey[]> {
     const accounts: PublicKey[] = [];
+    const seen = new Set<string>(); // Deduplicate
+
+    const addAccount = (pk: PublicKey | string) => {
+      try {
+        const pubkey = typeof pk === 'string' ? new PublicKey(pk) : pk;
+        const addr = pubkey.toBase58();
+        if (!seen.has(addr)) {
+          seen.add(addr);
+          accounts.push(pubkey);
+        }
+      } catch {}
+    };
 
     try {
       // ============================================
       // 1. SYSTEM PROGRAMS (appear in every transaction)
       // ============================================
-      accounts.push(new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')); // Token Program
-      accounts.push(new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')); // Token-2022 Program
-      accounts.push(new PublicKey('11111111111111111111111111111111'));             // System Program
-      accounts.push(new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')); // ATA Program
-      accounts.push(new PublicKey('ComputeBudget111111111111111111111111111111'));   // Compute Budget Program
-      accounts.push(new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'));   // Memo Program (Meteora swap2)
-      accounts.push(new PublicKey('Sysvar1nstructions1111111111111111111111111'));   // Instructions Sysvar (flash_borrow)
-      accounts.push(new PublicKey('SysvarRent111111111111111111111111111111111'));   // Rent Sysvar
+      addAccount('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');  // Token Program
+      addAccount('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');  // Token-2022 Program
+      addAccount('11111111111111111111111111111111');              // System Program
+      addAccount('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');  // ATA Program
+      addAccount('ComputeBudget111111111111111111111111111111');    // Compute Budget Program
+      addAccount('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');    // Memo Program
+      addAccount('Sysvar1nstructions1111111111111111111111111');    // Instructions Sysvar
+      addAccount('SysvarRent111111111111111111111111111111111');    // Rent Sysvar
+      addAccount('SysvarC1ock11111111111111111111111111111111');    // Clock Sysvar
 
       // ============================================
       // 2. DEX PROGRAM IDs (appear in every DEX swap)
       // ============================================
       // Raydium programs
-      if ((CONFIG as any)?.raydium?.ammV4Program) {
-        accounts.push(new PublicKey((CONFIG as any).raydium.ammV4Program));
-      }
-      if ((CONFIG as any)?.raydium?.ammV5Program) {
-        accounts.push(new PublicKey((CONFIG as any).raydium.ammV5Program));
-      }
-      if ((CONFIG as any)?.raydium?.clmmProgram) {
-        accounts.push(new PublicKey((CONFIG as any).raydium.clmmProgram));
-      } else {
-        // Default Raydium CLMM program
-        accounts.push(new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'));
-      }
+      addAccount((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+      addAccount((CONFIG as any)?.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
       
-      // Orca Whirlpool program
-      if ((CONFIG as any)?.orca?.programId) {
-        accounts.push(new PublicKey((CONFIG as any).orca.programId));
-      } else {
-        accounts.push(new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
-      }
+      // Orca Whirlpool
+      addAccount((CONFIG as any)?.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
       
-      // Meteora DLMM program
-      if ((CONFIG as any)?.meteora?.programId) {
-        accounts.push(new PublicKey((CONFIG as any).meteora.programId));
-      } else {
-        accounts.push(new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'));
-      }
+      // Meteora DLMM
+      addAccount((CONFIG as any)?.meteora?.programId || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+      
+      // PumpSwap
+      addAccount('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 
       // ============================================
       // 3. DEX-SPECIFIC SHARED ACCOUNTS
       // ============================================
-      // Meteora Event Authority PDA (appears in EVERY Meteora swap)
-      accounts.push(new PublicKey('D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6'));
+      // Meteora Event Authority PDA (every Meteora swap)
+      addAccount('D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6');
       
-      // Common Raydium AMM configs (shared across many pools)
+      // Common Raydium AMM configs
       const raydiumConfigs = [
-        'HVSwB6sML94MBWaHNrfmLMo3ZstLYvbnqRtMRdupCrXJ', // Common CLMM config
-        'GjLEiquek1Nc2YjcBhufUGFRkaqW1JhaGjsdFd8mys38', // Another common config
+        'HVSwB6sML94MBWaHNrfmLMo3ZstLYvbnqRtMRdupCrXJ',
+        'GjLEiquek1Nc2YjcBhufUGFRkaqW1JhaGjsdFd8mys38',
+        'D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2', // 0.01% fee tier
       ];
       for (const config of raydiumConfigs) {
-        try { accounts.push(new PublicKey(config)); } catch {}
+        addAccount(config);
       }
 
+      // Orca whirlpools config
+      addAccount('2LecshUwdy9xi7meFgHtFJQNSKk4KdTrcpvaB56dP2NQ');
+
       // ============================================
-      // 4. HIGH-FREQUENCY TOKEN MINTS
+      // 4. ANCHOR MINT ADDRESSES
       // ============================================
-      const commonMints = [
+      // Get anchor mints from config (or use defaults)
+      const anchorMints: string[] = (CONFIG.system as any)?.anchorMints || [
         'So11111111111111111111111111111111111111112',   // SOL (wSOL)
         'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
         'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+        'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij',  // cbBTC
+        'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB',  // USD1
+        'USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA',  // USDS
+      ];
+      
+      // Add additional common mints
+      const additionalMints = [
         'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',  // JUP
         'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
         'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',  // mSOL
@@ -992,26 +1002,60 @@ export class DexAltManager {
         'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3', // PYTH
         'rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof',  // RENDER
       ];
-
-      for (const mint of commonMints) {
-        try {
-          accounts.push(new PublicKey(mint));
-        } catch {}
+      
+      const allMints = [...new Set([...anchorMints, ...additionalMints])];
+      for (const mint of allMints) {
+        addAccount(mint);
       }
 
       // ============================================
-      // 5. ROUTER PROGRAM (if configured)
+      // 5. USER ATAs FOR ANCHOR MINTS
+      // ============================================
+      if (walletPubkey) {
+        const { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+        const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+        
+        // Add wallet pubkey itself
+        addAccount(walletPubkey);
+        
+        // Token-2022 mints (add any known Token-2022 mints here)
+        const token2022Mints = new Set<string>([
+          // Add Token-2022 mints as discovered
+        ]);
+        
+        for (const mint of allMints) {
+          try {
+            const mintPk = new PublicKey(mint);
+            const program = token2022Mints.has(mint) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+            const ata = getAssociatedTokenAddressSync(mintPk, walletPubkey, false, program);
+            addAccount(ata);
+          } catch {}
+        }
+      }
+
+      // ============================================
+      // 6. HIGH-FREQUENCY POOL VAULTS (ANCHOR PAIRS)
+      // ============================================
+      const frequentVaults = await this.collectFrequentAnchorVaults(anchorMints);
+      for (const vault of frequentVaults) {
+        addAccount(vault);
+      }
+
+      // ============================================
+      // 7. ROUTER PROGRAM (if configured)
       // ============================================
       if ((CONFIG as any)?.router?.programId) {
-        try {
-          accounts.push(new PublicKey((CONFIG as any).router.programId));
-        } catch {}
+        addAccount((CONFIG as any).router.programId);
       }
 
       try {
         logger.info('alt.manager.collect.common.complete', {
           cat: 'tx',
-          ctx: { accountCount: accounts.length },
+          ctx: { 
+            accountCount: accounts.length,
+            hasWalletAtas: !!walletPubkey,
+            anchorMintCount: allMints.length,
+          },
         });
       } catch {}
       
@@ -3695,6 +3739,550 @@ export class DexAltManager {
       altAddress: altPk.toBase58(),
       rentRecovered,
     };
+  }
+
+  // ============================================================================
+  // NEW METHODS: Enhanced ALT Management
+  // ============================================================================
+
+  /**
+   * Collect frequently-used pool vaults for anchor token pairs.
+   * These are vaults (token accounts) that appear in many pools involving anchor mints.
+   * 
+   * @param anchorMints List of anchor mint addresses
+   * @param maxVaults Maximum number of vaults to collect (default 50)
+   * @returns Array of vault PublicKeys sorted by frequency
+   */
+  private async collectFrequentAnchorVaults(
+    anchorMints: string[],
+    maxVaults: number = 50
+  ): Promise<PublicKey[]> {
+    const vaultCounts = new Map<string, number>();
+    
+    try {
+      const { getGraphSnapshot } = await import('../../server/graph.js');
+      const snapshot = await getGraphSnapshot();
+      
+      if (!snapshot?.edges) return [];
+      
+      const anchorSet = new Set(anchorMints);
+      
+      // Count vault occurrences in pools involving anchor mints
+      for (const edge of snapshot.edges) {
+        // Skip reverse edges
+        if (/[#-]rev$/.test(String(edge.pool_id || ''))) continue;
+        
+        const mintA = (edge as any).from || (edge as any).mint_a;
+        const mintB = (edge as any).to || (edge as any).mint_b;
+        
+        // Only consider pools with at least one anchor mint
+        const hasAnchor = anchorSet.has(mintA) || anchorSet.has(mintB);
+        if (!hasAnchor) continue;
+        
+        // Get vaults from edge data
+        const vaultA = (edge as any).vault_a || (edge as any).account_a;
+        const vaultB = (edge as any).vault_b || (edge as any).account_b;
+        
+        if (vaultA) {
+          vaultCounts.set(vaultA, (vaultCounts.get(vaultA) || 0) + 1);
+        }
+        if (vaultB) {
+          vaultCounts.set(vaultB, (vaultCounts.get(vaultB) || 0) + 1);
+        }
+      }
+      
+      // Sort by frequency and take top N
+      const sortedVaults = Array.from(vaultCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, maxVaults)
+        .map(([vault]) => vault);
+      
+      try {
+        logger.debug('alt.manager.collect.anchor.vaults', {
+          cat: 'tx',
+          ctx: {
+            totalVaultsFound: vaultCounts.size,
+            selectedVaults: sortedVaults.length,
+            topVaultFrequency: sortedVaults.length > 0 ? vaultCounts.get(sortedVaults[0]) : 0,
+          },
+        });
+      } catch {}
+      
+      return sortedVaults.map(v => new PublicKey(v));
+    } catch (error) {
+      try {
+        logger.warn('alt.manager.collect.anchor.vaults.error', {
+          cat: 'tx',
+          ctx: { error: String((error as any)?.message || error) },
+        });
+      } catch {}
+      return [];
+    }
+  }
+
+  /**
+   * Collect only STATIC accounts for a pool (accounts that don't change with price).
+   * Excludes tick arrays and bin arrays since they're position-dependent.
+   * 
+   * @param poolId Pool address (may include -rev or -fwd suffix)
+   * @param dex DEX type
+   * @returns Array of PublicKeys for static accounts needed for this pool
+   */
+  async collectStaticPoolAccounts(
+    poolId: string,
+    dex: string
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    const connection = getConnection();
+    
+    try {
+      const cleanPoolId = poolId.replace(/[#-](rev|fwd)$/, '');
+      const poolPk = new PublicKey(cleanPoolId);
+      accounts.push(poolPk);
+
+      const dexLower = dex.toLowerCase();
+      
+      // Try to get from execution cache first (faster, no RPC)
+      const { executionCache } = await import('../executionCache.js');
+      const stat = executionCache.getStatic(cleanPoolId);
+      
+      if (stat) {
+        // Use cached data (no RPC calls needed)
+        const addIfValid = (val: any) => {
+          if (!val) return;
+          try {
+            accounts.push(new PublicKey(val));
+          } catch {}
+        };
+        
+        // Common across all DEXes
+        addIfValid(stat.mint_a);
+        addIfValid(stat.mint_b);
+        addIfValid(stat.account_a);  // vault A
+        addIfValid(stat.account_b);  // vault B
+        
+        if (dexLower === 'raydium') {
+          addIfValid(stat.amm_config);
+          addIfValid(stat.observation_state);
+          addIfValid(stat.ex_bitmap);  // only if exists
+        } else if (dexLower === 'orca') {
+          addIfValid((stat as any).oracle);
+          addIfValid((stat as any).whirlpools_config);
+        } else if (dexLower === 'meteora') {
+          addIfValid((stat as any).oracle);
+          addIfValid((stat as any).reserve_x);
+          addIfValid((stat as any).reserve_y);
+          // Add event authority (constant PDA)
+          accounts.push(new PublicKey('D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6'));
+        }
+        
+        return accounts;
+      }
+      
+      // Fallback: fetch from chain (slower)
+      const poolInfo = await withRpcLimit(
+        () => connection.getAccountInfo(poolPk),
+        1,
+        { module: 'alt', method: 'getAccountInfo' }
+      );
+      
+      if (!poolInfo) return accounts;
+      
+      // Parse based on DEX type - reuse existing parse methods
+      if (dexLower === 'raydium') {
+        const clmmAccounts = await this.parseRaydiumClmmAccounts(poolPk, poolInfo);
+        accounts.push(...clmmAccounts);
+      } else if (dexLower === 'orca') {
+        const whirlpoolAccounts = await this.parseOrcaWhirlpoolAccounts(poolPk, poolInfo);
+        accounts.push(...whirlpoolAccounts);
+      } else if (dexLower === 'meteora') {
+        const dlmmAccounts = await this.parseMeteoraDlmmAccounts(poolPk, poolInfo);
+        accounts.push(...dlmmAccounts);
+      }
+      
+      return accounts;
+    } catch (error) {
+      try {
+        logger.warn('alt.manager.collectStaticPoolAccounts.error', {
+          cat: 'tx',
+          ctx: { poolId, dex, error: String((error as any)?.message || error) },
+        });
+      } catch {}
+      return accounts;
+    }
+  }
+
+  /**
+   * Create ALTs covering ALL pools in the graph for a specific DEX.
+   * Creates as many ALTs as needed to fit all pools (no artificial limit).
+   * 
+   * @param dex DEX to create ALTs for
+   * @returns DexAltSet with all created ALT info
+   */
+  async createAllDexPoolAlts(
+    dex: 'raydium' | 'orca' | 'meteora'
+  ): Promise<DexAltSet> {
+    const { ensureWallet } = await import('../../wallet/wallet.js');
+    const wallet = await ensureWallet(CONFIG.walletPath);
+    
+    // Solana ALT limit is 256, use 230 for safety margin
+    const MAX_ACCOUNTS_PER_ALT = 230;
+    
+    // Accounts per pool (static accounts only - excludes tick/bin arrays)
+    const STATIC_ACCOUNTS_PER_POOL: Record<string, number> = {
+      raydium: 8,  // pool, amm_config, vaultA, vaultB, mintA, mintB, observation, [exBitmap]
+      orca: 7,     // pool, vaultA, vaultB, mintA, mintB, oracle, whirlpoolsConfig
+      meteora: 8,  // pair, reserveX, reserveY, mintX, mintY, oracle, eventAuthority, [bitmapExt]
+    };
+    
+    const result: DexAltSet = {
+      addresses: [],
+      altContents: {},
+      totalPools: 0,
+      totalAccounts: 0,
+    };
+
+    try {
+      // Get ALL pools from graph snapshot (no limit)
+      const { getGraphSnapshot } = await import('../../server/graph.js');
+      const snapshot = await getGraphSnapshot();
+      
+      if (!snapshot?.edges) {
+        try {
+          logger.warn('alt.manager.createAllDexPoolAlts.no.snapshot', {
+            cat: 'tx',
+            ctx: { dex },
+          });
+        } catch {}
+        return result;
+      }
+
+      // Collect ALL unique pools for this DEX
+      const poolIds = new Set<string>();
+      for (const edge of snapshot.edges) {
+        const edgeDex = String(edge.dex || '').toLowerCase();
+        if (edgeDex !== dex.toLowerCase()) continue;
+        
+        const poolId = String(edge.pool_id || '');
+        if (!poolId) continue;
+        
+        // Skip reverse edges
+        if (/[#-]rev$/.test(poolId)) continue;
+        
+        const cleanPoolId = poolId.replace(/-(rev|fwd)$/, '');
+        poolIds.add(cleanPoolId);
+      }
+
+      if (poolIds.size === 0) {
+        try {
+          logger.warn('alt.manager.createAllDexPoolAlts.no.pools', {
+            cat: 'tx',
+            ctx: { dex },
+          });
+        } catch {}
+        return result;
+      }
+
+      const allPools = Array.from(poolIds);
+      const accountsPerPool = STATIC_ACCOUNTS_PER_POOL[dex] || 8;
+      const poolsPerAlt = Math.floor(MAX_ACCOUNTS_PER_ALT / accountsPerPool);
+      const altsNeeded = Math.ceil(allPools.length / poolsPerAlt);
+
+      try {
+        logger.info('alt.manager.createAllDexPoolAlts.planning', {
+          cat: 'tx',
+          ctx: {
+            dex,
+            totalPools: allPools.length,
+            accountsPerPool,
+            poolsPerAlt,
+            altsNeeded,
+            estimatedTotalAccounts: allPools.length * accountsPerPool,
+          },
+        });
+      } catch {}
+
+      // Load existing config
+      const config = await loadAltConfig();
+      if (!config.dexAlts) config.dexAlts = {};
+      if (!config.poolToAlt) config.poolToAlt = {};
+
+      // Process pools in chunks
+      for (let altIndex = 0; altIndex < altsNeeded; altIndex++) {
+        const startIdx = altIndex * poolsPerAlt;
+        const endIdx = Math.min(startIdx + poolsPerAlt, allPools.length);
+        const chunkPools = allPools.slice(startIdx, endIdx);
+        
+        const category = `${dex}-pools-${altIndex + 1}`;
+        
+        // Collect accounts for this chunk
+        const accounts: PublicKey[] = [];
+        const chunkPoolIds: string[] = [];
+        
+        for (const poolId of chunkPools) {
+          try {
+            // Only collect static accounts (not tick/bin arrays)
+            const poolAccounts = await this.collectStaticPoolAccounts(poolId, dex);
+            accounts.push(...poolAccounts);
+            chunkPoolIds.push(poolId);
+          } catch (e) {
+            try {
+              logger.warn('alt.manager.createAllDexPoolAlts.pool.error', {
+                cat: 'tx',
+                ctx: { poolId, dex, error: String((e as any)?.message || e) },
+              });
+            } catch {}
+          }
+        }
+
+        if (accounts.length === 0) continue;
+
+        // Deduplicate accounts within this chunk
+        const seen = new Set<string>();
+        const dedupedAccounts = accounts.filter(pk => {
+          const addr = pk.toBase58();
+          if (seen.has(addr)) return false;
+          seen.add(addr);
+          return true;
+        });
+
+        // Create or extend ALT
+        let altAddress: string;
+        const existingAlt = this.altAddresses.get(category);
+        
+        if (existingAlt) {
+          // Check if we can extend existing ALT
+          const existingAccount = this.altAccounts.get(existingAlt.toBase58());
+          const existingCount = existingAccount?.state?.addresses?.length || 0;
+          const remainingCapacity = 256 - existingCount;
+          
+          if (remainingCapacity >= dedupedAccounts.length) {
+            // Filter out accounts already in the ALT
+            const existingAddrs = new Set(
+              (existingAccount?.state?.addresses || []).map(a => a.toBase58())
+            );
+            const newAccounts = dedupedAccounts.filter(
+              pk => !existingAddrs.has(pk.toBase58())
+            );
+            
+            if (newAccounts.length > 0) {
+              await this.extendAlt(category, newAccounts);
+            }
+            altAddress = existingAlt.toBase58();
+          } else {
+            // Need to create a new ALT for overflow
+            const overflowCategory = `${category}-overflow-${Date.now()}`;
+            const address = await this.createAltOnChain(wallet, dedupedAccounts, overflowCategory);
+            altAddress = address.toBase58();
+            this.altAddresses.set(overflowCategory, address);
+          }
+        } else {
+          // Create new ALT
+          const address = await this.createAltOnChain(wallet, dedupedAccounts, category);
+          altAddress = address.toBase58();
+          this.altAddresses.set(category, address);
+        }
+
+        // Update result and mappings
+        result.addresses.push(altAddress);
+        result.altContents[altAddress] = chunkPoolIds;
+        result.totalPools += chunkPoolIds.length;
+        result.totalAccounts += dedupedAccounts.length;
+
+        // Update poolToAlt mapping for O(1) lookup
+        for (const poolId of chunkPoolIds) {
+          config.poolToAlt![poolId] = altAddress;
+        }
+
+        try {
+          logger.info('alt.manager.createAllDexPoolAlts.alt.created', {
+            cat: 'tx',
+            ctx: {
+              category,
+              altAddress: altAddress.slice(0, 8) + '...',
+              poolCount: chunkPoolIds.length,
+              accountCount: dedupedAccounts.length,
+              progress: `${altIndex + 1}/${altsNeeded}`,
+            },
+          });
+        } catch {}
+      }
+
+      // Save updated config
+      config.dexAlts![dex] = result;
+      await saveAltConfig(config);
+
+      // Refresh ALT cache
+      await this.preloadAllAltAccounts();
+
+      try {
+        logger.info('alt.manager.createAllDexPoolAlts.complete', {
+          cat: 'tx',
+          ctx: {
+            dex,
+            altsCreated: result.addresses.length,
+            totalPools: result.totalPools,
+            totalAccounts: result.totalAccounts,
+            coveragePercent: '100%',
+          },
+        });
+      } catch {}
+
+      return result;
+    } catch (error) {
+      try {
+        logger.error('alt.manager.createAllDexPoolAlts.error', {
+          cat: 'tx',
+          ctx: {
+            dex,
+            error: String((error as any)?.message || error),
+          },
+        });
+      } catch {}
+      return result;
+    }
+  }
+
+  /**
+   * Create or update the common ALT with all frequently-used accounts.
+   * This should be called on startup and periodically to refresh.
+   * 
+   * @param walletPubkey Wallet to derive ATAs for (optional but recommended)
+   * @returns Address of the common ALT
+   */
+  async createOrUpdateCommonAlt(walletPubkey?: PublicKey): Promise<string | null> {
+    try {
+      // Get wallet if not provided
+      const { ensureWallet } = await import('../../wallet/wallet.js');
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      const walletPk = walletPubkey || wallet.publicKey;
+      
+      // Collect all common accounts including wallet ATAs
+      const commonAccounts = await this.collectCommonAccounts(walletPk);
+      
+      if (commonAccounts.length === 0) {
+        try {
+          logger.warn('alt.manager.common.no_accounts', { cat: 'tx' });
+        } catch {}
+        return null;
+      }
+      
+      // Check if common ALT already exists
+      const config = await loadAltConfig();
+      
+      if (config.alts.common) {
+        // ALT exists - check if we need to extend it
+        const existingAlt = this.altAccounts.get(config.alts.common);
+        if (existingAlt) {
+          const existingAddrs = new Set(
+            (existingAlt.state?.addresses || []).map(a => a.toBase58())
+          );
+          
+          // Filter to only accounts not already in ALT
+          const newAccounts = commonAccounts.filter(
+            pk => !existingAddrs.has(pk.toBase58())
+          );
+          
+          if (newAccounts.length > 0) {
+            const remainingCapacity = 256 - (existingAlt.state?.addresses?.length || 0);
+            
+            if (newAccounts.length <= remainingCapacity) {
+              await this.extendAlt('common', newAccounts);
+              try {
+                logger.info('alt.manager.common.extended', {
+                  cat: 'tx',
+                  ctx: {
+                    address: config.alts.common,
+                    newAccounts: newAccounts.length,
+                    totalAccounts: (existingAlt.state?.addresses?.length || 0) + newAccounts.length,
+                  },
+                });
+              } catch {}
+              return config.alts.common;
+            } else {
+              try {
+                logger.warn('alt.manager.common.full', {
+                  cat: 'tx',
+                  ctx: {
+                    address: config.alts.common,
+                    capacity: remainingCapacity,
+                    needed: newAccounts.length,
+                  },
+                });
+              } catch {}
+            }
+          }
+          
+          return config.alts.common;
+        }
+      }
+      
+      // Create new common ALT
+      const address = await this.createAltOnChain(wallet, commonAccounts, 'common');
+      
+      // Save to config
+      config.alts.common = address.toBase58();
+      config.walletPublicKey = walletPk.toBase58();
+      await saveAltConfig(config);
+      
+      try {
+        logger.info('alt.manager.common.created', {
+          cat: 'tx',
+          ctx: {
+            address: address.toBase58(),
+            accountCount: commonAccounts.length,
+            wallet: walletPk.toBase58().slice(0, 8) + '...',
+          },
+        });
+      } catch {}
+      
+      return address.toBase58();
+    } catch (error) {
+      try {
+        logger.error('alt.manager.common.create.error', {
+          cat: 'tx',
+          ctx: { error: String((error as any)?.message || error) },
+        });
+      } catch {}
+      return null;
+    }
+  }
+
+  /**
+   * Create ALTs for ALL DEXes, covering all pools in the graph.
+   * Call this on startup or when graph changes significantly.
+   */
+  async createAllAlts(): Promise<{
+    raydium: DexAltSet;
+    orca: DexAltSet;
+    meteora: DexAltSet;
+    common: string | null;
+  }> {
+    try {
+      logger.info('alt.manager.createAllAlts.start', { cat: 'tx' });
+    } catch {}
+    
+    // Create common ALT first (programs, sysvars, user ATAs, etc.)
+    const commonAltAddress = await this.createOrUpdateCommonAlt();
+    
+    // Create DEX-specific ALTs (sequentially to avoid rate limits)
+    const raydium = await this.createAllDexPoolAlts('raydium');
+    const orca = await this.createAllDexPoolAlts('orca');
+    const meteora = await this.createAllDexPoolAlts('meteora');
+    
+    try {
+      logger.info('alt.manager.createAllAlts.complete', {
+        cat: 'tx',
+        ctx: {
+          common: commonAltAddress ? 'created' : 'skipped',
+          raydium: { alts: raydium.addresses.length, pools: raydium.totalPools },
+          orca: { alts: orca.addresses.length, pools: orca.totalPools },
+          meteora: { alts: meteora.addresses.length, pools: meteora.totalPools },
+        },
+      });
+    } catch {}
+    
+    return { raydium, orca, meteora, common: commonAltAddress };
   }
 }
 

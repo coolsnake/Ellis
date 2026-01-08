@@ -747,7 +747,42 @@ async function buildDirectRouterTx(
       // On-chain programs (Meteora, Raydium, Orca) use native ordering for direction
       const poolMintA = stat?.native_mint_a || stat?.mint_a;
       const aToB = hop.inputMint === poolMintA;
-      const amountIn = BigInt(hop.amountInRaw.toString());
+      
+      // Cap amountIn to actual balance to prevent "insufficient funds" errors
+      const requestedAmount = BigInt(hop.amountInRaw.toString());
+      let amountIn = requestedAmount;
+      try {
+        const singleHopBalances = await getBalances(wallet.publicKey);
+        if (singleHopBalances) {
+          const inputMint = hop.inputMint;
+          const inputDecimals = hop.inputDecimals ?? 6;
+          const uiBalance = inputMint === SOL_MINT 
+            ? singleHopBalances.sol 
+            : (singleHopBalances.tokens[inputMint] ?? 0);
+          
+          if (uiBalance > 0) {
+            const actualBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
+            if (requestedAmount > actualBalance) {
+              amountIn = actualBalance;
+              logger.debug('routerTx.direct.singleHop.amountCapped', {
+                cat: 'tx',
+                ctx: {
+                  inputMint: inputMint.slice(0, 8) + '...',
+                  requestedAmount: requestedAmount.toString(),
+                  actualBalance: actualBalance.toString(),
+                  cappedAmount: amountIn.toString(),
+                },
+              });
+            }
+          }
+        }
+      } catch (e) {
+        logger.warn('routerTx.direct.singleHop.getBalances.failed', {
+          cat: 'tx',
+          error: String((e as Error)?.message || e),
+        });
+      }
+      
       const minAmountOut = BigInt(hop.minOutRaw.toString());
       // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
       const dexAccounts = await extractDexAccounts(hop, dexType, wallet.publicKey, { allowVariableAccounts: true, aToB });
@@ -1171,10 +1206,44 @@ async function buildRouteStepsWithSdkAccounts(
     const sdkAccounts = sdkAccountsList[i];
     const dexType = dexNameToType(hop.dex, hop.variant);
 
-    // First hop: use specified amount, subsequent hops: use 0 for dynamic propagation
-    const amountIn = i === 0
-      ? BigInt(hop.amountInRaw.toString())
-      : 0n;
+    // First hop: use specified amount, but cap to actual balance to avoid "insufficient funds"
+    // Subsequent hops: use 0 for dynamic propagation
+    let amountIn = 0n;
+    if (i === 0) {
+      const requestedAmount = BigInt(hop.amountInRaw.toString());
+      
+      // Get actual balance and cap to it (prevents rounding/timing issues)
+      if (walletBalances) {
+        const inputMint = hop.inputMint;
+        const inputDecimals = hop.inputDecimals ?? 6;
+        const uiBalance = inputMint === SOL_MINT 
+          ? walletBalances.sol 
+          : (walletBalances.tokens[inputMint] ?? 0);
+        
+        if (uiBalance > 0) {
+          const actualBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
+          // Cap to actual balance to prevent "insufficient funds" errors
+          amountIn = requestedAmount > actualBalance ? actualBalance : requestedAmount;
+          
+          if (amountIn < requestedAmount) {
+            logger.debug('routerTx.buildRouteStepsWithSdk.amountCapped', {
+              cat: 'tx',
+              ctx: {
+                hopIndex: i,
+                inputMint: inputMint.slice(0, 8) + '...',
+                requestedAmount: requestedAmount.toString(),
+                actualBalance: actualBalance.toString(),
+                cappedAmount: amountIn.toString(),
+              },
+            });
+          }
+        } else {
+          amountIn = requestedAmount;
+        }
+      } else {
+        amountIn = requestedAmount;
+      }
+    }
 
     // Compute swap direction from pool's native mint ordering
     const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
@@ -1285,12 +1354,45 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
     const hop = hops[i];
     const dexType = dexNameToType(hop.dex, hop.variant);
 
-    // First hop: use specified amount
+    // First hop: use specified amount, but cap to actual balance to avoid "insufficient funds"
     // Subsequent hops: use 0 to trigger dynamic amount propagation
     // The on-chain router will read the actual token account balance
-    const amountIn = i === 0 
-      ? BigInt(hop.amountInRaw.toString()) 
-      : 0n;
+    let amountIn = 0n;
+    if (i === 0) {
+      const requestedAmount = BigInt(hop.amountInRaw.toString());
+      
+      // Get actual balance and cap to it (prevents rounding/timing issues)
+      if (walletBalances) {
+        const inputMint = hop.inputMint;
+        const inputDecimals = hop.inputDecimals ?? 6;
+        const uiBalance = inputMint === SOL_MINT 
+          ? walletBalances.sol 
+          : (walletBalances.tokens[inputMint] ?? 0);
+        
+        if (uiBalance > 0) {
+          const actualBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
+          // Cap to actual balance to prevent "insufficient funds" errors
+          amountIn = requestedAmount > actualBalance ? actualBalance : requestedAmount;
+          
+          if (amountIn < requestedAmount) {
+            logger.debug('routerTx.buildStep.amountCapped', {
+              cat: 'tx',
+              ctx: {
+                hopIndex: i,
+                inputMint: inputMint.slice(0, 8) + '...',
+                requestedAmount: requestedAmount.toString(),
+                actualBalance: actualBalance.toString(),
+                cappedAmount: amountIn.toString(),
+              },
+            });
+          }
+        } else {
+          amountIn = requestedAmount;
+        }
+      } else {
+        amountIn = requestedAmount;
+      }
+    }
 
     // Compute swap direction from pool's native mint ordering
     // aToB = true means swapping mint A -> mint B

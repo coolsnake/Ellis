@@ -11,6 +11,7 @@ import { loadExecConfig } from '../../server/execConfigStore.js';
 import { validateHopAmounts } from './validation.js';
 import { measureComputeUnits, estimateComputeUnits } from '../utils/computeUnits.js';
 import { dexAltManager } from '../utils/altManager.js';
+import { loadAltsForRoute } from '../utils/altSelection.js';
 import { getFeeCalculator } from '../../utils/feeCalculator.js';
 import { getConnection } from '../../wallet/wallet.js';
 
@@ -827,24 +828,17 @@ export async function buildDirectArbTx(
         // Get ALT addresses for this transaction
         const isMultiHop = plan.hops.length > 1;
         // Lower threshold for CLMM swaps - they always have many accounts
-        const hasClmmSwap = plan.hops.some(h => h.dex === 'raydium' && h.variant === 'clmm');
+        const hasClmmSwap = plan.hops.some(h => 
+          (h.dex === 'raydium' && h.variant === 'clmm') ||
+          h.dex === 'orca' ||
+          h.dex === 'meteora'
+        );
         const shouldUseAlts = isMultiHop || allAccounts.length > 15 || hasClmmSwap;
         
-        // Determine which DEXes are used to only include relevant ALTs
-        const dexCategories = new Set<string>();
-        for (const hop of plan.hops) {
-          if (hop.dex === 'raydium') {
-            dexCategories.add(hop.variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm');
-          } else if (hop.dex === 'orca') {
-            dexCategories.add('orca-whirlpool');
-          } else if (hop.dex === 'meteora') {
-            dexCategories.add('meteora-dlmm');
-          }
-        }
-        
-        const altAddresses = shouldUseAlts 
-          ? await dexAltManager.getAltAddresses(allAccounts, isMultiHop || hasClmmSwap, dexCategories)
-          : [];
+        // Use pool-specific ALT selection for compute measurement
+        const poolIds = plan.hops.map(h => h.poolId);
+        const altResult = shouldUseAlts ? await loadAltsForRoute(poolIds) : { altAddresses: [] };
+        const altAddresses = altResult.altAddresses || [];
         
         // If we have real instructions, measure them
         if (realIxs.length > 0) {
@@ -967,39 +961,53 @@ export async function buildDirectArbTx(
     
     const isMultiHop = plan.hops.length > 1;
     // Lower threshold for CLMM swaps - they always have many accounts
-    const hasClmmSwap = plan.hops.some(h => h.dex === 'raydium' && h.variant === 'clmm');
+    const hasClmmSwap = plan.hops.some(h => 
+      (h.dex === 'raydium' && h.variant === 'clmm') ||
+      h.dex === 'orca' ||
+      h.dex === 'meteora'
+    );
     const shouldUseAlts = isMultiHop || allAccounts.length > 15 || hasClmmSwap;
     
-    // Load DEX-specific ALTs based on hops
+    // Load ALTs using pool-specific selection for comprehensive coverage
     let altAddresses: string[] = [];
     if (shouldUseAlts) {
-      // Determine which DEXes are used to only include relevant ALTs
-      const dexCategories = new Set<string>();
-      for (const hop of plan.hops) {
-        if (hop.dex === 'raydium') {
-          dexCategories.add(hop.variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm');
-        } else if (hop.dex === 'orca') {
-          dexCategories.add('orca-whirlpool');
-        } else if (hop.dex === 'meteora') {
-          dexCategories.add('meteora-dlmm');
-        }
-      }
+      // Extract pool IDs from hops for pool-specific ALT lookup
+      const poolIds = plan.hops.map(h => h.poolId);
       
-      // Use the optimized getAltAddresses method with DEX category filtering
-      altAddresses = await dexAltManager.getAltAddresses(allAccounts, isMultiHop || hasClmmSwap, dexCategories);
+      // Use loadAltsForRoute for proper poolToAlt mapping lookup
+      const altResult = await loadAltsForRoute(poolIds);
+      altAddresses = altResult.altAddresses;
       
-      // Log ALT usage
+      // Log ALT coverage for monitoring
       try {
         logger.info('tx.build.alts.loaded', {
           cat: 'tx',
           ctx: {
             traceId,
+            poolCount: poolIds.length,
+            coverage: `${(altResult.coverage * 100).toFixed(1)}%`,
+            coveredPools: altResult.coveredPools.length,
+            missingPools: altResult.missingPools.length,
             altCount: altAddresses.length,
-            categories: Array.from(dexCategories),
             altAddresses,
           } as any,
         });
       } catch (e) { logCatchError('builder.tx', e); }
+      
+      // Warn if coverage is low for multi-hop routes
+      if (isMultiHop && altResult.coverage < 0.5) {
+        try {
+          logger.warn('tx.build.alts.low_coverage', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              coverage: `${(altResult.coverage * 100).toFixed(1)}%`,
+              missingPools: altResult.missingPools.slice(0, 5),
+              suggestion: 'Run createAllAlts() to improve coverage',
+            } as any,
+          });
+        } catch (e) { logCatchError('builder.tx', e); }
+      }
     }
     
     // After transaction is built, schedule closures and mark accounts as used:
