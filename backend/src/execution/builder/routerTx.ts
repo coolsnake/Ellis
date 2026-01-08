@@ -1932,12 +1932,12 @@ async function extractDexAccounts(
         let directionalBinArrays: PublicKey[] = [];
 
         // PRIORITY 1: Use SDK-provided bin arrays directly if available (SDK Quote mode)
-        // The SDK returns validated bin arrays that cover the swap's price range
+        // The SDK returns validated bin arrays sorted by index (low to high)
         const sdkBinArrays = (hop as any).binArrays as string[] | undefined;
         if (sdkBinArrays && sdkBinArrays.length > 0) {
-          // Validate each SDK-provided address before use to prevent "Non-base58 character" errors
+          // Validate all SDK-provided addresses before directional selection
           const validatedArrays: PublicKey[] = [];
-          for (const addr of sdkBinArrays.slice(0, Math.min(neededBinArrayCount, sdkBinArrays.length))) {
+          for (const addr of sdkBinArrays) {
             const validated = validateBase58Address(addr, `meteora.sdkBinArray.${hop.poolId.slice(0, 8)}`);
             if (validated) {
               validatedArrays.push(new PublicKey(validated));
@@ -1945,15 +1945,36 @@ async function extractDexAccounts(
           }
 
           if (validatedArrays.length > 0) {
-            directionalBinArrays = validatedArrays;
+            // SDK arrays are sorted by index (low to high)
+            // Select directionally: X→Y needs lower indices, Y→X needs upper indices
+            // The active bin array is typically near the middle of the sorted array
+            const midpoint = Math.floor(validatedArrays.length / 2);
+            
+            if (isXtoY) {
+              // X→Y: take from midpoint going DOWN (lower indices first)
+              // Reverse the lower half so active is first, then lower, lower-1, etc.
+              const lowerHalf = validatedArrays.slice(0, midpoint + 1).reverse();
+              directionalBinArrays = lowerHalf.slice(0, neededBinArrayCount);
+            } else {
+              // Y→X: take from midpoint going UP (higher indices)
+              directionalBinArrays = validatedArrays.slice(midpoint, midpoint + neededBinArrayCount);
+            }
+            
+            // Ensure we have enough arrays (pad with what we have if needed)
+            while (directionalBinArrays.length < neededBinArrayCount && validatedArrays.length > 0) {
+              directionalBinArrays.push(validatedArrays[directionalBinArrays.length % validatedArrays.length]);
+            }
+
             logger.info('routerTx.meteora.binArrays.fromSdk', {
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId.slice(0, 8) + '...',
                 sdkArrayCount: sdkBinArrays.length,
                 validCount: validatedArrays.length,
+                selectedCount: directionalBinArrays.length,
                 binStep: binStepNum,
                 isXtoY,
+                midpoint,
                 arrays: directionalBinArrays.map(a => a.toBase58().slice(0, 8)),
               },
             });

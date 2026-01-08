@@ -828,8 +828,57 @@ async function getRaydiumSdkQuote(
     let lowerAddress = tickArrayMap.get(currentTickArrayStart - ticksInArray);
     let upperAddress = tickArrayMap.get(currentTickArrayStart + ticksInArray);
 
-    // Fallback: derive tick arrays manually if SDK didn't return the center
-    if (!centerAddress) {
+    // If center isn't in SDK map but SDK has tick arrays, use the closest ones
+    // This handles liquidity gaps where the "expected" tick array doesn't exist on-chain
+    if (!centerAddress && tickArrayMap.size > 0) {
+      const sortedStartTicks = Array.from(tickArrayMap.keys()).sort((a, b) => a - b);
+      
+      // Find tick arrays closest to where current tick should be
+      let closestBelowIdx = -1;
+      let closestAboveIdx = -1;
+      
+      for (let i = 0; i < sortedStartTicks.length; i++) {
+        if (sortedStartTicks[i] <= currentTickArrayStart) {
+          closestBelowIdx = i;
+        }
+        if (sortedStartTicks[i] >= currentTickArrayStart && closestAboveIdx === -1) {
+          closestAboveIdx = i;
+        }
+      }
+      
+      // Use closest available as center, and adjacent ones for lower/upper
+      const centerIdx = closestBelowIdx >= 0 ? closestBelowIdx : closestAboveIdx;
+      if (centerIdx >= 0) {
+        const centerStartTick = sortedStartTicks[centerIdx];
+        centerAddress = tickArrayMap.get(centerStartTick);
+        
+        // Get adjacent from SDK if available
+        if (centerIdx > 0) {
+          lowerAddress = tickArrayMap.get(sortedStartTicks[centerIdx - 1]);
+        }
+        if (centerIdx < sortedStartTicks.length - 1) {
+          upperAddress = tickArrayMap.get(sortedStartTicks[centerIdx + 1]);
+        }
+        
+        logger.warn('sdkQuoteBuilder.raydium.quote.using_nearest_tick_arrays', {
+          cat: 'tx',
+          ctx: {
+            poolId: poolId.slice(0, 8),
+            tickCurrent,
+            tickSpacing,
+            expectedCenter: currentTickArrayStart,
+            actualCenter: centerStartTick,
+            offset: centerStartTick - currentTickArrayStart,
+            sdkArrayCount: sortedStartTicks.length,
+            hint: 'Using nearest SDK tick arrays - pool may have liquidity gap',
+          },
+        });
+      }
+    }
+
+    // Only derive manually if SDK returned NO tick arrays at all
+    // This is the "first fetch" case where we haven't discovered tick arrays yet
+    if (!centerAddress && tickArrayMap.size === 0) {
       logger.info('sdkQuoteBuilder.raydium.quote.manual_derivation', {
         cat: 'tx',
         ctx: { 
@@ -837,20 +886,15 @@ async function getRaydiumSdkQuote(
           tickCurrent, 
           tickSpacing, 
           currentTickArrayStart,
-          sdkMapSize: tickArrayMap.size,
-          sdkStartTicks: Array.from(tickArrayMap.keys()).slice(0, 5),
+          hint: 'No SDK tick arrays available - deriving manually',
         },
       });
 
       // Derive center, lower, upper tick arrays
       centerAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart, programId).toBase58();
-      if (!lowerAddress) {
-        lowerAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart - ticksInArray, programId).toBase58();
-      }
-      if (!upperAddress) {
-        upperAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart + ticksInArray, programId).toBase58();
-      }
-    } else {
+      lowerAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart - ticksInArray, programId).toBase58();
+      upperAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart + ticksInArray, programId).toBase58();
+    } else if (centerAddress) {
       // SDK provided center, derive any missing adjacent arrays
       if (!lowerAddress) {
         lowerAddress = deriveRaydiumTickArrayPda(poolPk, currentTickArrayStart - ticksInArray, programId).toBase58();
@@ -1021,7 +1065,7 @@ async function getMeteoraSdkQuote(
           const totalFromSdk = binArrays.length;
           
           // SDK returns ALL bin arrays - filter to those near active bin for efficiency
-          binArrayAddresses = binArrays
+          const binArraysWithIndex = binArrays
             .map((ba: any) => {
               const addr = typeof ba.publicKey?.toBase58 === 'function'
                 ? ba.publicKey.toBase58()
@@ -1037,14 +1081,18 @@ async function getMeteoraSdkQuote(
               }
               return true; // Keep if we can't determine index
             })
-            .map((item: { addr: string }) => item.addr)
             .slice(0, 7); // Hard cap at 7 bin arrays
+          
+          // Sort by index (low to high) so routerTx can select directionally
+          binArraysWithIndex.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          binArrayAddresses = binArraysWithIndex.map(item => item.addr);
             
           logger.debug('sdkQuoteBuilder.meteora.quote.bin_arrays_from_sdk', { 
             cat: 'tx', 
             totalFromSdk,
             filtered: binArrayAddresses.length,
             activeIndex,
+            indices: binArraysWithIndex.map(item => item.index),
           });
         }
       } catch (e) {
