@@ -59,6 +59,7 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
     meteora: 50,
   });
   const [actionResult, setActionResult] = React.useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [coverageStats, setCoverageStats] = React.useState<any>(null);
 
   // Load ALT config on mount and when expanded
   React.useEffect(() => {
@@ -73,6 +74,18 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
       if (res.ok) {
         const data = await res.json();
         setAltConfig(data);
+      }
+    } catch {}
+    // Also load coverage stats
+    loadCoverageStats();
+  };
+
+  const loadCoverageStats = async () => {
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.coverageStats}`, { headers: getAuthHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setCoverageStats(data);
       }
     } catch {}
   };
@@ -155,6 +168,71 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
       } else {
         const err = await res.json().catch(() => ({}));
         setActionResult({ type: 'error', message: err.error || 'Failed to create DEX ALTs' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  // Extend ALL pools for a DEX (uses new unlimited ALT system)
+  const handleExtendAllPools = async (dex: DexAltType) => {
+    const actionKey = `extend-all-${dex}`;
+    if (altActionLoading) return;
+    setAltActionLoading(actionKey);
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.extendDex}/${dex}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({
+          type: 'success',
+          message: `Extended ${dex}: ${data.altsCreated} ALT(s) covering ${data.totalPools} pools`,
+        });
+        onRefresh();
+        loadAltConfig();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to extend DEX ALTs' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  // Create ALL ALTs at once (common + all DEX pools)
+  const handleCreateAllAlts = async () => {
+    if (altActionLoading) return;
+    if (!confirm('Create ALTs for ALL pools in the graph? This may take a while and create multiple ALTs per DEX.')) return;
+    
+    setAltActionLoading('create-all');
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.createAll}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({
+          type: 'success',
+          message: `Created ${data.totalAlts} ALTs: Raydium(${data.raydium?.altsCreated || 0}), Orca(${data.orca?.altsCreated || 0}), Meteora(${data.meteora?.altsCreated || 0})`,
+        });
+        onRefresh();
+        loadAltConfig();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to create all ALTs' });
       }
     } catch (e: any) {
       setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
@@ -287,6 +365,18 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
             {altStatus.altCount || 0} ALT{altStatus.altCount !== 1 ? 's' : ''}
           </span>
           <button
+            onClick={handleCreateAllAlts}
+            disabled={altActionLoading !== null}
+            className={`px-2 py-1 text-xs border rounded ${
+              altActionLoading === 'create-all' 
+                ? 'bg-gray-700 opacity-50 cursor-not-allowed' 
+                : 'bg-green-700 hover:bg-green-600 border-green-600'
+            }`}
+            title="Create ALTs for all pools in graph"
+          >
+            {altActionLoading === 'create-all' ? '⏳ Creating...' : '🚀 Create All'}
+          </button>
+          <button
             onClick={handleRefreshCache}
             disabled={altActionLoading !== null}
             className={`px-2 py-1 text-xs border rounded ${
@@ -370,6 +460,38 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
             </div>
           </div>
 
+          {/* Coverage Stats */}
+          {coverageStats && (
+            <div className="bg-gray-900/60 rounded p-3 border border-gray-700">
+              <div className="flex items-center justify-between mb-2">
+                <h5 className="text-sm font-medium text-gray-300">Pool Coverage</h5>
+                <span className={`text-sm font-mono ${
+                  parseFloat(coverageStats.total?.percent || '0') >= 80 
+                    ? 'text-green-400' 
+                    : parseFloat(coverageStats.total?.percent || '0') >= 50 
+                      ? 'text-yellow-400' 
+                      : 'text-red-400'
+                }`}>
+                  {coverageStats.total?.percent || '0%'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                {Object.entries(coverageStats.byDex || {}).map(([dex, stats]: [string, any]) => (
+                  <div key={dex} className="bg-gray-800/50 rounded px-2 py-1">
+                    <div className="text-gray-400 capitalize">{dex}</div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-300">{stats.covered}/{stats.total}</span>
+                      <span className={`${
+                        parseFloat(stats.percent || '0') >= 80 ? 'text-green-400' :
+                        parseFloat(stats.percent || '0') >= 50 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>{stats.percent}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* DEX Pool ALTs */}
           <div>
             <h5 className="text-sm font-medium text-gray-300 mb-2">DEX Pool ALTs</h5>
@@ -381,6 +503,8 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
                 const totalPools = dexAltSet?.totalPools || 0;
                 const totalAccounts = dexAltSet?.totalAccounts || 0;
                 const isLoading = altActionLoading === `create-dex-${dex}`;
+                const isExtending = altActionLoading === `extend-all-${dex}`;
+                const dexCoverage = coverageStats?.byDex?.[dex];
 
                 return (
                   <div key={dex} className="bg-gray-900/60 rounded p-2 border border-gray-700">
@@ -392,8 +516,20 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
                             {altCount} ALT{altCount > 1 ? 's' : ''} • {totalPools} pools • {totalAccounts} accounts
                           </span>
                         )}
+                        {dexCoverage && (
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${
+                            parseFloat(dexCoverage.percent || '0') >= 80 
+                              ? 'bg-green-900/50 text-green-400' 
+                              : parseFloat(dexCoverage.percent || '0') >= 50 
+                                ? 'bg-yellow-900/50 text-yellow-400' 
+                                : 'bg-red-900/50 text-red-400'
+                          }`}>
+                            {dexCoverage.percent} coverage
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
+                        {/* Limited pools creation */}
                         <input
                           type="number"
                           min="10"
@@ -403,8 +539,8 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
                             ...prev,
                             [dex]: Math.min(200, Math.max(10, parseInt(e.target.value) || 50)),
                           }))}
-                          className="w-16 px-1 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-center"
-                          title="Max pools to include"
+                          className="w-14 px-1 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-center"
+                          title="Max pools for quick create"
                         />
                         <button
                           onClick={() => handleCreateDexPools(dex)}
@@ -412,12 +548,24 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
                           className={`px-2 py-1 text-xs rounded ${
                             isLoading 
                               ? 'bg-gray-700 opacity-50 cursor-not-allowed' 
-                              : altCount > 0 
-                                ? 'bg-purple-700 hover:bg-purple-600 text-white'
-                                : 'bg-green-700 hover:bg-green-600 text-white'
+                              : 'bg-blue-700 hover:bg-blue-600 text-white'
                           }`}
+                          title={`Create ALT for top ${dexPoolCounts[dex]} pools`}
                         >
-                          {isLoading ? '⏳' : altCount > 0 ? 'Refresh' : 'Create'}
+                          {isLoading ? '⏳' : 'Quick'}
+                        </button>
+                        {/* Extend ALL pools button */}
+                        <button
+                          onClick={() => handleExtendAllPools(dex)}
+                          disabled={altActionLoading !== null}
+                          className={`px-2 py-1 text-xs rounded ${
+                            isExtending 
+                              ? 'bg-gray-700 opacity-50 cursor-not-allowed' 
+                              : 'bg-green-700 hover:bg-green-600 text-white'
+                          }`}
+                          title="Create ALTs for ALL pools in graph"
+                        >
+                          {isExtending ? '⏳' : '🚀 All'}
                         </button>
                       </div>
                     </div>

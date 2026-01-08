@@ -102,6 +102,11 @@ export const ROUTES = {
       extendCategory: '/arb/alt/extend', // POST /arb/alt/extend/:category
       refresh: '/arb/alt/refresh',
       pools: '/arb/alt/pools',
+      // New comprehensive ALT endpoints
+      createAll: '/arb/alts/create-all',      // POST - Create all ALTs (common + all DEX pools)
+      coverageStats: '/arb/alts/coverage',    // GET - Detailed coverage by DEX
+      extendDex: '/arb/alts/extend',          // POST /arb/alts/extend/:dex - Extend all pools for DEX
+      createCommonNew: '/arb/alts/common',    // POST - Create/update common ALT with wallet ATAs
     },
   },
   exec: {
