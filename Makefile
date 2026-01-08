@@ -159,8 +159,8 @@ arb-router: check-solana-tools ## Build Anchor arb-router program (requires Agav
 	cd arb-router && npm ci --legacy-peer-deps
 	@echo "Removing old Cargo.lock..."
 	@rm -f arb-router/Cargo.lock 2>/dev/null || true
-	@echo "Pinning indexmap to Rust 1.79 compatible version..."
-	cd arb-router && cargo generate-lockfile && cargo update indexmap --precise 2.5.0
+	@echo "Pinning dependencies to Rust 1.79 compatible versions..."
+	cd arb-router && cargo generate-lockfile && cargo update indexmap --precise 2.5.0 && cargo update blake3 --precise 1.5.5
 	@echo "Building Anchor program..."
 	@bash -c '\
 		export PATH="$$HOME/.local/share/solana/install/active_release/bin:$$PATH"; \
