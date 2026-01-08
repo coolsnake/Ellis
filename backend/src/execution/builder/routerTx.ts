@@ -756,9 +756,9 @@ async function buildDirectRouterTx(
         if (singleHopBalances) {
           const inputMint = hop.inputMint;
           const inputDecimals = hop.inputDecimals ?? 6;
-          const uiBalance = inputMint === SOL_MINT 
-            ? singleHopBalances.sol 
-            : (singleHopBalances.tokens[inputMint] ?? 0);
+          // Always use token account balance, not native SOL
+          // For WSOL swaps, we need the WSOL ATA balance, not wallet lamports
+          const uiBalance = singleHopBalances.tokens[inputMint] ?? 0;
           
           if (uiBalance > 0) {
             const actualBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
@@ -1216,9 +1216,9 @@ async function buildRouteStepsWithSdkAccounts(
       if (walletBalances) {
         const inputMint = hop.inputMint;
         const inputDecimals = hop.inputDecimals ?? 6;
-        const uiBalance = inputMint === SOL_MINT 
-          ? walletBalances.sol 
-          : (walletBalances.tokens[inputMint] ?? 0);
+        // Always use token account balance, not native SOL
+        // For WSOL swaps, we need the WSOL ATA balance, not wallet lamports
+        const uiBalance = walletBalances.tokens[inputMint] ?? 0;
         
         if (uiBalance > 0) {
           const actualBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
@@ -1262,9 +1262,9 @@ async function buildRouteStepsWithSdkAccounts(
     if (i > 0 && walletBalances) {
       const inputMint = hop.inputMint;
       const inputDecimals = hop.inputDecimals ?? 6;
-      const uiBalance = inputMint === SOL_MINT
-        ? walletBalances.sol
-        : (walletBalances.tokens[inputMint] ?? 0);
+      // Always use token account balance, not native SOL
+      // For WSOL swaps, we need the WSOL ATA balance, not wallet lamports
+      const uiBalance = walletBalances.tokens[inputMint] ?? 0;
 
       if (uiBalance > 0) {
         initialBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
@@ -1365,9 +1365,9 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
       if (walletBalances) {
         const inputMint = hop.inputMint;
         const inputDecimals = hop.inputDecimals ?? 6;
-        const uiBalance = inputMint === SOL_MINT 
-          ? walletBalances.sol 
-          : (walletBalances.tokens[inputMint] ?? 0);
+        // Always use token account balance, not native SOL
+        // For WSOL swaps, we need the WSOL ATA balance, not wallet lamports
+        const uiBalance = walletBalances.tokens[inputMint] ?? 0;
         
         if (uiBalance > 0) {
           const actualBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
@@ -1417,9 +1417,9 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
       const inputDecimals = hop.inputDecimals ?? 6;
       
       // Get UI balance and convert to raw amount
-      const uiBalance = inputMint === SOL_MINT 
-        ? walletBalances.sol 
-        : (walletBalances.tokens[inputMint] ?? 0);
+      // Always use token account balance, not native SOL
+      // For WSOL swaps, we need the WSOL ATA balance, not wallet lamports
+      const uiBalance = walletBalances.tokens[inputMint] ?? 0;
       
       if (uiBalance > 0) {
         initialBalance = BigInt(Math.floor(uiBalance * Math.pow(10, inputDecimals)));
@@ -1937,7 +1937,7 @@ async function extractDexAccounts(
         if (sdkBinArrays && sdkBinArrays.length > 0) {
           // Validate each SDK-provided address before use to prevent "Non-base58 character" errors
           const validatedArrays: PublicKey[] = [];
-          for (const addr of sdkBinArrays.slice(0, Math.max(neededBinArrayCount, sdkBinArrays.length))) {
+          for (const addr of sdkBinArrays.slice(0, Math.min(neededBinArrayCount, sdkBinArrays.length))) {
             const validated = validateBase58Address(addr, `meteora.sdkBinArray.${hop.poolId.slice(0, 8)}`);
             if (validated) {
               validatedArrays.push(new PublicKey(validated));
