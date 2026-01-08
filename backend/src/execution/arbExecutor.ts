@@ -1068,9 +1068,10 @@ export class ArbExecutor {
           // PERF: Use static imports instead of dynamic imports
           const kp = await ensureWallet(CONFIG.walletPath);
           
+          // minProfit is now calculated automatically from plan.initialInputRaw and plan.minProfitBps
+          // by buildRouterTransaction when plan.isArbCycle is true (router-level enforcement)
           const routerResult = await buildRouterTransaction(plan, kp, {
             mode: ExecutionMode.FlashLoan,
-            minProfit: 0n, // Already validated profitability
           });
           
           if (!routerResult.usedRouter || routerResult.error) {

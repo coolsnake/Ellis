@@ -198,7 +198,24 @@ export async function buildRouterTransaction(
 
     const programId = new PublicKey(routerConfig.programId);
     const mode = config?.mode ?? routerConfig.executionMode ?? ExecutionMode.Auto;
-    const minProfit = config?.minProfit ?? 0n;
+    
+    // Calculate minProfit from plan's profitability fields if not explicitly provided
+    // For arb cycles, minProfit = initialInput * minProfitBps / 10000
+    // This enables router-level profitability enforcement via the execute instruction
+    let minProfit = config?.minProfit ?? 0n;
+    if (minProfit === 0n && plan.isArbCycle && plan.initialInputRaw && plan.minProfitBps !== undefined) {
+      minProfit = (plan.initialInputRaw * BigInt(Math.max(0, plan.minProfitBps))) / 10_000n;
+      logger.info('routerTx.minProfit.calculated', {
+        cat: 'tx',
+        ctx: {
+          isArbCycle: plan.isArbCycle,
+          initialInputRaw: plan.initialInputRaw.toString(),
+          minProfitBps: plan.minProfitBps,
+          calculatedMinProfit: minProfit.toString(),
+          traceId: plan.traceId,
+        },
+      });
+    }
 
     // SDK Quote mode: use DEX SDKs to get accurate tick/bin arrays
     if (mode === ExecutionMode.SdkQuote) {

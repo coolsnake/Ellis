@@ -689,34 +689,29 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       const isFinalHop = i === hops.length - 1;
       
       if (isFinalHop) {
-        // Final hop: apply slippage protection
+        // Final hop: apply slippage protection only
+        // NOTE: Profitability for arb cycles is now enforced at the router program level
+        // via the execute instruction's min_profit parameter, NOT via minOutRaw override.
+        // This allows intermediate hops to have slippage as long as total route is profitable.
         try { hops[i].minOutRaw = applyMinOut(out, eff); } catch { hops[i].minOutRaw = 0n; }
         
-        // For arb cycles: enforce profitability on final hop
         if (isArbCycle) {
-          const minProfitableOutput = initialInputRaw + 
-            (initialInputRaw * BigInt(Math.max(0, minProfitBps))) / 10_000n;
-          
-          if (hops[i].minOutRaw < minProfitableOutput) {
-            hops[i].minOutRaw = minProfitableOutput;
-            
-            try {
-              logger.info('tx.resolve.arb.profitability_enforced', {
-                cat: 'tx',
-                code: LogCode.TX_RESOLVE_OK,
+          try {
+            logger.info('tx.resolve.arb.router_level_enforcement', {
+              cat: 'tx',
+              code: LogCode.TX_RESOLVE_OK,
+              traceId,
+              ctx: {
+                hopIndex: i,
+                initialInputRaw: initialInputRaw.toString(),
+                minProfitBps,
+                quotedOutput: out.toString(),
+                slippageAdjustedMin: hops[i].minOutRaw.toString(),
+                note: 'profitability_enforced_by_router_min_profit',
                 traceId,
-                ctx: {
-                  hopIndex: i,
-                  initialInputRaw: initialInputRaw.toString(),
-                  minProfitBps,
-                  quotedOutput: out.toString(),
-                  slippageAdjustedMin: applyMinOut(out, eff).toString(),
-                  enforcedMinOut: minProfitableOutput.toString(),
-                  traceId,
-                }
-              });
-            } catch (e) { logCatchError('resolver.index', e); }
-          }
+              }
+            });
+          } catch (e) { logCatchError('resolver.index', e); }
         }
       } else {
         // Intermediate hops: minimal slippage protection (1n to avoid potential issues with 0)
@@ -802,7 +797,18 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     throw e;
   }
   logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, traceId, ctx: { ms: Date.now() - t0, hops: hops.length, traceId } as any });
-  return { path, hops, computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports, traceId };
+  
+  // Return plan with router-level profitability data for arb cycles
+  return { 
+    path, 
+    hops, 
+    computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports, 
+    traceId,
+    // Router-level profitability enforcement (arb cycles only)
+    isArbCycle,
+    initialInputRaw,
+    minProfitBps,
+  };
 }
 
 function hopAdjustAmount(_hops: DirectHop[], _raw: bigint): void { /* deprecated */ }

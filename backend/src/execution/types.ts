@@ -68,6 +68,13 @@ export type ExecutionPlan = {
   hops: DirectHop[];
   computeUnitPriceMicroLamports?: number;
   traceId?: string;  // Unified trace ID for correlating all logs across the execution lifecycle
+  
+  // Router-level profitability enforcement (for arb cycles)
+  // Instead of encoding profitability in the final hop's minOutRaw, we pass these
+  // to the router program which checks final_balance - initial_balance >= minProfit
+  isArbCycle?: boolean;           // Whether this is an arb cycle (same start/end token)
+  initialInputRaw?: bigint;       // Initial input amount for calculating minProfit
+  minProfitBps?: number;          // Minimum profit threshold in basis points
 };
 
 export type ChunkedPlan = { txs: Array<{ instructions: any[]; approxSizeBytes: number }>; totalIxs: number; totalBytes: number };
