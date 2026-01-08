@@ -19,5 +19,21 @@
     "windowMs": 300000,
     "quarantineDurationMs": 900000
   },
-  "manualPoolBlocklist": []
+  "manualPoolBlocklist": [],
+  "dynamicSizing": {
+    "enabled": true,
+    "minSizeUsd": 0.5,
+    "maxSizeUsd": 100,
+    "method": "optimal_iterative",
+    "bottleneckFraction": 0.10,
+    "profitScaling": true,
+    "optimalSettings": {
+      "ammSlippageMultiplier": 2.0,
+      "clmmSlippageMultiplier": 3.0,
+      "dlmmSlippageMultiplier": 1.3,
+      "iterativeMaxIterations": 15,
+      "iterativeTolerance": 1.0,
+      "safetyFactor": 0.85
+    }
+  }
 }

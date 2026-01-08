@@ -209,6 +209,21 @@ export interface OptimalSizeResult {
     slippageCostUsd: number;
     netProfitUsd: number;
   };
+  /** CLMM/DLMM capacity constraint info (if any) */
+  capacityInfo?: {
+    /** Capacity-constrained max size */
+    capacityConstraintUsd: number;
+    /** Whether capacity reduced the optimal size */
+    wasConstrained: boolean;
+    /** Which hop's capacity was the bottleneck */
+    bottleneckHop?: number;
+    /** Why that hop is constrained */
+    limitingFactor?: 'profit_margin' | 'active_liquidity' | 'vault_balance' | 'tvl';
+    /** Vault imbalance at bottleneck */
+    vaultImbalance?: string;
+    /** Warnings from capacity analysis */
+    warnings?: string[];
+  };
 }
 
 export interface OptimalSizingConfig {
@@ -303,6 +318,10 @@ export function calculateOptimalArbSize(
       });
     }
     
+    // Find the bottleneck hop for capacity info
+    const bottleneckHopIdx = hops.findIndex(h => h.hopCapacityUsd != null && h.hopCapacityUsd === capacityConstraint);
+    const bottleneckHop = bottleneckHopIdx >= 0 ? hops[bottleneckHopIdx] : undefined;
+    
     // If capacity is very low, warn and potentially skip
     if (effectiveMaxSize < minSizeUsd) {
       logger.warn('optimalSizing.capacity_below_minimum', {
@@ -311,13 +330,25 @@ export function calculateOptimalArbSize(
           minSizeUsd,
           capacityConstraint: capacityConstraint.toFixed(2),
           reason: 'CLMM/DLMM vault capacity too low for minimum trade size',
+          bottleneckHop: bottleneckHopIdx,
+          limitingFactor: bottleneckHop?.capacityLimitingFactor,
         }
       });
       return {
         optimalSizeUsd: 0,
         expectedProfitUsd: 0,
         method: 'heuristic',
-        breakdown: { grossProfitUsd: 0, slippageCostUsd: 0, netProfitUsd: 0 }
+        breakdown: { grossProfitUsd: 0, slippageCostUsd: 0, netProfitUsd: 0 },
+        capacityInfo: {
+          capacityConstraintUsd: capacityConstraint,
+          wasConstrained: true,
+          bottleneckHop: bottleneckHopIdx >= 0 ? bottleneckHopIdx : undefined,
+          limitingFactor: bottleneckHop?.capacityLimitingFactor,
+          vaultImbalance: bottleneckHop?.vaultImbalanceRatio 
+            ? (bottleneckHop.vaultImbalanceRatio * 100).toFixed(1) + '%' 
+            : undefined,
+          warnings: bottleneckHop?.capacityWarnings,
+        }
       };
     }
     
@@ -341,6 +372,21 @@ export function calculateOptimalArbSize(
     result.breakdown = calculateProfitBreakdown(result.optimalSizeUsd, hops, rateProduct, cfg);
     result.expectedProfitUsd = result.breakdown.netProfitUsd;
     
+    // Add capacity info to result
+    const wasConstrained = capacityConstraint < maxSizeUsd && capacityConstraint < Infinity;
+    if (wasConstrained || bottleneckHop) {
+      result.capacityInfo = {
+        capacityConstraintUsd: capacityConstraint < Infinity ? capacityConstraint : maxSizeUsd,
+        wasConstrained,
+        bottleneckHop: bottleneckHopIdx >= 0 ? bottleneckHopIdx : undefined,
+        limitingFactor: bottleneckHop?.capacityLimitingFactor,
+        vaultImbalance: bottleneckHop?.vaultImbalanceRatio 
+          ? (bottleneckHop.vaultImbalanceRatio * 100).toFixed(1) + '%' 
+          : undefined,
+        warnings: bottleneckHop?.capacityWarnings,
+      };
+    }
+    
     logger.debug('optimalSizing.calculated', {
       cat: 'arb',
       method: result.method,
@@ -350,8 +396,10 @@ export function calculateOptimalArbSize(
       optimalSizeUsd: result.optimalSizeUsd,
       expectedProfitUsd: result.expectedProfitUsd,
       safetyFactor: cfg.safetyFactor,
-      capacityConstraintApplied: capacityConstraint < maxSizeUsd,
+      capacityConstraintApplied: wasConstrained,
       capacityConstraint: capacityConstraint < Infinity ? capacityConstraint.toFixed(2) : 'none',
+      bottleneckHop: bottleneckHopIdx >= 0 ? bottleneckHopIdx : null,
+      limitingFactor: bottleneckHop?.capacityLimitingFactor,
     });
     
     return result;

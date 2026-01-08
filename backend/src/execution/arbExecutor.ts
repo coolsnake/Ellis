@@ -1834,6 +1834,21 @@ export class ArbExecutor {
         
         if (result.optimalSizeUsd > 0 && result.expectedProfitUsd > 0) {
           sizeUsd = result.optimalSizeUsd;
+          
+          // Log capacity constraint info if present (important for CLMM/DLMM sizing)
+          if (result.capacityInfo?.wasConstrained) {
+            logger.info('arb.executor.sizing.capacity_constrained', {
+              cat: 'arb',
+              path: opp.path.join('->'),
+              capacityConstraintUsd: result.capacityInfo.capacityConstraintUsd.toFixed(2),
+              finalSizeUsd: result.optimalSizeUsd.toFixed(2),
+              bottleneckHop: result.capacityInfo.bottleneckHop,
+              limitingFactor: result.capacityInfo.limitingFactor,
+              vaultImbalance: result.capacityInfo.vaultImbalance,
+              warnings: result.capacityInfo.warnings,
+            });
+          }
+          
           logger.debug('arb.executor.sizing.optimal', {
             cat: 'arb',
             path: opp.path.join('->'),
@@ -1842,14 +1857,28 @@ export class ArbExecutor {
             expectedProfitUsd: result.expectedProfitUsd,
             grossProfit: result.breakdown.grossProfitUsd,
             slippageCost: result.breakdown.slippageCostUsd,
+            capacityConstrained: result.capacityInfo?.wasConstrained ?? false,
           });
         } else {
           // Fall through to heuristic if optimal calculation fails
-          logger.debug('arb.executor.sizing.optimal_fallback', {
-            cat: 'arb',
-            path: opp.path.join('->'),
-            reason: 'zero_size_or_profit',
-          });
+          // Check if this was due to capacity constraints
+          if (result.capacityInfo?.wasConstrained) {
+            logger.info('arb.executor.sizing.capacity_rejection', {
+              cat: 'arb',
+              path: opp.path.join('->'),
+              reason: 'capacity_below_minimum',
+              capacityConstraintUsd: result.capacityInfo.capacityConstraintUsd.toFixed(2),
+              limitingFactor: result.capacityInfo.limitingFactor,
+              vaultImbalance: result.capacityInfo.vaultImbalance,
+              warnings: result.capacityInfo.warnings,
+            });
+          } else {
+            logger.debug('arb.executor.sizing.optimal_fallback', {
+              cat: 'arb',
+              path: opp.path.join('->'),
+              reason: 'zero_size_or_profit',
+            });
+          }
         }
       } catch (e: any) {
         logger.warn('arb.executor.sizing.optimal_error', {
