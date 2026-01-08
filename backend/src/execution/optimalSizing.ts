@@ -19,6 +19,9 @@ import { logCatchError } from '../utils/errorHandler.js';
 
 export type PoolType = 'amm' | 'clmm' | 'dlmm';
 
+/** What limits capacity in a CLMM/DLMM pool */
+export type CapacityLimitingFactor = 'profit_margin' | 'active_liquidity' | 'vault_balance' | 'tvl';
+
 export interface HopSizingInfo {
   poolType: PoolType;
   feeBps: number;
@@ -39,7 +42,7 @@ export interface HopSizingInfo {
   inputVaultUsd?: number;         // Input token vault balance in USD
   vaultImbalanceRatio?: number;   // min(vaultA,vaultB)/max(vaultA,vaultB) - closer to 1 = balanced
   hopCapacityUsd?: number;        // Estimated realistic trade capacity for this hop
-  capacityLimitingFactor?: string; // What limits capacity: 'profit_margin' | 'active_liquidity' | 'vault_balance' | 'tvl'
+  capacityLimitingFactor?: CapacityLimitingFactor; // What limits capacity
   capacityWarnings?: string[];    // Warnings about this hop's capacity
 }
 
@@ -51,7 +54,7 @@ export interface ClmmCapacityEstimate {
   /** Maximum safe trade size in USD considering all constraints */
   capacityUsd: number;
   /** Which constraint is binding */
-  limitingFactor: 'profit_margin' | 'active_liquidity' | 'vault_balance' | 'tvl';
+  limitingFactor: CapacityLimitingFactor;
   /** Detailed breakdown */
   breakdown: {
     /** Capacity based on profit margin tolerance */
@@ -218,7 +221,7 @@ export interface OptimalSizeResult {
     /** Which hop's capacity was the bottleneck */
     bottleneckHop?: number;
     /** Why that hop is constrained */
-    limitingFactor?: 'profit_margin' | 'active_liquidity' | 'vault_balance' | 'tvl';
+    limitingFactor?: CapacityLimitingFactor;
     /** Vault imbalance at bottleneck */
     vaultImbalance?: string;
     /** Warnings from capacity analysis */
@@ -701,7 +704,7 @@ export async function buildHopSizingInfo(
       let inputVaultUsd: number | undefined;
       let vaultImbalanceRatio: number | undefined;
       let hopCapacityUsd: number | undefined;
-      let capacityLimitingFactor: string | undefined;
+      let capacityLimitingFactor: CapacityLimitingFactor | undefined;
       let capacityWarnings: string[] = [];
       
       // Use hop liquidity if available
