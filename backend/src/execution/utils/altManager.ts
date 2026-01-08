@@ -3843,7 +3843,7 @@ export class DexAltManager {
       const dexLower = dex.toLowerCase();
       
       // Try to get from execution cache first (faster, no RPC)
-      const { executionCache } = await import('../executionCache.js');
+      const { executionCache } = await import('../cache.js');
       const stat = executionCache.getStatic(cleanPoolId);
       
       if (stat) {
