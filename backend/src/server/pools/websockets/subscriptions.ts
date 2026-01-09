@@ -12,6 +12,7 @@ import type { DexSource } from './types.js';
  */
 export interface SubscriptionState {
   attachedRaydiumPools: number;
+  attachedRaydiumCpmmPools: number;
   attachedOrcaPools: number;
   attachedMeteoraPools: number;
   attachedPumpswapPools: number;
@@ -20,6 +21,7 @@ export interface SubscriptionState {
 
 const subscriptionState: SubscriptionState = {
   attachedRaydiumPools: 0,
+  attachedRaydiumCpmmPools: 0,
   attachedOrcaPools: 0,
   attachedMeteoraPools: 0,
   attachedPumpswapPools: 0,
@@ -40,6 +42,9 @@ export function setSubscriptionCount(dex: DexSource, count: number): void {
   switch (dex) {
     case 'raydium':
       subscriptionState.attachedRaydiumPools = count;
+      break;
+    case 'raydium-cpmm':
+      subscriptionState.attachedRaydiumCpmmPools = count;
       break;
     case 'orca':
       subscriptionState.attachedOrcaPools = count;
@@ -63,6 +68,8 @@ export function getSubscriptionCount(dex: DexSource): number {
   switch (dex) {
     case 'raydium':
       return subscriptionState.attachedRaydiumPools;
+    case 'raydium-cpmm':
+      return subscriptionState.attachedRaydiumCpmmPools;
     case 'orca':
       return subscriptionState.attachedOrcaPools;
     case 'meteora':

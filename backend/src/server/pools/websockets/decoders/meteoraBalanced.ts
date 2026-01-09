@@ -33,7 +33,7 @@ import type { AmmPool, PoolsPayload } from '../../types.js';
 
 // Program IDs - Meteora DAMM has v1 and v2 versions
 export const METEORA_BALANCED_V1_PROGRAM = 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB';
-export const METEORA_BALANCED_V2_PROGRAM = 'cpaZT9LgfEDuBsZ4NhVPfqr6KPc6BmJKNsxbgDqJpump';
+export const METEORA_BALANCED_V2_PROGRAM = 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG'; // CP-AMM SDK
 
 // Debounce state for graph updates
 let metbalApplyState: { baseline: PoolsPayload | null; timer: NodeJS.Timeout | null } = { baseline: null, timer: null };

@@ -43,22 +43,35 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     const poolId = String(hopPoolIds[i]);
     let variant: DirectHop['variant'];
     if (dex === 'raydium') {
-      if (dexv.includes('clmm')) {
+      if (dexv.includes('cpmm')) {
+        variant = 'cpmm';
+      } else if (dexv.includes('clmm')) {
         variant = 'clmm';
       } else {
-        // Infer from poolId presence in Raydium CLMM list when variant not hinted
+        // Infer from poolId presence in Raydium CLMM/CPMM list when variant not hinted
         try {
           const { peekRaydiumPools } = await import('../../server/pools.js');
+          const { peekCpmmPools } = await import('../../server/pools.cache.js');
           const id = poolId.replace(/[#-]rev$/, '');
           const ray = peekRaydiumPools();
-          // Validate that pool has valid tickSpacing > 0 before considering it CLMM
-          const isClmm = Array.isArray(ray?.clmm) && (ray!.clmm as any[]).some((p: any) => {
-            const matchesId = String(p?.id || '') === id;
-            const tickSpacing = p?.tick_spacing ?? p?.tickSpacing;
-            const hasValidTick = typeof tickSpacing === 'number' && tickSpacing > 0;
-            return matchesId && hasValidTick;
-          });
-          variant = isClmm ? 'clmm' : 'amm';
+          const cpmm = peekCpmmPools();
+          
+          // Check CPMM first
+          const isCpmm = Array.isArray(cpmm?.cpmm) && (cpmm!.cpmm as any[]).some((p: any) => 
+            String(p?.id || '') === id
+          );
+          if (isCpmm) {
+            variant = 'cpmm';
+          } else {
+            // Validate that pool has valid tickSpacing > 0 before considering it CLMM
+            const isClmm = Array.isArray(ray?.clmm) && (ray!.clmm as any[]).some((p: any) => {
+              const matchesId = String(p?.id || '') === id;
+              const tickSpacing = p?.tick_spacing ?? p?.tickSpacing;
+              const hasValidTick = typeof tickSpacing === 'number' && tickSpacing > 0;
+              return matchesId && hasValidTick;
+            });
+            variant = isClmm ? 'clmm' : 'amm';
+          }
         } catch { variant = 'amm'; }
       }
     } else if (dex === 'orca') {
@@ -105,14 +118,22 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       variant,
       poolId,
       programId: executionCache.getStatic(poolId)?.programId || (() => {
-        if (dex === 'raydium') return variant === 'clmm' ? (CONFIG.raydium?.clmmProgram || '') : (CONFIG.raydium?.ammV4Program || '');
+        if (dex === 'raydium') {
+          if (variant === 'clmm') return CONFIG.raydium?.clmmProgram || '';
+          if (variant === 'cpmm') return CONFIG.raydium?.ammV5Program || 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
+          return CONFIG.raydium?.ammV4Program || '';
+        }
         if (dex === 'orca') return CONFIG.orca?.programId || '';
         if (dex === 'meteora') return (CONFIG.meteora?.programId as any) || '';
         if (dex === 'meteora_balanced') {
           const balanced = (CONFIG.meteora?.amm as any) || {};
           return variant === 'damm_v1' ? (balanced.v1ProgramId || '') : (balanced.v2ProgramId || '');
         }
-        if (dex === 'pumpswap') return 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
+        if (dex === 'pumpswap') {
+          // Use config values - prefer AMM program for post-graduation pools
+          const pumpswapConfig = (CONFIG as any).pumpswap || {};
+          return pumpswapConfig.ammProgramId || 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
+        }
         return '';
       })(),
       inputMint,
@@ -147,6 +168,9 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       if (hop.dex === 'raydium' && hop.variant === 'amm') {
         const { resolveRaydiumAmm } = await import('./raydiumAmm.js');
         return await resolveRaydiumAmm(hop);
+      } else if (hop.dex === 'raydium' && hop.variant === 'cpmm') {
+        const { resolveRaydiumCpmm } = await import('./raydiumCpmm.js');
+        return await resolveRaydiumCpmm(hop);
       } else if (hop.dex === 'raydium' && hop.variant === 'clmm') {
         const { resolveRaydiumClmm } = await import('./raydiumClmm.js');
         return await resolveRaydiumClmm(hop);

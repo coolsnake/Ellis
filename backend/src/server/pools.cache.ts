@@ -1,14 +1,15 @@
-import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
+import type { AmmPool, ClmmPool, CpmmPool, PoolsPayload } from './pools/types.js';
 
 export const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 export const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 export const meteoraCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 export const metbalCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 export const pumpswapCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
+export const cpmmCache: { data: { cpmm: CpmmPool[] } | null; ts: number; inflight?: Promise<{ cpmm: CpmmPool[] }> } = { data: null, ts: 0 };
 
 export const vaultBalanceCache: Map<string, bigint> = new Map();
 
-export type PoolCacheSource = 'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+export type PoolCacheSource = 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
 
 export function findPoolInCache(poolId: string): { pool: AmmPool | ClmmPool; source: PoolCacheSource } | null {
   // Check Orca
@@ -52,6 +53,13 @@ export function findPoolInCache(poolId: string): { pool: AmmPool | ClmmPool; sou
     if (metbalAmm) return { pool: metbalAmm, source: 'meteora_balanced' };
   }
   
+  // Check Raydium CPMM
+  const cpmmPools = cpmmCache.data;
+  if (cpmmPools) {
+    const cpmmPool = cpmmPools.cpmm.find(p => p.id === poolId);
+    if (cpmmPool) return { pool: cpmmPool as unknown as AmmPool, source: 'raydium-cpmm' };
+  }
+  
   return null;
 }
 
@@ -61,13 +69,15 @@ export function clearAllPoolCaches(): void {
   try { meteoraCache.data = undefined as any; meteoraCache.ts = 0; meteoraCache.inflight = undefined; } catch {}
   try { metbalCache.data = undefined as any; metbalCache.ts = 0; metbalCache.inflight = undefined; } catch {}
   try { pumpswapCache.data = undefined as any; pumpswapCache.ts = 0; pumpswapCache.inflight = undefined; } catch {}
+  try { cpmmCache.data = undefined as any; cpmmCache.ts = 0; cpmmCache.inflight = undefined; } catch {}
 }
 
-export function peekRaydiumPools(): PoolsPayload { return raydiumCache.data || { amm: [], clmm: [] }; }
-export function peekOrcaPools(): PoolsPayload { return orcaCache.data || { amm: [], clmm: [] }; }
-export function peekMeteoraPools(): PoolsPayload { return meteoraCache.data || { amm: [], clmm: [] }; }
-export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.data || { amm: [], clmm: [] }; }
-export function peekPumpswapPools(): PoolsPayload { return pumpswapCache.data || { amm: [], clmm: [] }; }
+export function peekRaydiumPools(): PoolsPayload { return raydiumCache.data || { amm: [], clmm: [], cpmm: [] }; }
+export function peekOrcaPools(): PoolsPayload { return orcaCache.data || { amm: [], clmm: [], cpmm: [] }; }
+export function peekMeteoraPools(): PoolsPayload { return meteoraCache.data || { amm: [], clmm: [], cpmm: [] }; }
+export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.data || { amm: [], clmm: [], cpmm: [] }; }
+export function peekPumpswapPools(): PoolsPayload { return pumpswapCache.data || { amm: [], clmm: [], cpmm: [] }; }
+export function peekCpmmPools(): { cpmm: CpmmPool[] } { return cpmmCache.data || { cpmm: [] }; }
 
 /**
  * Update pool objects in cache with validated tick/activeId data and optionally price data.

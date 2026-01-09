@@ -46,6 +46,9 @@ export {
   handlePumpswapUpdate,
   isPumpswapOwner,
   PUMPSWAP_PROGRAM,
+  PUMPSWAP_PROGRAMS,
+  PUMPSWAP_BONDING_CURVE_PROGRAM_ID,
+  PUMPSWAP_AMM_PROGRAM_ID,
 } from './pumpswap.js';
 
 // Meteora Balanced decoder (DAMM via vault updates)
@@ -56,6 +59,15 @@ export {
   isMeteoraBalancedOwner,
   METEORA_BALANCED_PROGRAMS,
 } from './meteoraBalanced.js';
+
+// Raydium CPMM decoder
+export {
+  decodeRaydiumCpmmPool,
+  handleRaydiumCpmmUpdate,
+  handleCpmmVaultUpdate,
+  isRaydiumCpmmOwner,
+  RAYDIUM_CPMM_PROGRAM_ID,
+} from './raydiumCpmm.js';
 
 // Shared types
 export type {
@@ -85,12 +97,19 @@ export async function routeAccountUpdate(
   derivedAccountToPool?: Map<string, { poolId: string; accountType: string }>
 ): Promise<{ handled: boolean; dex?: string; result?: any }> {
   const { handleRaydiumUpdate, isRaydiumOwner } = await import('./raydium.js');
+  const { handleRaydiumCpmmUpdate, isRaydiumCpmmOwner } = await import('./raydiumCpmm.js');
   const { handleOrcaUpdate, isOrcaOwner } = await import('./orca.js');
   const { handleMeteoraUpdate, isMeteoraOwner } = await import('./meteora.js');
   const { handlePumpswapUpdate, isPumpswapOwner } = await import('./pumpswap.js');
   const { handleMeteoraBalancedUpdate, isMeteoraBalancedOwner } = await import('./meteoraBalanced.js');
 
   const derivedMap = derivedAccountToPool as Map<string, { poolId: string; accountType: 'vault' | 'reserve' | 'tick_array' | 'oracle' | 'observation' }> || new Map();
+
+  // Check Raydium CPMM first (more specific)
+  if (isRaydiumCpmmOwner(owner)) {
+    const result = await handleRaydiumCpmmUpdate(info as any, poolId, derivedMap);
+    return { handled: true, dex: 'raydium-cpmm', result };
+  }
 
   if (isRaydiumOwner(owner)) {
     const result = await handleRaydiumUpdate(info as any, poolId, derivedMap);
@@ -122,13 +141,15 @@ export async function routeAccountUpdate(
  */
 export function getAllProgramIds(): string[] {
   return [
-    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM v4
     'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK', // Raydium CLMM
+    'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C', // Raydium CPMM
     'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', // Orca Whirlpool
     'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', // Meteora DLMM
-    'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', // Pumpswap
-    'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB', // Meteora Balanced V1
-    'cpaZT9LgfEDuBsZ4NhVPfqr6KPc6BmJKNsxbgDqJpump', // Meteora Balanced V2
+    '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', // PumpSwap (bonding curve)
+    'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', // PumpSwap AMM (post-graduation)
+    'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB', // Meteora Balanced V1 (Dynamic AMM)
+    'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG', // Meteora Balanced V2 (CP-AMM)
   ];
 }
 

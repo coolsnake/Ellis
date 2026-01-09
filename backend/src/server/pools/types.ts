@@ -117,7 +117,55 @@ export type ClmmPool = {
   token_vault_b?: string;               // Token vault B (alternative name for account_b)
 };
 
-export type PoolsPayload = { amm: AmmPool[]; clmm: ClmmPool[] };
+/**
+ * Raydium CPMM (Constant Product Market Maker) pool type.
+ * Uses constant product formula (x*y=k) like AMM V4 but with different account structure.
+ * Program ID: CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C
+ */
+export type CpmmPool = {
+  id: string;
+  dex: string;
+  mint_a: string;
+  mint_b: string;
+  fee_bps: number;
+  price_a_per_b: number;
+  updated_ms: number;
+  pool_kind: 'cpmm';
+  // Vault accounts
+  account_a?: string;
+  account_b?: string;
+  // Decimals
+  decimals_a?: number;
+  decimals_b?: number;
+  // Native (on-chain) orientation
+  native_mint_a?: string;
+  native_mint_b?: string;
+  native_account_a?: string;
+  native_account_b?: string;
+  native_decimals_a?: number;
+  native_decimals_b?: number;
+  // CPMM-specific accounts
+  amm_config?: string;
+  observation_key?: string;
+  lp_mint?: string;
+  token_program_a?: 'spl-token' | 'token-2022';
+  token_program_b?: 'spl-token' | 'token-2022';
+  authority?: string;
+  creator?: string;
+  // Liquidity
+  reserve_a_raw?: string;
+  reserve_b_raw?: string;
+  amount_a_whole?: number;
+  amount_b_whole?: number;
+  tvl_usd?: number;
+  liquidity_display?: number;
+  pool_liquidity_raw?: number;
+  was_swapped?: boolean;
+  _pipelineProcessed?: boolean;
+  _updatedAt?: string;
+};
+
+export type PoolsPayload = { amm: AmmPool[]; clmm: ClmmPool[]; cpmm: CpmmPool[] };
 
 /**
  * Lightweight pool summary for early filtering (before detail fetch + RPC enrichment).
@@ -127,8 +175,8 @@ export type SummaryPool = {
   pubkey: string;
   mint_a: string;
   mint_b: string;
-  dex: 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'pumpswap';
-  type: 'amm' | 'clmm';
+  dex: 'raydium' | 'raydium-clmm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap';
+  type: 'amm' | 'clmm' | 'cpmm';
   _updatedAt?: string;
 };
 
@@ -138,6 +186,7 @@ export type SummaryPool = {
 export type DexSummaries = {
   raydiumAmm: SummaryPool[];
   raydiumClmm: SummaryPool[];
+  raydiumCpmm: SummaryPool[];
   orca: SummaryPool[];
   meteora: SummaryPool[];
   pumpswap: SummaryPool[];
@@ -149,6 +198,7 @@ export type DexSummaries = {
 export type SurvivorPoolIds = {
   raydiumAmm: Set<string>;
   raydiumClmm: Set<string>;
+  raydiumCpmm: Set<string>;
   orca: Set<string>;
   meteora: Set<string>;
   pumpswap: Set<string>;

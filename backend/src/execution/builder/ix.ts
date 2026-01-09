@@ -2342,109 +2342,143 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
     const amountIn = new BN(String(hop.amountInRaw ?? 0n));
     const minOut = new BN(String(hop.minOutRaw ?? 0n));
 
-    // Try SDK-based approach first (disabled until SDK packages are installed)
-    // TODO: Enable once @meteora-ag/dynamic-amm-sdk and @meteora-ag/cp-amm-sdk are installed
-    // and their API signatures are verified
-    /*
-    try {
-      // DAMM v1 SDK
-      if (hop.variant === 'damm_v1') {
-        try {
-          const AmmImpl = await import('@meteora-ag/dynamic-amm-sdk').then(m => m.default || m);
-          if (AmmImpl && typeof (AmmImpl as any).create === 'function') {
-            const pool = await (AmmImpl as any).create(connection, poolAddress);
-            
-            if (pool && typeof pool.swap === 'function') {
-              const swapResult = await (pool.swap as any)(
-                kp.publicKey,
-                toPublicKey(hop.inputMint),
-                amountIn,
-                minOut
-              );
-              
-              if (swapResult?.transaction?.instructions) {
-                try {
-                  logger.info('meteora.damm.v1.sdk.success', {
-                    cat: 'tx',
-                    code: LogCode.TX_BUILD_HOP,
-                    ctx: {
-                      pool: hop.poolId.slice(0, 8) + '...',
-                      ixCount: swapResult.transaction.instructions.length,
-                    } as any,
-                  });
-                } catch (e) { logCatchError('ix.build', e); }
-                return swapResult.transaction.instructions;
-              }
-            }
-          }
-        } catch (e: any) {
-          try {
-            logger.warn('meteora.damm.v1.sdk.fallback', {
-              cat: 'tx',
-              ctx: { error: String(e?.message || e), pool: hop.poolId } as any,
-            });
-          } catch (e) { logCatchError('ix.build', e); }
-        }
-      }
-      
-      // DAMM v2 SDK
-      if (hop.variant === 'damm_v2') {
-        try {
-          const { CpAmm } = await import('@meteora-ag/cp-amm-sdk');
-          if (CpAmm) {
-            const cpAmm = new CpAmm(connection);
-            
-            if (typeof cpAmm.swap === 'function') {
-              const swapResult = await (cpAmm.swap as any)(
-                poolAddress,
-                kp.publicKey,
-                toPublicKey(hop.inputMint),
-                amountIn,
-                minOut
-              );
-              
-              if (swapResult?.instructions) {
-                try {
-                  logger.info('meteora.damm.v2.sdk.success', {
-                    cat: 'tx',
-                    code: LogCode.TX_BUILD_HOP,
-                    ctx: {
-                      pool: hop.poolId.slice(0, 8) + '...',
-                      ixCount: swapResult.instructions.length,
-                    } as any,
-                  });
-                } catch (e) { logCatchError('ix.build', e); }
-                return swapResult.instructions;
-              }
-            }
-          }
-        } catch (e: any) {
-          try {
-            logger.warn('meteora.damm.v2.sdk.fallback', {
-              cat: 'tx',
-              ctx: { error: String(e?.message || e), pool: hop.poolId } as any,
-            });
-          } catch (e) { logCatchError('ix.build', e); }
-        }
-      }
-    } catch (sdkErr: any) {
+    // Check if we're in SDK quote mode (indicated by SDK-provided poolAuthority on hop)
+    const useSdkMode = !!(hop as any).poolAuthority;
+    
+    // Try SDK-based approach when in SDK quote mode
+    if (useSdkMode) {
       try {
-        logger.warn('meteora.damm.sdk.import.failed', {
-          cat: 'tx',
-          ctx: { error: String(sdkErr?.message || sdkErr) } as any,
-        });
-      } catch (e) { logCatchError('ix.build', e); }
+        // DAMM v1 SDK (Dynamic AMM)
+        if (hop.variant === 'damm_v1' || !hop.variant) {
+          try {
+            const dynamicAmmModule = await import('@meteora-ag/dynamic-amm-sdk');
+            const AmmImpl = dynamicAmmModule.default || dynamicAmmModule;
+            
+            if (AmmImpl && typeof (AmmImpl as any).create === 'function') {
+              const pool = await (AmmImpl as any).create(connection, poolAddress);
+              
+              if (pool && typeof pool.swap === 'function') {
+                const swapResult = await (pool.swap as any)(
+                  kp.publicKey,
+                  toPublicKey(hop.inputMint),
+                  amountIn,
+                  minOut
+                );
+                
+                if (swapResult?.transaction?.instructions) {
+                  try {
+                    logger.info('meteora.damm.v1.sdk.success', {
+                      cat: 'tx',
+                      code: LogCode.TX_BUILD_HOP,
+                      ctx: {
+                        pool: hop.poolId.slice(0, 8) + '...',
+                        ixCount: swapResult.transaction.instructions.length,
+                      } as any,
+                    });
+                  } catch (e) { logCatchError('ix.build', e); }
+                  return swapResult.transaction.instructions;
+                }
+              }
+            }
+          } catch (e: any) {
+            try {
+              logger.warn('meteora.damm.v1.sdk.fallback', {
+                cat: 'tx',
+                ctx: { error: String(e?.message || e), pool: hop.poolId } as any,
+              });
+            } catch (e) { logCatchError('ix.build', e); }
+          }
+        }
+        
+        // DAMM v2 SDK (CP-AMM)
+        if (hop.variant === 'damm_v2') {
+          try {
+            const cpAmmModule = await import('@meteora-ag/cp-amm-sdk');
+            const CpAmm = (cpAmmModule as any).CpAmm || cpAmmModule.default;
+            
+            if (CpAmm) {
+              const cpAmm = new CpAmm(connection);
+              
+              // Try different method signatures the SDK might have
+              if (typeof cpAmm.swap === 'function') {
+                const swapResult = await (cpAmm.swap as any)(
+                  poolAddress,
+                  kp.publicKey,
+                  toPublicKey(hop.inputMint),
+                  amountIn,
+                  minOut
+                );
+                
+                if (swapResult?.instructions || swapResult?.transaction?.instructions) {
+                  const ixs = swapResult.instructions || swapResult.transaction.instructions;
+                  try {
+                    logger.info('meteora.damm.v2.sdk.success', {
+                      cat: 'tx',
+                      code: LogCode.TX_BUILD_HOP,
+                      ctx: {
+                        pool: hop.poolId.slice(0, 8) + '...',
+                        ixCount: ixs.length,
+                      } as any,
+                    });
+                  } catch (e) { logCatchError('ix.build', e); }
+                  return ixs;
+                }
+              }
+              
+              // Alternative: try getSwapQuote + buildSwapTransaction pattern
+              if (typeof cpAmm.getSwapQuote === 'function' && typeof cpAmm.swap === 'function') {
+                const quote = await cpAmm.getSwapQuote(
+                  poolAddress,
+                  toPublicKey(hop.inputMint),
+                  amountIn,
+                );
+                if (quote) {
+                  const swapTx = await cpAmm.swap(
+                    kp.publicKey,
+                    poolAddress,
+                    toPublicKey(hop.inputMint),
+                    amountIn,
+                    minOut,
+                  );
+                  if (swapTx?.instructions) {
+                    logger.info('meteora.damm.v2.sdk.quote_pattern.success', {
+                      cat: 'tx',
+                      code: LogCode.TX_BUILD_HOP,
+                      ctx: { pool: hop.poolId.slice(0, 8) + '...', ixCount: swapTx.instructions.length } as any,
+                    });
+                    return swapTx.instructions;
+                  }
+                }
+              }
+            }
+          } catch (e: any) {
+            try {
+              logger.warn('meteora.damm.v2.sdk.fallback', {
+                cat: 'tx',
+                ctx: { error: String(e?.message || e), pool: hop.poolId } as any,
+              });
+            } catch (e) { logCatchError('ix.build', e); }
+          }
+        }
+      } catch (sdkErr: any) {
+        try {
+          logger.warn('meteora.damm.sdk.import.failed', {
+            cat: 'tx',
+            ctx: { error: String(sdkErr?.message || sdkErr) } as any,
+          });
+        } catch (e) { logCatchError('ix.build', e); }
+      }
     }
-    */
 
-    // Fallback: Manual instruction building
+    // Fallback: Manual instruction building (used when not in SDK mode or SDK fails)
     try {
       logger.info('meteora.damm.manual.fallback', {
         cat: 'tx',
         ctx: {
-          message: 'SDK unavailable, using manual instruction builder',
+          message: useSdkMode ? 'SDK call failed, falling back to manual builder' : 'Not in SDK mode, using manual instruction builder',
           variant: hop.variant,
           pool: hop.poolId,
+          useSdkMode,
         } as any,
       });
     } catch (e) { logCatchError('ix.build', e); }
@@ -5565,6 +5599,187 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Otherwise wrap it with context
     wrapBuilderError(e, 'RAYDIUM_CLMM', 'build failed', hop);
   }
+}
+
+/**
+ * Build Raydium CPMM swap instruction
+ * 
+ * CPMM pools use constant product formula (x*y=k) with the following account structure:
+ * 0. payer (signer)
+ * 1. authority (PDA)
+ * 2. ammConfig
+ * 3. poolState (writable)
+ * 4. userInputAta (writable)
+ * 5. userOutputAta (writable)
+ * 6. inputVault (writable)
+ * 7. outputVault (writable)
+ * 8. inputTokenProgram
+ * 9. outputTokenProgram
+ * 10. inputMint
+ * 11. outputMint
+ * 12. observationState (writable)
+ */
+export async function buildRaydiumCpmmSwapIxReal(hop: DirectHop): Promise<any[]> {
+  const poolIdStripped = String(hop.poolId).replace(/[#-]rev$/, '');
+  
+  try { logger.debug('ix.build raydium.cpmm.real', { pool: poolIdStripped, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch (e) { logCatchError('ix.build', e); }
+  
+  try {
+    // Pre-build validation: amounts
+    validateHopAmounts(hop, { dex: 'raydium', variant: 'cpmm', poolId: poolIdStripped });
+    
+    // Pre-build validation: critical PublicKeys
+    try {
+      validatePublicKey(poolIdStripped, 'poolId', { dex: 'raydium', variant: 'cpmm' });
+      validatePublicKey(hop.inputMint, 'inputMint', { dex: 'raydium', variant: 'cpmm' });
+      validatePublicKey(hop.outputMint, 'outputMint', { dex: 'raydium', variant: 'cpmm' });
+      validatePublicKey(hop.userSourceAta, 'userSourceAta', { dex: 'raydium', variant: 'cpmm' });
+      validatePublicKey(hop.userDestAta, 'userDestAta', { dex: 'raydium', variant: 'cpmm' });
+    } catch (validationErr) {
+      throw createBuilderError('RAYDIUM_CPMM', String((validationErr as any)?.message || validationErr), hop);
+    }
+    
+    // Load cached CPMM pool data
+    let ammConfig: string | undefined = hop.ammConfig;
+    let observationKey: string | undefined = hop.observationId;
+    let inputVault: string | undefined;
+    let outputVault: string | undefined;
+    let inputTokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    let outputTokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    
+    try {
+      const { executionCache } = await import('../cache.js');
+      const poolData = executionCache.getStatic(poolIdStripped);
+      
+      if (poolData) {
+        if (!ammConfig && (poolData as any).amm_config) {
+          ammConfig = (poolData as any).amm_config;
+        }
+        if (!observationKey && (poolData as any).observation_key) {
+          observationKey = (poolData as any).observation_key;
+        }
+        
+        // Determine input/output vaults based on direction
+        const nativeAccountA = (poolData as any).native_account_a;
+        const nativeAccountB = (poolData as any).native_account_b;
+        const nativeMintA = (poolData as any).native_mint_a || (poolData as any).mint_a;
+        const nativeMintB = (poolData as any).native_mint_b || (poolData as any).mint_b;
+        
+        // Map input/output based on which mint we're swapping from
+        if (hop.inputMint === nativeMintA) {
+          inputVault = nativeAccountA;
+          outputVault = nativeAccountB;
+          inputTokenProgram = (poolData as any).token_program_a === 'token-2022' 
+            ? 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' 
+            : 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+          outputTokenProgram = (poolData as any).token_program_b === 'token-2022'
+            ? 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+            : 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+        } else {
+          inputVault = nativeAccountB;
+          outputVault = nativeAccountA;
+          inputTokenProgram = (poolData as any).token_program_b === 'token-2022'
+            ? 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+            : 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+          outputTokenProgram = (poolData as any).token_program_a === 'token-2022'
+            ? 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+            : 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+        }
+        
+        try {
+          logger.debug('raydium.cpmm.use_cached_data', {
+            cat: 'tx',
+            ctx: {
+              pool: poolIdStripped.slice(0, 8) + '...',
+              hasAmmConfig: !!ammConfig,
+              hasObservation: !!observationKey,
+              hasInputVault: !!inputVault,
+              hasOutputVault: !!outputVault,
+            }
+          });
+        } catch (e) { logCatchError('ix.build', e); }
+      }
+    } catch (e) { logCatchError('ix.build', e); }
+    
+    // Validate required fields
+    const missing: string[] = [];
+    if (!ammConfig) missing.push('ammConfig');
+    if (!observationKey) missing.push('observationKey');
+    if (!inputVault) missing.push('inputVault');
+    if (!outputVault) missing.push('outputVault');
+    
+    if (missing.length) {
+      throw createBuilderError('RAYDIUM_CPMM', `missing required fields: ${missing.join(', ')}`, hop);
+    }
+    
+    // Build the swap instruction
+    const kp = await ensureWallet(CONFIG.walletPath);
+    const cpmmProgramId = toPublicKey(hop.programId, 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C');
+    
+    // Derive authority PDA
+    const [authority] = PublicKey.findProgramAddressSync(
+      [Buffer.from('vault_and_lp_mint_auth_seed')],
+      cpmmProgramId
+    );
+    
+    // Build swap_base_input instruction data
+    // Discriminator: 8 bytes + amount_in: 8 bytes + minimum_amount_out: 8 bytes
+    const SWAP_BASE_INPUT_DISCRIMINATOR = Buffer.from([143, 190, 90, 218, 196, 30, 51, 222]); // swap_base_input
+    const amountIn = BigInt(hop.amountInRaw || 0);
+    const minAmountOut = BigInt(hop.minOutRaw || 0);
+    
+    const data = Buffer.alloc(24);
+    SWAP_BASE_INPUT_DISCRIMINATOR.copy(data, 0);
+    data.writeBigUInt64LE(amountIn, 8);
+    data.writeBigUInt64LE(minAmountOut, 16);
+    
+    // Build account list
+    const accounts = [
+      { pubkey: kp.publicKey, isSigner: true, isWritable: true }, // payer
+      { pubkey: authority, isSigner: false, isWritable: false }, // authority
+      { pubkey: toPublicKey(ammConfig!), isSigner: false, isWritable: false }, // ammConfig
+      { pubkey: toPublicKey(poolIdStripped), isSigner: false, isWritable: true }, // poolState
+      { pubkey: toPublicKey(hop.userSourceAta), isSigner: false, isWritable: true }, // userInputTokenAccount
+      { pubkey: toPublicKey(hop.userDestAta), isSigner: false, isWritable: true }, // userOutputTokenAccount
+      { pubkey: toPublicKey(inputVault!), isSigner: false, isWritable: true }, // inputVault
+      { pubkey: toPublicKey(outputVault!), isSigner: false, isWritable: true }, // outputVault
+      { pubkey: toPublicKey(inputTokenProgram), isSigner: false, isWritable: false }, // inputTokenProgram
+      { pubkey: toPublicKey(outputTokenProgram), isSigner: false, isWritable: false }, // outputTokenProgram
+      { pubkey: toPublicKey(hop.inputMint), isSigner: false, isWritable: false }, // inputMint
+      { pubkey: toPublicKey(hop.outputMint), isSigner: false, isWritable: false }, // outputMint
+      { pubkey: toPublicKey(observationKey!), isSigner: false, isWritable: true }, // observationState
+    ];
+    
+    const ix = new TransactionInstruction({
+      programId: cpmmProgramId,
+      keys: accounts,
+      data,
+    });
+    
+    try {
+      logger.info('raydium.cpmm.instruction.built', {
+        cat: 'tx',
+        ctx: {
+          pool: poolIdStripped.slice(0, 8) + '...',
+          programId: cpmmProgramId.toBase58(),
+          amountIn: amountIn.toString(),
+          minAmountOut: minAmountOut.toString(),
+          accountCount: accounts.length,
+        } as any,
+      });
+    } catch (e) { logCatchError('ix.build', e); }
+    
+    return [ix];
+  } catch (e) {
+    // If error is already a builder error, preserve it
+    if (e instanceof Error && e.message.includes('RAYDIUM_CPMM_BUILD_FAILED')) {
+      logAndThrow(e);
+    }
+    // Otherwise wrap it with context
+    wrapBuilderError(e, 'RAYDIUM_CPMM', 'build failed', hop);
+  }
+  
+  return [];
 }
 
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {

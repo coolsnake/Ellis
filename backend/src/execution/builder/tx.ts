@@ -1,5 +1,5 @@
 import type { ExecutionPlan, DirectHop } from '../types.js';
-import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildPumpswapSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal, buildPumpswapSwapIxReal, buildMeteoraDammSwapIxReal } from './ix.js';
+import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildPumpswapSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildRaydiumCpmmSwapIxReal, buildMeteoraDlmmSwapIxReal, buildPumpswapSwapIxReal, buildMeteoraDammSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { logCatchError } from '../../utils/errorHandler.js';
@@ -667,6 +667,10 @@ export async function buildDirectArbTx(
         let ixs: any[] = [];
         if (hop.dex === 'raydium' && hop.variant === 'amm') {
           ixs = await buildRaydiumAmmSwapIxReal(hop);
+        } else if (hop.dex === 'raydium' && hop.variant === 'cpmm') {
+          try { logger.info('tx.build.hop.raydium.cpmm.start', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
+          ixs = await buildRaydiumCpmmSwapIxReal(hop);
+          try { logger.info('tx.build.hop.raydium.cpmm.complete', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, instructionCount: ixs.length } as any }); } catch (e) { logCatchError('builder.tx', e); }
         } else if (hop.dex === 'raydium' && hop.variant === 'clmm') {
           ixs = await buildRaydiumClmmSwapIxReal(hop);
         } else if (hop.dex === 'orca') {

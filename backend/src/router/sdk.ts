@@ -536,6 +536,9 @@ export function getAccountsNeededForDex(dexType: DexType): number {
     case DexType.RaydiumAmm:
       // Raydium AMM v4: 17 accounts + 1 program = 18
       return 18;
+    case DexType.RaydiumCpmm:
+      // Raydium CPMM: 13 accounts + 1 program = 14
+      return 14;
     case DexType.Meteora:
       // NOTE: Must match arb-router/programs/arb-router/src/dex/meteora.rs
       // swap: 14 fixed + 1 program + 3 bin arrays = 18 (standard SPL tokens)
@@ -565,9 +568,11 @@ export function dexNameToType(dex: string, variant?: string): DexType {
   // Raydium variants
   if (dexLower === 'raydium') {
     if (variantLower === 'amm' || variantLower === 'amm_v4') return DexType.RaydiumAmm;
+    if (variantLower === 'cpmm') return DexType.RaydiumCpmm;
     return DexType.Raydium; // Default to CLMM
   }
   if (dexLower === 'raydium-amm' || dexLower === 'raydium_amm') return DexType.RaydiumAmm;
+  if (dexLower === 'raydium-cpmm' || dexLower === 'raydium_cpmm') return DexType.RaydiumCpmm;
   
   // Meteora variants
   if (dexLower === 'meteora' || dexLower === 'meteora-dlmm') {

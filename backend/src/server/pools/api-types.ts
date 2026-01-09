@@ -301,6 +301,46 @@ export interface PumpswapGraphQLResponse {
 }
 
 // =============================================================================
+// RAYDIUM CPMM API TYPES
+// =============================================================================
+
+/** Raydium CPMM pool API response from Shyft GraphQL */
+export interface RaydiumCpmmPoolApiResponse {
+  pubkey: string;
+  token0Mint: string;
+  token1Mint: string;
+  token0Vault: string;
+  token1Vault: string;
+  token0Program?: string;
+  token1Program?: string;
+  lpMint?: string;
+  lpSupply?: string | number;
+  ammConfig: string;
+  observationKey?: string;
+  creator?: string;
+  status?: number;
+  mintDecimals0?: number;
+  mintDecimals1?: number;
+  bump?: number;
+  openTime?: number | string;
+  // Reserve amounts (if provided by API)
+  token0Amount?: string | number;
+  token1Amount?: string | number;
+  // Derived/enriched fields
+  reserve0_raw?: string;
+  reserve1_raw?: string;
+  _updatedAt?: string;
+}
+
+/** Raydium CPMM GraphQL response wrapper */
+export interface RaydiumCpmmGraphQLResponse {
+  data?: {
+    Raydium_CPMM_PoolState?: RaydiumCpmmPoolApiResponse[];
+  };
+  errors?: Array<{ message: string }>;
+}
+
+// =============================================================================
 // TYPE GUARDS (Runtime Validation)
 // =============================================================================
 
@@ -410,6 +450,28 @@ export function isValidPumpswapPool(raw: unknown): raw is PumpswapPoolApiRespons
   
   // Must have mints
   if (typeof obj.base_mint !== 'string' || typeof obj.quote_mint !== 'string') return false;
+  
+  return true;
+}
+
+/**
+ * Validates if an object is a valid Raydium CPMM pool API response
+ */
+export function isValidRaydiumCpmmPool(raw: unknown): raw is RaydiumCpmmPoolApiResponse {
+  if (typeof raw !== 'object' || raw === null) return false;
+  const obj = raw as Record<string, unknown>;
+  
+  // Must have pubkey
+  if (typeof obj.pubkey !== 'string') return false;
+  
+  // Must have token mints
+  if (typeof obj.token0Mint !== 'string' || typeof obj.token1Mint !== 'string') return false;
+  
+  // Must have vaults
+  if (typeof obj.token0Vault !== 'string' || typeof obj.token1Vault !== 'string') return false;
+  
+  // Must have ammConfig
+  if (typeof obj.ammConfig !== 'string') return false;
   
   return true;
 }

@@ -1,5 +1,6 @@
 pub mod raydium;
 pub mod raydium_amm;
+pub mod raydium_cpmm;
 pub mod meteora;
 pub mod meteora_damm;
 pub mod orca;

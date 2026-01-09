@@ -2728,6 +2728,70 @@ async function extractDexAccounts(
           );
         }
         break;
+
+      case DexType.RaydiumCpmm:
+        // Raydium CPMM: 14 accounts
+        // 0: Payer (signer), 1: Authority (PDA), 2: AmmConfig, 3: PoolState,
+        // 4: UserInputAta, 5: UserOutputAta, 6: InputVault, 7: OutputVault,
+        // 8: InputTokenProgram, 9: OutputTokenProgram, 10: InputMint, 11: OutputMint,
+        // 12: ObservationState, 13: CPMM Program
+        const cpmmAmmConfig = (hop as any).ammConfig || stat?.amm_config;
+        const cpmmObservation = hop.observationId || (hop as any).observation_key || stat?.observation_key;
+        
+        // Derive CPMM authority PDA
+        const cpmmAuthority = PublicKey.findProgramAddressSync(
+          [Buffer.from('vault_and_lp_mint_auth_seed')],
+          programIdKey
+        )[0];
+        
+        // Determine input/output token programs
+        const cpmmInputTokenProgram = (hop as any).tokenProgramIn === 'token-2022' 
+          ? TOKEN_2022_PROGRAM_ID 
+          : TOKEN_PROGRAM_ID;
+        const cpmmOutputTokenProgram = (hop as any).tokenProgramOut === 'token-2022'
+          ? TOKEN_2022_PROGRAM_ID
+          : TOKEN_PROGRAM_ID;
+        
+        logger.info('routerTx.raydiumCpmm.accounts', {
+          cat: 'tx',
+          poolId: hop.poolId,
+          ammConfig: cpmmAmmConfig,
+          observation: cpmmObservation,
+          authority: cpmmAuthority.toBase58(),
+          vaultA: hop.vaultA,
+          vaultB: hop.vaultB,
+        });
+
+        if (!cpmmAmmConfig) {
+          logger.warn('routerTx.raydiumCpmm.missing_amm_config', {
+            cat: 'tx',
+            poolId: hop.poolId,
+          });
+        }
+        if (!cpmmObservation) {
+          logger.warn('routerTx.raydiumCpmm.missing_observation', {
+            cat: 'tx',
+            poolId: hop.poolId,
+          });
+        }
+
+        accounts.push(
+          wallet,                                                              // 0: Payer (signer)
+          cpmmAuthority,                                                       // 1: Authority (PDA)
+          new PublicKey(cpmmAmmConfig || poolId),                             // 2: AMM Config
+          poolId,                                                              // 3: Pool State
+          userSourceAta,                                                       // 4: User Input Token Account
+          userDestAta,                                                         // 5: User Output Token Account
+          new PublicKey(hop.vaultA || poolAccountA),                          // 6: Input Vault
+          new PublicKey(hop.vaultB || poolAccountB),                          // 7: Output Vault
+          cpmmInputTokenProgram,                                               // 8: Input Token Program
+          cpmmOutputTokenProgram,                                              // 9: Output Token Program
+          inputMint,                                                           // 10: Input Mint
+          outputMint,                                                          // 11: Output Mint
+          new PublicKey(cpmmObservation || poolId),                           // 12: Observation State
+          programIdKey,                                                        // 13: CPMM Program
+        );
+        break;
     }
   } catch (err: any) {
     logger.error('routerTx.extractAccounts.error', {
@@ -3271,6 +3335,35 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
             derivedAccounts.protocolFeeRecipient = stat.protocol_fee_recipient;
           }
           // protocolFeeRecipient will fall back to program ID in extractDexAccounts
+        }
+        break;
+        
+      case DexType.RaydiumCpmm:
+        // Check CPMM-specific accounts
+        if (!hop.ammConfig) {
+          const ammConfig = stat?.amm_config;
+          if (ammConfig) {
+            hop.ammConfig = ammConfig;
+            derivedAccounts.ammConfig = ammConfig;
+          } else {
+            missingAccounts.push('ammConfig');
+          }
+        }
+        if (!hop.observationId) {
+          const obsKey = stat?.observation_key;
+          if (obsKey) {
+            hop.observationId = obsKey;
+            derivedAccounts.observationId = obsKey;
+          } else {
+            missingAccounts.push('observationId');
+          }
+        }
+        // Check token programs
+        if (!(hop as any).tokenProgramIn) {
+          (hop as any).tokenProgramIn = stat?.token_program_a || 'spl-token';
+        }
+        if (!(hop as any).tokenProgramOut) {
+          (hop as any).tokenProgramOut = stat?.token_program_b || 'spl-token';
         }
         break;
     }

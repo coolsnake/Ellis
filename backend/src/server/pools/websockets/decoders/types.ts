@@ -9,12 +9,12 @@ import type { AmmPool, ClmmPool, PoolsPayload } from '../../types.js';
 /**
  * DEX source identifier
  */
-export type DexSource = 'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+export type DexSource = 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
 
 /**
  * Pool type identifier
  */
-export type PoolType = 'amm' | 'clmm';
+export type PoolType = 'amm' | 'clmm' | 'cpmm';
 
 /**
  * Decoded pool result from a WebSocket update

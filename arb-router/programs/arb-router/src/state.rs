@@ -97,6 +97,7 @@ pub enum DexType {
     PumpSwap = 3,     // PumpSwap AMM
     RaydiumAmm = 4,   // Raydium AMM v4 (Constant Product)
     MeteoraDAMM = 5,  // Meteora Balanced DAMM v1/v2 (Dynamic AMM)
+    RaydiumCpmm = 6,  // Raydium CPMM (Constant Product Market Maker)
 }
 
 impl Default for DexType {

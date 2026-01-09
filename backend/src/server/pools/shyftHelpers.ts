@@ -3,7 +3,7 @@ import { logger } from '../../utils/logger.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 
-type SupportedDex = 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'pumpswap';
+type SupportedDex = 'raydium' | 'raydium-clmm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap';
 
 // ============================================================================
 // GLOBAL SHYFT RATE LIMITER
@@ -52,12 +52,12 @@ interface GraphQLRequestMetrics {
 }
 
 const graphqlMetrics: GraphQLRequestMetrics = {
-  inFlight: { raydium: 0, 'raydium-clmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
-  totalRequests: { raydium: 0, 'raydium-clmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
-  successCount: { raydium: 0, 'raydium-clmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
-  errorCount: { raydium: 0, 'raydium-clmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
-  recentLatencies: { raydium: [], 'raydium-clmm': [], orca: [], meteora: [], pumpswap: [] },
-  lastRequestTime: { raydium: 0, 'raydium-clmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
+  inFlight: { raydium: 0, 'raydium-clmm': 0, 'raydium-cpmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
+  totalRequests: { raydium: 0, 'raydium-clmm': 0, 'raydium-cpmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
+  successCount: { raydium: 0, 'raydium-clmm': 0, 'raydium-cpmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
+  errorCount: { raydium: 0, 'raydium-clmm': 0, 'raydium-cpmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
+  recentLatencies: { raydium: [], 'raydium-clmm': [], 'raydium-cpmm': [], orca: [], meteora: [], pumpswap: [] },
+  lastRequestTime: { raydium: 0, 'raydium-clmm': 0, 'raydium-cpmm': 0, orca: 0, meteora: 0, pumpswap: 0 },
   activeRequests: new Map(),
 };
 
@@ -117,7 +117,7 @@ export function getGraphQLMetrics(): {
   timestamp: number;
 } {
   const now = Date.now();
-  const dexes: SupportedDex[] = ['raydium', 'raydium-clmm', 'orca', 'meteora', 'pumpswap'];
+  const dexes: SupportedDex[] = ['raydium', 'raydium-clmm', 'raydium-cpmm', 'orca', 'meteora', 'pumpswap'];
   
   const byDex = {} as Record<SupportedDex, {
     inFlight: number;

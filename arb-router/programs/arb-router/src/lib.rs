@@ -245,6 +245,15 @@ pub mod arb_router {
                     params.a_to_b,
                 )?;
             }
+            DexType::RaydiumCpmm => {
+                // Raydium CPMM (Constant Product Market Maker)
+                dex::raydium_cpmm::swap(
+                    &ctx.remaining_accounts,
+                    params.amount_in,
+                    params.min_amount_out,
+                    params.a_to_b,
+                )?;
+            }
         }
 
         msg!("Swap completed: {} in, min {} out", params.amount_in, params.min_amount_out);
@@ -346,6 +355,10 @@ pub mod arb_router {
                 DexType::MeteoraDAMM => {
                     // Meteora DAMM: a_to_b = true means v2, false means v1
                     dex::meteora_damm::swap(step_accounts, actual_amount_in, step.min_amount_out, step.a_to_b)?;
+                }
+                DexType::RaydiumCpmm => {
+                    // Raydium CPMM (Constant Product Market Maker)
+                    dex::raydium_cpmm::swap(step_accounts, actual_amount_in, step.min_amount_out, step.a_to_b)?;
                 }
             }
             
@@ -672,6 +685,7 @@ fn get_accounts_needed_for_dex(dex_type: &DexType) -> usize {
         DexType::PumpSwap => dex::pumpswap::ACCOUNTS_NEEDED,
         DexType::RaydiumAmm => dex::raydium_amm::ACCOUNTS_NEEDED,
         DexType::MeteoraDAMM => dex::meteora_damm::ACCOUNTS_NEEDED,
+        DexType::RaydiumCpmm => dex::raydium_cpmm::ACCOUNTS_NEEDED,
     }
 }
 
@@ -704,6 +718,8 @@ fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool, accounts_count: usi
         DexType::RaydiumAmm => 15,
         // Meteora DAMM: position 1 (User Source Token Account)
         DexType::MeteoraDAMM => 1,
+        // Raydium CPMM: position 4 (User Input Token Account)
+        DexType::RaydiumCpmm => 4,
     }
 }
 

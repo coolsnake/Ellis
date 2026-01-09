@@ -18,6 +18,7 @@ export const CONFIG_SEED = Buffer.from('config');
 export const DEX_PROGRAMS = {
   RAYDIUM_CLMM: new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'),
   RAYDIUM_AMM_V4: new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8'),
+  RAYDIUM_CPMM: new PublicKey('CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C'),
   METEORA_DLMM: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'),
   METEORA_DAMM_V1: new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB'),
   METEORA_DAMM_V2: new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG'),
@@ -47,6 +48,7 @@ export enum DexType {
   PumpSwap = 3,     // PumpSwap AMM
   RaydiumAmm = 4,   // Raydium AMM v4 (Constant Product)
   MeteoraDAMM = 5,  // Meteora Balanced DAMM v1/v2
+  RaydiumCpmm = 6,  // Raydium CPMM (Constant Product Market Maker)
 }
 
 export enum ExecutionMode {

@@ -849,6 +849,9 @@ export const CONFIG = {
   },
   // Pumpswap configuration (Shyft GraphQL)
   pumpswap: {
+    // Program IDs - bonding curve and post-graduation AMM
+    bondingCurveProgramId: process.env.PUMPSWAP_BONDING_CURVE_PROGRAM_ID || '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+    ammProgramId: process.env.PUMPSWAP_AMM_PROGRAM_ID || 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',
     shyftApiKey: process.env.SHYFT_API_KEY || '',
     cacheTtlMs: Number(process.env.PUMPSWAP_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.PUMPSWAP_HTTP_MAX_RETRIES || 2),

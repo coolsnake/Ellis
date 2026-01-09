@@ -31,8 +31,13 @@ import type {
 } from './types.js';
 import type { AmmPool, PoolsPayload } from '../../types.js';
 
-// Program ID
-export const PUMPSWAP_PROGRAM_ID = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
+// Program IDs - PumpSwap has two programs:
+// 1. Bonding curve (original pump.fun) - 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+// 2. Post-graduation AMM - pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
+export const PUMPSWAP_BONDING_CURVE_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+export const PUMPSWAP_AMM_PROGRAM_ID = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
+// Keep legacy export for backward compatibility
+export const PUMPSWAP_PROGRAM_ID = PUMPSWAP_AMM_PROGRAM_ID;
 
 // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
 const DEFAULT_FEE_BPS = 25;
@@ -815,8 +820,8 @@ export async function handlePumpswapUpdate(
       ? info.owner 
       : info.owner?.toBase58?.() || '';
     
-    // Route based on owner
-    if (owner === PUMPSWAP_PROGRAM_ID) {
+    // Route based on owner - check both PumpSwap programs
+    if (owner === PUMPSWAP_AMM_PROGRAM_ID || owner === PUMPSWAP_BONDING_CURVE_PROGRAM_ID) {
       // This is a pool account update (owned by pumpswap program)
       // Decode the pool state directly
       return handlePumpswapPoolAccountUpdate(info, accountAddress);
@@ -855,14 +860,18 @@ export async function handlePumpswapUpdate(
 }
 
 /**
- * Check if an owner is the Pumpswap program
+ * Check if an owner is a Pumpswap program (bonding curve or AMM)
  */
 export function isPumpswapOwner(owner: string): boolean {
-  return owner === PUMPSWAP_PROGRAM_ID;
+  return owner === PUMPSWAP_AMM_PROGRAM_ID || owner === PUMPSWAP_BONDING_CURVE_PROGRAM_ID;
 }
 
 /**
- * Get Pumpswap program ID
+ * Get Pumpswap program IDs
  */
-export const PUMPSWAP_PROGRAM = PUMPSWAP_PROGRAM_ID;
+export const PUMPSWAP_PROGRAM = PUMPSWAP_PROGRAM_ID; // Legacy export
+export const PUMPSWAP_PROGRAMS = {
+  BONDING_CURVE: PUMPSWAP_BONDING_CURVE_PROGRAM_ID,
+  AMM: PUMPSWAP_AMM_PROGRAM_ID,
+};
 

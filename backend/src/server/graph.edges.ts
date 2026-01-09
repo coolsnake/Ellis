@@ -1,9 +1,9 @@
 import type { GraphEdge } from './graph.types.js';
-import type { AmmPool, ClmmPool } from './pools/types.js';
+import type { AmmPool, ClmmPool, CpmmPool } from './pools/types.js';
 import { logger } from '../utils/logger.js';
 
 export type EdgeAllow = {
-  raydium?: { amm?: boolean; clmm?: boolean };
+  raydium?: { amm?: boolean; clmm?: boolean; cpmm?: boolean };
   orca?: { amm?: boolean; clmm?: boolean };
   meteora?: { amm?: boolean; clmm?: boolean };
 };
@@ -160,7 +160,7 @@ export function isPoolValidForGraph(
  * The pool's price should already be processed through the pipeline.
  */
 export function edgesFromPoolIncremental(
-  p: AmmPool | ClmmPool,
+  p: AmmPool | ClmmPool | CpmmPool,
   getUsd: (mint: string) => number | undefined,
   options?: EdgeBuildOptions,
 ): GraphEdge[] {
@@ -241,9 +241,9 @@ export function edgeChangedSimple(a: GraphEdge, b: GraphEdge): boolean {
   return false;
 }
 
-export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm', allow: EdgeAllow): boolean {
+export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm' | 'cpmm', allow: EdgeAllow): boolean {
   const d = String(dex || '').toLowerCase();
-  const k = String(kind || 'amm') as 'amm' | 'clmm';
+  const k = String(kind || 'amm') as 'amm' | 'clmm' | 'cpmm';
   if (d.includes('raydium')) return (allow.raydium?.[k] !== false);
   if (d.includes('orca')) return (allow.orca?.[k] !== false);
   if (d.includes('meteora')) return (allow.meteora?.[k] !== false);
