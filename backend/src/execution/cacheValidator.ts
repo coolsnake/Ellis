@@ -3953,11 +3953,12 @@ async function validatePoolTickArrays(
 ): Promise<boolean> {
   try {
     const dex = detectPoolDex(poolId);
-    if (!dex || dex === 'meteora') {
+    if (!dex || dex === 'meteora' || dex === 'meteora_balanced' || dex === 'raydium_amm' || dex === 'pumpswap') {
       // Meteora uses bin arrays, not tick arrays - skip for now
+      // raydium_amm and pumpswap are AMM pools without tick arrays
       // Could add bin array validation here if needed
-      if (dex === 'meteora') {
-        // Clear the flag since we can't validate meteora tick arrays here
+      if (dex === 'meteora' || dex === 'meteora_balanced' || dex === 'raydium_amm' || dex === 'pumpswap') {
+        // Clear the flag since we can't validate tick arrays for these pool types
         const hot = executionCache.getHot(poolId);
         if (hot?.needsTickArrayValidation) {
           executionCache.setHot(poolId, {
@@ -3970,6 +3971,7 @@ async function validatePoolTickArrays(
     }
     
     // Use the existing fetchFreshTickDataAndValidate function
+    // At this point, dex can only be 'orca' | 'raydium' (CLMM pools with tick arrays)
     const result = await fetchFreshTickDataAndValidate(connection, poolId, dex);
     
     if (!result) {

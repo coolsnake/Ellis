@@ -18,6 +18,7 @@ export { wsDecodeStats, wsDeltaStats, incrementSkipReason, wsDebugCounters, wsTa
  */
 const wsCounts: Record<DexSource, number> = {
   raydium: 0,
+  'raydium-cpmm': 0,
   orca: 0,
   meteora: 0,
   pumpswap: 0,

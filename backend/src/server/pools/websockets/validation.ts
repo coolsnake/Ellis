@@ -170,6 +170,7 @@ export function validateDecodedPool(
  */
 const priceDeltaStats: Record<DexSource, { warnings: number; maxDelta: number }> = {
   raydium: { warnings: 0, maxDelta: 0 },
+  'raydium-cpmm': { warnings: 0, maxDelta: 0 },
   orca: { warnings: 0, maxDelta: 0 },
   meteora: { warnings: 0, maxDelta: 0 },
   pumpswap: { warnings: 0, maxDelta: 0 },

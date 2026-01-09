@@ -352,7 +352,7 @@ async function initRaydiumAmmSdk(): Promise<boolean> {
     // Try to get layout for manual decoding
     try {
       const layoutModule = await import('@raydium-io/raydium-sdk-v2/lib/raydium/liquidity/layout.js');
-      RaydiumAmmLayout = layoutModule.liquidityStateV4Layout || layoutModule.LIQUIDITY_STATE_LAYOUT_V4;
+      RaydiumAmmLayout = layoutModule.liquidityStateV4Layout;
     } catch {
       // Fallback - try from main export
       RaydiumAmmLayout = (raydiumSdk as any).liquidityStateV4Layout

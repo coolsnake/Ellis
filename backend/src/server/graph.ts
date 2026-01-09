@@ -678,7 +678,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       type NormPools = { amm: any[]; clmm: any[] };
       const validatePoolsForGraph = (norm: NormPools): NormPools => {
         if (!validationConfig.sanityEnabled) return norm;
-        const out: NormPools = { amm: [], clmm: [], cpmm: [] };
+        const out: NormPools = { amm: [], clmm: [] };
         const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0, amm: { total: 0, dropped: 0 }, clmm: { total: 0, dropped: 0 } } as any;
         
         const checkPool = (p: any, kind: 'amm' | 'clmm') => {
