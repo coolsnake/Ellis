@@ -107,6 +107,12 @@ export const ROUTES = {
       coverageStats: '/arb/alts/coverage',    // GET - Detailed coverage by DEX
       extendDex: '/arb/alts/extend',          // POST /arb/alts/extend/:dex - Extend all pools for DEX
       createCommonNew: '/arb/alts/common',    // POST - Create/update common ALT with wallet ATAs
+      // ALT Discovery & Management (for ALL wallet-owned ALTs)
+      discover: '/arb/alts/discover',             // GET - Discover all wallet-owned ALTs
+      deactivateByAddress: '/arb/alts/deactivate-by-address',  // POST - Deactivate by address
+      closeByAddress: '/arb/alts/close-by-address',            // POST - Close by address
+      bulkDeactivate: '/arb/alts/bulk-deactivate',             // POST - Bulk deactivate
+      bulkClose: '/arb/alts/bulk-close',                       // POST - Bulk close
     },
   },
   exec: {

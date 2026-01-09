@@ -91,10 +91,12 @@ impl Config {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DexType {
-    Raydium = 0,
-    Meteora = 1,
-    Orca = 2,
-    PumpSwap = 3,
+    Raydium = 0,      // Raydium CLMM (Concentrated Liquidity)
+    Meteora = 1,      // Meteora DLMM (Discrete Liquidity)
+    Orca = 2,         // Orca Whirlpool
+    PumpSwap = 3,     // PumpSwap AMM
+    RaydiumAmm = 4,   // Raydium AMM v4 (Constant Product)
+    MeteoraDAMM = 5,  // Meteora Balanced DAMM v1/v2 (Dynamic AMM)
 }
 
 impl Default for DexType {

@@ -1,14 +1,45 @@
 import type { DirectHop } from '../../execution/types.js';
 import { executionCache } from '../cache.js';
 import { determineSwapOrientation } from '../../server/pools/orientation.js';
+import { PublicKey } from '@solana/web3.js';
+
+// Program IDs for DAMM v1 and v2
+const METEORA_DAMM_V1_PROGRAM = 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB';
+const METEORA_DAMM_V2_PROGRAM = 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG';
+
+/**
+ * Derive pool authority PDA for Meteora DAMM
+ */
+function derivePoolAuthority(poolId: string, programId: string, isV2: boolean): string {
+  try {
+    const pool = new PublicKey(poolId);
+    const program = new PublicKey(programId);
+    const seed = isV2 ? 'pool_authority' : 'vault_and_lp_mint_auth_pda';
+    const [authority] = PublicKey.findProgramAddressSync(
+      [Buffer.from(seed), pool.toBuffer()],
+      program
+    );
+    return authority.toBase58();
+  } catch {
+    return poolId; // Fallback to pool ID if derivation fails
+  }
+}
 
 /**
  * Resolver for Meteora Balanced (DAMM) pools - both v1 and v2
- * Populates vault addresses and reserve data for constant product AMM quoting
+ * Populates vault addresses, pool authority, and reserve data for on-chain router execution
  */
 export async function resolveMeteoraDamm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
   if (stat?.programId) hop.programId = stat.programId;
+  
+  // Determine if this is v1 or v2 based on variant or program ID
+  const isV2 = hop.variant === 'damm_v2' || hop.programId === METEORA_DAMM_V2_PROGRAM;
+  
+  // Set default program ID based on variant if not already set
+  if (!hop.programId) {
+    hop.programId = isV2 ? METEORA_DAMM_V2_PROGRAM : METEORA_DAMM_V1_PROGRAM;
+  }
   
   try {
     // Import Meteora Balanced pools from server cache
@@ -90,9 +121,22 @@ export async function resolveMeteoraDamm(hop: DirectHop): Promise<DirectHop> {
       if ((p as any)?.token_program_b) {
         (hop as any).tokenProgramB = String((p as any).token_program_b);
       }
+      
+      // Derive and store pool authority for router usage
+      const poolAuthority = derivePoolAuthority(id, hop.programId, isV2);
+      (hop as any).poolAuthority = poolAuthority;
     }
   } catch (e) {
     // Silently fail - hop will use defaults
+  }
+  
+  // Ensure pool authority is set even if pool lookup failed
+  if (!(hop as any).poolAuthority && hop.programId) {
+    (hop as any).poolAuthority = derivePoolAuthority(
+      hop.poolId.replace(/[#-]rev$/, ''),
+      hop.programId,
+      isV2
+    );
   }
   
   return hop;

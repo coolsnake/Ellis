@@ -24,7 +24,11 @@ const RPC_MODULE = 'cacheValidator';
 // Program IDs
 const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
 const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+const RAYDIUM_AMM_V4_PROGRAM = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
 const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+const METEORA_DAMM_V1_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
+const METEORA_DAMM_V2_PROGRAM = new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
+const PUMPSWAP_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 
 // Constants for tick/bin array derivation
 const ORCA_TICK_ARRAY_SIZE = 88;
@@ -3549,13 +3553,17 @@ export async function validatePoolRaydiumExBitmap(
 /**
  * Get pools for a specific DEX from cache
  */
-function getPoolsForDex(dex: 'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'meteora_balanced'): any[] {
+function getPoolsForDex(dex: 'orca' | 'raydium' | 'raydium_amm' | 'meteora' | 'pumpswap' | 'meteora_balanced'): any[] {
   switch (dex) {
     case 'orca':
       return peekOrcaPools()?.clmm || [];
     case 'raydium': {
       const raydium = peekRaydiumPools();
-      return [...(raydium?.clmm || []), ...(raydium?.amm || [])];
+      return raydium?.clmm || [];
+    }
+    case 'raydium_amm': {
+      const raydium = peekRaydiumPools();
+      return raydium?.amm || [];
     }
     case 'meteora':
       return peekMeteoraPools()?.clmm || [];
@@ -3575,7 +3583,7 @@ function getPoolsForDex(dex: 'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'mete
 function validateAndUpdatePoolDecimals(
   pool: any,
   decimalMap: Map<string, number>,
-  dex: 'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'meteora_balanced',
+  dex: 'orca' | 'raydium' | 'raydium_amm' | 'meteora' | 'pumpswap' | 'meteora_balanced',
   dryRun: boolean
 ): DecimalValidationResult {
   const issues: string[] = [];
@@ -3908,18 +3916,29 @@ function detectPoolDex(poolId: string): 'orca' | 'raydium' | 'meteora' | null {
   const programId = stat?.programId;
   if (programId === 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc') return 'orca';
   if (programId === 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK') return 'raydium';
+  if (programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') return 'raydium_amm';
   if (programId === 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') return 'meteora';
+  if (programId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') return 'meteora_balanced';
+  if (programId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG') return 'meteora_balanced';
+  if (programId === '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P') return 'pumpswap';
   
   // Try to find in pool caches
   try {
     const raydiumPools = peekRaydiumPools();
     if (raydiumPools?.clmm?.some((p: any) => p.id === poolId)) return 'raydium';
+    if (raydiumPools?.amm?.some((p: any) => p.id === poolId)) return 'raydium_amm';
     
     const orcaPools = peekOrcaPools();
     if (orcaPools?.clmm?.some((p: any) => p.id === poolId)) return 'orca';
     
     const meteoraPools = peekMeteoraPools();
     if (meteoraPools?.clmm?.some((p: any) => p.id === poolId)) return 'meteora';
+    
+    const meteoraBalancedPools = peekMeteoraBalancedPools();
+    if (meteoraBalancedPools?.amm?.some((p: any) => p.id === poolId)) return 'meteora_balanced';
+    
+    const pumpswapPools = peekPumpswapPools();
+    if (pumpswapPools?.amm?.some((p: any) => p.id === poolId)) return 'pumpswap';
   } catch {}
   
   return null;

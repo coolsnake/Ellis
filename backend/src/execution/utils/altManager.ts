@@ -3476,6 +3476,328 @@ export class DexAltManager {
   }
 
   /**
+   * Discover ALL ALTs owned by the wallet on-chain.
+   * This uses getProgramAccounts to find ALTs where the wallet is the authority.
+   * Returns ALTs that may not be in our config (orphaned/untracked).
+   */
+  async discoverWalletAlts(): Promise<{
+    address: string;
+    accountCount: number;
+    isDeactivated: boolean;
+    canClose: boolean;
+    rentLamports: number;
+    rentSOL: string;
+    inConfig: boolean;
+    category?: string;
+  }[]> {
+    const { ensureWallet } = await import('../../wallet/wallet.js');
+    const wallet = await ensureWallet(CONFIG.walletPath);
+    const connection = getConnection();
+
+    try {
+      logger.info('alt.manager.discover.start', {
+        cat: 'tx',
+        ctx: { wallet: wallet.publicKey.toBase58() },
+      });
+    } catch {}
+
+    // Address Lookup Table Program ID
+    const ALT_PROGRAM_ID = new PublicKey('AddressLookupTab1e1111111111111111111111111');
+    
+    // Authority is at byte offset 22 in the ALT account data
+    const AUTHORITY_OFFSET = 22;
+
+    // Get all ALTs where our wallet is the authority
+    const accounts = await withRpcLimit(() =>
+      connection.getProgramAccounts(ALT_PROGRAM_ID, {
+        filters: [
+          {
+            memcmp: {
+              offset: AUTHORITY_OFFSET,
+              bytes: wallet.publicKey.toBase58(),
+            },
+          },
+        ],
+      }),
+      1,
+      { module: 'alt', method: 'discoverWalletAlts' }
+    );
+
+    try {
+      logger.info('alt.manager.discover.found', {
+        cat: 'tx',
+        ctx: { count: accounts.length },
+      });
+    } catch {}
+
+    // Build a reverse lookup from address to category
+    const addressToCategory = new Map<string, string>();
+    for (const [category, pk] of this.altAddresses.entries()) {
+      addressToCategory.set(pk.toBase58(), category);
+    }
+    
+    // Also check altConfig for dexAlts addresses
+    const altConfig = this.altConfig || await loadAltConfig();
+    if (altConfig.dexAlts) {
+      for (const [dex, dexAltSet] of Object.entries(altConfig.dexAlts)) {
+        if (dexAltSet?.addresses) {
+          for (let i = 0; i < dexAltSet.addresses.length; i++) {
+            const addr = dexAltSet.addresses[i];
+            if (!addressToCategory.has(addr)) {
+              addressToCategory.set(addr, `${dex}-pool-${i}`);
+            }
+          }
+        }
+      }
+    }
+
+    const currentSlot = await withRpcLimit(() => connection.getSlot());
+    const MAX_U64 = BigInt('18446744073709551615');
+
+    const results: {
+      address: string;
+      accountCount: number;
+      isDeactivated: boolean;
+      canClose: boolean;
+      rentLamports: number;
+      rentSOL: string;
+      inConfig: boolean;
+      category?: string;
+    }[] = [];
+
+    for (const { pubkey, account } of accounts) {
+      const address = pubkey.toBase58();
+      
+      // Parse ALT to get account count and deactivation status
+      let accountCount = 0;
+      let isDeactivated = false;
+      let canClose = false;
+
+      try {
+        const altAccount = await withRpcLimit(() =>
+          connection.getAddressLookupTable(pubkey)
+        );
+        
+        if (altAccount.value) {
+          accountCount = altAccount.value.state.addresses.length;
+          
+          const deactivationSlotBigInt = altAccount.value.state.deactivationSlot;
+          isDeactivated = deactivationSlotBigInt !== undefined && 
+                          deactivationSlotBigInt !== MAX_U64 &&
+                          deactivationSlotBigInt < MAX_U64;
+          
+          if (isDeactivated) {
+            const deactivationSlot = Number(deactivationSlotBigInt);
+            const slotsSinceDeactivation = currentSlot - deactivationSlot;
+            canClose = slotsSinceDeactivation >= 513;
+          }
+        }
+      } catch {}
+
+      const category = addressToCategory.get(address);
+      const rentLamports = account.lamports;
+      const rentSOL = (rentLamports / 1e9).toFixed(6);
+
+      results.push({
+        address,
+        accountCount,
+        isDeactivated,
+        canClose,
+        rentLamports,
+        rentSOL,
+        inConfig: !!category,
+        category,
+      });
+    }
+
+    // Sort: closeable first, then by rent amount (highest first)
+    results.sort((a, b) => {
+      if (a.canClose && !b.canClose) return -1;
+      if (!a.canClose && b.canClose) return 1;
+      if (a.isDeactivated && !b.isDeactivated) return -1;
+      if (!a.isDeactivated && b.isDeactivated) return 1;
+      return b.rentLamports - a.rentLamports;
+    });
+
+    try {
+      logger.info('alt.manager.discover.complete', {
+        cat: 'tx',
+        ctx: {
+          total: results.length,
+          inConfig: results.filter(r => r.inConfig).length,
+          orphaned: results.filter(r => !r.inConfig).length,
+          deactivated: results.filter(r => r.isDeactivated).length,
+          closeable: results.filter(r => r.canClose).length,
+          totalRentSOL: results.reduce((sum, r) => sum + r.rentLamports, 0) / 1e9,
+        },
+      });
+    } catch {}
+
+    return results;
+  }
+
+  /**
+   * Deactivate an ALT by address (for orphaned ALTs not in config)
+   */
+  async deactivateAltByAddress(altAddress: string): Promise<{ signature: string }> {
+    const { ensureWallet } = await import('../../wallet/wallet.js');
+    const wallet = await ensureWallet(CONFIG.walletPath);
+    const connection = getConnection();
+
+    const altPk = new PublicKey(altAddress);
+
+    try {
+      logger.info('alt.manager.deactivateByAddress.start', {
+        cat: 'tx',
+        ctx: { altAddress },
+      });
+    } catch {}
+
+    const deactivateIx = AddressLookupTableProgram.deactivateLookupTable({
+      lookupTable: altPk,
+      authority: wallet.publicKey,
+    });
+
+    const tx = new Transaction().add(deactivateIx);
+    const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash());
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = wallet.publicKey;
+    tx.sign(wallet);
+
+    const signature = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize()));
+    await withRpcLimit(() => connection.confirmTransaction(signature, 'confirmed'));
+
+    try {
+      logger.info('alt.manager.deactivateByAddress.ok', {
+        cat: 'tx',
+        ctx: { altAddress, signature },
+      });
+    } catch {}
+
+    return { signature };
+  }
+
+  /**
+   * Close an ALT by address (for orphaned ALTs not in config)
+   */
+  async closeAltByAddress(altAddress: string): Promise<{ signature: string; rentRecovered: number }> {
+    const { ensureWallet } = await import('../../wallet/wallet.js');
+    const wallet = await ensureWallet(CONFIG.walletPath);
+    const connection = getConnection();
+
+    const altPk = new PublicKey(altAddress);
+
+    // Verify ALT is closeable
+    const altAccount = await withRpcLimit(() => connection.getAddressLookupTable(altPk));
+    if (!altAccount.value) {
+      throw new Error(`ALT not found: ${altAddress}`);
+    }
+
+    const MAX_U64 = BigInt('18446744073709551615');
+    const deactivationSlotBigInt = altAccount.value.state.deactivationSlot;
+    const isDeactivated = deactivationSlotBigInt !== undefined && 
+                          deactivationSlotBigInt !== MAX_U64 &&
+                          deactivationSlotBigInt < MAX_U64;
+
+    if (!isDeactivated) {
+      throw new Error(`ALT is not deactivated. Deactivate first and wait ~5 minutes.`);
+    }
+
+    const currentSlot = await withRpcLimit(() => connection.getSlot());
+    const slotsSinceDeactivation = currentSlot - Number(deactivationSlotBigInt);
+    if (slotsSinceDeactivation < 513) {
+      const minutesLeft = Math.ceil((513 - slotsSinceDeactivation) * 0.4 / 60);
+      throw new Error(`ALT not ready to close. Wait ~${minutesLeft} more minutes.`);
+    }
+
+    // Get rent amount before closing
+    const accountInfo = await withRpcLimit(() => connection.getAccountInfo(altPk));
+    const rentRecovered = accountInfo?.lamports || 0;
+
+    try {
+      logger.info('alt.manager.closeByAddress.start', {
+        cat: 'tx',
+        ctx: { altAddress, rentRecovered },
+      });
+    } catch {}
+
+    const closeIx = AddressLookupTableProgram.closeLookupTable({
+      lookupTable: altPk,
+      authority: wallet.publicKey,
+      recipient: wallet.publicKey,
+    });
+
+    const tx = new Transaction().add(closeIx);
+    const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash());
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = wallet.publicKey;
+    tx.sign(wallet);
+
+    const signature = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize()));
+    await withRpcLimit(() => connection.confirmTransaction(signature, 'confirmed'));
+
+    try {
+      logger.info('alt.manager.closeByAddress.ok', {
+        cat: 'tx',
+        ctx: { altAddress, signature, rentRecoveredSOL: rentRecovered / 1e9 },
+      });
+    } catch {}
+
+    return { signature, rentRecovered };
+  }
+
+  /**
+   * Bulk deactivate multiple ALTs
+   */
+  async bulkDeactivate(altAddresses: string[]): Promise<{
+    success: string[];
+    failed: { address: string; error: string }[];
+  }> {
+    const success: string[] = [];
+    const failed: { address: string; error: string }[] = [];
+
+    for (const addr of altAddresses) {
+      try {
+        await this.deactivateAltByAddress(addr);
+        success.push(addr);
+        // Small delay to avoid rate limits
+        await new Promise(r => setTimeout(r, 500));
+      } catch (e: any) {
+        failed.push({ address: addr, error: String(e?.message || e) });
+      }
+    }
+
+    return { success, failed };
+  }
+
+  /**
+   * Bulk close multiple ALTs
+   */
+  async bulkClose(altAddresses: string[]): Promise<{
+    success: { address: string; rentRecovered: number }[];
+    failed: { address: string; error: string }[];
+    totalRentRecovered: number;
+  }> {
+    const success: { address: string; rentRecovered: number }[] = [];
+    const failed: { address: string; error: string }[] = [];
+    let totalRentRecovered = 0;
+
+    for (const addr of altAddresses) {
+      try {
+        const result = await this.closeAltByAddress(addr);
+        success.push({ address: addr, rentRecovered: result.rentRecovered });
+        totalRentRecovered += result.rentRecovered;
+        // Small delay to avoid rate limits
+        await new Promise(r => setTimeout(r, 500));
+      } catch (e: any) {
+        failed.push({ address: addr, error: String(e?.message || e) });
+      }
+    }
+
+    return { success, failed, totalRentRecovered };
+  }
+
+  /**
    * Get detailed ALT information including deactivation status
    */
   async getAltInfo(category: string): Promise<{

@@ -41,9 +41,12 @@ import { getSdkQuoteAccountsForPlan, type SdkProvidedAccounts } from './sdkQuote
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+const METEORA_DAMM_V1_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
+const METEORA_DAMM_V2_PROGRAM = new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
 const PUMPSWAP_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
 const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+const RAYDIUM_AMM_V4_PROGRAM = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
 
 // Tick array derivation constants
 const ORCA_TICK_ARRAY_SIZE = 88;
@@ -1149,7 +1152,7 @@ function applysdkAccountsToHop(hop: DirectHop, sdkAccounts: SdkProvidedAccounts)
     (hop as any).oracle = sdkAccounts.oracle;
   }
 
-  // Raydium accounts
+  // Raydium CLMM accounts
   if (sdkAccounts.tickArrayLower) {
     hop.tickArrayLower = sdkAccounts.tickArrayLower;
   }
@@ -1169,7 +1172,42 @@ function applysdkAccountsToHop(hop: DirectHop, sdkAccounts: SdkProvidedAccounts)
     hop.ammConfig = sdkAccounts.ammConfig;
   }
 
-  // Meteora accounts
+  // Raydium AMM v4 accounts (Serum/OpenBook market)
+  if (sdkAccounts.ammAuthority) {
+    (hop as any).ammAuthority = sdkAccounts.ammAuthority;
+  }
+  if (sdkAccounts.openOrders) {
+    (hop as any).openOrders = sdkAccounts.openOrders;
+  }
+  if (sdkAccounts.targetOrders) {
+    (hop as any).targetOrders = sdkAccounts.targetOrders;
+  }
+  if (sdkAccounts.marketId) {
+    (hop as any).market = sdkAccounts.marketId;
+  }
+  if (sdkAccounts.marketProgramId) {
+    (hop as any).serumProgramId = sdkAccounts.marketProgramId;
+  }
+  if (sdkAccounts.serumBids) {
+    (hop as any).serumBids = sdkAccounts.serumBids;
+  }
+  if (sdkAccounts.serumAsks) {
+    (hop as any).serumAsks = sdkAccounts.serumAsks;
+  }
+  if (sdkAccounts.serumEventQueue) {
+    (hop as any).serumEventQueue = sdkAccounts.serumEventQueue;
+  }
+  if (sdkAccounts.serumCoinVault) {
+    (hop as any).serumCoinVault = sdkAccounts.serumCoinVault;
+  }
+  if (sdkAccounts.serumPcVault) {
+    (hop as any).serumPcVault = sdkAccounts.serumPcVault;
+  }
+  if (sdkAccounts.serumVaultSigner) {
+    (hop as any).serumVaultSigner = sdkAccounts.serumVaultSigner;
+  }
+
+  // Meteora DLMM accounts
   if (sdkAccounts.binArrays && sdkAccounts.binArrays.length > 0) {
     (hop as any).binArrays = sdkAccounts.binArrays;
     hop.binArrayLower = sdkAccounts.binArrayLower || sdkAccounts.binArrays[0];
@@ -1177,6 +1215,28 @@ function applysdkAccountsToHop(hop: DirectHop, sdkAccounts: SdkProvidedAccounts)
   }
   if (sdkAccounts.activeId !== undefined) {
     hop.activeId = sdkAccounts.activeId;
+  }
+
+  // Meteora DAMM accounts (v1/v2)
+  if (sdkAccounts.poolAuthority) {
+    (hop as any).poolAuthority = sdkAccounts.poolAuthority;
+  }
+  if (sdkAccounts.lpMint) {
+    (hop as any).lpMint = sdkAccounts.lpMint;
+  }
+
+  // PumpSwap accounts
+  if (sdkAccounts.globalConfig) {
+    (hop as any).globalConfig = sdkAccounts.globalConfig;
+  }
+  if (sdkAccounts.protocolFeeRecipient) {
+    (hop as any).protocolFeeRecipient = sdkAccounts.protocolFeeRecipient;
+  }
+  if (sdkAccounts.bondingCurve) {
+    (hop as any).bondingCurve = sdkAccounts.bondingCurve;
+  }
+  if (sdkAccounts.associatedBondingCurve) {
+    (hop as any).associatedBondingCurve = sdkAccounts.associatedBondingCurve;
   }
 
   // Common vault accounts
@@ -2510,10 +2570,16 @@ async function extractDexAccounts(
         // PumpSwap: 12 accounts
         // 0: GlobalConfig, 1: FeeRecipient, 2: Mint, 3: BondingCurve, 4: BCTokenAccount,
         // 5: AssociatedBC, 6: UserToken, 7: User, 8: System, 9: Token, 10: Rent, 11: Program
-        const globalConfig = derivePumpswapGlobalConfig();
+        // Use SDK-provided globalConfig if available, otherwise derive
+        const globalConfig = (hop as any).globalConfig 
+          ? new PublicKey((hop as any).globalConfig)
+          : derivePumpswapGlobalConfig();
         const isBuying = hop.inputMint === SOL_MINT; // SOL -> Token = buy
         const pumpMint = isBuying ? outputMint : inputMint; // The pump.fun token mint
-        const associatedBC = derivePumpswapAssociatedBondingCurve(poolId, pumpMint);
+        // Use SDK-provided associatedBondingCurve if available, otherwise derive
+        const associatedBC = (hop as any).associatedBondingCurve
+          ? new PublicKey((hop as any).associatedBondingCurve)
+          : derivePumpswapAssociatedBondingCurve(poolId, pumpMint);
         
         // CRITICAL: Use CANONICAL account ordering for BC Token Account
         const pumpVault = poolAccountA || hop.vaultA || hop.poolId;
@@ -2533,6 +2599,7 @@ async function extractDexAccounts(
           userTokenAccount: (isBuying ? userDestAta : userSourceAta).toBase58(),
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
+          fromSdk: !!((hop as any).globalConfig || (hop as any).associatedBondingCurve || (hop as any).protocolFeeRecipient),
         });
         
         accounts.push(
@@ -2551,6 +2618,115 @@ async function extractDexAccounts(
           SYSVAR_RENT_PUBKEY,                                                  // 10: Rent
           programIdKey,                                                        // 11: PumpSwap Program
         );
+        break;
+
+      case DexType.RaydiumAmm:
+        // Raydium AMM v4: 18 accounts
+        // 0: TokenProgram, 1: AMM, 2: Authority, 3: OpenOrders, 4: TargetOrders,
+        // 5: CoinVault, 6: PCVault, 7: SerumProgram, 8: Market, 9: Bids, 10: Asks,
+        // 11: EventQ, 12: SerumCoinVault, 13: SerumPCVault, 14: VaultSigner,
+        // 15: UserSource, 16: UserDest, 17: User, 18: Program
+        const raydiumAmmAuthority = (hop as any).ammAuthority || stat?.authority || stat?.amm_authority;
+        const openOrders = (hop as any).openOrders || stat?.open_orders || stat?.amm_open_orders;
+        const targetOrders = (hop as any).targetOrders || stat?.target_orders || stat?.amm_target_orders;
+        const serumProgramId = hop.serumProgramId || stat?.market_program_id;
+        const serumMarket = hop.market || stat?.market_id || stat?.market;
+        
+        // Serum market accounts (if available in cache or hop)
+        const serumBids = (hop as any).serumBids || stat?.serum_bids;
+        const serumAsks = (hop as any).serumAsks || stat?.serum_asks;
+        const serumEventQueue = (hop as any).serumEventQueue || stat?.serum_event_queue;
+        const serumCoinVault = (hop as any).serumCoinVault || stat?.serum_coin_vault;
+        const serumPcVault = (hop as any).serumPcVault || stat?.serum_pc_vault;
+        const serumVaultSigner = (hop as any).serumVaultSigner || stat?.serum_vault_signer;
+        
+        logger.info('routerTx.raydiumAmm.accounts', {
+          cat: 'tx',
+          poolId: hop.poolId,
+          authority: raydiumAmmAuthority,
+          openOrders,
+          targetOrders,
+          serumMarket,
+          hasSerumAccounts: !!(serumBids && serumAsks && serumEventQueue),
+        });
+
+        accounts.push(
+          TOKEN_PROGRAM_ID,                                                    // 0: Token Program
+          poolId,                                                              // 1: AMM ID
+          raydiumAmmAuthority ? new PublicKey(raydiumAmmAuthority) : poolId,  // 2: AMM Authority
+          openOrders ? new PublicKey(openOrders) : poolId,                    // 3: Open Orders
+          targetOrders ? new PublicKey(targetOrders) : poolId,                // 4: Target Orders
+          new PublicKey(hop.vaultA || poolAccountA),                          // 5: Coin Vault
+          new PublicKey(hop.vaultB || poolAccountB),                          // 6: PC Vault
+          serumProgramId ? new PublicKey(serumProgramId) : programIdKey,      // 7: Serum Program
+          serumMarket ? new PublicKey(serumMarket) : poolId,                  // 8: Serum Market
+          serumBids ? new PublicKey(serumBids) : poolId,                      // 9: Serum Bids
+          serumAsks ? new PublicKey(serumAsks) : poolId,                      // 10: Serum Asks
+          serumEventQueue ? new PublicKey(serumEventQueue) : poolId,          // 11: Event Queue
+          serumCoinVault ? new PublicKey(serumCoinVault) : poolId,            // 12: Serum Coin Vault
+          serumPcVault ? new PublicKey(serumPcVault) : poolId,                // 13: Serum PC Vault
+          serumVaultSigner ? new PublicKey(serumVaultSigner) : poolId,        // 14: Vault Signer
+          userSourceAta,                                                       // 15: User Source
+          userDestAta,                                                         // 16: User Dest
+          wallet,                                                              // 17: User (signer)
+          programIdKey,                                                        // 18: Program
+        );
+        break;
+
+      case DexType.MeteoraDAMM:
+        // Meteora DAMM v1: 11 accounts, v2: 12 accounts
+        // v1: 0: Pool, 1: UserSource, 2: UserDest, 3: VaultA, 4: VaultB, 
+        //     5: MintA, 6: MintB, 7: Authority, 8: User, 9: TokenProgram, 10: Program
+        const isV2 = hop.variant === 'damm_v2';
+        // Use SDK-provided authority if available, otherwise derive
+        const dammAuthority = (hop as any).poolAuthority 
+          ? new PublicKey((hop as any).poolAuthority)
+          : deriveMeteoraDAMMPoolAuthority(poolId, programIdKey, isV2);
+        
+        logger.info('routerTx.meteoraDamm.accounts', {
+          cat: 'tx',
+          poolId: hop.poolId,
+          variant: hop.variant,
+          isV2,
+          vaultA: hop.vaultA,
+          vaultB: hop.vaultB,
+          authority: dammAuthority.toBase58(),
+          fromSdk: !!(hop as any).poolAuthority,
+        });
+
+        if (isV2) {
+          // v2 account layout (12 accounts)
+          const lpMint = (hop as any).lpMint || stat?.mint_lp || poolId;
+          accounts.push(
+            poolId,                                                            // 0: Pool
+            userSourceAta,                                                     // 1: User Source
+            userDestAta,                                                       // 2: User Dest
+            new PublicKey(hop.vaultA || poolAccountA),                        // 3: Vault A
+            new PublicKey(hop.vaultB || poolAccountB),                        // 4: Vault B
+            inputMint,                                                         // 5: Token A Mint
+            outputMint,                                                        // 6: Token B Mint
+            new PublicKey(lpMint),                                            // 7: LP Mint
+            dammAuthority,                                                     // 8: Pool Authority
+            wallet,                                                            // 9: User (signer)
+            TOKEN_PROGRAM_ID,                                                  // 10: Token Program
+            programIdKey,                                                      // 11: Program
+          );
+        } else {
+          // v1 account layout (11 accounts)
+          accounts.push(
+            poolId,                                                            // 0: Pool
+            userSourceAta,                                                     // 1: User Source
+            userDestAta,                                                       // 2: User Dest
+            new PublicKey(hop.vaultA || poolAccountA),                        // 3: Vault A
+            new PublicKey(hop.vaultB || poolAccountB),                        // 4: Vault B
+            inputMint,                                                         // 5: Token A Mint
+            outputMint,                                                        // 6: Token B Mint
+            dammAuthority,                                                     // 7: Pool Authority
+            wallet,                                                            // 8: User (signer)
+            TOKEN_PROGRAM_ID,                                                  // 9: Token Program
+            programIdKey,                                                      // 10: Program
+          );
+        }
         break;
     }
   } catch (err: any) {
@@ -2620,6 +2796,31 @@ function derivePumpswapAssociatedBondingCurve(bondingCurve: PublicKey, mint: Pub
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   return assocBC;
+}
+
+/**
+ * Derive Meteora DAMM Pool Authority PDA
+ * v1 uses "vault_and_lp_mint_auth_pda", v2 uses "pool_authority"
+ */
+function deriveMeteoraDAMMPoolAuthority(pool: PublicKey, programId: PublicKey, isV2: boolean): PublicKey {
+  const seed = isV2 ? 'pool_authority' : 'vault_and_lp_mint_auth_pda';
+  const [authority] = PublicKey.findProgramAddressSync(
+    [Buffer.from(seed), pool.toBuffer()],
+    programId
+  );
+  return authority;
+}
+
+/**
+ * Derive Raydium AMM v4 Authority PDA
+ * Seeds: [AMM_ID bytes, "amm authority"]
+ */
+function deriveRaydiumAmmAuthority(ammId: PublicKey, programId: PublicKey): PublicKey {
+  const [authority] = PublicKey.findProgramAddressSync(
+    [ammId.toBuffer(), Buffer.from('amm authority')],
+    programId
+  );
+  return authority;
 }
 
 // ============================================================================

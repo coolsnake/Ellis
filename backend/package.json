@@ -25,6 +25,7 @@
     "@meteora-ag/dlmm-sdk": "^0.3.0",
     "@meteora-ag/dynamic-amm-sdk": "^1.1.0",
     "@orca-so/common-sdk": "^0.6.11",
+    "@pump-fun/pump-swap-sdk": "^1.0.0",
     "@orca-so/tx-sender": "^1.0.2",
     "@orca-so/whirlpools": "^4.0.0",
     "@orca-so/whirlpools-client": "^4.0.0",

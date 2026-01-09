@@ -4,6 +4,11 @@ import { peekRaydiumPools } from '../../server/pools.js';
 import { determineSwapOrientation } from '../../server/pools/orientation.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 
+/**
+ * Resolver for Raydium AMM v4 pools
+ * Populates all required accounts for on-chain router execution including
+ * Serum/OpenBook market accounts for order book routing.
+ */
 export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
   if (stat?.programId) hop.programId = stat.programId;
@@ -21,6 +26,14 @@ export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
   if (stat?.amm_open_orders && !(hop as any).openOrders) (hop as any).openOrders = stat.amm_open_orders;
   if (stat?.amm_target_orders && !(hop as any).targetOrders) (hop as any).targetOrders = stat.amm_target_orders;
   if (stat?.amm_authority && !hop.ammAuthority) hop.ammAuthority = stat.amm_authority;
+  
+  // Serum/OpenBook market accounts (required for router execution)
+  if (stat?.serum_bids && !(hop as any).serumBids) (hop as any).serumBids = stat.serum_bids;
+  if (stat?.serum_asks && !(hop as any).serumAsks) (hop as any).serumAsks = stat.serum_asks;
+  if (stat?.serum_event_queue && !(hop as any).serumEventQueue) (hop as any).serumEventQueue = stat.serum_event_queue;
+  if (stat?.serum_coin_vault && !(hop as any).serumCoinVault) (hop as any).serumCoinVault = stat.serum_coin_vault;
+  if (stat?.serum_pc_vault && !(hop as any).serumPcVault) (hop as any).serumPcVault = stat.serum_pc_vault;
+  if (stat?.serum_vault_signer && !(hop as any).serumVaultSigner) (hop as any).serumVaultSigner = stat.serum_vault_signer;
   
   try {
     const pools = peekRaydiumPools();
@@ -60,8 +73,12 @@ export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
         hop.ammAuthority = String((p as any)?.authority || (p as any)?.amm_authority || '');
       }
       // Populate market / serum program if available from normalized payload
-      hop.market = String((p as any)?.market || (p as any)?.market_id || '');
-      hop.serumProgramId = String((p as any)?.market_program_id || (p as any)?.marketProgramId || '');
+      if (!hop.market) hop.market = String((p as any)?.market || (p as any)?.market_id || '');
+      if (!hop.serumProgramId) hop.serumProgramId = String((p as any)?.market_program_id || (p as any)?.marketProgramId || '');
+      
+      // Populate open orders and target orders from pool data
+      if (!(hop as any).openOrders) (hop as any).openOrders = String((p as any)?.open_orders || (p as any)?.amm_open_orders || '');
+      if (!(hop as any).targetOrders) (hop as any).targetOrders = String((p as any)?.target_orders || (p as any)?.amm_target_orders || '');
       
       // Decimals (prefer token meta, but use orientation-aware mapping if needed)
       if (!Number.isFinite(Number(hop.inputDecimals))) {

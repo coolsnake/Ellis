@@ -60,6 +60,10 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
   });
   const [actionResult, setActionResult] = React.useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [coverageStats, setCoverageStats] = React.useState<any>(null);
+  const [discoveredAlts, setDiscoveredAlts] = React.useState<any[]>([]);
+  const [discoverySummary, setDiscoverySummary] = React.useState<any>(null);
+  const [showDiscovery, setShowDiscovery] = React.useState(false);
+  const [selectedAlts, setSelectedAlts] = React.useState<Set<string>>(new Set());
 
   // Load ALT config on mount and when expanded
   React.useEffect(() => {
@@ -238,6 +242,190 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
       setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
     } finally {
       setAltActionLoading(null);
+    }
+  };
+
+  // Discover ALL wallet-owned ALTs on-chain
+  const handleDiscoverAlts = async () => {
+    if (altActionLoading) return;
+    setAltActionLoading('discover');
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.discover}`, {
+        headers: getAuthHeaders(),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setDiscoveredAlts(data.alts || []);
+        setDiscoverySummary(data.summary || null);
+        setShowDiscovery(true);
+        setSelectedAlts(new Set());
+        setActionResult({
+          type: 'success',
+          message: `Found ${data.summary?.total || 0} ALTs (${data.summary?.orphaned || 0} orphaned, ${data.summary?.closeable || 0} closeable)`,
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to discover ALTs' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  // Deactivate a single ALT by address
+  const handleDeactivateByAddress = async (address: string) => {
+    if (altActionLoading) return;
+    setAltActionLoading(`deactivate-${address}`);
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.deactivateByAddress}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ address }),
+      });
+
+      if (res.ok) {
+        setActionResult({ type: 'success', message: `Deactivated. Wait ~5 min before closing.` });
+        handleDiscoverAlts(); // Refresh the list
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to deactivate' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  // Close a single ALT by address
+  const handleCloseByAddress = async (address: string) => {
+    if (altActionLoading) return;
+    setAltActionLoading(`close-${address}`);
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.closeByAddress}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ address }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({ type: 'success', message: `Closed! Recovered ${data.rentRecoveredSOL} SOL` });
+        handleDiscoverAlts(); // Refresh the list
+        onRefresh();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed to close' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  // Bulk deactivate selected ALTs
+  const handleBulkDeactivate = async () => {
+    if (altActionLoading || selectedAlts.size === 0) return;
+    const addresses = Array.from(selectedAlts);
+    if (!confirm(`Deactivate ${addresses.length} ALT(s)?`)) return;
+    
+    setAltActionLoading('bulk-deactivate');
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.bulkDeactivate}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ addresses }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({ type: 'success', message: data.message });
+        setSelectedAlts(new Set());
+        handleDiscoverAlts();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  // Bulk close selected ALTs
+  const handleBulkClose = async () => {
+    if (altActionLoading || selectedAlts.size === 0) return;
+    const closeableAddresses = Array.from(selectedAlts).filter(addr => 
+      discoveredAlts.find(a => a.address === addr)?.canClose
+    );
+    if (closeableAddresses.length === 0) {
+      setActionResult({ type: 'error', message: 'No selected ALTs are ready to close' });
+      return;
+    }
+    if (!confirm(`Close ${closeableAddresses.length} ALT(s) and recover rent?`)) return;
+    
+    setAltActionLoading('bulk-close');
+    setActionResult(null);
+
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.arb.alts.bulkClose}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ addresses: closeableAddresses }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActionResult({ 
+          type: 'success', 
+          message: `Closed ${data.successCount} ALTs. Recovered ${data.totalRentRecoveredSOL} SOL` 
+        });
+        setSelectedAlts(new Set());
+        handleDiscoverAlts();
+        onRefresh();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setActionResult({ type: 'error', message: err.error || 'Failed' });
+      }
+    } catch (e: any) {
+      setActionResult({ type: 'error', message: e?.message || 'Unknown error' });
+    } finally {
+      setAltActionLoading(null);
+    }
+  };
+
+  // Toggle ALT selection
+  const toggleAltSelection = (address: string) => {
+    setSelectedAlts(prev => {
+      const next = new Set(prev);
+      if (next.has(address)) {
+        next.delete(address);
+      } else {
+        next.add(address);
+      }
+      return next;
+    });
+  };
+
+  // Select all / none
+  const toggleSelectAll = () => {
+    if (selectedAlts.size === discoveredAlts.length) {
+      setSelectedAlts(new Set());
+    } else {
+      setSelectedAlts(new Set(discoveredAlts.map(a => a.address)));
     }
   };
 
@@ -668,6 +856,182 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
               </div>
             </div>
           )}
+
+          {/* Discover All Wallet ALTs */}
+          <div className="border-t border-gray-700 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <h5 className="text-sm font-medium text-gray-300">Discover & Manage All Wallet ALTs</h5>
+              <button
+                onClick={handleDiscoverAlts}
+                disabled={altActionLoading !== null}
+                className={`px-3 py-1 text-xs rounded ${
+                  altActionLoading === 'discover' 
+                    ? 'bg-gray-700 opacity-50 cursor-not-allowed' 
+                    : 'bg-amber-700 hover:bg-amber-600 text-white'
+                }`}
+              >
+                {altActionLoading === 'discover' ? '⏳ Scanning...' : '🔍 Discover On-Chain'}
+              </button>
+            </div>
+
+            {discoverySummary && (
+              <div className="mb-2 grid grid-cols-4 gap-2 text-xs">
+                <div className="bg-gray-800/50 rounded px-2 py-1">
+                  <div className="text-gray-500">Total</div>
+                  <div className="text-gray-200 font-medium">{discoverySummary.total}</div>
+                </div>
+                <div className="bg-gray-800/50 rounded px-2 py-1">
+                  <div className="text-gray-500">Orphaned</div>
+                  <div className="text-orange-400 font-medium">{discoverySummary.orphaned}</div>
+                </div>
+                <div className="bg-gray-800/50 rounded px-2 py-1">
+                  <div className="text-gray-500">Closeable</div>
+                  <div className="text-green-400 font-medium">{discoverySummary.closeable}</div>
+                </div>
+                <div className="bg-gray-800/50 rounded px-2 py-1">
+                  <div className="text-gray-500">Total Rent</div>
+                  <div className="text-amber-300 font-medium">{discoverySummary.totalRentSOL} SOL</div>
+                </div>
+              </div>
+            )}
+
+            {showDiscovery && discoveredAlts.length > 0 && (
+              <div className="bg-gray-900/60 rounded border border-gray-700">
+                {/* Bulk action bar */}
+                <div className="flex items-center justify-between px-2 py-1.5 border-b border-gray-700 bg-gray-800/50">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedAlts.size === discoveredAlts.length && discoveredAlts.length > 0}
+                      onChange={toggleSelectAll}
+                      className="rounded border-gray-600 text-amber-500 focus:ring-amber-500"
+                    />
+                    <span className="text-xs text-gray-400">
+                      {selectedAlts.size > 0 ? `${selectedAlts.size} selected` : 'Select all'}
+                    </span>
+                  </div>
+                  {selectedAlts.size > 0 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleBulkDeactivate}
+                        disabled={altActionLoading !== null}
+                        className={`px-2 py-0.5 text-xs rounded ${
+                          altActionLoading === 'bulk-deactivate'
+                            ? 'bg-gray-700 opacity-50'
+                            : 'bg-orange-700 hover:bg-orange-600 text-white'
+                        }`}
+                      >
+                        {altActionLoading === 'bulk-deactivate' ? '⏳' : '⏸️'} Deactivate
+                      </button>
+                      <button
+                        onClick={handleBulkClose}
+                        disabled={altActionLoading !== null}
+                        className={`px-2 py-0.5 text-xs rounded ${
+                          altActionLoading === 'bulk-close'
+                            ? 'bg-gray-700 opacity-50'
+                            : 'bg-red-700 hover:bg-red-600 text-white'
+                        }`}
+                      >
+                        {altActionLoading === 'bulk-close' ? '⏳' : '🗑️'} Close
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* ALT list */}
+                <div className="max-h-64 overflow-y-auto">
+                  {discoveredAlts.map((alt) => {
+                    const isSelected = selectedAlts.has(alt.address);
+                    const isDeactivating = altActionLoading === `deactivate-${alt.address}`;
+                    const isClosing = altActionLoading === `close-${alt.address}`;
+
+                    return (
+                      <div
+                        key={alt.address}
+                        className={`flex items-center justify-between px-2 py-1.5 border-b border-gray-800 last:border-0 ${
+                          isSelected ? 'bg-amber-900/20' : 'hover:bg-gray-800/30'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleAltSelection(alt.address)}
+                            className="rounded border-gray-600 text-amber-500 focus:ring-amber-500"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-mono text-gray-300 truncate">
+                                {alt.address.slice(0, 8)}...{alt.address.slice(-6)}
+                              </span>
+                              {alt.category && (
+                                <span className="text-xs px-1 bg-blue-900/50 text-blue-400 rounded">
+                                  {alt.category}
+                                </span>
+                              )}
+                              {!alt.inConfig && (
+                                <span className="text-xs px-1 bg-orange-900/50 text-orange-400 rounded">
+                                  orphaned
+                                </span>
+                              )}
+                              {alt.canClose && (
+                                <span className="text-xs px-1 bg-green-900/50 text-green-400 rounded">
+                                  closeable
+                                </span>
+                              )}
+                              {alt.isDeactivated && !alt.canClose && (
+                                <span className="text-xs px-1 bg-yellow-900/50 text-yellow-400 rounded">
+                                  deactivating
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {alt.accountCount} accounts • {alt.rentSOL} SOL
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 ml-2">
+                          {alt.canClose ? (
+                            <button
+                              onClick={() => handleCloseByAddress(alt.address)}
+                              disabled={altActionLoading !== null}
+                              className={`px-2 py-0.5 text-xs rounded ${
+                                isClosing
+                                  ? 'bg-gray-700 opacity-50'
+                                  : 'bg-red-700 hover:bg-red-600 text-white'
+                              }`}
+                            >
+                              {isClosing ? '⏳' : '🗑️'} Close
+                            </button>
+                          ) : !alt.isDeactivated ? (
+                            <button
+                              onClick={() => handleDeactivateByAddress(alt.address)}
+                              disabled={altActionLoading !== null}
+                              className={`px-2 py-0.5 text-xs rounded ${
+                                isDeactivating
+                                  ? 'bg-gray-700 opacity-50'
+                                  : 'bg-orange-700 hover:bg-orange-600 text-white'
+                              }`}
+                            >
+                              {isDeactivating ? '⏳' : '⏸️'} Deactivate
+                            </button>
+                          ) : (
+                            <span className="text-xs text-yellow-400">⏳ Waiting...</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {showDiscovery && discoveredAlts.length === 0 && (
+              <div className="text-xs text-gray-500 text-center py-4">
+                No ALTs found for this wallet on-chain.
+              </div>
+            )}
+          </div>
 
           {/* Warnings */}
           {altStatus.startupStatus?.errors?.length > 0 && (

@@ -27,7 +27,11 @@ import type { DirectHop } from '../types.js';
 
 const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
 const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+const RAYDIUM_AMM_V4_PROGRAM = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
 const METEORA_DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+const METEORA_DAMM_V1_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
+const METEORA_DAMM_V2_PROGRAM = new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
+const PUMPSWAP_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 
 const RAYDIUM_TICK_ARRAY_SIZE = 60;
 const RAYDIUM_BITMAP_RANGE = 512;
@@ -55,15 +59,42 @@ export interface SdkProvidedAccounts {
   exBitmap?: string;
   ammConfig?: string;
 
+  // Raydium AMM v4 (Serum/OpenBook market accounts)
+  ammAuthority?: string;
+  openOrders?: string;
+  targetOrders?: string;
+  marketId?: string;
+  marketProgramId?: string;
+  serumBids?: string;
+  serumAsks?: string;
+  serumEventQueue?: string;
+  serumCoinVault?: string;
+  serumPcVault?: string;
+  serumVaultSigner?: string;
+
   // Meteora DLMM
   binArrays?: string[];
   activeId?: number;
   binArrayLower?: string;
   binArrayUpper?: string;
 
+  // Meteora DAMM (v1/v2)
+  poolAuthority?: string;
+  lpMint?: string;
+
+  // PumpSwap
+  globalConfig?: string;
+  protocolFeeRecipient?: string;
+  bondingCurve?: string;
+  associatedBondingCurve?: string;
+
   // Common
   vaultA?: string;
   vaultB?: string;
+
+  // Quote results (for reference)
+  expectedAmountOut?: bigint;
+  priceImpact?: number;
 }
 
 /**
@@ -278,6 +309,135 @@ async function initMeteoraSdk(): Promise<boolean> {
       cat: 'tx',
       error: e?.message || String(e),
       stack: e?.stack?.slice(0, 500),
+    });
+    return false;
+  }
+}
+
+// ============================================================================
+// AMM SDK Cached Imports
+// ============================================================================
+
+// Raydium AMM v4 SDK components
+let RaydiumAmmLayout: any = null;
+let RaydiumLiquidity: any = null;
+let raydiumAmmSdkInitialized = false;
+
+// Meteora DAMM SDK components (v1 = Dynamic AMM, v2 = CP-AMM)
+let MeteoraDynamicAmm: any = null;
+let MeteoraCpAmm: any = null;
+let meteoraDammV1Initialized = false;
+let meteoraDammV2Initialized = false;
+
+// PumpSwap SDK components
+let PumpSwapSdk: any = null;
+let pumpswapSdkInitialized = false;
+
+/**
+ * Initialize Raydium AMM v4 SDK components (lazy loaded)
+ * Used for fetching Serum/OpenBook market accounts
+ */
+async function initRaydiumAmmSdk(): Promise<boolean> {
+  if (raydiumAmmSdkInitialized) return !!RaydiumAmmLayout;
+  raydiumAmmSdkInitialized = true;
+
+  try {
+    const raydiumSdk = await import('@raydium-io/raydium-sdk-v2');
+    
+    // Try to get AMM pool layout
+    RaydiumLiquidity = (raydiumSdk as any).Liquidity 
+      || (raydiumSdk as any).AmmV4 
+      || (raydiumSdk as any).Amm;
+    
+    // Try to get layout for manual decoding
+    try {
+      const layoutModule = await import('@raydium-io/raydium-sdk-v2/lib/raydium/liquidity/layout.js');
+      RaydiumAmmLayout = layoutModule.LIQUIDITY_STATE_LAYOUT_V4;
+    } catch {
+      // Fallback - try from main export
+      RaydiumAmmLayout = (raydiumSdk as any).LIQUIDITY_STATE_LAYOUT_V4
+        || (raydiumSdk as any).Liquidity?.LIQUIDITY_STATE_LAYOUT_V4;
+    }
+
+    logger.info('sdkQuoteBuilder.raydiumAmm.init.success', {
+      cat: 'tx',
+      hasLayout: !!RaydiumAmmLayout,
+      hasLiquidity: !!RaydiumLiquidity,
+    });
+    return !!RaydiumAmmLayout || !!RaydiumLiquidity;
+  } catch (e) {
+    logCatchError('sdkQuoteBuilder.raydiumAmm.init', e);
+    return false;
+  }
+}
+
+/**
+ * Initialize Meteora Dynamic AMM SDK (DAMM v1)
+ */
+async function initMeteoraDammV1Sdk(): Promise<boolean> {
+  if (meteoraDammV1Initialized && MeteoraDynamicAmm) return true;
+  meteoraDammV1Initialized = true;
+
+  try {
+    const dynamicAmmModule = await import('@meteora-ag/dynamic-amm-sdk');
+    MeteoraDynamicAmm = dynamicAmmModule.default || dynamicAmmModule;
+    
+    logger.info('sdkQuoteBuilder.meteoraDammV1.init.success', {
+      cat: 'tx',
+      hasCreate: typeof MeteoraDynamicAmm?.create === 'function',
+    });
+    return !!MeteoraDynamicAmm;
+  } catch (e) {
+    logCatchError('sdkQuoteBuilder.meteoraDammV1.init', e);
+    return false;
+  }
+}
+
+/**
+ * Initialize Meteora CP-AMM SDK (DAMM v2)
+ */
+async function initMeteoraDammV2Sdk(): Promise<boolean> {
+  if (meteoraDammV2Initialized && MeteoraCpAmm) return true;
+  meteoraDammV2Initialized = true;
+
+  try {
+    const cpAmmModule = await import('@meteora-ag/cp-amm-sdk');
+    MeteoraCpAmm = (cpAmmModule as any).CpAmm || cpAmmModule.default || cpAmmModule;
+    
+    logger.info('sdkQuoteBuilder.meteoraDammV2.init.success', {
+      cat: 'tx',
+      hasCpAmm: !!MeteoraCpAmm,
+    });
+    return !!MeteoraCpAmm;
+  } catch (e) {
+    logCatchError('sdkQuoteBuilder.meteoraDammV2.init', e);
+    return false;
+  }
+}
+
+/**
+ * Initialize PumpSwap SDK
+ */
+async function initPumpswapSdk(): Promise<boolean> {
+  if (pumpswapSdkInitialized && PumpSwapSdk) return true;
+  pumpswapSdkInitialized = true;
+
+  try {
+    // Try to import PumpSwap SDK
+    const pumpModule = await import('@pump-fun/pump-swap-sdk');
+    PumpSwapSdk = pumpModule.default || pumpModule;
+    
+    logger.info('sdkQuoteBuilder.pumpswap.init.success', {
+      cat: 'tx',
+      hasSdk: !!PumpSwapSdk,
+      keys: PumpSwapSdk ? Object.keys(PumpSwapSdk).slice(0, 10) : [],
+    });
+    return !!PumpSwapSdk;
+  } catch (e) {
+    // PumpSwap SDK may not be installed - this is optional
+    logger.debug('sdkQuoteBuilder.pumpswap.init.not_available', {
+      cat: 'tx',
+      error: (e as Error).message,
     });
     return false;
   }
@@ -1191,6 +1351,455 @@ async function getMeteoraSdkQuote(
 }
 
 // ============================================================================
+// Raydium AMM v4 SDK Quote
+// ============================================================================
+
+/**
+ * Get Raydium AMM v4 accounts via SDK
+ * Fetches Serum/OpenBook market accounts which are required for swaps
+ */
+async function getRaydiumAmmSdkQuote(
+  connection: Connection,
+  hop: DirectHop
+): Promise<SdkQuoteResult> {
+  const poolId = hop.poolId.replace(/[#-]rev$/, '');
+  const poolPk = new PublicKey(poolId);
+
+  try {
+    const sdkAvailable = await initRaydiumAmmSdk();
+    
+    // Even if SDK not available, we can still fetch and decode the pool state manually
+    const accountInfo = await connection.getAccountInfo(poolPk);
+    if (!accountInfo || !accountInfo.data) {
+      return {
+        success: false,
+        accounts: {},
+        error: 'Raydium AMM pool account not found',
+      };
+    }
+
+    // Raydium AMM v4 pool layout (key offsets for accounts):
+    // The state contains: status, nonce, orderNum, depth, coinDecimals, pcDecimals,
+    // state, resetFlag, minSize, volMaxCutRatio, amountWaveRatio, coinLotSize, pcLotSize,
+    // minPriceMultiplier, maxPriceMultiplier, systemDecimalValue, ... fees ...
+    // poolOpenTime, punishPcAmount, punishCoinAmount, orderbookToInitTime,
+    // (padding), coinVault, pcVault, coinMint, pcMint, lpMint,
+    // openOrders, marketId, marketProgramId, targetOrders, ...
+    
+    const data = Buffer.from(accountInfo.data);
+    const accounts: SdkProvidedAccounts = {};
+    
+    // AMM v4 layout parsing (offsets based on Raydium SDK)
+    // Skip the initial 8 bytes (u64 status through orderNum, etc.) 
+    // to the address fields which start around byte 336
+    
+    try {
+      // These offsets are from the Raydium AMM v4 state layout
+      let offset = 336; // Start of pubkey fields after numeric fields and padding
+      
+      const coinVault = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const pcVault = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const coinMint = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const pcMint = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const lpMint = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const openOrders = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const marketId = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const marketProgramId = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const targetOrders = new PublicKey(data.subarray(offset, offset + 32));
+      
+      // Store AMM accounts
+      accounts.vaultA = coinVault.toBase58();
+      accounts.vaultB = pcVault.toBase58();
+      accounts.openOrders = openOrders.toBase58();
+      accounts.targetOrders = targetOrders.toBase58();
+      accounts.marketId = marketId.toBase58();
+      accounts.marketProgramId = marketProgramId.toBase58();
+      accounts.lpMint = lpMint.toBase58();
+      
+      // Derive AMM authority PDA
+      const [authority] = PublicKey.findProgramAddressSync(
+        [poolPk.toBuffer(), Buffer.from([97, 109, 109, 32, 97, 117, 116, 104, 111, 114, 105, 116, 121])],
+        RAYDIUM_AMM_V4_PROGRAM
+      );
+      accounts.ammAuthority = authority.toBase58();
+      
+      // Now fetch the Serum/OpenBook market to get remaining accounts
+      const marketAccountInfo = await connection.getAccountInfo(marketId);
+      if (marketAccountInfo && marketAccountInfo.data) {
+        const marketData = Buffer.from(marketAccountInfo.data);
+        
+        // OpenBook/Serum market layout (simplified):
+        // Bids at offset 40, Asks at 72, EventQueue at 136, BaseVault at 168, QuoteVault at 200
+        // VaultSignerNonce at 232 (u64), then derive vault signer PDA
+        if (marketData.length >= 240) {
+          // Skip first 5 bytes (account flags) and padding to reach data
+          const marketOffset = 13; // Serum market header offset
+          
+          // Read market accounts (each is 32 bytes)
+          const bids = new PublicKey(marketData.subarray(marketOffset + 40, marketOffset + 72));
+          const asks = new PublicKey(marketData.subarray(marketOffset + 72, marketOffset + 104));
+          const eventQueue = new PublicKey(marketData.subarray(marketOffset + 136, marketOffset + 168));
+          const baseVault = new PublicKey(marketData.subarray(marketOffset + 168, marketOffset + 200));
+          const quoteVault = new PublicKey(marketData.subarray(marketOffset + 200, marketOffset + 232));
+          
+          // Read vault signer nonce (u64 at offset 232)
+          const vaultSignerNonce = marketData.readBigUInt64LE(marketOffset + 232);
+          
+          // Derive vault signer PDA
+          const [vaultSigner] = PublicKey.findProgramAddressSync(
+            [marketId.toBuffer(), Buffer.from([Number(vaultSignerNonce)])],
+            marketProgramId
+          );
+          
+          accounts.serumBids = bids.toBase58();
+          accounts.serumAsks = asks.toBase58();
+          accounts.serumEventQueue = eventQueue.toBase58();
+          accounts.serumCoinVault = baseVault.toBase58();
+          accounts.serumPcVault = quoteVault.toBase58();
+          accounts.serumVaultSigner = vaultSigner.toBase58();
+          
+          logger.info('sdkQuoteBuilder.raydiumAmm.market.decoded', {
+            cat: 'tx',
+            poolId: poolId.slice(0, 8) + '...',
+            marketId: marketId.toBase58().slice(0, 8) + '...',
+            hasSerumAccounts: true,
+          });
+        }
+      }
+      
+      logger.info('sdkQuoteBuilder.raydiumAmm.quote.success', {
+        cat: 'tx',
+        poolId: poolId.slice(0, 8) + '...',
+        hasVaults: !!(accounts.vaultA && accounts.vaultB),
+        hasOpenOrders: !!accounts.openOrders,
+        hasMarket: !!accounts.marketId,
+        hasSerumAccounts: !!accounts.serumBids,
+      });
+      
+      return { success: true, accounts };
+    } catch (decodeErr) {
+      logger.warn('sdkQuoteBuilder.raydiumAmm.decode.fallback', {
+        cat: 'tx',
+        error: (decodeErr as Error).message,
+      });
+      // Return partial success - some accounts may be populated from cache
+      return { success: true, accounts };
+    }
+  } catch (e) {
+    logCatchError('sdkQuoteBuilder.raydiumAmm.quote', e);
+    return {
+      success: false,
+      accounts: {},
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+// ============================================================================
+// Meteora DAMM SDK Quote (v1/v2)
+// ============================================================================
+
+/**
+ * Get Meteora DAMM v1 (Dynamic AMM) accounts via SDK
+ */
+async function getMeteoraDammV1SdkQuote(
+  connection: Connection,
+  hop: DirectHop
+): Promise<SdkQuoteResult> {
+  const poolId = hop.poolId.replace(/[#-]rev$/, '');
+  const poolPk = new PublicKey(poolId);
+
+  try {
+    const sdkAvailable = await initMeteoraDammV1Sdk();
+    const accounts: SdkProvidedAccounts = {};
+    
+    if (sdkAvailable && MeteoraDynamicAmm) {
+      try {
+        // Try using the SDK
+        const pool = await MeteoraDynamicAmm.create(connection, poolPk);
+        if (pool) {
+          // Extract accounts from pool instance
+          if (pool.poolInfo) {
+            accounts.vaultA = pool.poolInfo.tokenAVault?.toBase58?.() || pool.poolInfo.aVault?.toBase58?.();
+            accounts.vaultB = pool.poolInfo.tokenBVault?.toBase58?.() || pool.poolInfo.bVault?.toBase58?.();
+            accounts.lpMint = pool.poolInfo.lpMint?.toBase58?.();
+          }
+          
+          logger.info('sdkQuoteBuilder.meteoraDammV1.sdk.success', {
+            cat: 'tx',
+            poolId: poolId.slice(0, 8) + '...',
+          });
+        }
+      } catch (sdkErr) {
+        logger.debug('sdkQuoteBuilder.meteoraDammV1.sdk.fallback', {
+          cat: 'tx',
+          error: (sdkErr as Error).message,
+        });
+      }
+    }
+    
+    // Derive pool authority PDA (always do this as backup)
+    const [authority] = PublicKey.findProgramAddressSync(
+      [Buffer.from('vault_and_lp_mint_auth_pda'), poolPk.toBuffer()],
+      METEORA_DAMM_V1_PROGRAM
+    );
+    accounts.poolAuthority = authority.toBase58();
+    
+    // If SDK didn't populate vaults, try manual decode
+    if (!accounts.vaultA || !accounts.vaultB) {
+      const accountInfo = await connection.getAccountInfo(poolPk);
+      if (accountInfo && accountInfo.data) {
+        const data = Buffer.from(accountInfo.data);
+        // DAMM v1 pool layout: after 8-byte discriminator
+        // lpMint at 8, tokenAMint at 40, tokenBMint at 72, aVault at 104, bVault at 136
+        if (data.length >= 168) {
+          const lpMint = new PublicKey(data.subarray(8, 40));
+          const tokenAMint = new PublicKey(data.subarray(40, 72));
+          const tokenBMint = new PublicKey(data.subarray(72, 104));
+          const aVault = new PublicKey(data.subarray(104, 136));
+          const bVault = new PublicKey(data.subarray(136, 168));
+          
+          accounts.vaultA = aVault.toBase58();
+          accounts.vaultB = bVault.toBase58();
+          accounts.lpMint = lpMint.toBase58();
+        }
+      }
+    }
+    
+    logger.info('sdkQuoteBuilder.meteoraDammV1.quote.success', {
+      cat: 'tx',
+      poolId: poolId.slice(0, 8) + '...',
+      hasVaults: !!(accounts.vaultA && accounts.vaultB),
+      hasAuthority: !!accounts.poolAuthority,
+    });
+    
+    return { success: true, accounts };
+  } catch (e) {
+    logCatchError('sdkQuoteBuilder.meteoraDammV1.quote', e);
+    return {
+      success: false,
+      accounts: {},
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+/**
+ * Get Meteora DAMM v2 (CP-AMM) accounts via SDK
+ */
+async function getMeteoraDammV2SdkQuote(
+  connection: Connection,
+  hop: DirectHop
+): Promise<SdkQuoteResult> {
+  const poolId = hop.poolId.replace(/[#-]rev$/, '');
+  const poolPk = new PublicKey(poolId);
+
+  try {
+    const sdkAvailable = await initMeteoraDammV2Sdk();
+    const accounts: SdkProvidedAccounts = {};
+    
+    if (sdkAvailable && MeteoraCpAmm) {
+      try {
+        // Try using the SDK
+        const cpAmm = new MeteoraCpAmm(connection);
+        const poolInfo = await cpAmm.getPool?.(poolPk) || await cpAmm.fetchPoolState?.(poolPk);
+        if (poolInfo) {
+          accounts.vaultA = poolInfo.tokenAVault?.toBase58?.() || poolInfo.aVault?.toBase58?.();
+          accounts.vaultB = poolInfo.tokenBVault?.toBase58?.() || poolInfo.bVault?.toBase58?.();
+          accounts.lpMint = poolInfo.lpMint?.toBase58?.();
+          
+          logger.info('sdkQuoteBuilder.meteoraDammV2.sdk.success', {
+            cat: 'tx',
+            poolId: poolId.slice(0, 8) + '...',
+          });
+        }
+      } catch (sdkErr) {
+        logger.debug('sdkQuoteBuilder.meteoraDammV2.sdk.fallback', {
+          cat: 'tx',
+          error: (sdkErr as Error).message,
+        });
+      }
+    }
+    
+    // Derive pool authority PDA (v2 uses different seed)
+    const [authority] = PublicKey.findProgramAddressSync(
+      [Buffer.from('pool_authority'), poolPk.toBuffer()],
+      METEORA_DAMM_V2_PROGRAM
+    );
+    accounts.poolAuthority = authority.toBase58();
+    
+    // If SDK didn't populate vaults, try manual decode
+    if (!accounts.vaultA || !accounts.vaultB) {
+      const accountInfo = await connection.getAccountInfo(poolPk);
+      if (accountInfo && accountInfo.data) {
+        const data = Buffer.from(accountInfo.data);
+        // CP-AMM v2 pool layout may differ - try similar offsets
+        if (data.length >= 168) {
+          const lpMint = new PublicKey(data.subarray(8, 40));
+          const tokenAMint = new PublicKey(data.subarray(40, 72));
+          const tokenBMint = new PublicKey(data.subarray(72, 104));
+          const aVault = new PublicKey(data.subarray(104, 136));
+          const bVault = new PublicKey(data.subarray(136, 168));
+          
+          accounts.vaultA = aVault.toBase58();
+          accounts.vaultB = bVault.toBase58();
+          accounts.lpMint = lpMint.toBase58();
+        }
+      }
+    }
+    
+    logger.info('sdkQuoteBuilder.meteoraDammV2.quote.success', {
+      cat: 'tx',
+      poolId: poolId.slice(0, 8) + '...',
+      hasVaults: !!(accounts.vaultA && accounts.vaultB),
+      hasAuthority: !!accounts.poolAuthority,
+    });
+    
+    return { success: true, accounts };
+  } catch (e) {
+    logCatchError('sdkQuoteBuilder.meteoraDammV2.quote', e);
+    return {
+      success: false,
+      accounts: {},
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+// ============================================================================
+// PumpSwap SDK Quote
+// ============================================================================
+
+/**
+ * Get PumpSwap accounts via SDK or manual derivation
+ * Key account: protocolFeeRecipient
+ */
+async function getPumpswapSdkQuote(
+  connection: Connection,
+  hop: DirectHop
+): Promise<SdkQuoteResult> {
+  const poolId = hop.poolId.replace(/[#-]rev$/, '');
+  const poolPk = new PublicKey(poolId);
+
+  try {
+    const accounts: SdkProvidedAccounts = {};
+    
+    // Try SDK first
+    const sdkAvailable = await initPumpswapSdk();
+    if (sdkAvailable && PumpSwapSdk) {
+      try {
+        // Try to get global config and fee recipient from SDK
+        if (PumpSwapSdk.getGlobalConfig) {
+          const globalConfig = await PumpSwapSdk.getGlobalConfig(connection);
+          if (globalConfig) {
+            accounts.globalConfig = globalConfig.address?.toBase58?.() || globalConfig.publicKey?.toBase58?.();
+            accounts.protocolFeeRecipient = globalConfig.protocolFeeRecipient?.toBase58?.() 
+              || globalConfig.feeRecipient?.toBase58?.();
+          }
+        }
+        
+        // Try to get pool info
+        if (PumpSwapSdk.getPool || PumpSwapSdk.fetchPool) {
+          const poolFn = PumpSwapSdk.getPool || PumpSwapSdk.fetchPool;
+          const poolInfo = await poolFn(connection, poolPk);
+          if (poolInfo) {
+            accounts.vaultA = poolInfo.tokenVault?.toBase58?.() || poolInfo.baseVault?.toBase58?.();
+            accounts.bondingCurve = poolPk.toBase58();
+          }
+        }
+        
+        logger.info('sdkQuoteBuilder.pumpswap.sdk.success', {
+          cat: 'tx',
+          poolId: poolId.slice(0, 8) + '...',
+          hasGlobalConfig: !!accounts.globalConfig,
+          hasFeeRecipient: !!accounts.protocolFeeRecipient,
+        });
+      } catch (sdkErr) {
+        logger.debug('sdkQuoteBuilder.pumpswap.sdk.fallback', {
+          cat: 'tx',
+          error: (sdkErr as Error).message,
+        });
+      }
+    }
+    
+    // Always derive global config PDA
+    const [globalConfig] = PublicKey.findProgramAddressSync(
+      [Buffer.from('global')],
+      PUMPSWAP_PROGRAM
+    );
+    accounts.globalConfig = globalConfig.toBase58();
+    
+    // If we don't have fee recipient from SDK, try to fetch it from global config account
+    if (!accounts.protocolFeeRecipient) {
+      try {
+        const globalConfigInfo = await connection.getAccountInfo(globalConfig);
+        if (globalConfigInfo && globalConfigInfo.data) {
+          const data = Buffer.from(globalConfigInfo.data);
+          // PumpSwap global config layout: fee recipient is typically near the start
+          // Skip 8-byte discriminator, then read addresses
+          if (data.length >= 72) {
+            // Try offset 8 (after discriminator) for fee recipient
+            const feeRecipient = new PublicKey(data.subarray(8, 40));
+            if (!feeRecipient.equals(PublicKey.default)) {
+              accounts.protocolFeeRecipient = feeRecipient.toBase58();
+            }
+          }
+        }
+      } catch (fetchErr) {
+        logger.debug('sdkQuoteBuilder.pumpswap.globalConfig.fetch.failed', {
+          cat: 'tx',
+          error: (fetchErr as Error).message,
+        });
+      }
+    }
+    
+    // Derive associated bonding curve if we know the mint
+    const pumpMint = hop.inputMint === 'So11111111111111111111111111111111111111112' 
+      ? hop.outputMint 
+      : hop.inputMint;
+    if (pumpMint) {
+      try {
+        const mintPk = new PublicKey(pumpMint);
+        const ASSOCIATED_TOKEN_PROGRAM = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+        const TOKEN_PROGRAM = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+        const [associatedBC] = PublicKey.findProgramAddressSync(
+          [poolPk.toBuffer(), TOKEN_PROGRAM.toBuffer(), mintPk.toBuffer()],
+          ASSOCIATED_TOKEN_PROGRAM
+        );
+        accounts.associatedBondingCurve = associatedBC.toBase58();
+      } catch { /* ignore */ }
+    }
+    
+    accounts.bondingCurve = poolPk.toBase58();
+    
+    logger.info('sdkQuoteBuilder.pumpswap.quote.success', {
+      cat: 'tx',
+      poolId: poolId.slice(0, 8) + '...',
+      hasGlobalConfig: !!accounts.globalConfig,
+      hasFeeRecipient: !!accounts.protocolFeeRecipient,
+      hasAssociatedBC: !!accounts.associatedBondingCurve,
+    });
+    
+    return { success: true, accounts };
+  } catch (e) {
+    logCatchError('sdkQuoteBuilder.pumpswap.quote', e);
+    return {
+      success: false,
+      accounts: {},
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+// ============================================================================
 // Main Export
 // ============================================================================
 
@@ -1201,37 +1810,67 @@ async function getMeteoraSdkQuote(
 export async function getSdkQuoteAccounts(hop: DirectHop): Promise<SdkQuoteResult> {
   const connection = getConnection();
   const dex = hop.dex?.toLowerCase();
+  const variant = hop.variant?.toLowerCase();
 
   switch (dex) {
     case 'orca':
       return getOrcaSdkQuote(connection, hop);
 
     case 'raydium':
-      if (hop.variant === 'clmm') {
+      // Route based on variant (CLMM vs AMM v4)
+      if (variant === 'clmm' || !variant) {
+        // Default to CLMM for backward compatibility
+        if (variant === 'clmm') {
+          return getRaydiumSdkQuote(connection, hop);
+        }
+        // Check program ID to determine variant if not specified
+        const programId = hop.programId || '';
+        if (programId === RAYDIUM_AMM_V4_PROGRAM.toBase58() || 
+            programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
+          return getRaydiumAmmSdkQuote(connection, hop);
+        }
         return getRaydiumSdkQuote(connection, hop);
       }
-      // Raydium AMM doesn't need SDK quotes (constant product)
-      return {
-        success: true,
-        accounts: {},
-      };
+      if (variant === 'amm' || variant === 'amm_v4') {
+        return getRaydiumAmmSdkQuote(connection, hop);
+      }
+      return getRaydiumSdkQuote(connection, hop);
 
     case 'meteora':
+      // Route based on variant (DLMM vs DAMM v1/v2)
+      if (variant === 'dlmm' || !variant) {
+        // Check program ID to determine variant if not specified
+        const programId = hop.programId || '';
+        if (programId === METEORA_DAMM_V1_PROGRAM.toBase58() ||
+            programId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') {
+          return getMeteoraDammV1SdkQuote(connection, hop);
+        }
+        if (programId === METEORA_DAMM_V2_PROGRAM.toBase58() ||
+            programId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG') {
+          return getMeteoraDammV2SdkQuote(connection, hop);
+        }
+        return getMeteoraSdkQuote(connection, hop);
+      }
+      if (variant === 'balanced' || variant === 'damm' || variant === 'damm_v1') {
+        return getMeteoraDammV1SdkQuote(connection, hop);
+      }
+      if (variant === 'damm_v2' || variant === 'cpamm') {
+        return getMeteoraDammV2SdkQuote(connection, hop);
+      }
       return getMeteoraSdkQuote(connection, hop);
 
     case 'meteora_balanced':
-      // Meteora DAMM doesn't need SDK quotes (constant product)
-      return {
-        success: true,
-        accounts: {},
-      };
+      // Legacy case - detect v1 vs v2 from program ID
+      const metProgId = hop.programId || '';
+      if (metProgId === METEORA_DAMM_V2_PROGRAM.toBase58() ||
+          metProgId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG') {
+        return getMeteoraDammV2SdkQuote(connection, hop);
+      }
+      return getMeteoraDammV1SdkQuote(connection, hop);
 
     case 'pumpswap':
-      // PumpSwap doesn't need SDK quotes (constant product)
-      return {
-        success: true,
-        accounts: {},
-      };
+      // PumpSwap needs SDK for global config and fee recipient resolution
+      return getPumpswapSdkQuote(connection, hop);
 
     default:
       return {
@@ -1279,15 +1918,36 @@ export async function getSdkQuoteAccountsForPlan(
 export async function warmupSdks(): Promise<void> {
   const startMs = Date.now();
   
-  await Promise.all([
+  // Core CLMM/DLMM SDKs (critical path)
+  const coreResults = await Promise.all([
     initOrcaSdk(),
     initRaydiumSdk(),
     initMeteoraSdk(),
+  ]);
+  
+  // AMM SDKs (optional but useful)
+  // Run in parallel but don't block on failure
+  const ammResults = await Promise.allSettled([
+    initRaydiumAmmSdk(),
+    initMeteoraDammV1Sdk(),
+    initMeteoraDammV2Sdk(),
+    initPumpswapSdk(),
   ]);
   
   const elapsed = Date.now() - startMs;
   logger.info('sdkQuoteBuilder.warmup.complete', { 
     cat: 'tx', 
     elapsed_ms: elapsed,
+    core: {
+      orca: coreResults[0],
+      raydiumClmm: coreResults[1],
+      meteoraDlmm: coreResults[2],
+    },
+    amm: {
+      raydiumAmm: ammResults[0].status === 'fulfilled' ? ammResults[0].value : false,
+      meteoraDammV1: ammResults[1].status === 'fulfilled' ? ammResults[1].value : false,
+      meteoraDammV2: ammResults[2].status === 'fulfilled' ? ammResults[2].value : false,
+      pumpswap: ammResults[3].status === 'fulfilled' ? ammResults[3].value : false,
+    },
   });
 }

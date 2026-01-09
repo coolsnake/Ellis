@@ -533,12 +533,19 @@ export function getAccountsNeededForDex(dexType: DexType): number {
     case DexType.Raydium:
       // Return maximum (with exBitmap). Actual count determined by builder based on pool state.
       return 18;
+    case DexType.RaydiumAmm:
+      // Raydium AMM v4: 17 accounts + 1 program = 18
+      return 18;
     case DexType.Meteora:
       // NOTE: Must match arb-router/programs/arb-router/src/dex/meteora.rs
       // swap: 14 fixed + 1 program + 3 bin arrays = 18 (standard SPL tokens)
       // swap2: 15 fixed + 1 program + 3 bin arrays = 19 (Token-2022)
       // Return minimum (swap). The builder passes appropriate count per variant.
       return 18;
+    case DexType.MeteoraDAMM:
+      // Meteora DAMM v1: 10 accounts + 1 program = 11
+      // Meteora DAMM v2: 11 accounts + 1 program = 12
+      return 11;
     case DexType.Orca:
       return 12; // Orca Whirlpool: 11 swap accounts + 1 program
     case DexType.PumpSwap:
@@ -553,11 +560,30 @@ export function getAccountsNeededForDex(dexType: DexType): number {
  */
 export function dexNameToType(dex: string, variant?: string): DexType {
   const dexLower = dex.toLowerCase();
+  const variantLower = (variant || '').toLowerCase();
   
-  if (dexLower === 'raydium' && variant === 'clmm') return DexType.Raydium;
-  if (dexLower === 'raydium') return DexType.Raydium;
-  if (dexLower === 'meteora') return DexType.Meteora;
+  // Raydium variants
+  if (dexLower === 'raydium') {
+    if (variantLower === 'amm' || variantLower === 'amm_v4') return DexType.RaydiumAmm;
+    return DexType.Raydium; // Default to CLMM
+  }
+  if (dexLower === 'raydium-amm' || dexLower === 'raydium_amm') return DexType.RaydiumAmm;
+  
+  // Meteora variants
+  if (dexLower === 'meteora' || dexLower === 'meteora-dlmm') {
+    return DexType.Meteora; // DLMM
+  }
+  if (dexLower === 'meteora_balanced' || dexLower === 'meteora-damm') {
+    return DexType.MeteoraDAMM;
+  }
+  if (variantLower === 'damm_v1' || variantLower === 'damm_v2') {
+    return DexType.MeteoraDAMM;
+  }
+  
+  // Orca
   if (dexLower === 'orca') return DexType.Orca;
+  
+  // PumpSwap
   if (dexLower === 'pumpswap') return DexType.PumpSwap;
   
   throw new Error(`Unsupported DEX: ${dex}/${variant}`);

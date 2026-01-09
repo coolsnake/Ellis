@@ -1139,7 +1139,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
       }: {
         hops: Array<{
           poolId: string;
-          dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap';
+          dex: 'raydium' | 'raydium-amm' | 'orca' | 'meteora' | 'meteora-damm' | 'pumpswap';
+          variant?: 'clmm' | 'amm' | 'dlmm' | 'damm_v1' | 'damm_v2';
           inputMint: string;
           outputMint: string;
         }>;
@@ -1205,8 +1206,17 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const dexes = hops.map(h => {
         // Map dex name to variant for proper pool type identification
         const dexLower = h.dex.toLowerCase();
+        const variant = (h.variant || '').toLowerCase();
+        
+        // Raydium variants
+        if (dexLower === 'raydium-amm' || variant === 'amm') return 'raydium.amm';
         if (dexLower === 'raydium') return 'raydium-clmm';
+        
+        // Meteora variants
+        if (dexLower === 'meteora-damm' || variant === 'damm_v1') return 'meteora_balanced_v1';
+        if (variant === 'damm_v2') return 'meteora_balanced_v2';
         if (dexLower === 'meteora') return 'meteora-dlmm';
+        
         return dexLower;
       });
 

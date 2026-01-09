@@ -3281,6 +3281,139 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // ============================================================================
+  // ALT Discovery & Management (for ALL wallet-owned ALTs, including orphaned)
+  // ============================================================================
+
+  /**
+   * GET /api/arb/alts/discover
+   * Discover ALL ALTs owned by the wallet on-chain.
+   * Returns ALTs that may not be in our config (orphaned/untracked).
+   */
+  api.get('/arb/alts/discover', async (_req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const alts = await dexAltManager.discoverWalletAlts();
+      
+      const summary = {
+        total: alts.length,
+        inConfig: alts.filter(a => a.inConfig).length,
+        orphaned: alts.filter(a => !a.inConfig).length,
+        active: alts.filter(a => !a.isDeactivated).length,
+        deactivated: alts.filter(a => a.isDeactivated && !a.canClose).length,
+        closeable: alts.filter(a => a.canClose).length,
+        totalRentSOL: (alts.reduce((sum, a) => sum + a.rentLamports, 0) / 1e9).toFixed(6),
+        recoverableRentSOL: (alts.filter(a => a.canClose).reduce((sum, a) => sum + a.rentLamports, 0) / 1e9).toFixed(6),
+      };
+      
+      res.json({
+        status: 'success',
+        summary,
+        alts,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /api/arb/alts/deactivate-by-address
+   * Deactivate an ALT by its address (works for orphaned ALTs not in config).
+   */
+  api.post('/arb/alts/deactivate-by-address', async (req: Request, res: Response) => {
+    try {
+      const { address } = req.body;
+      if (!address) {
+        return res.status(400).json({ error: 'address is required' });
+      }
+      
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const result = await dexAltManager.deactivateAltByAddress(address);
+      
+      res.json({
+        status: 'success',
+        ...result,
+        message: 'ALT deactivated. Wait ~5 minutes before closing.',
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /api/arb/alts/close-by-address
+   * Close an ALT by its address and recover rent (works for orphaned ALTs not in config).
+   */
+  api.post('/arb/alts/close-by-address', async (req: Request, res: Response) => {
+    try {
+      const { address } = req.body;
+      if (!address) {
+        return res.status(400).json({ error: 'address is required' });
+      }
+      
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const result = await dexAltManager.closeAltByAddress(address);
+      
+      res.json({
+        status: 'success',
+        ...result,
+        rentRecoveredSOL: (result.rentRecovered / 1e9).toFixed(6),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /api/arb/alts/bulk-deactivate
+   * Deactivate multiple ALTs at once.
+   */
+  api.post('/arb/alts/bulk-deactivate', async (req: Request, res: Response) => {
+    try {
+      const { addresses } = req.body;
+      if (!addresses || !Array.isArray(addresses)) {
+        return res.status(400).json({ error: 'addresses array is required' });
+      }
+      
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const result = await dexAltManager.bulkDeactivate(addresses);
+      
+      res.json({
+        status: 'success',
+        ...result,
+        message: `Deactivated ${result.success.length}/${addresses.length} ALTs. Wait ~5 minutes before closing.`,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /**
+   * POST /api/arb/alts/bulk-close
+   * Close multiple deactivated ALTs at once and recover rent.
+   */
+  api.post('/arb/alts/bulk-close', async (req: Request, res: Response) => {
+    try {
+      const { addresses } = req.body;
+      if (!addresses || !Array.isArray(addresses)) {
+        return res.status(400).json({ error: 'addresses array is required' });
+      }
+      
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const result = await dexAltManager.bulkClose(addresses);
+      
+      res.json({
+        status: 'success',
+        successCount: result.success.length,
+        failedCount: result.failed.length,
+        totalRentRecoveredSOL: (result.totalRentRecovered / 1e9).toFixed(6),
+        details: result,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

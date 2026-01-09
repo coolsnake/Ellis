@@ -228,6 +228,23 @@ pub mod arb_router {
                     params.a_to_b,
                 )?;
             }
+            DexType::RaydiumAmm => {
+                // Raydium AMM v4 (constant product with Serum/OpenBook)
+                dex::raydium_amm::swap(
+                    &ctx.remaining_accounts,
+                    params.amount_in,
+                    params.min_amount_out,
+                )?;
+            }
+            DexType::MeteoraDAMM => {
+                // Meteora DAMM: a_to_b = true means v2, false means v1
+                dex::meteora_damm::swap(
+                    &ctx.remaining_accounts,
+                    params.amount_in,
+                    params.min_amount_out,
+                    params.a_to_b,
+                )?;
+            }
         }
 
         msg!("Swap completed: {} in, min {} out", params.amount_in, params.min_amount_out);
@@ -321,6 +338,14 @@ pub mod arb_router {
                 DexType::PumpSwap => {
                     // PumpSwap: a_to_b = true means buy (SOL->Token), false means sell (Token->SOL)
                     dex::pumpswap::swap(step_accounts, actual_amount_in, step.min_amount_out, step.a_to_b)?;
+                }
+                DexType::RaydiumAmm => {
+                    // Raydium AMM v4 (constant product with Serum/OpenBook)
+                    dex::raydium_amm::swap(step_accounts, actual_amount_in, step.min_amount_out)?;
+                }
+                DexType::MeteoraDAMM => {
+                    // Meteora DAMM: a_to_b = true means v2, false means v1
+                    dex::meteora_damm::swap(step_accounts, actual_amount_in, step.min_amount_out, step.a_to_b)?;
                 }
             }
             
@@ -645,6 +670,8 @@ fn get_accounts_needed_for_dex(dex_type: &DexType) -> usize {
         DexType::Meteora => dex::meteora::ACCOUNTS_NEEDED,
         DexType::Orca => dex::orca::ACCOUNTS_NEEDED,
         DexType::PumpSwap => dex::pumpswap::ACCOUNTS_NEEDED,
+        DexType::RaydiumAmm => dex::raydium_amm::ACCOUNTS_NEEDED,
+        DexType::MeteoraDAMM => dex::meteora_damm::ACCOUNTS_NEEDED,
     }
 }
 
@@ -673,6 +700,10 @@ fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool, accounts_count: usi
         },
         // PumpSwap: position 6 (User Token Account)
         DexType::PumpSwap => 6,
+        // Raydium AMM v4: position 15 (User Source Token Account)
+        DexType::RaydiumAmm => 15,
+        // Meteora DAMM: position 1 (User Source Token Account)
+        DexType::MeteoraDAMM => 1,
     }
 }
 
