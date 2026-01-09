@@ -61,7 +61,7 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       res.json(out);
     } catch (e: any) {
       logger.error('raydium pools fetch failed', { error: String(e?.message || e) });
-      res.status(503).json({ amm: [], clmm: [] });
+      res.status(503).json({ amm: [], clmm: [], cpmm: [] });
     }
   });
 
@@ -108,7 +108,7 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       res.json(out);
     } catch (e: any) {
       logger.error('orca pools fetch failed', { error: String(e?.message || e) });
-      res.status(503).json({ amm: [], clmm: [] });
+      res.status(503).json({ amm: [], clmm: [], cpmm: [] });
     }
   });
 
@@ -141,7 +141,7 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       res.json(out);
     } catch (e: any) {
       logger.error('meteora pools fetch failed', { error: String(e?.message || e) });
-      res.status(503).json({ amm: [], clmm: [] });
+      res.status(503).json({ amm: [], clmm: [], cpmm: [] });
     }
   });
 
@@ -170,7 +170,7 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       res.json({ amm, clmm: [] });
     } catch (e: any) {
       logger.error('meteora balanced pools fetch failed', { error: String(e?.message || e) });
-      res.status(503).json({ amm: [], clmm: [] });
+      res.status(503).json({ amm: [], clmm: [], cpmm: [] });
     }
   });
 
@@ -197,7 +197,7 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       res.json({ amm, clmm: [] });
     } catch (e: any) {
       logger.error('pumpswap pools fetch failed', { error: String(e?.message || e) });
-      res.status(503).json({ amm: [], clmm: [] });
+      res.status(503).json({ amm: [], clmm: [], cpmm: [] });
     }
   });
 

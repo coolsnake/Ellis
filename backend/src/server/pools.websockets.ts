@@ -1757,7 +1757,7 @@ function runWebsocketRefreshLoop(): void {
                         // When a pool is swapped during canonicalization, decimals_a/b refer to the canonical mints,
                         // but mintA/mintB from chain state are always in native order
                         try {
-                          const cachedRayPools = raydiumCache.data || { amm: [], clmm: [] };
+                          const cachedRayPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
                           const existing = cachedRayPools.clmm.find(p => p.id === pk58);
                           decA = existing?.native_decimals_a ?? existing?.decimals_a;
                           decB = existing?.native_decimals_b ?? existing?.decimals_b;
@@ -1926,8 +1926,8 @@ function runWebsocketRefreshLoop(): void {
                         // Pipeline already canonicalized, use item directly
                         const finalItem = item;
                         
-                        const prev = raydiumCache.data || { amm: [], clmm: [] };
-                        const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                        const prev = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
+                        const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
                         const idx = next.clmm.findIndex(p => p.id === finalItem.id);
                         
                         // CRITICAL FIX: Handle orientation changes correctly
@@ -2128,7 +2128,7 @@ function runWebsocketRefreshLoop(): void {
                         let decB: number | undefined;
                         try {
                           // Get decimals from pool cache (fast memory lookup)
-                          const cachedRayPools = raydiumCache.data || { amm: [], clmm: [] };
+                          const cachedRayPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
                           const existing = cachedRayPools.amm.find(p => p.id === pk58);
                           // CRITICAL FIX: Use native decimals, not canonical decimals
                           // The cache stores canonical (potentially swapped) decimals, but we need native decimals
@@ -2238,8 +2238,8 @@ function runWebsocketRefreshLoop(): void {
                         const [canonicalItem] = canonicalizePools([{ ...item }]);
                         const finalItem = canonicalItem || item;
                         
-                        const prev = raydiumCache.data || { amm: [], clmm: [] };
-                        const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                        const prev = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
+                        const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
                         const idx = next.amm.findIndex(p => p.id === finalItem.id);
                         
                         // CRITICAL FIX: Handle orientation changes correctly
@@ -2633,8 +2633,8 @@ function runWebsocketRefreshLoop(): void {
                     throw new Error(`validation failed: ${validation.reasons.join(',')}`);
                   }
                   
-                  const prev = orcaCache.data || { amm: [], clmm: [] };
-                  const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                  const prev = orcaCache.data || { amm: [], clmm: [], cpmm: [] };
+                  const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
                   const idx = next.clmm.findIndex(p => p.id === id);
                   if (idx >= 0) { next.clmm[idx] = { ...next.clmm[idx], ...clmmItem }; } else { next.clmm.push(clmmItem); }
                   try { wsDecodeStats.orca.successes += 1; } catch {}
@@ -2853,7 +2853,7 @@ function runWebsocketRefreshLoop(): void {
                   } catch {}
                   
                   // Get decimals from pool cache (fast memory lookup)
-                  const cachedMetPools = meteoraCache.data || { amm: [], clmm: [] };
+                  const cachedMetPools = meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
                   const existing = cachedMetPools.clmm.find(p => p.id === poolId);
                   // CRITICAL FIX: Use native decimals, not canonical decimals
                   // The cache stores canonical (potentially swapped) decimals, but we need native decimals for tokenX/tokenY
@@ -3141,8 +3141,8 @@ function runWebsocketRefreshLoop(): void {
                       throw new Error(`validation failed: ${validation.reasons.join(',')}`);
                     }
                     
-                    const prev = meteoraCache.data || { amm: [], clmm: [] };
-                    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                    const prev = meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
+                    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
                     const idx = next.clmm.findIndex(p => p.id === finalItem.id);
                     
                     // Sync bin arrays to pool cache if we have activeId/bin array data
@@ -3394,11 +3394,11 @@ function runWebsocketRefreshLoop(): void {
         };
         const WS_APPLY_DEBOUNCE_MS = Math.max(10, Number(((CONFIG.system as any)?.wsApplyDebounceMs) || 100));
         const getCurrentCache = (dex: 'raydium'|'orca'|'meteora'|'pumpswap'|'meteora_balanced'): any => {
-          if (dex === 'raydium') return raydiumCache.data || { amm: [], clmm: [] };
-          if (dex === 'orca') return orcaCache.data || { amm: [], clmm: [] };
-          if (dex === 'meteora') return meteoraCache.data || { amm: [], clmm: [] };
-          if (dex === 'pumpswap') return pumpswapCache.data || { amm: [], clmm: [] };
-          return metbalCache.data || { amm: [], clmm: [] };
+          if (dex === 'raydium') return raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
+          if (dex === 'orca') return orcaCache.data || { amm: [], clmm: [], cpmm: [] };
+          if (dex === 'meteora') return meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
+          if (dex === 'pumpswap') return pumpswapCache.data || { amm: [], clmm: [], cpmm: [] };
+          return metbalCache.data || { amm: [], clmm: [], cpmm: [] };
         };
         async function scheduleDexApply(dex: 'raydium'|'orca'|'meteora'|'pumpswap'|'meteora_balanced', baseline: any): Promise<void> {
           try {
@@ -3504,8 +3504,8 @@ function runWebsocketRefreshLoop(): void {
             return;
           }
           tracker.aggregate = aggregate;
-          const prev = meteoraCache.data || { amm: [], clmm: [] };
-          const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+          const prev = meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
+          const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
           const idx = next.clmm.findIndex(p => p.id === poolId);
           if (idx === -1) {
             // Pool snapshot not yet cached; bin state will be included on next pair update

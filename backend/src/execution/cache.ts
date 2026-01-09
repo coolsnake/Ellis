@@ -4,7 +4,7 @@ import { ensureDir, readJson, writeJson, joinPath } from '../utils/fs.js';
 type PoolStatic = {
   programId?: string;
   dex?: string;
-  pool_kind?: 'amm' | 'clmm';
+  pool_kind?: 'amm' | 'clmm' | 'cpmm';
   vaults?: { a?: string; b?: string };
   // Common execution accounts
   authorities?: Record<string, string>;
@@ -46,6 +46,15 @@ type PoolStatic = {
   amm_open_orders?: string;
   amm_target_orders?: string;
   lp_mint?: string;
+  // Legacy Serum market aliases (for backward compatibility with older code paths)
+  market?: string;                      // Alias for market_id
+  serum_bids?: string;                  // Alias for market_bids
+  serum_asks?: string;                  // Alias for market_asks
+  serum_event_queue?: string;           // Alias for market_event_queue
+  serum_coin_vault?: string;            // Alias for market_base_vault
+  serum_pc_vault?: string;              // Alias for market_quote_vault
+  serum_vault_signer?: string;          // Alias for market_authority
+  mint_lp?: string;                     // Alias for lp_mint
   // Generic vault/account references (used across DEXes)
   vault_a?: string;
   vault_b?: string;
@@ -56,6 +65,7 @@ type PoolStatic = {
   // Meteora DLMM: bitmap_extension is handled automatically by the SDK, no need to cache
   // Raydium CLMM-specific
   observation_state?: string;           // Observation state account (oracle data)
+  observation_key?: string;             // Alias for observation_state (CPMM pools)
   ex_bitmap?: string;                   // Extended bitmap for tick array tracking
   tickArrayLower?: string;
   tickArrayCenter?: string;

@@ -40,8 +40,8 @@ describe('computeIncrementalGraphUpdate', () => {
     const previousSnapshot = makeSnapshot(1);
     const request: GraphIncrementalRequest = {
       previousSnapshot,
-      previousPools: { amm: [{ ...BASE_POOL }], clmm: [] },
-      nextPools: { amm: [{ ...BASE_POOL, price_a_per_b: 1.1, updated_ms: 2_000, _pipelineProcessed: true } as any], clmm: [] },
+      previousPools: { amm: [{ ...BASE_POOL }], clmm: [], cpmm: [] },
+      nextPools: { amm: [{ ...BASE_POOL, price_a_per_b: 1.1, updated_ms: 2_000, _pipelineProcessed: true } as any], clmm: [], cpmm: [] },
       droppedPoolIds: [],
       edgeAllow: {},
       priceMap: PRICE_MAP,
@@ -69,8 +69,8 @@ describe('computeIncrementalGraphUpdate', () => {
     const previousSnapshot = makeSnapshot(1);
     const request: GraphIncrementalRequest = {
       previousSnapshot,
-      previousPools: { amm: [{ ...BASE_POOL }], clmm: [] },
-      nextPools: { amm: [], clmm: [] },
+      previousPools: { amm: [{ ...BASE_POOL }], clmm: [], cpmm: [] },
+      nextPools: { amm: [], clmm: [], cpmm: [] },
       droppedPoolIds: [],
       edgeAllow: {},
       priceMap: PRICE_MAP,

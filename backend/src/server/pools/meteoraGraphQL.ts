@@ -1283,6 +1283,6 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     }
   } catch {}
   
-  return { amm: [], clmm: clmm };
+  return { amm: [], clmm: clmm, cpmm: [] };
 }
 

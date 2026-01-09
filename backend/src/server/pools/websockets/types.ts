@@ -27,7 +27,7 @@ export interface RefreshSourcesOptions {
 /**
  * DEX source identifier
  */
-export type DexSource = 'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+export type DexSource = 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
 
 /**
  * Pool decoder interface - each DEX decoder must implement these methods

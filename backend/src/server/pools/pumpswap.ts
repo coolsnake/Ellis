@@ -1448,6 +1448,6 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
     });
   }
   
-  return { amm: ammCanon, clmm: [] };
+  return { amm: ammCanon, clmm: [], cpmm: [] };
 }
 

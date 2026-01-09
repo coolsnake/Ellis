@@ -32,7 +32,7 @@ export interface RawPriceInput {
   decimalsB: number;       // Decimals for mint B
   poolId?: string;         // Pool ID for diagnostics
   dex?: string;            // DEX name for diagnostics
-  poolType?: 'amm' | 'clmm';
+  poolType?: 'amm' | 'clmm' | 'cpmm';
 
   // Add raw data fields for direct calculation inside pipeline
   sqrtPriceX64?: bigint | number;

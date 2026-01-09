@@ -4,7 +4,7 @@ import { LogCat, LogSubcat, LogCode } from '../../utils/logging.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 
 export type HttpLogCtx = {
-  source: 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'meteora_balanced' | 'meteora_balanced_v1' | 'meteora_balanced_v2' | 'pumpswap';
+  source: 'raydium' | 'raydium-clmm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora_balanced' | 'meteora_balanced_v1' | 'meteora_balanced_v2' | 'pumpswap';
   url: string;
   cid?: string;
   extra?: Record<string, unknown>;

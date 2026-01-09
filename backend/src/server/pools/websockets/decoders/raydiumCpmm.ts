@@ -162,11 +162,11 @@ export async function decodeRaydiumCpmmPool(
     const token1Program = readPubkey(data, CPMM_LAYOUT.TOKEN_1_PROGRAM_OFFSET);
     const observationKey = readPubkey(data, CPMM_LAYOUT.OBSERVATION_KEY_OFFSET);
     
-    const authBump = data.readUInt8(CPMM_LAYOUT.AUTH_BUMP_OFFSET);
-    const status = data.readUInt8(CPMM_LAYOUT.STATUS_OFFSET);
-    const lpDecimals = data.readUInt8(CPMM_LAYOUT.LP_DECIMALS_OFFSET);
-    const mint0Decimals = data.readUInt8(CPMM_LAYOUT.MINT_0_DECIMALS_OFFSET);
-    const mint1Decimals = data.readUInt8(CPMM_LAYOUT.MINT_1_DECIMALS_OFFSET);
+    const authBump = data[CPMM_LAYOUT.AUTH_BUMP_OFFSET];
+    const status = data[CPMM_LAYOUT.STATUS_OFFSET];
+    const lpDecimals = data[CPMM_LAYOUT.LP_DECIMALS_OFFSET];
+    const mint0Decimals = data[CPMM_LAYOUT.MINT_0_DECIMALS_OFFSET];
+    const mint1Decimals = data[CPMM_LAYOUT.MINT_1_DECIMALS_OFFSET];
     
     // Validate required fields
     if (!token0Mint || !token1Mint) {
@@ -332,6 +332,10 @@ async function handleCpmmUpdate(
     });
   }
 
+  // Calculate whole token amounts from reserves
+  const amountAWhole = reserveA && decA !== undefined ? Number(reserveA) / Math.pow(10, decA) : undefined;
+  const amountBWhole = reserveB && decB !== undefined ? Number(reserveB) / Math.pow(10, decB) : undefined;
+
   // Build the pool item
   const item: CpmmPool = {
     id: poolId,
@@ -364,8 +368,8 @@ async function handleCpmmUpdate(
     was_swapped: processedPrice?.wasSwapped || false,
     reserve_a_raw: reserveA?.toString(),
     reserve_b_raw: reserveB?.toString(),
-    amount_a_whole: processedPrice?.amountAWhole,
-    amount_b_whole: processedPrice?.amountBWhole,
+    amount_a_whole: amountAWhole,
+    amount_b_whole: amountBWhole,
     _pipelineProcessed: true,
   };
 
@@ -561,6 +565,10 @@ export async function handleCpmmVaultUpdate(
             });
             
             if (processedPrice && processedPrice.priceForward > 0) {
+              // Calculate whole token amounts from reserves
+              const amountAWhole = Number(balanceA) / Math.pow(10, decA);
+              const amountBWhole = Number(balanceB) / Math.pow(10, decB);
+              
               // Update pool in cache
               const prev = cpmmCache.data || { cpmm: [] };
               const idx = prev.cpmm.findIndex(p => p.id === poolId);
@@ -572,8 +580,8 @@ export async function handleCpmmVaultUpdate(
                   price_a_per_b: processedPrice.priceForward,
                   reserve_a_raw: balanceA.toString(),
                   reserve_b_raw: balanceB.toString(),
-                  amount_a_whole: processedPrice.amountAWhole,
-                  amount_b_whole: processedPrice.amountBWhole,
+                  amount_a_whole: amountAWhole,
+                  amount_b_whole: amountBWhole,
                   updated_ms: Date.now(),
                 };
                 

@@ -265,11 +265,11 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     } catch {}
     // Return cached data if available
     return {
-      raydium: raydiumCache.data || { amm: [], clmm: [] },
-      orca: orcaCache.data || { amm: [], clmm: [] },
-      meteora: meteoraCache.data || { amm: [], clmm: [] },
-      meteora_balanced: metbalCache.data || { amm: [], clmm: [] },
-      pumpswap: pumpswapCache.data || { amm: [], clmm: [] }
+      raydium: raydiumCache.data || { amm: [], clmm: [], cpmm: [] },
+      orca: orcaCache.data || { amm: [], clmm: [], cpmm: [] },
+      meteora: meteoraCache.data || { amm: [], clmm: [], cpmm: [] },
+      meteora_balanced: metbalCache.data || { amm: [], clmm: [], cpmm: [] },
+      pumpswap: pumpswapCache.data || { amm: [], clmm: [], cpmm: [] }
     };
   }
   (refreshAllSources as any).__isRunning = true;
@@ -392,11 +392,11 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     cat: 'pools' 
   });
   
-  let r: PoolsPayload = { amm: [], clmm: [] };
-  let o: PoolsPayload = { amm: [], clmm: [] };
-  let m: PoolsPayload = { amm: [], clmm: [] };
-  let mb: PoolsPayload = { amm: [], clmm: [] };
-  let pump: PoolsPayload = { amm: [], clmm: [] };
+  let r: PoolsPayload = { amm: [], clmm: [], cpmm: [] };
+  let o: PoolsPayload = { amm: [], clmm: [], cpmm: [] };
+  let m: PoolsPayload = { amm: [], clmm: [], cpmm: [] };
+  let mb: PoolsPayload = { amm: [], clmm: [], cpmm: [] };
+  let pump: PoolsPayload = { amm: [], clmm: [], cpmm: [] };
   
   // Shared mints for consistent universe across all DEX fetchers
   // Computed once and passed to all GraphQL fetchers to avoid timing inconsistencies
@@ -613,6 +613,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     const survivorIds: SurvivorPoolIds = {
       raydiumAmm: filterAndGetIds(raySummary),
       raydiumClmm: filterAndGetIds(rayClmmSummary),
+      raydiumCpmm: new Set<string>(), // CPMM handled separately
       orca: filterAndGetIds(orcaSummary),
       meteora: filterAndGetIds(metSummary),
       pumpswap: filterAndGetIds(pumpSummary),
@@ -863,7 +864,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         }
       } catch (err) {
         logger.warn('pools.refresh.phase.fetch.raydium.failed', { error: String((err as any)?.message || err), cat: 'pools' });
-        r = { amm: [], clmm: [] };
+        r = { amm: [], clmm: [], cpmm: [] };
       }
     } else {
       logger.info('pools.refresh.phase.fetch.raydium.skipped', { reason: 'disabled', cat: 'pools' });
@@ -881,7 +882,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         }
       } catch (err) {
         logger.warn('pools.refresh.phase.fetch.orca.failed', { error: String((err as any)?.message || err), cat: 'pools' });
-        o = { amm: [], clmm: [] };
+        o = { amm: [], clmm: [], cpmm: [] };
       }
     } else {
       logger.info('pools.refresh.phase.fetch.orca.skipped', { reason: 'disabled', cat: 'pools' });
@@ -894,7 +895,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
           : await getMeteoraPoolsCached(!!options.force, { skipUniverseFilter: true });
       } catch (err) {
         logger.warn('pools.refresh.phase.fetch.meteora.failed', { error: String((err as any)?.message || err), cat: 'pools' });
-        m = { amm: [], clmm: [] };
+        m = { amm: [], clmm: [], cpmm: [] };
       }
     } else {
       logger.info('pools.refresh.phase.fetch.meteora.skipped', { reason: 'disabled', cat: 'pools' });
@@ -907,7 +908,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       mb = await getMeteoraBalancedPoolsCached(!!options.force, { skipUniverseFilter: true });
     } catch (err) {
       logger.warn('pools.refresh.phase.fetch.meteora_balanced.failed', { error: String((err as any)?.message || err), cat: 'pools' });
-      mb = { amm: [], clmm: [] };
+      mb = { amm: [], clmm: [], cpmm: [] };
     }
   } else {
     logger.info('pools.refresh.phase.fetch.meteora_balanced.skipped', { reason: 'disabled', cat: 'pools' });
@@ -920,7 +921,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       pump = await getPumpswapPoolsCached(!!options.force, { mints: sharedMints });
     } catch (err) {
       logger.warn('pools.refresh.phase.fetch.pumpswap.failed', { error: String((err as any)?.message || err), cat: 'pools' });
-      pump = { amm: [], clmm: [] };
+      pump = { amm: [], clmm: [], cpmm: [] };
     }
   } else if (!useEarlyFilterPath) {
     logger.info('pools.refresh.phase.fetch.pumpswap.skipped', { reason: 'disabled', cat: 'pools' });
@@ -1701,7 +1702,7 @@ export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skip
   const now = Date.now();
   if (!force) {
     if (metbalCache.data && now - metbalCache.ts < ttlMs) return metbalCache.data;
-    return metbalCache.data || { amm: [], clmm: [] };
+    return metbalCache.data || { amm: [], clmm: [], cpmm: [] };
   }
   if (force) {
     const last = (getMeteoraBalancedPoolsCached as any).__lastForceAt as number;
@@ -1731,7 +1732,7 @@ export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skip
       poolsMetrics.meteora_balanced.lastMs = Date.now();
       poolsMetrics.meteora_balanced.lastAmm = (norm.amm || []).length;
       try {
-        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [], cpmm: [] }, norm);
         emit('pools-update', { source: 'meteora_balanced', amm: (norm.amm || []).length, clmm: 0, ts: Date.now() });
         emit('pool-updates', { source: 'meteora_balanced', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample: { amm: d.amm.slice(0, 50), clmm: [] }, ts: Date.now() });
         const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
@@ -1744,7 +1745,7 @@ export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skip
             if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
               // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [], cpmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora_balanced', cat: 'graph' }); } catch {}
               });
             } else if (!inc && hasDelta) {
@@ -1776,7 +1777,7 @@ export async function getPumpswapPoolsCached(force = false, opts?: { mints?: str
   const now = Date.now();
   if (!force) {
     if (pumpswapCache.data && now - pumpswapCache.ts < ttlMs) return pumpswapCache.data;
-    return pumpswapCache.data || { amm: [], clmm: [] };
+    return pumpswapCache.data || { amm: [], clmm: [], cpmm: [] };
   }
   if (force) {
     const last = (getPumpswapPoolsCached as any).__lastForceAt as number;
@@ -1940,7 +1941,7 @@ export async function getPumpswapPoolsCached(force = false, opts?: { mints?: str
       try { logger.info('pumpswap.fetch normalized', { amm: norm.amm.length, ms: Date.now() - t0, cat: 'pumpswap' }); } catch {}
       try { emit('log', { level: 'info', message: `arb:pools pumpswap.fetch ok amm=${norm.amm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       try {
-        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [], cpmm: [] }, norm);
         const sample = { amm: d.amm.slice(0, 100), clmm: [] };
         emit('pools-update', { source: 'pumpswap', amm: norm.amm.length, clmm: 0, ts: Date.now() });
         emit('pool-updates', { source: 'pumpswap', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
@@ -1953,7 +1954,7 @@ export async function getPumpswapPoolsCached(force = false, opts?: { mints?: str
             if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
               // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [], cpmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'pumpswap', cat: 'graph' }); } catch {}
               });
             }
@@ -1979,7 +1980,7 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
   // In non-forced mode, never initiate a fetch. Only return cached data (even if stale) or empty.
   if (!force) {
     if (raydiumCache.data && now - raydiumCache.ts < ttlMs) return raydiumCache.data;
-    return raydiumCache.data || { amm: [], clmm: [] };
+    return raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
   }
   if (force) {
     const last = (getRaydiumPoolsNormalized as any).__lastForceAt as number;
@@ -2248,7 +2249,7 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
       } catch {}
       // Emit fine-grained pool-updates (deltas) and prefer incremental graph apply when enabled
       try {
-        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [], cpmm: [] }, norm);
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
         emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
@@ -2260,7 +2261,7 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
             if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
               // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [], cpmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'raydium', cat: 'graph' }); } catch {}
               });
             }
@@ -2285,10 +2286,10 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
             }));
           };
           const items = [
-            ...collect(raydiumCache.data || { amm: [], clmm: [] }),
-            ...collect(orcaCache.data || { amm: [], clmm: [] }),
-            ...collect(meteoraCache.data || { amm: [], clmm: [] }),
-            ...collect(metbalCache.data || { amm: [], clmm: [] }),
+            ...collect(raydiumCache.data || { amm: [], clmm: [], cpmm: [] }),
+            ...collect(orcaCache.data || { amm: [], clmm: [], cpmm: [] }),
+            ...collect(meteoraCache.data || { amm: [], clmm: [], cpmm: [] }),
+            ...collect(metbalCache.data || { amm: [], clmm: [], cpmm: [] }),
           ];
           const ranked = items.sort((a,b) => (b.tvl || 0) - (a.tvl || 0)).slice(0, topN);
           const set = new Set<string>();
@@ -2594,7 +2595,7 @@ export async function getRaydiumClmmPoolsGraphQL(force = false, opts?: { mints?:
     return normalized;
   } catch (err) {
     logger.error('raydium.clmm.graphql.fetch.error', { error: String(err), cat: 'raydium-clmm' });
-    return { amm: [], clmm: [] };
+    return { amm: [], clmm: [], cpmm: [] };
   }
 }
 
@@ -2606,7 +2607,7 @@ export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFil
   // In non-forced mode, never initiate a fetch. Only return cached data (even if stale) or empty.
   if (!force) {
     if (orcaCache.data && now - orcaCache.ts < ttlMs) return orcaCache.data;
-    return orcaCache.data || { amm: [], clmm: [] };
+    return orcaCache.data || { amm: [], clmm: [], cpmm: [] };
   }
   // Debounce forced refreshes
   if (force) {
@@ -2676,7 +2677,7 @@ export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFil
       } catch {}
       // Emit fine-grained pool-updates (deltas) and prefer incremental graph apply when enabled
       try {
-        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, data);
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [], cpmm: [] }, data);
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
         emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         try { logger.debug('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
@@ -2689,7 +2690,7 @@ export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFil
             if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
               // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: false }).catch((err: any) => {
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [], cpmm: [] }, data, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'orca', cat: 'graph' }); } catch {}
               });
             }
@@ -2837,7 +2838,7 @@ export async function getOrcaPoolsNormalized(opts?: { skipUniverseFilter?: boole
     } catch (e: any) {
     tried.push(`http:${String(e?.message || e)}`);
     logger.warn('orca.http failed', { tried });
-  return { amm: [], clmm: [] };
+  return { amm: [], clmm: [], cpmm: [] };
   }
 }
 
@@ -3164,7 +3165,7 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
   const skipUniverseFilter = opts?.skipUniverseFilter === true;
   if (!force) {
     if (meteoraCache.data && now - meteoraCache.ts < ttlMs) return meteoraCache.data;
-    return meteoraCache.data || { amm: [], clmm: [] };
+    return meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
   }
   if (force) {
     const last = (getMeteoraPoolsCached as any).__lastForceAt as number;
@@ -3298,7 +3299,7 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
       try { logger.info('meteora.fetch normalized', { clmm: norm.clmm.length, ms: Date.now() - t0, cat: 'meteora' }); } catch {}
       try { emit('log', { level: 'info', message: `arb:pools meteora.fetch ok clmm=${norm.clmm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       try {
-        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [], cpmm: [] }, norm);
         const sample = { amm: [], clmm: d.clmm.slice(0, 100) };
         emit('pools-update', { source: 'meteora', amm: 0, clmm: norm.clmm.length, ts: Date.now() });
         emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
@@ -3311,7 +3312,7 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
             if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
               // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [], cpmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora', cat: 'graph' }); } catch {}
               });
             }

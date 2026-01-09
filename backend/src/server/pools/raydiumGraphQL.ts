@@ -2184,5 +2184,5 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     });
   }
   
-  return { amm: amm, clmm: clmm };
+  return { amm: amm, clmm: clmm, cpmm: [] };
 }

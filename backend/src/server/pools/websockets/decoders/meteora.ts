@@ -386,7 +386,7 @@ export async function handleMeteoraUpdate(
     }
 
     // Get decimals from cache
-    const cachedPools = meteoraCache.data || { amm: [], clmm: [] };
+    const cachedPools = meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
     const existing = cachedPools.clmm.find(p => p.id === poolId);
     
     let decA = existing?.native_decimals_a ?? existing?.decimals_a;
@@ -706,8 +706,8 @@ export async function handleMeteoraUpdate(
     }
 
     // Update cache
-    const prev = meteoraCache.data || { amm: [], clmm: [] };
-    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+    const prev = meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
+    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
     const idx = next.clmm.findIndex(p => p.id === item.id);
 
     // Validate price delta against previous value

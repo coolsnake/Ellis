@@ -448,8 +448,8 @@ export async function handlePumpswapPoolAccountUpdate(
     }
 
     // Update cache
-    const prev = pumpswapCache.data || { amm: [], clmm: [] };
-    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+    const prev = pumpswapCache.data || { amm: [], clmm: [], cpmm: [] };
+    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
     const idx = next.amm.findIndex(p => p.id === item.id);
 
     // Validate price delta against previous value
@@ -714,8 +714,8 @@ export async function handlePumpswapVaultUpdate(
     }
 
     // Update cache
-    const prev = pumpswapCache.data || { amm: [], clmm: [] };
-    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+    const prev = pumpswapCache.data || { amm: [], clmm: [], cpmm: [] };
+    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
     const idx = next.amm.findIndex(p => p.id === item.id);
 
     // Validate price delta against previous value

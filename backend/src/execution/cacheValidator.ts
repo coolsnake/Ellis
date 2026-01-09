@@ -923,7 +923,7 @@ export type DecimalSource = 'pool' | 'cache' | 'jupiter' | 'rpc' | 'fallback';
 
 export interface DecimalValidationResult {
   poolId: string;
-  dex: 'orca' | 'raydium' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+  dex: 'orca' | 'raydium' | 'raydium_amm' | 'meteora' | 'pumpswap' | 'meteora_balanced';
   valid: boolean;
   issues: string[];
   // Before validation
@@ -3904,7 +3904,7 @@ let reactiveValidationConnection: Connection | null = null;
 /**
  * Detect DEX type for a pool from cache
  */
-function detectPoolDex(poolId: string): 'orca' | 'raydium' | 'meteora' | null {
+function detectPoolDex(poolId: string): 'orca' | 'raydium' | 'raydium_amm' | 'meteora' | 'meteora_balanced' | 'pumpswap' | null {
   const stat = executionCache.getStatic(poolId);
   if (stat?.dex) {
     if (stat.dex === 'orca') return 'orca';

@@ -1056,6 +1056,6 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
   
   logger.info('orca.graphql.normalized', { clmm: clmm.length, cat: 'orca' });
   
-  return { amm: [], clmm: clmm };
+  return { amm: [], clmm: clmm, cpmm: [] };
 }
 

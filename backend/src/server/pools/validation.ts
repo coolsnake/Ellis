@@ -194,7 +194,8 @@ export function filterAnomalousPrices(
       const filterFn = (pool: AmmPool | ClmmPool) => !excludePoolIds.has((pool as any).id);
       filtered[dex] = {
         amm: (payload.amm || []).filter(filterFn),
-        clmm: (payload.clmm || []).filter(filterFn)
+        clmm: (payload.clmm || []).filter(filterFn),
+        cpmm: (payload.cpmm || []).filter(filterFn as any)
       };
     }
     

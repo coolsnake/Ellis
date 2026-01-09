@@ -352,7 +352,7 @@ export async function normalizeMeteoraHttp(raw: MeteoraApiListResponse | Meteora
   // OPTIMIZATION: Pre-cache active bin IDs to eliminate RPC calls during transaction building
   await populateMeteoraActiveIds(clmm);
   
-  return { amm: [], clmm: clmm };
+  return { amm: [], clmm: clmm, cpmm: [] };
 }
 
 /**

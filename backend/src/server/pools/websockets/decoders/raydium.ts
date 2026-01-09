@@ -355,7 +355,7 @@ async function handleClmmUpdate(
   const sqrtRaw = anyToBigInt(decoded.sqrt_price_x64_raw ?? decoded.sqrt_price_x64);
 
   // Get decimals from cache
-  const cachedPools = raydiumCache.data || { amm: [], clmm: [] };
+  const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
   const existing = cachedPools.clmm.find(p => p.id === poolId);
   
   let decA = existing?.native_decimals_a ?? existing?.decimals_a;
@@ -472,8 +472,8 @@ async function handleClmmUpdate(
   }
 
   // Update cache
-  const prev = raydiumCache.data || { amm: [], clmm: [] };
-  const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+  const prev = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
+  const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
   const idx = next.clmm.findIndex(p => p.id === item.id);
 
   // Validate price delta against previous value
@@ -691,7 +691,7 @@ async function handleAmmUpdate(
   const rB = Number(decoded.reserve_b_raw || 0);
 
   // Get decimals from cache
-  const cachedPools = raydiumCache.data || { amm: [], clmm: [] };
+  const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
   const existing = cachedPools.amm.find(p => p.id === poolId);
   
   let decA = existing?.native_decimals_a ?? existing?.decimals_a;
@@ -791,8 +791,8 @@ async function handleAmmUpdate(
   const finalItem = canonicalItem || item;
 
   // Update cache
-  const prev = raydiumCache.data || { amm: [], clmm: [] };
-  const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+  const prev = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
+  const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
   const idx = next.amm.findIndex(p => p.id === finalItem.id);
 
   // Validate price delta against previous value

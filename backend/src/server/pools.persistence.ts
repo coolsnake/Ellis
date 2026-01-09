@@ -126,11 +126,11 @@ export async function savePoolsSnapshot(): Promise<boolean> {
       version: SNAPSHOT_VERSION,
       savedAt: new Date().toISOString(),
       savedAtMs: Date.now(),
-      raydium: raydiumCache.data || { amm: [], clmm: [] },
-      orca: orcaCache.data || { amm: [], clmm: [] },
-      meteora: meteoraCache.data || { amm: [], clmm: [] },
-      meteoraBalanced: metbalCache.data || { amm: [], clmm: [] },
-      pumpswap: pumpswapCache.data || { amm: [], clmm: [] },
+      raydium: raydiumCache.data || { amm: [], clmm: [], cpmm: [] },
+      orca: orcaCache.data || { amm: [], clmm: [], cpmm: [] },
+      meteora: meteoraCache.data || { amm: [], clmm: [], cpmm: [] },
+      meteoraBalanced: metbalCache.data || { amm: [], clmm: [], cpmm: [] },
+      pumpswap: pumpswapCache.data || { amm: [], clmm: [], cpmm: [] },
     };
 
     const counts = {
@@ -684,11 +684,11 @@ function buildCurrentSnapshot(name?: string, description?: string): PoolsSnapsho
     description,
     savedAt: new Date().toISOString(),
     savedAtMs: Date.now(),
-    raydium: raydiumCache.data || { amm: [], clmm: [] },
-    orca: orcaCache.data || { amm: [], clmm: [] },
-    meteora: meteoraCache.data || { amm: [], clmm: [] },
-    meteoraBalanced: metbalCache.data || { amm: [], clmm: [] },
-    pumpswap: pumpswapCache.data || { amm: [], clmm: [] },
+    raydium: raydiumCache.data || { amm: [], clmm: [], cpmm: [] },
+    orca: orcaCache.data || { amm: [], clmm: [], cpmm: [] },
+    meteora: meteoraCache.data || { amm: [], clmm: [], cpmm: [] },
+    meteoraBalanced: metbalCache.data || { amm: [], clmm: [], cpmm: [] },
+    pumpswap: pumpswapCache.data || { amm: [], clmm: [], cpmm: [] },
   };
 }
 
@@ -975,22 +975,27 @@ export async function mergeSnapshots(
       raydium: {
         amm: mergePools(loadedSnapshots.map(s => s.raydium?.amm || []), mode),
         clmm: mergePools(loadedSnapshots.map(s => s.raydium?.clmm || []), mode),
+        cpmm: mergePools(loadedSnapshots.map(s => (s.raydium as any)?.cpmm || []), mode),
       },
       orca: {
         amm: mergePools(loadedSnapshots.map(s => s.orca?.amm || []), mode),
         clmm: mergePools(loadedSnapshots.map(s => s.orca?.clmm || []), mode),
+        cpmm: [],
       },
       meteora: {
         amm: mergePools(loadedSnapshots.map(s => s.meteora?.amm || []), mode),
         clmm: mergePools(loadedSnapshots.map(s => s.meteora?.clmm || []), mode),
+        cpmm: [],
       },
       meteoraBalanced: {
         amm: mergePools(loadedSnapshots.map(s => s.meteoraBalanced?.amm || []), mode),
         clmm: [],
+        cpmm: [],
       },
       pumpswap: {
         amm: mergePools(loadedSnapshots.map(s => s.pumpswap?.amm || []), mode),
         clmm: [],
+        cpmm: [],
       },
     };
     
@@ -1187,7 +1192,7 @@ export async function loadRawNormalizedPools(dex: DexName): Promise<PoolsPayload
       cat: 'pools'
     });
     
-    return snapshot.pools || { amm: [], clmm: [] };
+    return snapshot.pools || { amm: [], clmm: [], cpmm: [] };
   } catch (err: any) {
     logger.warn('pools.raw_normalized.load.failed', { dex, error: err.message, cat: 'pools' });
     return null;
@@ -1205,11 +1210,11 @@ export async function loadAllRawNormalizedPools(): Promise<PoolsSnapshot | null>
     version: SNAPSHOT_VERSION,
     savedAt: new Date().toISOString(),
     savedAtMs: Date.now(),
-    raydium: { amm: [], clmm: [] },
-    orca: { amm: [], clmm: [] },
-    meteora: { amm: [], clmm: [] },
-    meteoraBalanced: { amm: [], clmm: [] },
-    pumpswap: { amm: [], clmm: [] },
+    raydium: { amm: [], clmm: [], cpmm: [] },
+    orca: { amm: [], clmm: [], cpmm: [] },
+    meteora: { amm: [], clmm: [], cpmm: [] },
+    meteoraBalanced: { amm: [], clmm: [], cpmm: [] },
+    pumpswap: { amm: [], clmm: [], cpmm: [] },
   };
   
   let foundAny = false;

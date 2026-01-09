@@ -912,8 +912,8 @@ export async function handleOrcaUpdate(
     }
 
     // Update cache
-    const prev = orcaCache.data || { amm: [], clmm: [] };
-    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+    const prev = orcaCache.data || { amm: [], clmm: [], cpmm: [] };
+    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
     const idx = next.clmm.findIndex(p => p.id === poolId);
     
     // Validate price delta against previous value

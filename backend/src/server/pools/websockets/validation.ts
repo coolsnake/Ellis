@@ -13,6 +13,7 @@ import { logCatchError } from '../../../utils/errorHandler.js';
  */
 const wsValidationStats: Record<DexSource, ValidationStats> = {
   raydium: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  'raydium-cpmm': { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   orca: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   meteora: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   pumpswap: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
@@ -32,6 +33,7 @@ export function getValidationStats(dex: DexSource): ValidationStats {
 export function getAllValidationStats(): Record<DexSource, ValidationStats> {
   return {
     raydium: { ...wsValidationStats.raydium },
+    'raydium-cpmm': { ...wsValidationStats['raydium-cpmm'] },
     orca: { ...wsValidationStats.orca },
     meteora: { ...wsValidationStats.meteora },
     pumpswap: { ...wsValidationStats.pumpswap },

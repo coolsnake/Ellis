@@ -346,8 +346,8 @@ export async function handleMeteoraBalancedVaultUpdate(
     }
 
     // Update cache
-    const prev = metbalCache.data || { amm: [], clmm: [] };
-    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+    const prev = metbalCache.data || { amm: [], clmm: [], cpmm: [] };
+    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
     const idx = next.amm.findIndex(p => p.id === item.id);
 
     // Validate price delta against previous value

@@ -436,7 +436,7 @@ export async function normalizeOrcaHttp(raw: OrcaPoolApiResponse[] | { data?: Or
   // OPTIMIZATION: Pre-cache Orca pool states to eliminate RPC calls during transaction building
   await populateOrcaPoolStates(clmm);
   
-  return { amm: [], clmm: clmm };
+  return { amm: [], clmm: clmm, cpmm: [] };
 }
 
 /**

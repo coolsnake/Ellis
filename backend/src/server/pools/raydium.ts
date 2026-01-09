@@ -816,7 +816,7 @@ export async function normalizeRaydiumPools(raw: RaydiumApiListResponse | { data
   }
   
   logger.info('raydium.pools normalized', { amm: amm.length, clmm: clmm.length, cat: 'raydium' });
-  return { amm, clmm };
+  return { amm, clmm, cpmm: [] };
 }
 
 

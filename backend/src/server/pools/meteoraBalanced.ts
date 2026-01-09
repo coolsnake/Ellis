@@ -506,12 +506,12 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
         } catch (e) { logCatchError('pools.meteoraBalanced', e); }
       }
       try { logger.info('meteora.balanced normalized', { amm: filtered.length, cat: 'meteora' }); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
-      return { amm: filtered, clmm: [] };
+      return { amm: filtered, clmm: [], cpmm: [] };
     }
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
   try { logger.info('meteora.balanced normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
-  return { amm: ammCanon, clmm: [] };
+  return { amm: ammCanon, clmm: [], cpmm: [] };
 }
 
 // v1 normalizer: array response shape

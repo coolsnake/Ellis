@@ -308,6 +308,7 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
         return {
           amm: filterActivatedPools(payload.amm || []),
           clmm: filterActivatedPools(payload.clmm || []),
+          cpmm: filterActivatedPools(payload.cpmm || []),
         };
       };
       const filteredPrev = applyActivationFilter(prev);
@@ -536,11 +537,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // Build graph from whatever is in caches right now; do not trigger source fetches here
       const poolsMod: any = await import('./pools.js');
       const overrides: any = (globalThis as any).__graphTestPools;
-      const rayRaw = overrides?.raydium ?? (typeof poolsMod.peekRaydiumPools === 'function' ? poolsMod.peekRaydiumPools() : { amm: [], clmm: [] });
-      const orcRaw = overrides?.orca ?? (typeof poolsMod.peekOrcaPools === 'function' ? poolsMod.peekOrcaPools() : { amm: [], clmm: [] });
-      const metRaw = overrides?.meteora ?? (typeof poolsMod.peekMeteoraPools === 'function' ? poolsMod.peekMeteoraPools() : { amm: [], clmm: [] });
-      const mblRaw = overrides?.meteora_balanced ?? (typeof poolsMod.peekMeteoraBalancedPools === 'function' ? poolsMod.peekMeteoraBalancedPools() : { amm: [], clmm: [] });
-      const pumpRaw = overrides?.pumpswap ?? (typeof poolsMod.peekPumpswapPools === 'function' ? poolsMod.peekPumpswapPools() : { amm: [], clmm: [] });
+      const rayRaw = overrides?.raydium ?? (typeof poolsMod.peekRaydiumPools === 'function' ? poolsMod.peekRaydiumPools() : { amm: [], clmm: [], cpmm: [] });
+      const orcRaw = overrides?.orca ?? (typeof poolsMod.peekOrcaPools === 'function' ? poolsMod.peekOrcaPools() : { amm: [], clmm: [], cpmm: [] });
+      const metRaw = overrides?.meteora ?? (typeof poolsMod.peekMeteoraPools === 'function' ? poolsMod.peekMeteoraPools() : { amm: [], clmm: [], cpmm: [] });
+      const mblRaw = overrides?.meteora_balanced ?? (typeof poolsMod.peekMeteoraBalancedPools === 'function' ? poolsMod.peekMeteoraBalancedPools() : { amm: [], clmm: [], cpmm: [] });
+      const pumpRaw = overrides?.pumpswap ?? (typeof poolsMod.peekPumpswapPools === 'function' ? poolsMod.peekPumpswapPools() : { amm: [], clmm: [], cpmm: [] });
       
       // Pools are already filtered by universe, minPools, and TVL in refreshAllSources
       // Use the cached results directly without re-filtering
@@ -550,6 +551,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         return {
           amm: filterActivatedPools(payload.amm || []),
           clmm: filterActivatedPools(payload.clmm || []),
+          cpmm: filterActivatedPools(payload.cpmm || []),
         };
       };
       let ray = filterPools(rayRaw);
@@ -676,7 +678,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       type NormPools = { amm: any[]; clmm: any[] };
       const validatePoolsForGraph = (norm: NormPools): NormPools => {
         if (!validationConfig.sanityEnabled) return norm;
-        const out: NormPools = { amm: [], clmm: [] };
+        const out: NormPools = { amm: [], clmm: [], cpmm: [] };
         const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0, amm: { total: 0, dropped: 0 }, clmm: { total: 0, dropped: 0 } } as any;
         
         const checkPool = (p: any, kind: 'amm' | 'clmm') => {

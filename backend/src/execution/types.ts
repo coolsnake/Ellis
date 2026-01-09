@@ -1,7 +1,7 @@
 // Core types for direct execution (multi-hop) across DEXes
 
 export type Dex = 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap';
-export type Variant = 'amm' | 'clmm' | 'dlmm' | 'damm_v1' | 'damm_v2';
+export type Variant = 'amm' | 'clmm' | 'dlmm' | 'damm_v1' | 'damm_v2' | 'cpmm';
 
 export type DirectHop = {
   dex: Dex;
@@ -21,6 +21,13 @@ export type DirectHop = {
 
   amountInRaw: bigint;
   minOutRaw: bigint;
+  
+  // Legacy/internal fields for CPMM resolver compatibility
+  mintIn?: string;
+  mintOut?: string;
+  aToB?: boolean;
+  decimalsIn?: number;
+  decimalsOut?: number;
   
   // Multihop exact amount tracking
   quotedOutputRaw?: bigint; // Exact output from quote, used for multihop propagation
