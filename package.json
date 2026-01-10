@@ -19,6 +19,8 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "@meteora-ag/dynamic-amm-sdk": "^1.4.1"
   }
 }
-

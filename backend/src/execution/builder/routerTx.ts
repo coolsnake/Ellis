@@ -48,6 +48,7 @@ const PUMPSWAP_PROGRAM = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMf
 const ORCA_WHIRLPOOL_PROGRAM = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
 const RAYDIUM_CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
 const RAYDIUM_AMM_V4_PROGRAM = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 
 // Tick array derivation constants
 const ORCA_TICK_ARRAY_SIZE = 88;
@@ -1237,6 +1238,40 @@ function applysdkAccountsToHop(hop: DirectHop, sdkAccounts: SdkProvidedAccounts)
   if (sdkAccounts.lpMint) {
     (hop as any).lpMint = sdkAccounts.lpMint;
   }
+  // Meteora DAMM v1 - Mercurial Vault accounts
+  if (sdkAccounts.aVault) {
+    (hop as any).aVault = sdkAccounts.aVault;
+  }
+  if (sdkAccounts.bVault) {
+    (hop as any).bVault = sdkAccounts.bVault;
+  }
+  if (sdkAccounts.aTokenVault) {
+    (hop as any).aTokenVault = sdkAccounts.aTokenVault;
+  }
+  if (sdkAccounts.bTokenVault) {
+    (hop as any).bTokenVault = sdkAccounts.bTokenVault;
+  }
+  if (sdkAccounts.aVaultLpMint) {
+    (hop as any).aVaultLpMint = sdkAccounts.aVaultLpMint;
+  }
+  if (sdkAccounts.bVaultLpMint) {
+    (hop as any).bVaultLpMint = sdkAccounts.bVaultLpMint;
+  }
+  if (sdkAccounts.aVaultLp) {
+    (hop as any).aVaultLp = sdkAccounts.aVaultLp;
+  }
+  if (sdkAccounts.bVaultLp) {
+    (hop as any).bVaultLp = sdkAccounts.bVaultLp;
+  }
+  if (sdkAccounts.protocolTokenAFee) {
+    (hop as any).protocolTokenAFee = sdkAccounts.protocolTokenAFee;
+  }
+  if (sdkAccounts.protocolTokenBFee) {
+    (hop as any).protocolTokenBFee = sdkAccounts.protocolTokenBFee;
+  }
+  if (sdkAccounts.vaultProgram) {
+    (hop as any).vaultProgram = sdkAccounts.vaultProgram;
+  }
 
   // PumpSwap accounts
   if (sdkAccounts.globalConfig) {
@@ -1338,7 +1373,13 @@ async function buildRouteStepsWithSdkAccounts(
     // Compute swap direction from pool's native mint ordering
     const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
     const poolMintA = stat?.native_mint_a || stat?.mint_a;
-    const aToB = hop.inputMint === poolMintA;
+    
+    // CRITICAL: PumpSwap has specific direction semantics:
+    // aToB = true → Buy (SOL → Token), aToB = false → Sell (Token → SOL)
+    // This differs from generic mint A/B ordering used by other DEXes
+    const aToB = dexType === DexType.PumpSwap
+      ? hop.inputMint === SOL_MINT  // PumpSwap: true = buying with SOL
+      : hop.inputMint === poolMintA; // Other DEXes: use pool mint ordering
 
     steps.push({
       dexType,
@@ -1488,7 +1529,13 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
     // aToB = true means swapping mint A -> mint B
     const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
     const poolMintA = stat?.native_mint_a || stat?.mint_a;
-    const aToB = hop.inputMint === poolMintA;
+    
+    // CRITICAL: PumpSwap has specific direction semantics:
+    // aToB = true → Buy (SOL → Token), aToB = false → Sell (Token → SOL)
+    // This differs from generic mint A/B ordering used by other DEXes
+    const aToB = dexType === DexType.PumpSwap
+      ? hop.inputMint === SOL_MINT  // PumpSwap: true = buying with SOL
+      : hop.inputMint === poolMintA; // Other DEXes: use pool mint ordering
 
     steps.push({
       dexType,
@@ -2580,81 +2627,137 @@ async function extractDexAccounts(
         return accounts;
 
       case DexType.PumpSwap:
-        // PumpSwap: 12 accounts
-        // 0: GlobalConfig, 1: FeeRecipient, 2: Mint, 3: BondingCurve, 4: BCTokenAccount,
-        // 5: AssociatedBC, 6: UserToken, 7: User, 8: System, 9: Token, 10: Rent, 11: Program
-        // Use SDK-provided globalConfig if available, otherwise derive
-        const globalConfig = (hop as any).globalConfig 
-          ? new PublicKey((hop as any).globalConfig)
-          : derivePumpswapGlobalConfig();
-        const isBuying = hop.inputMint === SOL_MINT; // SOL -> Token = buy
-        const pumpMint = isBuying ? outputMint : inputMint; // The pump.fun token mint
+        // PumpSwap AMM: 19 accounts (matching official @pump-fun/pump-swap-sdk IDL)
+        // Account order:
+        // 0: pool, 1: user, 2: global_config, 3: base_mint, 4: quote_mint,
+        // 5: user_base_token_account, 6: user_quote_token_account,
+        // 7: pool_base_token_account, 8: pool_quote_token_account,
+        // 9: protocol_fee_recipient, 10: protocol_fee_recipient_token_account,
+        // 11: base_token_program, 12: quote_token_program, 13: system_program,
+        // 14: associated_token_program, 15: event_authority, 16: program,
+        // 17: coin_creator_vault_ata, 18: coin_creator_vault_authority
         
-        // CRITICAL: Determine the token program for the pump token (Token-2022 vs SPL)
-        // Use SDK-provided info if available, otherwise detect from hop.inputTokenProgram/outputTokenProgram
-        const pumpMintTokenProgram = isBuying
-          ? hop.outputTokenProgram
-          : hop.inputTokenProgram;
-        const isPumpToken2022 = pumpMintTokenProgram === 'token-2022' || 
-          pumpMintTokenProgram === TOKEN_2022_PROGRAM_ID.toBase58() ||
-          (hop as any).pumpMintTokenProgram === TOKEN_2022_PROGRAM_ID.toBase58();
-        const pumpTokenProgramId = isPumpToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+        // Get pool data from cache
+        const pumpBaseMint = stat?.onchain_base_mint || poolMintA || hop.inputMint;
+        const pumpQuoteMint = stat?.onchain_quote_mint || poolMintB || hop.outputMint;
+        const pumpPoolBaseVault = stat?.onchain_base_vault || hop.vaultA || poolAccountA;
+        const pumpPoolQuoteVault = stat?.onchain_quote_vault || hop.vaultB || poolAccountB;
+        const pumpCoinCreator = stat?.creator || stat?.metadata_creator;
         
-        // Use SDK-provided associatedBondingCurve if available, otherwise derive with correct token program
-        const associatedBC = (hop as any).associatedBondingCurve
-          ? new PublicKey((hop as any).associatedBondingCurve)
-          : derivePumpswapAssociatedBondingCurve(poolId, pumpMint, pumpTokenProgramId);
+        // Determine token programs
+        const pumpBaseTokenProgram = hop.inputMint === pumpBaseMint
+          ? (hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID)
+          : (hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID);
+        const pumpQuoteTokenProgram = hop.inputMint === pumpQuoteMint
+          ? (hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID)
+          : (hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID);
         
-        // CRITICAL: Use CANONICAL account ordering for BC Token Account
-        const pumpVault = poolAccountA || hop.vaultA || hop.poolId;
+        // User token accounts (base and quote ATAs)
+        const pumpUserBaseAta = getAssociatedTokenAddressSync(
+          new PublicKey(pumpBaseMint),
+          wallet,
+          true,
+          pumpBaseTokenProgram
+        );
+        const pumpUserQuoteAta = getAssociatedTokenAddressSync(
+          new PublicKey(pumpQuoteMint),
+          wallet,
+          true,
+          pumpQuoteTokenProgram
+        );
         
-        // FIXED: Use known protocol fee recipients as fallback instead of programIdKey
-        // PumpSwap protocol fee recipients - programIdKey cannot be used because it's a program
-        // account and the on-chain router marks index 1 as writable for CPI
+        // Protocol fee recipient and their token account
         const PUMPSWAP_PROTOCOL_FEE_RECIPIENTS = [
           'ADyA8hdefbpkJYKuQsdGgmFkME9hyLD1k2FjSPwK8Mg4',
           '8gTR2unjS9ss9PBuFChsQJbnW7xFgX7aRcK7ocHkHs3c',
           'G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP',
           'JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU'
         ];
-        const protocolFeeRecipient = (hop as any).protocolFeeRecipient
+        const pumpProtocolFeeRecipient = (hop as any).protocolFeeRecipient
           ? new PublicKey((hop as any).protocolFeeRecipient)
-          : new PublicKey(PUMPSWAP_PROTOCOL_FEE_RECIPIENTS[Math.floor(Math.random() * PUMPSWAP_PROTOCOL_FEE_RECIPIENTS.length)]);
+          : stat?.protocol_fee_recipient
+            ? new PublicKey(stat.protocol_fee_recipient)
+            : new PublicKey(PUMPSWAP_PROTOCOL_FEE_RECIPIENTS[Math.floor(Math.random() * PUMPSWAP_PROTOCOL_FEE_RECIPIENTS.length)]);
         
-        // Log the accounts being used for debugging
-        logger.info('routerTx.pumpswap.accounts', {
+        // Protocol fee recipient's quote token account (ATA)
+        const pumpProtocolFeeRecipientAta = getAssociatedTokenAddressSync(
+          new PublicKey(pumpQuoteMint),
+          pumpProtocolFeeRecipient,
+          true,
+          pumpQuoteTokenProgram
+        );
+        
+        // Derive PDAs
+        const pumpGlobalConfig = (hop as any).globalConfig 
+          ? new PublicKey((hop as any).globalConfig)
+          : derivePumpswapGlobalConfig();
+        const pumpEventAuthority = derivePumpswapEventAuthority();
+        
+        // Coin creator vault derivation
+        // Use the bonding curve program (6EF8r...) for creator vault derivation
+        const PUMP_BONDING_CURVE_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+        let pumpCoinCreatorVaultAuthority: PublicKey;
+        let pumpCoinCreatorVaultAta: PublicKey;
+        
+        if (pumpCoinCreator && pumpCoinCreator !== SystemProgram.programId.toBase58()) {
+          // Derive creator vault authority PDA
+          const [vaultAuthority] = PublicKey.findProgramAddressSync(
+            [Buffer.from('creator-vault-authority'), new PublicKey(pumpCoinCreator).toBuffer()],
+            PUMP_BONDING_CURVE_PROGRAM
+          );
+          pumpCoinCreatorVaultAuthority = vaultAuthority;
+          
+          // Derive creator vault ATA for quote token
+          pumpCoinCreatorVaultAta = getAssociatedTokenAddressSync(
+            new PublicKey(pumpQuoteMint),
+            vaultAuthority,
+            true,
+            pumpQuoteTokenProgram
+          );
+        } else {
+          // No creator configured - use System Program as placeholder
+          pumpCoinCreatorVaultAuthority = SystemProgram.programId;
+          pumpCoinCreatorVaultAta = SystemProgram.programId;
+        }
+        
+        // Log accounts for debugging
+        logger.info('routerTx.pumpswap.accounts.v2', {
           cat: 'tx',
           poolId: hop.poolId,
-          globalConfig: globalConfig.toBase58(),
-          protocolFeeRecipient: protocolFeeRecipient.toBase58(),
-          pumpMint: pumpMint.toBase58(),
-          associatedBC: associatedBC.toBase58(),
-          canonicalAccountA: poolAccountA || 'missing',
-          hopVaultA: hop.vaultA || 'missing',
-          selectedVault: pumpVault,
-          isBuying,
-          isPumpToken2022,
-          pumpTokenProgram: pumpTokenProgramId.toBase58(),
-          userTokenAccount: (isBuying ? userDestAta : userSourceAta).toBase58(),
-          inputMint: hop.inputMint,
-          outputMint: hop.outputMint,
-          fromSdk: !!((hop as any).globalConfig || (hop as any).associatedBondingCurve || (hop as any).protocolFeeRecipient),
-          usedFallbackFeeRecipient: !(hop as any).protocolFeeRecipient,
+          baseMint: pumpBaseMint,
+          quoteMint: pumpQuoteMint,
+          poolBaseVault: pumpPoolBaseVault,
+          poolQuoteVault: pumpPoolQuoteVault,
+          userBaseAta: pumpUserBaseAta.toBase58(),
+          userQuoteAta: pumpUserQuoteAta.toBase58(),
+          protocolFeeRecipient: pumpProtocolFeeRecipient.toBase58(),
+          coinCreator: pumpCoinCreator || 'missing',
+          coinCreatorVaultAuthority: pumpCoinCreatorVaultAuthority.toBase58(),
+          globalConfig: pumpGlobalConfig.toBase58(),
+          eventAuthority: pumpEventAuthority.toBase58(),
         });
         
+        // Push all 19 accounts in order matching SDK IDL
         accounts.push(
-          globalConfig,                                                        // 0: Global Config
-          protocolFeeRecipient,                                                // 1: Fee Recipient (FIXED)
-          pumpMint,                                                            // 2: Mint (pump.fun token)
-          poolId,                                                              // 3: Bonding Curve
-          new PublicKey(pumpVault),                                            // 4: BC Token Account (canonical A)
-          associatedBC,                                                        // 5: Associated Bonding Curve
-          isBuying ? userDestAta : userSourceAta,                             // 6: User Token Account
-          wallet,                                                              // 7: User (signer)
-          SystemProgram.programId,                                             // 8: System Program
-          pumpTokenProgramId,                                                  // 9: Token Program (SPL or Token-2022)
-          SYSVAR_RENT_PUBKEY,                                                  // 10: Rent
-          PUMPSWAP_PROGRAM,                                                    // 11: PumpSwap AMM Program (MUST be pAMMBay... not bonding curve)
+          poolId,                                                              // 0: pool
+          wallet,                                                              // 1: user (signer)
+          pumpGlobalConfig,                                                    // 2: global_config
+          new PublicKey(pumpBaseMint),                                         // 3: base_mint
+          new PublicKey(pumpQuoteMint),                                        // 4: quote_mint
+          pumpUserBaseAta,                                                     // 5: user_base_token_account
+          pumpUserQuoteAta,                                                    // 6: user_quote_token_account
+          new PublicKey(pumpPoolBaseVault),                                    // 7: pool_base_token_account
+          new PublicKey(pumpPoolQuoteVault),                                   // 8: pool_quote_token_account
+          pumpProtocolFeeRecipient,                                            // 9: protocol_fee_recipient
+          pumpProtocolFeeRecipientAta,                                         // 10: protocol_fee_recipient_token_account
+          pumpBaseTokenProgram,                                                // 11: base_token_program
+          pumpQuoteTokenProgram,                                               // 12: quote_token_program
+          SystemProgram.programId,                                             // 13: system_program
+          ASSOCIATED_TOKEN_PROGRAM_ID,                                         // 14: associated_token_program
+          pumpEventAuthority,                                                  // 15: event_authority
+          PUMPSWAP_PROGRAM,                                                    // 16: program
+          pumpCoinCreatorVaultAta,                                             // 17: coin_creator_vault_ata
+          pumpCoinCreatorVaultAuthority,                                       // 18: coin_creator_vault_authority
         );
         break;
 
@@ -2712,72 +2815,138 @@ async function extractDexAccounts(
         break;
 
       case DexType.MeteoraDAMM:
-        // Meteora DAMM v1: 11 accounts, v2: 12 accounts
-        // v1: 0: Pool, 1: UserSource, 2: UserDest, 3: VaultA, 4: VaultB, 
-        //     5: MintA, 6: MintB, 7: Authority, 8: User, 9: TokenProgram, 10: Program
+        // Meteora DAMM v1 uses Mercurial Vaults ("vault of vaults" architecture)
+        // v1: 16 accounts total, v2: 12 accounts (different layout)
         // CRITICAL: Mints and Vaults must be in POOL CANONICAL ORDER (A/B), not swap direction!
         const isV2 = hop.variant === 'damm_v2';
-        // Use SDK-provided authority if available, otherwise derive
-        const dammAuthority = (hop as any).poolAuthority 
-          ? new PublicKey((hop as any).poolAuthority)
-          : deriveMeteoraDAMMPoolAuthority(poolId, programIdKey, isV2);
         
-        // CRITICAL: Use pool's canonical A/B mint order, NOT input/output swap direction
-        // poolMintA/poolMintB are in the pool's canonical order (from cache)
-        const dammMintA = poolMintA ? new PublicKey(poolMintA) : inputMint;
-        const dammMintB = poolMintB ? new PublicKey(poolMintB) : outputMint;
-        const dammVaultA = hop.vaultA || poolAccountA;
-        const dammVaultB = hop.vaultB || poolAccountB;
-        
-        logger.info('routerTx.meteoraDamm.accounts', {
-          cat: 'tx',
-          poolId: hop.poolId,
-          variant: hop.variant,
-          isV2,
-          // Pool canonical ordering
-          poolMintA: poolMintA || 'missing',
-          poolMintB: poolMintB || 'missing',
-          vaultA: dammVaultA || 'missing',
-          vaultB: dammVaultB || 'missing',
-          // Swap direction (may differ from pool order)
-          inputMint: hop.inputMint,
-          outputMint: hop.outputMint,
-          isAtoB: hop.inputMint === poolMintA,
-          authority: dammAuthority.toBase58(),
-          fromSdk: !!(hop as any).poolAuthority,
-        });
-
         if (isV2) {
-          // v2 account layout (12 accounts)
-          const lpMint = (hop as any).lpMint || stat?.mint_lp || poolId;
+          // v2 (CP-AMM) account layout (12 accounts) - simpler, no Mercurial vaults
+          const dammV2Authority = (hop as any).poolAuthority 
+            ? new PublicKey((hop as any).poolAuthority)
+            : deriveMeteoraDAMMPoolAuthority(poolId, programIdKey, true);
+          const dammV2MintA = poolMintA ? new PublicKey(poolMintA) : inputMint;
+          const dammV2MintB = poolMintB ? new PublicKey(poolMintB) : outputMint;
+          const dammV2VaultA = hop.vaultA || poolAccountA;
+          const dammV2VaultB = hop.vaultB || poolAccountB;
+          const lpMint = (hop as any).lpMint || stat?.mint_lp || hop.poolId.replace(/[#-]rev$/, '');
+          
+          logger.info('routerTx.meteoraDamm.v2.accounts', {
+            cat: 'tx',
+            poolId: hop.poolId,
+            variant: 'damm_v2',
+            poolMintA: poolMintA || 'missing',
+            poolMintB: poolMintB || 'missing',
+            vaultA: dammV2VaultA || 'missing',
+            vaultB: dammV2VaultB || 'missing',
+            authority: dammV2Authority.toBase58(),
+          });
+          
           accounts.push(
             poolId,                                                            // 0: Pool
             userSourceAta,                                                     // 1: User Source
             userDestAta,                                                       // 2: User Dest
-            new PublicKey(dammVaultA),                                        // 3: Vault A (canonical)
-            new PublicKey(dammVaultB),                                        // 4: Vault B (canonical)
-            dammMintA,                                                         // 5: Token A Mint (canonical)
-            dammMintB,                                                         // 6: Token B Mint (canonical)
+            new PublicKey(dammV2VaultA),                                      // 3: Vault A (canonical)
+            new PublicKey(dammV2VaultB),                                      // 4: Vault B (canonical)
+            dammV2MintA,                                                       // 5: Token A Mint (canonical)
+            dammV2MintB,                                                       // 6: Token B Mint (canonical)
             new PublicKey(lpMint),                                            // 7: LP Mint
-            dammAuthority,                                                     // 8: Pool Authority
+            dammV2Authority,                                                   // 8: Pool Authority
             wallet,                                                            // 9: User (signer)
             TOKEN_PROGRAM_ID,                                                  // 10: Token Program
             programIdKey,                                                      // 11: Program
           );
         } else {
-          // v1 account layout (11 accounts)
+          // v1 (Dynamic AMM) account layout - 16 accounts with Mercurial Vault architecture
+          // Matches the Meteora Dynamic AMM IDL swap instruction:
+          // 0:  pool
+          // 1:  userSourceToken
+          // 2:  userDestinationToken
+          // 3:  aVault (Mercurial Vault account)
+          // 4:  bVault (Mercurial Vault account)
+          // 5:  aTokenVault (SPL Token account inside aVault)
+          // 6:  bTokenVault (SPL Token account inside bVault)
+          // 7:  aVaultLpMint (LP token mint of vault A)
+          // 8:  bVaultLpMint (LP token mint of vault B)
+          // 9:  aVaultLp (Pool's LP token account for vault A)
+          // 10: bVaultLp (Pool's LP token account for vault B)
+          // 11: protocolTokenFee (direction-dependent)
+          // 12: user (signer)
+          // 13: vaultProgram (Mercurial Vault program)
+          // 14: tokenProgram
+          // 15: DAMM Program (for CPI)
+          
+          // Get SDK-provided accounts (from getMeteoraDammV1SdkQuote)
+          const aVault = (hop as any).aVault;
+          const bVault = (hop as any).bVault;
+          const aTokenVault = (hop as any).aTokenVault;
+          const bTokenVault = (hop as any).bTokenVault;
+          const aVaultLpMint = (hop as any).aVaultLpMint;
+          const bVaultLpMint = (hop as any).bVaultLpMint;
+          const aVaultLp = (hop as any).aVaultLp;
+          const bVaultLp = (hop as any).bVaultLp;
+          const protocolTokenAFee = (hop as any).protocolTokenAFee;
+          const protocolTokenBFee = (hop as any).protocolTokenBFee;
+          const vaultProgram = (hop as any).vaultProgram || '24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi';
+          
+          // Select protocol fee based on swap direction (source token's fee account)
+          const isAtoB = opts?.aToB ?? (hop.inputMint === poolMintA);
+          const protocolTokenFee = isAtoB ? protocolTokenAFee : protocolTokenBFee;
+          
+          // Verify we have all required accounts
+          const missingAccounts: string[] = [];
+          if (!aVault) missingAccounts.push('aVault');
+          if (!bVault) missingAccounts.push('bVault');
+          if (!aTokenVault) missingAccounts.push('aTokenVault');
+          if (!bTokenVault) missingAccounts.push('bTokenVault');
+          if (!aVaultLpMint) missingAccounts.push('aVaultLpMint');
+          if (!bVaultLpMint) missingAccounts.push('bVaultLpMint');
+          if (!aVaultLp) missingAccounts.push('aVaultLp');
+          if (!bVaultLp) missingAccounts.push('bVaultLp');
+          if (!protocolTokenFee) missingAccounts.push('protocolTokenFee');
+          
+          logger.info('routerTx.meteoraDamm.v1.accounts', {
+            cat: 'tx',
+            poolId: hop.poolId,
+            variant: 'damm_v1',
+            isAtoB,
+            inputMint: hop.inputMint,
+            outputMint: hop.outputMint,
+            aVault: aVault || 'missing',
+            bVault: bVault || 'missing',
+            aTokenVault: aTokenVault || 'missing',
+            bTokenVault: bTokenVault || 'missing',
+            aVaultLpMint: aVaultLpMint || 'missing',
+            bVaultLpMint: bVaultLpMint || 'missing',
+            aVaultLp: aVaultLp || 'missing',
+            bVaultLp: bVaultLp || 'missing',
+            protocolTokenFee: protocolTokenFee || 'missing',
+            vaultProgram,
+            missingCount: missingAccounts.length,
+            missing: missingAccounts.length > 0 ? missingAccounts : undefined,
+          });
+          
+          if (missingAccounts.length > 0) {
+            throw new Error(`Meteora DAMM v1: Missing required accounts: ${missingAccounts.join(', ')}. SDK quote may have failed.`);
+          }
+          
           accounts.push(
             poolId,                                                            // 0: Pool
-            userSourceAta,                                                     // 1: User Source
-            userDestAta,                                                       // 2: User Dest
-            new PublicKey(dammVaultA),                                        // 3: Vault A (canonical)
-            new PublicKey(dammVaultB),                                        // 4: Vault B (canonical)
-            dammMintA,                                                         // 5: Token A Mint (canonical)
-            dammMintB,                                                         // 6: Token B Mint (canonical)
-            dammAuthority,                                                     // 7: Pool Authority
-            wallet,                                                            // 8: User (signer)
-            TOKEN_PROGRAM_ID,                                                  // 9: Token Program
-            programIdKey,                                                      // 10: Program
+            userSourceAta,                                                     // 1: User Source Token
+            userDestAta,                                                       // 2: User Destination Token
+            new PublicKey(aVault),                                            // 3: aVault (Mercurial Vault)
+            new PublicKey(bVault),                                            // 4: bVault (Mercurial Vault)
+            new PublicKey(aTokenVault),                                       // 5: aTokenVault (SPL Token in vault)
+            new PublicKey(bTokenVault),                                       // 6: bTokenVault (SPL Token in vault)
+            new PublicKey(aVaultLpMint),                                      // 7: aVaultLpMint
+            new PublicKey(bVaultLpMint),                                      // 8: bVaultLpMint
+            new PublicKey(aVaultLp),                                          // 9: aVaultLp
+            new PublicKey(bVaultLp),                                          // 10: bVaultLp
+            new PublicKey(protocolTokenFee),                                  // 11: Protocol Token Fee
+            wallet,                                                            // 12: User (signer)
+            new PublicKey(vaultProgram),                                      // 13: Vault Program
+            TOKEN_PROGRAM_ID,                                                  // 14: Token Program
+            programIdKey,                                                      // 15: DAMM Program
           );
         }
         break;
@@ -2907,6 +3076,17 @@ function derivePumpswapGlobalConfig(): PublicKey {
     PUMPSWAP_PROGRAM
   );
   return globalConfig;
+}
+
+/**
+ * Derive PumpSwap Event Authority PDA
+ */
+function derivePumpswapEventAuthority(): PublicKey {
+  const [eventAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from('__event_authority')],
+    PUMPSWAP_PROGRAM
+  );
+  return eventAuthority;
 }
 
 /**

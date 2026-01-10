@@ -712,8 +712,10 @@ fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool, accounts_count: usi
             let base_idx = if accounts_count >= dex::orca::SWAP_V2_ACCOUNTS_NEEDED { 7 } else { 3 };
             if a_to_b { base_idx } else { base_idx + 2 }
         },
-        // PumpSwap: position 6 (User Token Account)
-        DexType::PumpSwap => 6,
+        // PumpSwap: user token accounts are at positions 5 (base) and 6 (quote)
+        // Buy (a_to_b=true): input is quote (SOL) at index 6
+        // Sell (a_to_b=false): input is base (token) at index 5
+        DexType::PumpSwap => if a_to_b { 6 } else { 5 },
         // Raydium AMM v4: position 15 (User Source Token Account)
         DexType::RaydiumAmm => 15,
         // Meteora DAMM: position 1 (User Source Token Account)

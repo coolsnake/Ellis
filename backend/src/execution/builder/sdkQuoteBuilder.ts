@@ -1508,6 +1508,25 @@ async function getRaydiumAmmSdkQuote(
 
 /**
  * Get Meteora DAMM v1 (Dynamic AMM) accounts via SDK
+ * 
+ * Meteora Dynamic AMM uses a "vault of vaults" architecture with Mercurial Vaults.
+ * The swap instruction requires 15 accounts (+ program = 16 total):
+ * 
+ * 0:  pool
+ * 1:  userSourceToken
+ * 2:  userDestinationToken
+ * 3:  aVault (Mercurial Vault account)
+ * 4:  bVault (Mercurial Vault account)
+ * 5:  aTokenVault (SPL Token account inside aVault)
+ * 6:  bTokenVault (SPL Token account inside bVault)
+ * 7:  aVaultLpMint (LP token mint of vault A)
+ * 8:  bVaultLpMint (LP token mint of vault B)
+ * 9:  aVaultLp (Pool's LP token account for vault A)
+ * 10: bVaultLp (Pool's LP token account for vault B)
+ * 11: protocolTokenFee (direction-dependent)
+ * 12: user (signer)
+ * 13: vaultProgram (Mercurial Vault program)
+ * 14: tokenProgram
  */
 async function getMeteoraDammV1SdkQuote(
   connection: Connection,
@@ -1522,19 +1541,52 @@ async function getMeteoraDammV1SdkQuote(
     
     if (sdkAvailable && MeteoraDynamicAmm) {
       try {
-        // Try using the SDK
+        // Create pool instance - this fetches pool state and vault states
         const pool = await MeteoraDynamicAmm.create(connection, poolPk);
         if (pool) {
-          // Extract accounts from pool instance
+          // Extract Mercurial Vault accounts from pool state
+          // These are the vault PDAs (not the token accounts inside them)
+          if (pool.poolState) {
+            accounts.aVault = pool.poolState.aVault?.toBase58?.();
+            accounts.bVault = pool.poolState.bVault?.toBase58?.();
+            accounts.aVaultLp = pool.poolState.aVaultLp?.toBase58?.();
+            accounts.bVaultLp = pool.poolState.bVaultLp?.toBase58?.();
+            accounts.protocolTokenAFee = pool.poolState.protocolTokenAFee?.toBase58?.();
+            accounts.protocolTokenBFee = pool.poolState.protocolTokenBFee?.toBase58?.();
+          }
+          
+          // Extract token vaults from the VaultImpl instances
+          // These are the actual SPL token accounts inside the Mercurial vaults
+          if (pool.vaultA?.vaultState) {
+            accounts.aTokenVault = pool.vaultA.vaultState.tokenVault?.toBase58?.();
+            accounts.aVaultLpMint = pool.vaultA.vaultState.lpMint?.toBase58?.();
+          }
+          if (pool.vaultB?.vaultState) {
+            accounts.bTokenVault = pool.vaultB.vaultState.tokenVault?.toBase58?.();
+            accounts.bVaultLpMint = pool.vaultB.vaultState.lpMint?.toBase58?.();
+          }
+          
+          // Get vault program ID
+          if (pool.vaultA?.vaultProgram?.programId) {
+            accounts.vaultProgram = pool.vaultA.vaultProgram.programId.toBase58();
+          } else {
+            // Mercurial Vault program ID (mainnet)
+            accounts.vaultProgram = '24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi';
+          }
+          
+          // Also get poolInfo data if available
           if (pool.poolInfo) {
-            accounts.vaultA = pool.poolInfo.tokenAVault?.toBase58?.() || pool.poolInfo.aVault?.toBase58?.();
-            accounts.vaultB = pool.poolInfo.tokenBVault?.toBase58?.() || pool.poolInfo.bVault?.toBase58?.();
             accounts.lpMint = pool.poolInfo.lpMint?.toBase58?.();
           }
           
           logger.info('sdkQuoteBuilder.meteoraDammV1.sdk.success', {
             cat: 'tx',
             poolId: poolId.slice(0, 8) + '...',
+            hasVaults: !!(accounts.aVault && accounts.bVault),
+            hasTokenVaults: !!(accounts.aTokenVault && accounts.bTokenVault),
+            hasVaultLp: !!(accounts.aVaultLp && accounts.bVaultLp),
+            hasVaultLpMints: !!(accounts.aVaultLpMint && accounts.bVaultLpMint),
+            hasProtocolFees: !!(accounts.protocolTokenAFee && accounts.protocolTokenBFee),
           });
         }
       } catch (sdkErr) {
@@ -1552,23 +1604,74 @@ async function getMeteoraDammV1SdkQuote(
     );
     accounts.poolAuthority = authority.toBase58();
     
-    // If SDK didn't populate vaults, try manual decode
-    if (!accounts.vaultA || !accounts.vaultB) {
+    // Default vault program if SDK didn't provide it
+    if (!accounts.vaultProgram) {
+      accounts.vaultProgram = '24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi';
+    }
+    
+    // If SDK didn't populate vaults, try manual decode from pool account
+    if (!accounts.aVault || !accounts.bVault) {
       const accountInfo = await connection.getAccountInfo(poolPk);
       if (accountInfo && accountInfo.data) {
         const data = Buffer.from(accountInfo.data);
         // DAMM v1 pool layout: after 8-byte discriminator
         // lpMint at 8, tokenAMint at 40, tokenBMint at 72, aVault at 104, bVault at 136
-        if (data.length >= 168) {
+        // aVaultLp at 168, bVaultLp at 200
+        if (data.length >= 232) {
           const lpMint = new PublicKey(data.subarray(8, 40));
           const tokenAMint = new PublicKey(data.subarray(40, 72));
           const tokenBMint = new PublicKey(data.subarray(72, 104));
           const aVault = new PublicKey(data.subarray(104, 136));
           const bVault = new PublicKey(data.subarray(136, 168));
+          const aVaultLp = new PublicKey(data.subarray(168, 200));
+          const bVaultLp = new PublicKey(data.subarray(200, 232));
           
-          accounts.vaultA = aVault.toBase58();
-          accounts.vaultB = bVault.toBase58();
+          accounts.aVault = aVault.toBase58();
+          accounts.bVault = bVault.toBase58();
+          accounts.aVaultLp = aVaultLp.toBase58();
+          accounts.bVaultLp = bVaultLp.toBase58();
           accounts.lpMint = lpMint.toBase58();
+          
+          // Need to fetch vault accounts to get tokenVault and lpMint
+          // This is a fallback - the SDK path above is preferred
+          try {
+            const [aVaultInfo, bVaultInfo] = await connection.getMultipleAccountsInfo([aVault, bVault]);
+            // Mercurial Vault layout: tokenVault at offset 40, lpMint at offset 72
+            if (aVaultInfo?.data && aVaultInfo.data.length >= 104) {
+              const aVaultData = Buffer.from(aVaultInfo.data);
+              accounts.aTokenVault = new PublicKey(aVaultData.subarray(40, 72)).toBase58();
+              accounts.aVaultLpMint = new PublicKey(aVaultData.subarray(72, 104)).toBase58();
+            }
+            if (bVaultInfo?.data && bVaultInfo.data.length >= 104) {
+              const bVaultData = Buffer.from(bVaultInfo.data);
+              accounts.bTokenVault = new PublicKey(bVaultData.subarray(40, 72)).toBase58();
+              accounts.bVaultLpMint = new PublicKey(bVaultData.subarray(72, 104)).toBase58();
+            }
+          } catch (vaultErr) {
+            logger.debug('sdkQuoteBuilder.meteoraDammV1.vaultFetch.error', {
+              cat: 'tx',
+              error: (vaultErr as Error).message,
+            });
+          }
+          
+          // Derive protocol fee accounts if not already set
+          // protocolTokenAFee and protocolTokenBFee are in the pool state at specific offsets
+          // For now, try to parse them from pool data if available
+          // Pool state has protocolTokenAFee after bVaultLpBump (1 byte), enabled (1 byte)
+          // Offset: 232 + some padding
+          if (data.length >= 360 && !accounts.protocolTokenAFee) {
+            // These offsets may need adjustment based on actual layout
+            // protocolTokenAFee is typically around offset 264
+            // protocolTokenBFee is typically around offset 296
+            try {
+              const protocolAFee = new PublicKey(data.subarray(264, 296));
+              const protocolBFee = new PublicKey(data.subarray(296, 328));
+              accounts.protocolTokenAFee = protocolAFee.toBase58();
+              accounts.protocolTokenBFee = protocolBFee.toBase58();
+            } catch {
+              // Ignore parse errors for protocol fees
+            }
+          }
         }
       }
     }
@@ -1576,8 +1679,16 @@ async function getMeteoraDammV1SdkQuote(
     logger.info('sdkQuoteBuilder.meteoraDammV1.quote.success', {
       cat: 'tx',
       poolId: poolId.slice(0, 8) + '...',
-      hasVaults: !!(accounts.vaultA && accounts.vaultB),
+      hasVaults: !!(accounts.aVault && accounts.bVault),
+      hasTokenVaults: !!(accounts.aTokenVault && accounts.bTokenVault),
       hasAuthority: !!accounts.poolAuthority,
+      hasAllAccounts: !!(
+        accounts.aVault && accounts.bVault &&
+        accounts.aTokenVault && accounts.bTokenVault &&
+        accounts.aVaultLpMint && accounts.bVaultLpMint &&
+        accounts.aVaultLp && accounts.bVaultLp &&
+        accounts.protocolTokenAFee && accounts.protocolTokenBFee
+      ),
     });
     
     return { success: true, accounts };

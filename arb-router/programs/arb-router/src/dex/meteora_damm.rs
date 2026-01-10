@@ -3,12 +3,13 @@
 //! v1 Program ID: Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB (Dynamic Pool AMM)
 //! v2 Program ID: cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG (CP-AMM / Constant Product AMM)
 //!
-//! Meteora DAMM (Dynamic AMM) is a balanced pool AMM with constant product pricing.
-//! This is different from Meteora DLMM which uses discrete liquidity bins.
+//! Meteora DAMM v1 (Dynamic AMM) uses Mercurial Vault architecture where each pool
+//! has underlying vaults that earn yield. This requires passing vault-related accounts
+//! in addition to the pool accounts.
 //!
 //! ## Swap Instructions
-//! - v1: `swap` instruction with standard constant product math
-//! - v2: `swap` instruction with similar structure but different program
+//! - v1: `swap` instruction with Mercurial Vault integration (16 accounts)
+//! - v2: `swap` instruction with simpler CP-AMM structure (12 accounts)
 //!
 //! The DEX program ID is passed as the last account to support both v1 and v2.
 
@@ -22,14 +23,14 @@ use crate::error::ArbRouterError;
 // =============================================================================
 
 /// Number of accounts needed for Meteora DAMM v1 swap
-/// 10 accounts to program + 1 program ID = 11 total
-pub const ACCOUNTS_NEEDED_V1: usize = 11;
+/// v1 uses Mercurial Vault architecture requiring 15 accounts + 1 program ID = 16 total
+pub const ACCOUNTS_NEEDED_V1: usize = 16;
 
 /// Number of accounts needed for Meteora DAMM v2 swap  
-/// 11 accounts to program + 1 program ID = 12 total
+/// v2 is simpler CP-AMM: 11 accounts + 1 program ID = 12 total
 pub const ACCOUNTS_NEEDED_V2: usize = 12;
 
-/// Default accounts needed (v1)
+/// Default accounts needed (v1 - the more complex one)
 pub const ACCOUNTS_NEEDED: usize = ACCOUNTS_NEEDED_V1;
 
 // =============================================================================
@@ -61,21 +62,30 @@ pub struct SwapParams {
 // Swap Functions
 // =============================================================================
 
-/// Execute a swap on Meteora DAMM v1 (Dynamic Pool AMM)
+/// Execute a swap on Meteora DAMM v1 (Dynamic Pool AMM with Mercurial Vaults)
 ///
-/// ## Account Layout (11 accounts total):
+/// ## Account Layout (16 accounts total):
 ///
-/// 0. `[writable]` Pool
-/// 1. `[writable]` User Source Token Account
-/// 2. `[writable]` User Destination Token Account
-/// 3. `[writable]` Pool Token A Vault (a_vault)
-/// 4. `[writable]` Pool Token B Vault (b_vault)
-/// 5. `[]` Token A Mint
-/// 6. `[]` Token B Mint
-/// 7. `[]` Pool Authority (PDA)
-/// 8. `[signer]` User
-/// 9. `[]` Token Program
-/// 10. `[]` Meteora DAMM v1 Program (for CPI)
+/// The Meteora Dynamic AMM uses a "vault of vaults" architecture where liquidity
+/// is stored in Mercurial vaults that can earn yield. This requires passing all
+/// vault-related accounts for the CPI to work correctly.
+///
+/// 0.  `[writable]` pool - The DAMM pool account
+/// 1.  `[writable]` userSourceToken - User's source token ATA
+/// 2.  `[writable]` userDestinationToken - User's destination token ATA
+/// 3.  `[writable]` aVault - Mercurial Vault account for token A
+/// 4.  `[writable]` bVault - Mercurial Vault account for token B
+/// 5.  `[writable]` aTokenVault - SPL Token account inside aVault
+/// 6.  `[writable]` bTokenVault - SPL Token account inside bVault
+/// 7.  `[writable]` aVaultLpMint - LP token mint of vault A
+/// 8.  `[writable]` bVaultLpMint - LP token mint of vault B
+/// 9.  `[writable]` aVaultLp - Pool's LP token account for vault A
+/// 10. `[writable]` bVaultLp - Pool's LP token account for vault B
+/// 11. `[writable]` protocolTokenFee - Protocol fee account (direction-dependent)
+/// 12. `[signer]`   user - User wallet
+/// 13. `[]`         vaultProgram - Mercurial Vault program
+/// 14. `[]`         tokenProgram - SPL Token program
+/// 15. `[]`         dammProgram - Meteora DAMM v1 program (for CPI)
 ///
 /// # Arguments
 /// * `accounts` - DEX-specific accounts in the order above
@@ -102,19 +112,24 @@ pub fn swap_v1(
     data.extend_from_slice(&SWAP_V1_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
-    let program_idx = ACCOUNTS_NEEDED_V1 - 1;
+    let program_idx = ACCOUNTS_NEEDED_V1 - 1; // 15
     let dex_program_id = *accounts[program_idx].key;
 
-    // Build account metas
-    // Writable: Pool(0), UserSource(1), UserDest(2), VaultA(3), VaultB(4)
-    // Read-only: MintA(5), MintB(6), Authority(7), TokenProgram(9)
-    // Signer: User(8)
+    // Build account metas for Meteora Dynamic AMM swap
+    // Based on IDL: https://github.com/MeteoraAg/dynamic-amm-sdk
+    //
+    // Writable accounts (indices 0-11):
+    //   pool, userSourceToken, userDestToken, aVault, bVault,
+    //   aTokenVault, bTokenVault, aVaultLpMint, bVaultLpMint,
+    //   aVaultLp, bVaultLp, protocolTokenFee
+    // Signer: user (index 12)
+    // Read-only: vaultProgram (13), tokenProgram (14)
     let account_metas: Vec<AccountMeta> = accounts[..program_idx]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
-            let is_signer = i == 8;
-            let is_writable = matches!(i, 0 | 1 | 2 | 3 | 4);
+            let is_signer = i == 12;  // user at index 12
+            let is_writable = i <= 11; // indices 0-11 are writable
             
             if is_signer {
                 AccountMeta::new(*acc.key, true)
@@ -225,20 +240,24 @@ pub fn swap_v2(
 /// * `_a_to_b` - Swap direction (not used for v1/v2 detection)
 ///
 /// # Version Detection
-/// v1 requires 11 accounts, v2 requires 12 accounts.
-/// We detect the version by account count rather than a flag to avoid
-/// confusion with the swap direction flag.
+/// v1 (Dynamic AMM with Mercurial Vaults) requires 16 accounts
+/// v2 (CP-AMM) requires 12 accounts
+/// We detect the version by account count rather than a flag.
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
     _a_to_b: bool,
 ) -> Result<()> {
-    // Detect version by account count: v1=11, v2=12
-    if accounts.len() >= ACCOUNTS_NEEDED_V2 {
+    // Detect version by account count: v1=16 (Mercurial Vaults), v2=12 (CP-AMM)
+    if accounts.len() >= ACCOUNTS_NEEDED_V1 {
+        swap_v1(accounts, amount_in, min_amount_out)
+    } else if accounts.len() >= ACCOUNTS_NEEDED_V2 {
         swap_v2(accounts, amount_in, min_amount_out)
     } else {
-        swap_v1(accounts, amount_in, min_amount_out)
+        msg!("Meteora DAMM: Insufficient accounts. Expected {} (v1) or {} (v2), got {}", 
+             ACCOUNTS_NEEDED_V1, ACCOUNTS_NEEDED_V2, accounts.len());
+        Err(ArbRouterError::InvalidAccount.into())
     }
 }
 

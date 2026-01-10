@@ -566,13 +566,13 @@ export function getAccountsNeededForDex(dexType: DexType): number {
     case DexType.Orca:
       return 12; // Orca Whirlpool: 11 swap accounts + 1 program
     case DexType.PumpSwap:
-      return 12; // PumpSwap
+      return 19; // PumpSwap AMM: 19 accounts (matching @pump-fun/pump-swap-sdk IDL)
     case DexType.RaydiumAmm:
       return 19; // Raydium AMM v4: 18 accounts + program
     case DexType.MeteoraDAMM:
-      // Meteora DAMM v1: 11 accounts, v2: 12 accounts
-      // Return max (v2). Builder determines actual count based on variant.
-      return 12;
+      // Meteora DAMM v1: 16 accounts (with Mercurial Vaults), v2: 12 accounts
+      // Return max (v1). Builder determines actual count based on variant.
+      return 16;
     case DexType.RaydiumCpmm:
       return 14; // Raydium CPMM: 14 accounts
     default:

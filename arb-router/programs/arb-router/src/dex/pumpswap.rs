@@ -3,7 +3,7 @@
 //! Program ID: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA (Post-graduation AMM)
 //!
 //! PumpSwap is the AMM used by Pump.fun for token trading after graduation.
-//! It's a simpler constant product AMM for post-bonding curve pools.
+//! Account layout updated to match official @pump-fun/pump-swap-sdk IDL.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
@@ -11,53 +11,43 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::constants::dex_programs::PUMPSWAP;
 use crate::error::ArbRouterError;
 
-/// Number of accounts needed for a PumpSwap swap
-pub const ACCOUNTS_NEEDED: usize = 12;
+/// Number of accounts needed for a PumpSwap swap (matches SDK IDL)
+pub const ACCOUNTS_NEEDED: usize = 19;
 
-/// PumpSwap buy instruction discriminator
+/// PumpSwap buy instruction discriminator (from IDL)
 const BUY_DISCRIMINATOR: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
 
-/// PumpSwap sell instruction discriminator  
+/// PumpSwap sell instruction discriminator (from IDL)
 const SELL_DISCRIMINATOR: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
-
-/// PumpSwap swap parameters
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct BuyParams {
-    /// Amount of SOL to spend
-    pub amount: u64,
-    /// Minimum tokens to receive
-    pub min_tokens_out: u64,
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct SellParams {
-    /// Amount of tokens to sell
-    pub amount: u64,
-    /// Minimum SOL to receive
-    pub min_sol_out: u64,
-}
 
 /// Execute a swap on PumpSwap
 ///
-/// Expected accounts (in order):
-/// 0. `[]` Global Config
-/// 1. `[writable]` Fee Recipient
-/// 2. `[]` Mint (the pump.fun token)
-/// 3. `[writable]` Bonding Curve
-/// 4. `[writable]` Bonding Curve Token Account
-/// 5. `[writable]` Associated Bonding Curve
-/// 6. `[writable]` User Token Account
-/// 7. `[signer, writable]` User
-/// 8. `[]` System Program
-/// 9. `[]` Token Program
-/// 10. `[]` Rent
-/// 11. `[]` PumpSwap Program
+/// Expected accounts (in order, matching official SDK IDL):
+/// 0.  `[writable]` pool - The pool account
+/// 1.  `[signer, writable]` user - The user performing the swap
+/// 2.  `[]` global_config - Global configuration PDA
+/// 3.  `[]` base_mint - The base token mint (pump token)
+/// 4.  `[]` quote_mint - The quote token mint (usually WSOL)
+/// 5.  `[writable]` user_base_token_account - User's base token ATA
+/// 6.  `[writable]` user_quote_token_account - User's quote token ATA
+/// 7.  `[writable]` pool_base_token_account - Pool's base token vault
+/// 8.  `[writable]` pool_quote_token_account - Pool's quote token vault
+/// 9.  `[]` protocol_fee_recipient - Protocol fee recipient wallet
+/// 10. `[writable]` protocol_fee_recipient_token_account - Protocol fee recipient's quote ATA
+/// 11. `[]` base_token_program - Token program for base mint (SPL or Token-2022)
+/// 12. `[]` quote_token_program - Token program for quote mint (usually SPL)
+/// 13. `[]` system_program - System program
+/// 14. `[]` associated_token_program - Associated token program
+/// 15. `[]` event_authority - Event authority PDA
+/// 16. `[]` program - PumpSwap program ID
+/// 17. `[writable]` coin_creator_vault_ata - Coin creator's fee vault ATA
+/// 18. `[]` coin_creator_vault_authority - Coin creator's vault authority PDA
 ///
 /// # Arguments
 /// * `accounts` - DEX-specific accounts in the order above
 /// * `amount_in` - Amount of input tokens to swap
 /// * `min_amount_out` - Minimum output tokens (slippage protection)
-/// * `is_buy` - Direction: true = buy (SOL->Token), false = sell (Token->SOL)
+/// * `is_buy` - Direction: true = buy (quote->base, SOL->Token), false = sell (base->quote, Token->SOL)
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
@@ -70,31 +60,37 @@ pub fn swap(
     }
 
     // Build instruction data based on direction
-    let mut data = Vec::with_capacity(8 + 8 + 8);
+    // Buy: base_amount_out, max_quote_amount_in, referral_option
+    // Sell: base_amount_in, min_quote_amount_out
+    let mut data = Vec::with_capacity(32);
     
     if is_buy {
-        let params = BuyParams {
-            amount: amount_in,
-            min_tokens_out: min_amount_out,
-        };
+        // Buy instruction: buy(base_amount_out: u64, max_quote_amount_in: u64, referral: Option<...>)
+        // For buy: amount_in is quote (SOL), min_amount_out is base (token)
+        // So: base_amount_out = min_amount_out, max_quote_amount_in = amount_in
         data.extend_from_slice(&BUY_DISCRIMINATOR);
-        params.serialize(&mut data)?;
+        data.extend_from_slice(&min_amount_out.to_le_bytes()); // base_amount_out (what we want)
+        data.extend_from_slice(&amount_in.to_le_bytes());      // max_quote_amount_in (max we pay)
+        // Referral option: None (0 byte for Option::None in Anchor)
+        data.push(0);
     } else {
-        let params = SellParams {
-            amount: amount_in,
-            min_sol_out: min_amount_out,
-        };
+        // Sell instruction: sell(base_amount_in: u64, min_quote_amount_out: u64)
+        // For sell: amount_in is base (token), min_amount_out is quote (SOL)
         data.extend_from_slice(&SELL_DISCRIMINATOR);
-        params.serialize(&mut data)?;
+        data.extend_from_slice(&amount_in.to_le_bytes());      // base_amount_in (what we sell)
+        data.extend_from_slice(&min_amount_out.to_le_bytes()); // min_quote_amount_out (min we receive)
     }
 
-    // Build account metas
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
+    // Build account metas matching SDK IDL order
+    // Writable accounts: 0 (pool), 1 (user), 5-8 (token accounts), 10 (protocol fee ata), 17 (creator vault)
+    // Signer: 1 (user)
+    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
-            let is_signer = i == 7; // User is signer
-            let is_writable = matches!(i, 1 | 3 | 4 | 5 | 6 | 7);
+            let is_signer = i == 1; // User at index 1 is the signer
+            let is_writable = matches!(i, 0 | 1 | 5 | 6 | 7 | 8 | 10 | 17);
+            
             if is_signer {
                 AccountMeta::new(*acc.key, true)
             } else if is_writable {
@@ -111,7 +107,7 @@ pub fn swap(
         data,
     };
 
-    // Invoke the swap
+    // Invoke the swap - pass all accounts for CPI
     let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
     invoke(&ix, &account_infos)?;
 
@@ -120,59 +116,35 @@ pub fn swap(
 }
 
 /// Execute a sell on PumpSwap (Token -> SOL)
+/// Kept for backwards compatibility, delegates to swap()
 pub fn sell(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
 ) -> Result<()> {
-    if accounts.len() < ACCOUNTS_NEEDED {
-        msg!("PumpSwap: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
-        return Err(ArbRouterError::InvalidAccount.into());
-    }
-
-    let params = SellParams {
-        amount: amount_in,
-        min_sol_out: min_amount_out,
-    };
-
-    let mut data = Vec::with_capacity(8 + 8 + 8);
-    data.extend_from_slice(&SELL_DISCRIMINATOR);
-    params.serialize(&mut data)?;
-
-    // Build account metas (same structure as buy)
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED - 1]
-        .iter()
-        .enumerate()
-        .map(|(i, acc)| {
-            let is_signer = i == 7;
-            let is_writable = matches!(i, 1 | 3 | 4 | 5 | 6 | 7);
-            if is_signer {
-                AccountMeta::new(*acc.key, true)
-            } else if is_writable {
-                AccountMeta::new(*acc.key, false)
-            } else {
-                AccountMeta::new_readonly(*acc.key, false)
-            }
-        })
-        .collect();
-
-    let ix = Instruction {
-        program_id: PUMPSWAP,
-        accounts: account_metas,
-        data,
-    };
-
-    let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
-    invoke(&ix, &account_infos)?;
-
-    msg!("PumpSwap sell executed: {} in, min {} out", amount_in, min_amount_out);
-    Ok(())
+    swap(accounts, amount_in, min_amount_out, false)
 }
 
-/// Derive bonding curve PDA for a token
-pub fn derive_bonding_curve(mint: &Pubkey) -> (Pubkey, u8) {
+/// Derive the global config PDA
+pub fn derive_global_config() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[b"bonding-curve", mint.as_ref()],
+        &[b"global_config"],
+        &PUMPSWAP,
+    )
+}
+
+/// Derive the event authority PDA
+pub fn derive_event_authority() -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[b"__event_authority"],
+        &PUMPSWAP,
+    )
+}
+
+/// Derive coin creator vault authority PDA
+pub fn derive_coin_creator_vault_authority(coin_creator: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[b"coin_creator_vault_authority", coin_creator.as_ref()],
         &PUMPSWAP,
     )
 }
@@ -182,29 +154,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_buy_params_serialize() {
-        let params = BuyParams {
-            amount: 1000000,
-            min_tokens_out: 990000,
-        };
-        
-        let mut data = Vec::new();
-        params.serialize(&mut data).unwrap();
-        
-        assert_eq!(data.len(), 16);
+    fn test_accounts_needed() {
+        assert_eq!(ACCOUNTS_NEEDED, 19);
     }
 
     #[test]
-    fn test_sell_params_serialize() {
-        let params = SellParams {
-            amount: 1000000,
-            min_sol_out: 990000,
-        };
-        
-        let mut data = Vec::new();
-        params.serialize(&mut data).unwrap();
-        
-        assert_eq!(data.len(), 16);
+    fn test_buy_discriminator() {
+        assert_eq!(BUY_DISCRIMINATOR, [102, 6, 61, 18, 1, 218, 235, 234]);
+    }
+
+    #[test]
+    fn test_sell_discriminator() {
+        assert_eq!(SELL_DISCRIMINATOR, [51, 230, 133, 164, 1, 127, 131, 173]);
     }
 }
-
