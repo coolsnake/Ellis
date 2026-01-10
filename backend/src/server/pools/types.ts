@@ -1,6 +1,7 @@
 export type AmmPool = {
   id: string;
   dex: string;
+  programId?: string;  // On-chain program ID (e.g., DAMM v1 vs v2, Pumpswap AMM)
   mint_a: string;
   mint_b: string;
   fee_bps: number;
