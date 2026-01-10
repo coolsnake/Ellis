@@ -26,8 +26,8 @@ pub mod dex_programs {
     // Orca Whirlpool
     pub const ORCA_WHIRLPOOL: Pubkey = pubkey!("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc");
     
-    // PumpSwap (Pump.fun AMM)
-    pub const PUMPSWAP: Pubkey = pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+    // PumpSwap (Pump.fun AMM) - Post-graduation AMM program
+    pub const PUMPSWAP: Pubkey = pubkey!("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
 }
 
 // SPL Token Program

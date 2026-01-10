@@ -956,8 +956,8 @@ export class DexAltManager {
       // Meteora DLMM
       addAccount((CONFIG as any)?.meteora?.programId || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
       
-      // PumpSwap
-      addAccount('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+      // PumpSwap (post-graduation AMM)
+      addAccount('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
 
       // ============================================
       // 3. DEX-SPECIFIC SHARED ACCOUNTS

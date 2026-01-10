@@ -1,9 +1,9 @@
 //! PumpSwap (Pump.fun AMM) CPI integration
 //!
-//! Program ID: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+//! Program ID: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA (Post-graduation AMM)
 //!
-//! PumpSwap is the AMM used by Pump.fun for token trading.
-//! It's a simpler constant product AMM.
+//! PumpSwap is the AMM used by Pump.fun for token trading after graduation.
+//! It's a simpler constant product AMM for post-bonding curve pools.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};

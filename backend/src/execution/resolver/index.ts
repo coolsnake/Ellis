@@ -119,15 +119,18 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       poolId,
       programId: executionCache.getStatic(poolId)?.programId || (() => {
         if (dex === 'raydium') {
-          if (variant === 'clmm') return CONFIG.raydium?.clmmProgram || '';
+          if (variant === 'clmm') return CONFIG.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
           if (variant === 'cpmm') return CONFIG.raydium?.ammV5Program || 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
-          return CONFIG.raydium?.ammV4Program || '';
+          // AMM v4 - must have proper fallback!
+          return CONFIG.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
         }
-        if (dex === 'orca') return CONFIG.orca?.programId || '';
-        if (dex === 'meteora') return (CONFIG.meteora?.programId as any) || '';
+        if (dex === 'orca') return CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
+        if (dex === 'meteora') return (CONFIG.meteora?.programId as any) || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
         if (dex === 'meteora_balanced') {
           const balanced = (CONFIG.meteora?.amm as any) || {};
-          return variant === 'damm_v1' ? (balanced.v1ProgramId || '') : (balanced.v2ProgramId || '');
+          return variant === 'damm_v1' 
+            ? (balanced.v1ProgramId || 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') 
+            : (balanced.v2ProgramId || 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
         }
         if (dex === 'pumpswap') {
           // Use config values - prefer AMM program for post-graduation pools

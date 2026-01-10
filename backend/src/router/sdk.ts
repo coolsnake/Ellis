@@ -448,15 +448,39 @@ export function buildExecuteIx(
     dexAccountsCount: allDexAccounts?.length || 0,
   });
   
+  // Program accounts that should NOT be marked as writable
+  // These are system/DEX programs used for CPI - writing to them would fail
+  const READ_ONLY_PROGRAMS = new Set([
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',  // SPL Token
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',  // Token-2022
+    '11111111111111111111111111111111',              // System Program
+    'SysvarRent111111111111111111111111111111111',   // Rent
+    'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',  // Memo
+    'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo',  // Memo (old)
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', // Associated Token
+    // DEX Programs (read-only for CPI)
+    'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK', // Raydium CLMM
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM v4
+    'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C', // Raydium CPMM
+    'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', // Meteora DLMM
+    'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB', // Meteora DAMM v1
+    'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG', // Meteora DAMM v2
+    'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', // Orca Whirlpool
+    '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', // PumpSwap Bonding Curve
+    'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', // PumpSwap AMM
+    'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX', // Serum/OpenBook
+    'opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EQBh8x', // OpenBook v2
+  ]);
+
   const keys = [
     { pubkey: user, isSigner: true, isWritable: false },
     { pubkey: userTokenAccount, isSigner: false, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    // Add all DEX accounts as remaining accounts
+    // Add all DEX accounts - only mark writable if NOT a program account
     ...allDexAccounts.map((pubkey) => ({
       pubkey,
       isSigner: false,
-      isWritable: true,
+      isWritable: !READ_ONLY_PROGRAMS.has(pubkey.toBase58()),
     })),
   ];
 
