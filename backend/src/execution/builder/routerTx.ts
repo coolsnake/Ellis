@@ -1028,14 +1028,25 @@ async function buildSdkQuoteRouterTx(
     const inputMint = new PublicKey(plan.hops[0].inputMint);
     const userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
 
-    // Create ATAs for intermediate tokens
+    // Create ATAs for tokens (matching buildDirectRouterTx logic)
     const connection = getConnection();
     const atasToCreate: { mint: PublicKey; tokenProgram: PublicKey }[] = [];
 
-    // Input token ATA
-    atasToCreate.push({ mint: inputMint, tokenProgram: inputTokenProgram });
+    // Input token ATA - skip if SOL (buildWrapSolIxs already creates WSOL ATA)
+    if (!inputIsSol) {
+      atasToCreate.push({ mint: inputMint, tokenProgram: inputTokenProgram });
+    }
 
-    // Intermediate token ATAs
+    // Output token ATA - add for non-SOL outputs (was missing!)
+    const outputMint = new PublicKey(plan.hops[plan.hops.length - 1].outputMint);
+    const outputTokenProgram = plan.hops[plan.hops.length - 1].outputTokenProgram === 'token-2022'
+      ? TOKEN_2022_PROGRAM_ID
+      : TOKEN_PROGRAM_ID;
+    if (!outputIsSol) {
+      atasToCreate.push({ mint: outputMint, tokenProgram: outputTokenProgram });
+    }
+
+    // Intermediate token ATAs for multi-hop routes
     for (let i = 0; i < plan.hops.length - 1; i++) {
       const hop = plan.hops[i];
       const intermediateMint = new PublicKey(hop.outputMint);
@@ -1043,7 +1054,8 @@ async function buildSdkQuoteRouterTx(
         ? TOKEN_2022_PROGRAM_ID
         : TOKEN_PROGRAM_ID;
 
-      if (hop.outputMint !== plan.hops[0].inputMint) {
+      // Skip if it's SOL (handled as WSOL) or same as input/output
+      if (!isSolMint(hop.outputMint) && hop.outputMint !== plan.hops[0].inputMint) {
         atasToCreate.push({ mint: intermediateMint, tokenProgram: intermediateTokenProgram });
       }
     }

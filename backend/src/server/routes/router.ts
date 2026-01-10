@@ -1082,6 +1082,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
         feeBps: p.fee_bps,
         priceAPerB: p.price_a_per_b,
         liquidityBase: p.liquidity_base,
+        dex: p.dex, // Expose DEX variant (e.g. 'MeteoraBalanced_v1', 'MeteoraBalanced_v2')
       });
       
       // Map CPMM pools (similar to AMM structure)
@@ -1115,6 +1116,12 @@ export function createRouterRouter(io: SocketIOServer): Router {
             dlmmCount: meteora.clmm.length,
           },
           meteoraBalanced: {
+            // Split DAMM pools by version for proper UI filtering
+            dammV1: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v1').slice(0, limit).map(mapAmmPool),
+            dammV2: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v2').slice(0, limit).map(mapAmmPool),
+            dammV1Count: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v1').length,
+            dammV2Count: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v2').length,
+            // Keep combined for backward compatibility
             amm: meteoraBalanced.amm.slice(0, limit).map(mapAmmPool),
             ammCount: meteoraBalanced.amm.length,
           },
@@ -1128,6 +1135,8 @@ export function createRouterRouter(io: SocketIOServer): Router {
           orca: orca.clmm.length,
           meteora: meteora.clmm.length,
           meteoraBalanced: meteoraBalanced.amm.length,
+          meteoraBalancedV1: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v1').length,
+          meteoraBalancedV2: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v2').length,
           pumpswap: pumpswap.amm.length,
         },
       });
