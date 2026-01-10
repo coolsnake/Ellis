@@ -124,7 +124,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         if (dex === 'raydium') {
           if (variant === 'clmm') return CONFIG.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
           if (variant === 'cpmm') return CONFIG.raydium?.ammV5Program || 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
-          if (variant === 'amm' || variant === 'amm_v4') return CONFIG.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
+          if (variant === 'amm') return CONFIG.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
           // Default for raydium without explicit variant - check cache, then default to CLMM
           return executionCache.getStatic(poolId)?.programId || CONFIG.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
         }
