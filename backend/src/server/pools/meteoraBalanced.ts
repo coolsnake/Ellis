@@ -406,6 +406,10 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
       amm.push({
         id,
         dex,  // 'MeteoraBalanced_v1' or 'MeteoraBalanced_v2' based on pool_version
+        // CRITICAL: Include programId so execution cache can use the correct program
+        programId: poolVersion === 1 
+          ? 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB'  // DAMM v1
+          : 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG',   // DAMM v2
         mint_a,
         mint_b,
         fee_bps,
@@ -650,6 +654,8 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       amm.push({
         id,
         dex,  // 'MeteoraBalanced_v1' or 'MeteoraBalanced_v2' based on pool_version
+        // CRITICAL: V1 API - always use v1 program
+        programId: 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  // DAMM v1
         mint_a,
         mint_b,
         fee_bps,
@@ -1098,6 +1104,69 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   const rugpullDetected = new Set<string>(); // Track rugpulled pools to avoid duplicate logging
   let successCount = 0;
   let failCount = 0;
+
+  // CRITICAL: Verify pool version by checking on-chain owner program
+  // This is the authoritative source - API pool_version may be incorrect
+  const DAMM_V1_PROGRAM = 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB';
+  const DAMM_V2_PROGRAM = 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG';
+  const poolAddresses: string[] = pools.map(p => String(p?.pool_address || p?.address || p?.id || '')).filter(Boolean);
+  const poolVersionMap: Map<string, number> = new Map();
+  
+  try {
+    logger.info('meteora.balanced.rpc.owner_check.start', { poolCount: poolAddresses.length, cat: 'meteora' });
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
+  
+  for (let i = 0; i < poolAddresses.length; i += batchSize) {
+    const batch = poolAddresses.slice(i, i + batchSize);
+    const pubkeys = batch.map(addr => new PublicKey(addr));
+    
+    try {
+      const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
+      const accounts = await withRpcLimit(
+        () => conn.getMultipleAccountsInfo(pubkeys),
+        weight,
+        { module: 'pools', method: 'getMultipleAccountsInfo:owner' }
+      );
+      
+      for (let j = 0; j < accounts.length; j++) {
+        const account = accounts[j];
+        const poolId = batch[j];
+        
+        if (account && account.owner) {
+          const ownerStr = account.owner.toBase58();
+          if (ownerStr === DAMM_V1_PROGRAM) {
+            poolVersionMap.set(poolId, 1);
+          } else if (ownerStr === DAMM_V2_PROGRAM) {
+            poolVersionMap.set(poolId, 2);
+          }
+        }
+      }
+    } catch (e) {
+      logCatchError('pools.meteoraBalanced.owner_check', e);
+    }
+  }
+  
+  // Update pool versions based on on-chain owner
+  let v1Count = 0;
+  let v2Count = 0;
+  for (const pool of pools) {
+    const poolId = String(pool?.pool_address || pool?.address || pool?.id || '');
+    const version = poolVersionMap.get(poolId);
+    if (version !== undefined) {
+      pool.pool_version = version;
+      if (version === 1) v1Count++;
+      else if (version === 2) v2Count++;
+    }
+  }
+  
+  try {
+    logger.info('meteora.balanced.rpc.owner_check.done', { 
+      v1Count, 
+      v2Count, 
+      unchanged: pools.length - v1Count - v2Count,
+      cat: 'meteora' 
+    });
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
 
   // Fetch vault balances
   for (let i = 0; i < vaultAddresses.length; i += batchSize) {

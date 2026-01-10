@@ -11,7 +11,8 @@ import { logCatchError } from '../../utils/errorHandler.js';
  */
 export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
-  if (stat?.programId) hop.programId = stat.programId;
+  // Only use cached programId if hop doesn't already have one (variant-based takes precedence)
+  if (stat?.programId && !hop.programId) hop.programId = stat.programId;
   
   // Read market info from executionCache first (populated during GraphQL normalization)
   if (stat?.market_id && !hop.market) hop.market = stat.market_id;

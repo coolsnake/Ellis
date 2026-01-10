@@ -216,20 +216,26 @@ pub fn swap_v2(
     Ok(())
 }
 
-/// Unified swap function that routes to v1 or v2 based on flag
+/// Unified swap function that routes to v1 or v2 based on account count
 ///
 /// # Arguments
 /// * `accounts` - DEX-specific accounts
 /// * `amount_in` - Amount of input tokens to swap
 /// * `min_amount_out` - Minimum output tokens (slippage protection)
-/// * `is_v2` - If true, use v2 swap; if false, use v1 swap
+/// * `_a_to_b` - Swap direction (not used for v1/v2 detection)
+///
+/// # Version Detection
+/// v1 requires 11 accounts, v2 requires 12 accounts.
+/// We detect the version by account count rather than a flag to avoid
+/// confusion with the swap direction flag.
 pub fn swap(
     accounts: &[AccountInfo],
     amount_in: u64,
     min_amount_out: u64,
-    is_v2: bool,
+    _a_to_b: bool,
 ) -> Result<()> {
-    if is_v2 {
+    // Detect version by account count: v1=11, v2=12
+    if accounts.len() >= ACCOUNTS_NEEDED_V2 {
         swap_v2(accounts, amount_in, min_amount_out)
     } else {
         swap_v1(accounts, amount_in, min_amount_out)

@@ -337,7 +337,8 @@ export function populateExecutionCacheFromPools(
       const existing = executionCache.getStatic(pool.id) || {} as any;
       const staticData: any = {
         ...existing,
-        programId,
+        // Use pool-level programId if available (e.g., Meteora Balanced v1 vs v2)
+        programId: (pool as any).programId || programId,
         dex,
         pool_kind: 'amm',
         mint_a: pool.mint_a,

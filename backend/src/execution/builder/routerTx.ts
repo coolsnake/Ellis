@@ -2608,12 +2608,25 @@ async function extractDexAccounts(
         // CRITICAL: Use CANONICAL account ordering for BC Token Account
         const pumpVault = poolAccountA || hop.vaultA || hop.poolId;
         
+        // FIXED: Use known protocol fee recipients as fallback instead of programIdKey
+        // PumpSwap protocol fee recipients - programIdKey cannot be used because it's a program
+        // account and the on-chain router marks index 1 as writable for CPI
+        const PUMPSWAP_PROTOCOL_FEE_RECIPIENTS = [
+          'ADyA8hdefbpkJYKuQsdGgmFkME9hyLD1k2FjSPwK8Mg4',
+          '8gTR2unjS9ss9PBuFChsQJbnW7xFgX7aRcK7ocHkHs3c',
+          'G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP',
+          'JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU'
+        ];
+        const protocolFeeRecipient = (hop as any).protocolFeeRecipient
+          ? new PublicKey((hop as any).protocolFeeRecipient)
+          : new PublicKey(PUMPSWAP_PROTOCOL_FEE_RECIPIENTS[Math.floor(Math.random() * PUMPSWAP_PROTOCOL_FEE_RECIPIENTS.length)]);
+        
         // Log the accounts being used for debugging
         logger.info('routerTx.pumpswap.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
           globalConfig: globalConfig.toBase58(),
-          protocolFeeRecipient: (hop as any).protocolFeeRecipient || 'missing',
+          protocolFeeRecipient: protocolFeeRecipient.toBase58(),
           pumpMint: pumpMint.toBase58(),
           associatedBC: associatedBC.toBase58(),
           canonicalAccountA: poolAccountA || 'missing',
@@ -2626,13 +2639,12 @@ async function extractDexAccounts(
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
           fromSdk: !!((hop as any).globalConfig || (hop as any).associatedBondingCurve || (hop as any).protocolFeeRecipient),
+          usedFallbackFeeRecipient: !(hop as any).protocolFeeRecipient,
         });
         
         accounts.push(
           globalConfig,                                                        // 0: Global Config
-          (hop as any).protocolFeeRecipient 
-            ? new PublicKey((hop as any).protocolFeeRecipient) 
-            : programIdKey,                                                    // 1: Fee Recipient
+          protocolFeeRecipient,                                                // 1: Fee Recipient (FIXED)
           pumpMint,                                                            // 2: Mint (pump.fun token)
           poolId,                                                              // 3: Bonding Curve
           new PublicKey(pumpVault),                                            // 4: BC Token Account (canonical A)
