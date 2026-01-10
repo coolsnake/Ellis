@@ -2703,19 +2703,34 @@ async function extractDexAccounts(
         // Meteora DAMM v1: 11 accounts, v2: 12 accounts
         // v1: 0: Pool, 1: UserSource, 2: UserDest, 3: VaultA, 4: VaultB, 
         //     5: MintA, 6: MintB, 7: Authority, 8: User, 9: TokenProgram, 10: Program
+        // CRITICAL: Mints and Vaults must be in POOL CANONICAL ORDER (A/B), not swap direction!
         const isV2 = hop.variant === 'damm_v2';
         // Use SDK-provided authority if available, otherwise derive
         const dammAuthority = (hop as any).poolAuthority 
           ? new PublicKey((hop as any).poolAuthority)
           : deriveMeteoraDAMMPoolAuthority(poolId, programIdKey, isV2);
         
+        // CRITICAL: Use pool's canonical A/B mint order, NOT input/output swap direction
+        // poolMintA/poolMintB are in the pool's canonical order (from cache)
+        const dammMintA = poolMintA ? new PublicKey(poolMintA) : inputMint;
+        const dammMintB = poolMintB ? new PublicKey(poolMintB) : outputMint;
+        const dammVaultA = hop.vaultA || poolAccountA;
+        const dammVaultB = hop.vaultB || poolAccountB;
+        
         logger.info('routerTx.meteoraDamm.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
           variant: hop.variant,
           isV2,
-          vaultA: hop.vaultA,
-          vaultB: hop.vaultB,
+          // Pool canonical ordering
+          poolMintA: poolMintA || 'missing',
+          poolMintB: poolMintB || 'missing',
+          vaultA: dammVaultA || 'missing',
+          vaultB: dammVaultB || 'missing',
+          // Swap direction (may differ from pool order)
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
+          isAtoB: hop.inputMint === poolMintA,
           authority: dammAuthority.toBase58(),
           fromSdk: !!(hop as any).poolAuthority,
         });
@@ -2727,10 +2742,10 @@ async function extractDexAccounts(
             poolId,                                                            // 0: Pool
             userSourceAta,                                                     // 1: User Source
             userDestAta,                                                       // 2: User Dest
-            new PublicKey(hop.vaultA || poolAccountA),                        // 3: Vault A
-            new PublicKey(hop.vaultB || poolAccountB),                        // 4: Vault B
-            inputMint,                                                         // 5: Token A Mint
-            outputMint,                                                        // 6: Token B Mint
+            new PublicKey(dammVaultA),                                        // 3: Vault A (canonical)
+            new PublicKey(dammVaultB),                                        // 4: Vault B (canonical)
+            dammMintA,                                                         // 5: Token A Mint (canonical)
+            dammMintB,                                                         // 6: Token B Mint (canonical)
             new PublicKey(lpMint),                                            // 7: LP Mint
             dammAuthority,                                                     // 8: Pool Authority
             wallet,                                                            // 9: User (signer)
@@ -2743,10 +2758,10 @@ async function extractDexAccounts(
             poolId,                                                            // 0: Pool
             userSourceAta,                                                     // 1: User Source
             userDestAta,                                                       // 2: User Dest
-            new PublicKey(hop.vaultA || poolAccountA),                        // 3: Vault A
-            new PublicKey(hop.vaultB || poolAccountB),                        // 4: Vault B
-            inputMint,                                                         // 5: Token A Mint
-            outputMint,                                                        // 6: Token B Mint
+            new PublicKey(dammVaultA),                                        // 3: Vault A (canonical)
+            new PublicKey(dammVaultB),                                        // 4: Vault B (canonical)
+            dammMintA,                                                         // 5: Token A Mint (canonical)
+            dammMintB,                                                         // 6: Token B Mint (canonical)
             dammAuthority,                                                     // 7: Pool Authority
             wallet,                                                            // 8: User (signer)
             TOKEN_PROGRAM_ID,                                                  // 9: Token Program

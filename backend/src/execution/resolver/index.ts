@@ -117,12 +117,16 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       dex,
       variant,
       poolId,
-      programId: executionCache.getStatic(poolId)?.programId || (() => {
+      // IMPORTANT: Determine programId based on DEX + variant FIRST
+      // Don't blindly trust cached programId as it may be stale/incorrect for the variant
+      programId: (() => {
+        // Variant-based programId takes priority - this ensures correct routing
         if (dex === 'raydium') {
           if (variant === 'clmm') return CONFIG.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
           if (variant === 'cpmm') return CONFIG.raydium?.ammV5Program || 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
-          // AMM v4 - must have proper fallback!
-          return CONFIG.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
+          if (variant === 'amm' || variant === 'amm_v4') return CONFIG.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
+          // Default for raydium without explicit variant - check cache, then default to CLMM
+          return executionCache.getStatic(poolId)?.programId || CONFIG.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
         }
         if (dex === 'orca') return CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
         if (dex === 'meteora') return (CONFIG.meteora?.programId as any) || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
@@ -133,11 +137,12 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             : (balanced.v2ProgramId || 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
         }
         if (dex === 'pumpswap') {
-          // Use config values - prefer AMM program for post-graduation pools
+          // Always use AMM program for post-graduation pools - don't trust cache
           const pumpswapConfig = (CONFIG as any).pumpswap || {};
           return pumpswapConfig.ammProgramId || 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
         }
-        return '';
+        // Fallback to cache for unknown DEXs
+        return executionCache.getStatic(poolId)?.programId || '';
       })(),
       inputMint,
       outputMint,

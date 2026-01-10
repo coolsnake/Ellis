@@ -822,10 +822,13 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
           return configRaydium !== false;
         })();
         
+        const isCpmmEnabledPreCheck = (CONFIG as any)?.raydiumCpmm?.enabled !== false;
+        
         logger.info('pools.refresh.phase.fetch.raydium.config', { 
           useGraphQL, 
           isAmmEnabled, 
-          isClmmEnabled, 
+          isClmmEnabled,
+          isCpmmEnabled: isCpmmEnabledPreCheck,
           cat: 'pools' 
         });
         
@@ -861,6 +864,44 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
           }
         } else if (!isClmmEnabled) {
           logger.info('pools.refresh.phase.fetch.raydium.clmm.skipped', { reason: 'disabled', cat: 'pools' });
+        }
+        
+        // Only fetch CPMM if enabled
+        const isCpmmEnabled = (() => {
+          if (typeof options.sources?.raydium === 'object') {
+            return (options.sources.raydium as any).cpmm !== false;
+          }
+          if (options.sources?.raydium === false) return false;
+          const configRaydium = configSources.raydium;
+          if (typeof configRaydium === 'object') {
+            return (configRaydium as any).cpmm !== false;
+          }
+          // Check dedicated raydiumCpmm config
+          return (CONFIG as any)?.raydiumCpmm?.enabled !== false;
+        })();
+        
+        if (isCpmmEnabled && (CONFIG as any)?.raydiumCpmm?.enabled !== false) {
+          try {
+            // Add delay if AMM or CLMM was also fetched (to respect rate limits)
+            if (isAmmEnabled || isClmmEnabled) {
+              const cpmmPageDelayMs = Number((CONFIG as any)?.raydiumCpmm?.pageDelayMs || 200);
+              const interPhaseMultiplier = Number((CONFIG as any)?.raydiumCpmm?.initialDelayMultiplier || 10);
+              const interPhaseDelayMs = cpmmPageDelayMs * interPhaseMultiplier;
+              if (interPhaseDelayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, interPhaseDelayMs));
+              }
+            }
+            
+            const cpmmResult = await getRaydiumCpmmPoolsGraphQL(!!options.force, { mints: sharedMints });
+            r.cpmm = [...(r.cpmm || []), ...(cpmmResult.cpmm || [])];
+          } catch (err) {
+            logger.warn('pools.refresh.phase.fetch.raydium.cpmm.failed', { 
+              error: String((err as any)?.message || err), 
+              cat: 'pools' 
+            });
+          }
+        } else if (!isCpmmEnabled) {
+          logger.info('pools.refresh.phase.fetch.raydium.cpmm.skipped', { reason: 'disabled', cat: 'pools' });
         }
       } catch (err) {
         logger.warn('pools.refresh.phase.fetch.raydium.failed', { error: String((err as any)?.message || err), cat: 'pools' });
@@ -2595,6 +2636,62 @@ export async function getRaydiumClmmPoolsGraphQL(force = false, opts?: { mints?:
     return normalized;
   } catch (err) {
     logger.error('raydium.clmm.graphql.fetch.error', { error: String(err), cat: 'raydium-clmm' });
+    return { amm: [], clmm: [], cpmm: [] };
+  }
+}
+
+export async function getRaydiumCpmmPoolsGraphQL(force = false, opts?: { mints?: string[] }): Promise<PoolsPayload> {
+  try {
+    // Check if CPMM is enabled
+    if ((CONFIG as any)?.raydiumCpmm?.enabled === false) {
+      logger.info('raydium.cpmm.graphql.skipped', { reason: 'disabled', cat: 'raydium-cpmm' });
+      return { amm: [], clmm: [], cpmm: [] };
+    }
+    
+    // Use provided mints if available (from shared universe), otherwise compute
+    let mints: string[];
+    if (opts?.mints && opts.mints.length > 0) {
+      mints = opts.mints;
+    } else {
+      const { computeTokenUniverse } = await import('./universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+    }
+    
+    // CRITICAL: Always include anchor tokens in mints list for GraphQL queries
+    // This ensures we can find pools containing SOL/USDC/USDT even if they're not in the universe
+    // Anchor bridging only affects filtering AFTER fetching, not what we query
+    const { getAnchorSet } = await import('./universe.js');
+    const anchors = getAnchorSet();
+    const mintsSet = new Set(mints);
+    for (const anchor of anchors) {
+      mintsSet.add(anchor);
+    }
+    mints = Array.from(mintsSet);
+    
+    logger.info('raydium.cpmm.graphql.fetch.start', { mintCount: mints.length, anchorCount: anchors.size, shared: !!opts?.mints, cat: 'raydium-cpmm' });
+    
+    const { fetchRaydiumCpmmGraphQL, normalizeRaydiumCpmmGraphQL } = await import('./pools/raydiumCpmmGraphQL.js');
+    const raw = await fetchRaydiumCpmmGraphQL(mints);
+    
+    // Normalize the CPMM pools
+    const normalized = await normalizeRaydiumCpmmGraphQL(raw);
+    
+    // Write to disk cache
+    const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-cpmm-pools-graphql.json');
+    try { await writeJson(CACHE_PATH, normalized); } catch {}
+    
+    // Emit to websocket
+    try { emit('pools:raydium-cpmm', normalized); } catch {}
+    
+    logger.info('raydium.cpmm.graphql.complete', { 
+      cpmm: normalized.cpmm.length, 
+      cat: 'raydium-cpmm' 
+    });
+    
+    return { amm: [], clmm: [], cpmm: normalized.cpmm };
+  } catch (err) {
+    logger.error('raydium.cpmm.graphql.fetch.error', { error: String(err), cat: 'raydium-cpmm' });
     return { amm: [], clmm: [], cpmm: [] };
   }
 }

@@ -46,6 +46,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     enabledDexSources_raydium: true,
     enabledDexSources_raydium_amm: true,
     enabledDexSources_raydium_clmm: true,
+    enabledDexSources_raydium_cpmm: false,
     enabledDexSources_orca: true,
     enabledDexSources_orca_amm: true,
     enabledDexSources_orca_clmm: true,
@@ -131,6 +132,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     raydium_mintBatchSize: 10,
     raydium_graphqlMaxPages: 50,
     raydium_detailBatchSize: 50,
+    // Raydium CPMM GraphQL
+    raydiumCpmm_enabled: false,
+    raydiumCpmm_pageDelayMs: 200,
+    raydiumCpmm_mintBatchSize: 10,
+    raydiumCpmm_graphqlMaxPages: 50,
+    raydiumCpmm_detailBatchSize: 50,
     // Orca GraphQL
     orca_useGraphQL: false,
     orca_shyftApiKey: '',
@@ -213,6 +220,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             enabledDexSources_raydium: j?.system?.enabledDexSources?.raydium ?? prev.enabledDexSources_raydium ?? true,
             enabledDexSources_raydium_amm: (typeof j?.system?.enabledDexSources?.raydium === 'object' ? (j.system.enabledDexSources.raydium.amm ?? true) : prev.enabledDexSources_raydium_amm ?? true),
             enabledDexSources_raydium_clmm: (typeof j?.system?.enabledDexSources?.raydium === 'object' ? (j.system.enabledDexSources.raydium.clmm ?? true) : prev.enabledDexSources_raydium_clmm ?? true),
+            enabledDexSources_raydium_cpmm: (typeof j?.system?.enabledDexSources?.raydium === 'object' ? (j.system.enabledDexSources.raydium.cpmm ?? false) : prev.enabledDexSources_raydium_cpmm ?? false),
             enabledDexSources_orca: j?.system?.enabledDexSources?.orca ?? prev.enabledDexSources_orca ?? true,
             enabledDexSources_orca_amm: (typeof j?.system?.enabledDexSources?.orca === 'object' ? (j.system.enabledDexSources.orca.amm ?? true) : prev.enabledDexSources_orca_amm ?? true),
             enabledDexSources_orca_clmm: (typeof j?.system?.enabledDexSources?.orca === 'object' ? (j.system.enabledDexSources.orca.clmm ?? true) : prev.enabledDexSources_orca_clmm ?? true),
@@ -283,6 +291,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             raydium_mintBatchSize: Number(j?.raydium?.mintBatchSize ?? prev.raydium_mintBatchSize ?? 10),
             raydium_graphqlMaxPages: Number(j?.raydium?.graphqlMaxPages ?? prev.raydium_graphqlMaxPages ?? 50),
             raydium_detailBatchSize: Number(j?.raydium?.detailBatchSize ?? prev.raydium_detailBatchSize ?? 50),
+            // Raydium CPMM GraphQL
+            raydiumCpmm_enabled: !!j?.raydiumCpmm?.enabled,
+            raydiumCpmm_pageDelayMs: Number(j?.raydiumCpmm?.pageDelayMs ?? prev.raydiumCpmm_pageDelayMs ?? 200),
+            raydiumCpmm_mintBatchSize: Number(j?.raydiumCpmm?.mintBatchSize ?? prev.raydiumCpmm_mintBatchSize ?? 10),
+            raydiumCpmm_graphqlMaxPages: Number(j?.raydiumCpmm?.graphqlMaxPages ?? prev.raydiumCpmm_graphqlMaxPages ?? 50),
+            raydiumCpmm_detailBatchSize: Number(j?.raydiumCpmm?.detailBatchSize ?? prev.raydiumCpmm_detailBatchSize ?? 50),
             // Orca GraphQL
             orca_useGraphQL: !!j?.orca?.useGraphQL,
             orca_shyftApiKey: j?.orca?.shyftApiKey || prev.orca_shyftApiKey || '',
@@ -402,8 +416,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         rpcMinGapMs: Number(cfg.rpcMinGapMs),
         enabledDexSources: {
           raydium: cfg.enabledDexSources_raydium ? 
-            (cfg.enabledDexSources_raydium_amm && cfg.enabledDexSources_raydium_clmm ? true : 
-              { amm: !!cfg.enabledDexSources_raydium_amm, clmm: !!cfg.enabledDexSources_raydium_clmm }) : false,
+            (cfg.enabledDexSources_raydium_amm && cfg.enabledDexSources_raydium_clmm && !cfg.enabledDexSources_raydium_cpmm ? true : 
+              { amm: !!cfg.enabledDexSources_raydium_amm, clmm: !!cfg.enabledDexSources_raydium_clmm, cpmm: !!cfg.enabledDexSources_raydium_cpmm }) : false,
           orca: cfg.enabledDexSources_orca ? 
             (cfg.enabledDexSources_orca_amm && cfg.enabledDexSources_orca_clmm ? true : 
               { amm: !!cfg.enabledDexSources_orca_amm, clmm: !!cfg.enabledDexSources_orca_clmm }) : false,
@@ -428,6 +442,13 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
       graphqlMaxPages: Number(cfg.raydium_graphqlMaxPages || 50),
       detailBatchSize: Number(cfg.raydium_detailBatchSize || 50),
 		},
+      raydiumCpmm: {
+        enabled: !!cfg.raydiumCpmm_enabled,
+        pageDelayMs: Number(cfg.raydiumCpmm_pageDelayMs || 200),
+        mintBatchSize: Number(cfg.raydiumCpmm_mintBatchSize || 10),
+        graphqlMaxPages: Number(cfg.raydiumCpmm_graphqlMaxPages || 50),
+        detailBatchSize: Number(cfg.raydiumCpmm_detailBatchSize || 50),
+      },
       orca: {
         cacheTtlMs: Number(cfg.orca_cacheTtlMs),
         maxHttpRetries: Number(cfg.orca_maxHttpRetries),
@@ -681,6 +702,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       if (!e.target.checked) {
                         set('enabledDexSources_raydium_amm', false);
                         set('enabledDexSources_raydium_clmm', false);
+                        set('enabledDexSources_raydium_cpmm', false);
                       }
                     }} 
                   />
@@ -703,6 +725,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                         onChange={(e)=>set('enabledDexSources_raydium_clmm', e.target.checked)} 
                       />
                       CLMM Pools
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={!!cfg.enabledDexSources_raydium_cpmm} 
+                        onChange={(e)=>set('enabledDexSources_raydium_cpmm', e.target.checked)} 
+                      />
+                      CPMM Pools
                     </label>
                   </div>
                 )}
@@ -994,6 +1024,60 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                         value={cfg.raydium_detailBatchSize} 
                         onChange={(e)=>set('raydium_detailBatchSize', Number(e.target.value)||50)}
                         disabled={!cfg.raydium_useGraphQL}
+                        min={1} max={100}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-gray-800/50 rounded p-3 border border-orange-600">
+                <label className="flex items-center gap-2 mb-3">
+                  <input type="checkbox" checked={!!cfg.raydiumCpmm_enabled} onChange={(e)=>set('raydiumCpmm_enabled', e.target.checked)} />
+                  <span className="font-semibold text-orange-400">Enable Raydium CPMM GraphQL</span>
+                </label>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Page Delay (ms)</label>
+                    <input 
+                      type="number" 
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                      value={cfg.raydiumCpmm_pageDelayMs} 
+                      onChange={(e)=>set('raydiumCpmm_pageDelayMs', Number(e.target.value)||0)}
+                      disabled={!cfg.raydiumCpmm_enabled}
+                    />
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-gray-600">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Mint Batch</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                        value={cfg.raydiumCpmm_mintBatchSize} 
+                        onChange={(e)=>set('raydiumCpmm_mintBatchSize', Number(e.target.value)||10)}
+                        disabled={!cfg.raydiumCpmm_enabled}
+                        min={1} max={50}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Max Pages</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                        value={cfg.raydiumCpmm_graphqlMaxPages} 
+                        onChange={(e)=>set('raydiumCpmm_graphqlMaxPages', Number(e.target.value)||50)}
+                        disabled={!cfg.raydiumCpmm_enabled}
+                        min={1} max={100}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Detail Batch</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                        value={cfg.raydiumCpmm_detailBatchSize} 
+                        onChange={(e)=>set('raydiumCpmm_detailBatchSize', Number(e.target.value)||50)}
+                        disabled={!cfg.raydiumCpmm_enabled}
                         min={1} max={100}
                       />
                     </div>
