@@ -1763,6 +1763,7 @@ async function getPumpswapSdkQuote(
     }
     
     // Derive associated bonding curve if we know the mint
+    // CRITICAL: Must use the correct token program based on whether the mint is Token-2022 or SPL
     const pumpMint = hop.inputMint === 'So11111111111111111111111111111111111111112' 
       ? hop.outputMint 
       : hop.inputMint;
@@ -1770,13 +1771,43 @@ async function getPumpswapSdkQuote(
       try {
         const mintPk = new PublicKey(pumpMint);
         const ASSOCIATED_TOKEN_PROGRAM = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
-        const TOKEN_PROGRAM = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+        const TOKEN_PROGRAM_SPL = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+        const TOKEN_PROGRAM_2022 = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+        
+        // Determine which token program to use based on hop.inputTokenProgram or hop.outputTokenProgram
+        // PumpMint is the non-SOL token in the pair
+        const pumpMintTokenProgram = hop.inputMint === 'So11111111111111111111111111111111111111112'
+          ? hop.outputTokenProgram
+          : hop.inputTokenProgram;
+        const isToken2022 = pumpMintTokenProgram === 'token-2022' || pumpMintTokenProgram === TOKEN_PROGRAM_2022.toBase58();
+        const tokenProgram = isToken2022 ? TOKEN_PROGRAM_2022 : TOKEN_PROGRAM_SPL;
+        
+        // ATA derivation uses: [owner, tokenProgram, mint]
         const [associatedBC] = PublicKey.findProgramAddressSync(
-          [poolPk.toBuffer(), TOKEN_PROGRAM.toBuffer(), mintPk.toBuffer()],
+          [poolPk.toBuffer(), tokenProgram.toBuffer(), mintPk.toBuffer()],
           ASSOCIATED_TOKEN_PROGRAM
         );
         accounts.associatedBondingCurve = associatedBC.toBase58();
-      } catch { /* ignore */ }
+        
+        // Store the token program for the builder
+        (accounts as any).pumpMintTokenProgram = tokenProgram.toBase58();
+        
+        logger.debug('sdkQuoteBuilder.pumpswap.associatedBC.derived', {
+          cat: 'tx',
+          ctx: {
+            poolId: poolId.slice(0, 8) + '...',
+            pumpMint: pumpMint.slice(0, 8) + '...',
+            isToken2022,
+            tokenProgram: tokenProgram.toBase58().slice(0, 8) + '...',
+            associatedBC: accounts.associatedBondingCurve.slice(0, 8) + '...',
+          },
+        });
+      } catch (e) {
+        logger.debug('sdkQuoteBuilder.pumpswap.associatedBC.derivation.failed', {
+          cat: 'tx',
+          error: (e as Error).message,
+        });
+      }
     }
     
     accounts.bondingCurve = poolPk.toBase58();
@@ -1806,74 +1837,140 @@ async function getPumpswapSdkQuote(
 
 /**
  * Get SDK-provided accounts for a hop
- * Routes to the appropriate DEX SDK based on hop.dex
+ * Routes to the appropriate DEX SDK based on hop.dex and hop.variant
+ * 
+ * CRITICAL: The variant field determines which SDK to use:
+ * - Raydium: 'clmm' (default), 'amm'/'amm_v4', 'cpmm'
+ * - Meteora: 'dlmm' (default), 'damm_v1', 'damm_v2'
+ * 
+ * If variant is not set, we check programId as fallback.
  */
 export async function getSdkQuoteAccounts(hop: DirectHop): Promise<SdkQuoteResult> {
   const connection = getConnection();
   const dex = hop.dex?.toLowerCase();
   const variant = hop.variant?.toLowerCase();
+  const programId = hop.programId || '';
+
+  // Log routing decision for debugging
+  logger.debug('sdkQuoteBuilder.routing', {
+    cat: 'tx',
+    ctx: {
+      poolId: hop.poolId?.slice(0, 8) + '...',
+      dex,
+      variant,
+      programId: programId.slice(0, 8) + '...',
+    },
+  });
 
   switch (dex) {
     case 'orca':
       return getOrcaSdkQuote(connection, hop);
 
     case 'raydium':
-      // Route based on variant (CLMM vs AMM v4)
-      if (variant === 'clmm' || !variant) {
-        // Default to CLMM for backward compatibility
-        if (variant === 'clmm') {
-          return getRaydiumSdkQuote(connection, hop);
-        }
-        // Check program ID to determine variant if not specified
-        const programId = hop.programId || '';
-        if (programId === RAYDIUM_AMM_V4_PROGRAM.toBase58() || 
-            programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
-          return getRaydiumAmmSdkQuote(connection, hop);
-        }
-        return getRaydiumSdkQuote(connection, hop);
+      // CPMM variant - handle first as it's most specific
+      if (variant === 'cpmm') {
+        logger.debug('sdkQuoteBuilder.routing.raydium.cpmm', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        // Note: CPMM doesn't need SDK quote - it's a constant product AMM
+        // Return empty success to let builder derive accounts manually
+        return { success: true, accounts: {} };
       }
+      
+      // AMM v4 variant
       if (variant === 'amm' || variant === 'amm_v4') {
+        logger.debug('sdkQuoteBuilder.routing.raydium.amm', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
         return getRaydiumAmmSdkQuote(connection, hop);
       }
+      
+      // CLMM variant (default for Raydium)
+      if (variant === 'clmm') {
+        logger.debug('sdkQuoteBuilder.routing.raydium.clmm', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        return getRaydiumSdkQuote(connection, hop);
+      }
+      
+      // No variant - check program ID to determine type
+      if (programId === RAYDIUM_AMM_V4_PROGRAM.toBase58() || 
+          programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
+        logger.debug('sdkQuoteBuilder.routing.raydium.amm_by_programId', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        return getRaydiumAmmSdkQuote(connection, hop);
+      }
+      
+      // Check for CPMM program ID
+      if (programId === 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C') {
+        logger.debug('sdkQuoteBuilder.routing.raydium.cpmm_by_programId', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        return { success: true, accounts: {} };
+      }
+      
+      // Default to CLMM
+      logger.debug('sdkQuoteBuilder.routing.raydium.clmm_default', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
       return getRaydiumSdkQuote(connection, hop);
 
     case 'meteora':
-      // Route based on variant (DLMM vs DAMM v1/v2)
-      if (variant === 'dlmm' || !variant) {
-        // Check program ID to determine variant if not specified
-        const programId = hop.programId || '';
-        if (programId === METEORA_DAMM_V1_PROGRAM.toBase58() ||
-            programId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') {
-          return getMeteoraDammV1SdkQuote(connection, hop);
-        }
-        if (programId === METEORA_DAMM_V2_PROGRAM.toBase58() ||
-            programId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG') {
-          return getMeteoraDammV2SdkQuote(connection, hop);
-        }
-        return getMeteoraSdkQuote(connection, hop);
-      }
-      if (variant === 'balanced' || variant === 'damm' || variant === 'damm_v1') {
+      // DAMM v1 variant
+      if (variant === 'damm_v1' || variant === 'damm' || variant === 'balanced') {
+        logger.debug('sdkQuoteBuilder.routing.meteora.damm_v1', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
         return getMeteoraDammV1SdkQuote(connection, hop);
       }
+      
+      // DAMM v2 variant
       if (variant === 'damm_v2' || variant === 'cpamm') {
+        logger.debug('sdkQuoteBuilder.routing.meteora.damm_v2', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
         return getMeteoraDammV2SdkQuote(connection, hop);
       }
+      
+      // DLMM variant (default for Meteora)
+      if (variant === 'dlmm') {
+        logger.debug('sdkQuoteBuilder.routing.meteora.dlmm', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        return getMeteoraSdkQuote(connection, hop);
+      }
+      
+      // No variant - check program ID to determine type
+      if (programId === METEORA_DAMM_V1_PROGRAM.toBase58() ||
+          programId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') {
+        logger.debug('sdkQuoteBuilder.routing.meteora.damm_v1_by_programId', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        return getMeteoraDammV1SdkQuote(connection, hop);
+      }
+      if (programId === METEORA_DAMM_V2_PROGRAM.toBase58() ||
+          programId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG') {
+        logger.debug('sdkQuoteBuilder.routing.meteora.damm_v2_by_programId', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        return getMeteoraDammV2SdkQuote(connection, hop);
+      }
+      
+      // Default to DLMM
+      logger.debug('sdkQuoteBuilder.routing.meteora.dlmm_default', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
       return getMeteoraSdkQuote(connection, hop);
 
     case 'meteora_balanced':
-      // Legacy case - detect v1 vs v2 from program ID
-      const metProgId = hop.programId || '';
-      if (metProgId === METEORA_DAMM_V2_PROGRAM.toBase58() ||
-          metProgId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG') {
+      // meteora_balanced DEX name - always DAMM, detect v1 vs v2 from variant or programId
+      if (variant === 'damm_v2') {
+        logger.debug('sdkQuoteBuilder.routing.meteora_balanced.v2_by_variant', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
         return getMeteoraDammV2SdkQuote(connection, hop);
       }
+      if (variant === 'damm_v1') {
+        logger.debug('sdkQuoteBuilder.routing.meteora_balanced.v1_by_variant', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        return getMeteoraDammV1SdkQuote(connection, hop);
+      }
+      
+      // Check program ID
+      if (programId === METEORA_DAMM_V2_PROGRAM.toBase58() ||
+          programId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG') {
+        logger.debug('sdkQuoteBuilder.routing.meteora_balanced.v2_by_programId', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
+        return getMeteoraDammV2SdkQuote(connection, hop);
+      }
+      
+      // Default to v1
+      logger.debug('sdkQuoteBuilder.routing.meteora_balanced.v1_default', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
       return getMeteoraDammV1SdkQuote(connection, hop);
 
     case 'pumpswap':
       // PumpSwap needs SDK for global config and fee recipient resolution
+      logger.debug('sdkQuoteBuilder.routing.pumpswap', { cat: 'tx', poolId: hop.poolId?.slice(0, 8) });
       return getPumpswapSdkQuote(connection, hop);
 
     default:
+      logger.warn('sdkQuoteBuilder.routing.unsupported', {
+        cat: 'tx',
+        ctx: { dex, variant, poolId: hop.poolId?.slice(0, 8) },
+      });
       return {
         success: false,
         accounts: {},

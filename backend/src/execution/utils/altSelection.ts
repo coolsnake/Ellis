@@ -10,12 +10,16 @@ import { logger } from '../../utils/logger.js';
 
 /**
  * DEX type enumeration for estimating account requirements
+ * NOTE: Keep in sync with router/types.ts DexType enum
  */
 export enum DexType {
-  Raydium = 0,
-  Meteora = 1,
-  Orca = 2,
-  PumpSwap = 3,
+  Raydium = 0,        // Raydium CLMM
+  Meteora = 1,        // Meteora DLMM
+  Orca = 2,           // Orca Whirlpool
+  PumpSwap = 3,       // PumpSwap AMM
+  RaydiumAmm = 4,     // Raydium AMM v4 (Serum/OpenBook)
+  MeteoraDAMM = 5,    // Meteora Dynamic AMM (v1 and v2)
+  RaydiumCpmm = 6,    // Raydium Constant Product AMM (CP-Swap)
 }
 
 /**
@@ -23,10 +27,13 @@ export enum DexType {
  * Used for transaction size estimation
  */
 const ACCOUNTS_PER_HOP: Record<number, number> = {
-  [DexType.Raydium]: 18,   // Raydium CLMM
-  [DexType.Meteora]: 18,   // Meteora DLMM
-  [DexType.Orca]: 12,      // Orca Whirlpool
-  [DexType.PumpSwap]: 10,  // PumpSwap
+  [DexType.Raydium]: 18,     // Raydium CLMM
+  [DexType.Meteora]: 18,     // Meteora DLMM
+  [DexType.Orca]: 12,        // Orca Whirlpool
+  [DexType.PumpSwap]: 12,    // PumpSwap
+  [DexType.RaydiumAmm]: 19,  // Raydium AMM v4
+  [DexType.MeteoraDAMM]: 12, // Meteora DAMM v1/v2
+  [DexType.RaydiumCpmm]: 14, // Raydium CPMM
 };
 
 /**

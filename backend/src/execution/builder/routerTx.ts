@@ -2576,10 +2576,21 @@ async function extractDexAccounts(
           : derivePumpswapGlobalConfig();
         const isBuying = hop.inputMint === SOL_MINT; // SOL -> Token = buy
         const pumpMint = isBuying ? outputMint : inputMint; // The pump.fun token mint
-        // Use SDK-provided associatedBondingCurve if available, otherwise derive
+        
+        // CRITICAL: Determine the token program for the pump token (Token-2022 vs SPL)
+        // Use SDK-provided info if available, otherwise detect from hop.inputTokenProgram/outputTokenProgram
+        const pumpMintTokenProgram = isBuying
+          ? hop.outputTokenProgram
+          : hop.inputTokenProgram;
+        const isPumpToken2022 = pumpMintTokenProgram === 'token-2022' || 
+          pumpMintTokenProgram === TOKEN_2022_PROGRAM_ID.toBase58() ||
+          (hop as any).pumpMintTokenProgram === TOKEN_2022_PROGRAM_ID.toBase58();
+        const pumpTokenProgramId = isPumpToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+        
+        // Use SDK-provided associatedBondingCurve if available, otherwise derive with correct token program
         const associatedBC = (hop as any).associatedBondingCurve
           ? new PublicKey((hop as any).associatedBondingCurve)
-          : derivePumpswapAssociatedBondingCurve(poolId, pumpMint);
+          : derivePumpswapAssociatedBondingCurve(poolId, pumpMint, pumpTokenProgramId);
         
         // CRITICAL: Use CANONICAL account ordering for BC Token Account
         const pumpVault = poolAccountA || hop.vaultA || hop.poolId;
@@ -2596,6 +2607,8 @@ async function extractDexAccounts(
           hopVaultA: hop.vaultA || 'missing',
           selectedVault: pumpVault,
           isBuying,
+          isPumpToken2022,
+          pumpTokenProgram: pumpTokenProgramId.toBase58(),
           userTokenAccount: (isBuying ? userDestAta : userSourceAta).toBase58(),
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
@@ -2614,7 +2627,7 @@ async function extractDexAccounts(
           isBuying ? userDestAta : userSourceAta,                             // 6: User Token Account
           wallet,                                                              // 7: User (signer)
           SystemProgram.programId,                                             // 8: System Program
-          TOKEN_PROGRAM_ID,                                                    // 9: Token Program
+          pumpTokenProgramId,                                                  // 9: Token Program (SPL or Token-2022)
           SYSVAR_RENT_PUBKEY,                                                  // 10: Rent
           programIdKey,                                                        // 11: PumpSwap Program
         );
@@ -2852,11 +2865,19 @@ function derivePumpswapGlobalConfig(): PublicKey {
 
 /**
  * Derive PumpSwap Associated Bonding Curve (ATA for bonding curve)
+ * CRITICAL: Must use the correct token program based on whether mint is Token-2022 or SPL
+ * @param bondingCurve The bonding curve (pool) address
+ * @param mint The pump.fun token mint
+ * @param tokenProgram Optional token program override (defaults to SPL Token)
  */
-function derivePumpswapAssociatedBondingCurve(bondingCurve: PublicKey, mint: PublicKey): PublicKey {
+function derivePumpswapAssociatedBondingCurve(
+  bondingCurve: PublicKey,
+  mint: PublicKey,
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID
+): PublicKey {
   const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
   const [assocBC] = PublicKey.findProgramAddressSync(
-    [bondingCurve.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    [bondingCurve.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   return assocBC;

@@ -135,42 +135,8 @@ export interface OrcaWhirlpoolPoolState {
   };
 }
 
-export interface RaydiumAmmPoolState {
-  programId: string;
-  authority: string;
-  openOrders: string;
-  targetOrders: string;
-  coinVault: string;
-  pcVault: string;
-  coinMint: string;
-  pcMint: string;
-  lpMint: string;
-  marketId: string;
-  marketProgramId: string;
-  serumBids?: string;
-  serumAsks?: string;
-  serumEventQueue?: string;
-  serumCoinVault?: string;
-  serumPcVault?: string;
-  serumVaultSigner?: string;
-}
-
-export interface MeteoraDammPoolState {
-  programId: string;
-  mintA: string;
-  mintB: string;
-  vaultA: string;
-  vaultB: string;
-  authority: string;
-  lpMint: string;
-  isV2: boolean;
-  reserveA?: number;
-  reserveB?: number;
-  feeBps?: number;
-}
-
 // Union type for pool states
-export type PoolState = RaydiumClmmPoolState | MeteoraDlmmPoolState | OrcaWhirlpoolPoolState | RaydiumAmmPoolState | MeteoraDammPoolState;
+export type PoolState = RaydiumClmmPoolState | MeteoraDlmmPoolState | OrcaWhirlpoolPoolState;
 
 // Type guard to check if pool is Raydium
 function isRaydiumPool(pool: PoolState): pool is RaydiumClmmPoolState {
@@ -185,16 +151,6 @@ function isMeteoraDlmmPool(pool: PoolState): pool is MeteoraDlmmPoolState {
 // Type guard to check if pool is Orca Whirlpool
 function isOrcaWhirlpool(pool: PoolState): pool is OrcaWhirlpoolPoolState {
   return 'mintA' in pool && 'mintB' in pool && 'tickArrays' in pool && !('ammConfig' in pool) && !('tokenXMint' in pool);
-}
-
-// Type guard to check if pool is Raydium AMM v4
-function isRaydiumAmm(pool: PoolState): pool is RaydiumAmmPoolState {
-  return 'marketId' in pool && 'openOrders' in pool && 'targetOrders' in pool;
-}
-
-// Type guard to check if pool is Meteora DAMM
-function isMeteoraDamm(pool: PoolState): pool is MeteoraDammPoolState {
-  return 'isV2' in pool && 'authority' in pool && !('binArrays' in pool);
 }
 
 // ============================================================================
@@ -212,28 +168,14 @@ export async function fetchPoolAccounts(params: {
   try {
     const poolPubkey = new PublicKey(poolId);
     
-    // Raydium CLMM (Concentrated Liquidity)
     if (dex === 'raydium' && variant === 'clmm') {
       return await fetchRaydiumClmmPool(connection, poolPubkey);
     }
     
-    // Raydium AMM v4 (Constant Product)
-    if ((dex === 'raydium' && variant === 'amm') || dex === 'raydium-amm') {
-      return await fetchRaydiumAmmPool(connection, poolPubkey);
-    }
-    
-    // Meteora DLMM (Discrete Liquidity)
     if (dex === 'meteora' && variant === 'dlmm') {
       return await fetchMeteoraDlmmPool(connection, poolPubkey);
     }
     
-    // Meteora DAMM v1/v2 (Dynamic AMM)
-    if ((dex === 'meteora' && (variant === 'damm_v1' || variant === 'damm_v2')) || dex === 'meteora-damm') {
-      const isV2 = variant === 'damm_v2';
-      return await fetchMeteoraDammPool(connection, poolPubkey, isV2);
-    }
-    
-    // Orca Whirlpool
     if (dex === 'orca' && (variant === 'whirlpool' || !variant)) {
       return await fetchOrcaWhirlpoolPool(connection, poolPubkey);
     }
@@ -813,192 +755,6 @@ async function fetchOrcaWhirlpoolPool(
   } catch (err: any) {
     logger.error('router.test.orca.pool.decode.error', { cat: 'router', error: err.message, stack: err.stack });
     return { success: false, error: `Failed to decode Orca pool: ${err.message}` };
-  }
-}
-
-// Raydium AMM v4 program ID
-const RAYDIUM_AMM_V4_PROGRAM = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
-// Meteora DAMM program IDs
-const METEORA_DAMM_V1_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
-const METEORA_DAMM_V2_PROGRAM = new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
-
-async function fetchRaydiumAmmPool(
-  connection: Connection,
-  poolPubkey: PublicKey
-): Promise<{ success: boolean; pool?: RaydiumAmmPoolState; error?: string }> {
-  const accountInfo = await connection.getAccountInfo(poolPubkey);
-  
-  if (!accountInfo || !accountInfo.data) {
-    return { success: false, error: 'Pool account not found' };
-  }
-
-  try {
-    // Raydium AMM v4 account layout (simplified):
-    // 8: status
-    // 8: nonce
-    // 8: maxOrder
-    // 8: depth
-    // ... (more fields)
-    // Vaults, mints, etc. at specific offsets
-    
-    const data = Buffer.from(accountInfo.data);
-    
-    // Read key fields - these offsets are approximate and may need verification
-    // with the actual Raydium AMM v4 account layout
-    let offset = 0;
-    
-    // Skip to the relevant fields
-    offset += 8;  // status
-    offset += 8;  // nonce
-    offset += 8;  // maxOrder
-    offset += 8;  // depth
-    offset += 8;  // baseDecimal
-    offset += 8;  // quoteDecimal
-    offset += 8;  // state
-    offset += 8;  // resetFlag
-    offset += 8;  // minSize
-    offset += 8;  // volMaxCutRatio
-    offset += 8;  // amountWaveRatio
-    offset += 8;  // baseLotSize
-    offset += 8;  // quoteLotSize
-    offset += 8;  // minPriceMultiplier
-    offset += 8;  // maxPriceMultiplier
-    offset += 8;  // systemDecimalValue
-    offset += 8;  // minSeparateNumerator
-    offset += 8;  // minSeparateDenominator
-    offset += 8;  // tradeFeeNumerator
-    offset += 8;  // tradeFeeDenominator
-    offset += 8;  // pnlNumerator
-    offset += 8;  // pnlDenominator
-    offset += 8;  // swapFeeNumerator
-    offset += 8;  // swapFeeDenominator
-    offset += 8;  // baseNeedTakePnl
-    offset += 8;  // quoteNeedTakePnl
-    offset += 8;  // quoteTotalPnl
-    offset += 8;  // baseTotalPnl
-    offset += 8;  // poolOpenTime
-    offset += 8;  // punishPcAmount
-    offset += 8;  // punishCoinAmount
-    offset += 8;  // orderbookToInitTime
-    
-    // Skip padding (128 bytes)
-    offset += 128;
-    
-    // Read public keys
-    const poolCoinTokenAccount = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const poolPcTokenAccount = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const coinMint = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const pcMint = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const lpMint = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const openOrders = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const market = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const marketProgramId = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const targetOrders = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    
-    // Derive authority PDA
-    const [authority] = PublicKey.findProgramAddressSync(
-      [poolPubkey.toBuffer(), Buffer.from([97, 109, 109, 32, 97, 117, 116, 104, 111, 114, 105, 116, 121])], // "amm authority"
-      RAYDIUM_AMM_V4_PROGRAM
-    );
-
-    const pool: RaydiumAmmPoolState = {
-      programId: accountInfo.owner.toBase58(),
-      authority: authority.toBase58(),
-      openOrders: openOrders.toBase58(),
-      targetOrders: targetOrders.toBase58(),
-      coinVault: poolCoinTokenAccount.toBase58(),
-      pcVault: poolPcTokenAccount.toBase58(),
-      coinMint: coinMint.toBase58(),
-      pcMint: pcMint.toBase58(),
-      lpMint: lpMint.toBase58(),
-      marketId: market.toBase58(),
-      marketProgramId: marketProgramId.toBase58(),
-    };
-
-    logger.info('router.test.pool.decoded', { 
-      cat: 'router', 
-      poolId: poolPubkey.toBase58(), 
-      pool, 
-      dex: 'raydium_amm',
-    });
-
-    return { success: true, pool };
-  } catch (err: any) {
-    logger.error('router.test.raydium_amm.pool.decode.error', { cat: 'router', error: err.message, stack: err.stack });
-    return { success: false, error: `Failed to decode Raydium AMM pool: ${err.message}` };
-  }
-}
-
-async function fetchMeteoraDammPool(
-  connection: Connection,
-  poolPubkey: PublicKey,
-  isV2: boolean = false
-): Promise<{ success: boolean; pool?: MeteoraDammPoolState; error?: string }> {
-  const accountInfo = await connection.getAccountInfo(poolPubkey);
-  
-  if (!accountInfo || !accountInfo.data) {
-    return { success: false, error: 'Pool account not found' };
-  }
-
-  try {
-    const data = Buffer.from(accountInfo.data);
-    
-    // Meteora DAMM pool layout (simplified):
-    // Note: Layout differs between v1 and v2
-    let offset = 8; // Skip discriminator
-    
-    // For v1 (Dynamic AMM):
-    // Pool state fields at known offsets
-    const lpMint = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const tokenAMint = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const tokenBMint = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const aVault = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    const bVault = new PublicKey(data.subarray(offset, offset + 32));
-    offset += 32;
-    
-    // Derive pool authority PDA
-    const programId = isV2 ? METEORA_DAMM_V2_PROGRAM : METEORA_DAMM_V1_PROGRAM;
-    const seed = isV2 ? 'pool_authority' : 'vault_and_lp_mint_auth_pda';
-    const [authority] = PublicKey.findProgramAddressSync(
-      [Buffer.from(seed), poolPubkey.toBuffer()],
-      programId
-    );
-
-    const pool: MeteoraDammPoolState = {
-      programId: accountInfo.owner.toBase58(),
-      mintA: tokenAMint.toBase58(),
-      mintB: tokenBMint.toBase58(),
-      vaultA: aVault.toBase58(),
-      vaultB: bVault.toBase58(),
-      authority: authority.toBase58(),
-      lpMint: lpMint.toBase58(),
-      isV2,
-    };
-
-    logger.info('router.test.pool.decoded', { 
-      cat: 'router', 
-      poolId: poolPubkey.toBase58(), 
-      pool, 
-      dex: isV2 ? 'meteora_damm_v2' : 'meteora_damm_v1',
-    });
-
-    return { success: true, pool };
-  } catch (err: any) {
-    logger.error('router.test.meteora_damm.pool.decode.error', { cat: 'router', error: err.message, stack: err.stack });
-    return { success: false, error: `Failed to decode Meteora DAMM pool: ${err.message}` };
   }
 }
 

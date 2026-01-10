@@ -531,28 +531,26 @@ export function calculateRepayAmount(borrowedAmount: bigint): bigint {
 export function getAccountsNeededForDex(dexType: DexType): number {
   switch (dexType) {
     case DexType.Raydium:
-      // Return maximum (with exBitmap). Actual count determined by builder based on pool state.
+      // Raydium CLMM: Return maximum (with exBitmap). Actual count determined by builder based on pool state.
       return 18;
-    case DexType.RaydiumAmm:
-      // Raydium AMM v4: 17 accounts + 1 program = 18
-      return 18;
-    case DexType.RaydiumCpmm:
-      // Raydium CPMM: 13 accounts + 1 program = 14
-      return 14;
     case DexType.Meteora:
-      // NOTE: Must match arb-router/programs/arb-router/src/dex/meteora.rs
+      // Meteora DLMM (NOTE: Must match arb-router/programs/arb-router/src/dex/meteora.rs)
       // swap: 14 fixed + 1 program + 3 bin arrays = 18 (standard SPL tokens)
       // swap2: 15 fixed + 1 program + 3 bin arrays = 19 (Token-2022)
       // Return minimum (swap). The builder passes appropriate count per variant.
       return 18;
-    case DexType.MeteoraDAMM:
-      // Meteora DAMM v1: 10 accounts + 1 program = 11
-      // Meteora DAMM v2: 11 accounts + 1 program = 12
-      return 11;
     case DexType.Orca:
       return 12; // Orca Whirlpool: 11 swap accounts + 1 program
     case DexType.PumpSwap:
       return 12; // PumpSwap
+    case DexType.RaydiumAmm:
+      return 19; // Raydium AMM v4: 18 accounts + program
+    case DexType.MeteoraDAMM:
+      // Meteora DAMM v1: 11 accounts, v2: 12 accounts
+      // Return max (v2). Builder determines actual count based on variant.
+      return 12;
+    case DexType.RaydiumCpmm:
+      return 14; // Raydium CPMM: 14 accounts
     default:
       return 12;
   }
@@ -560,6 +558,11 @@ export function getAccountsNeededForDex(dexType: DexType): number {
 
 /**
  * Map string DEX name to DexType enum
+ * 
+ * IMPORTANT: This maps hop.dex + hop.variant to the correct on-chain DexType
+ * The variant is critical for distinguishing between:
+ * - Raydium CLMM (clmm) vs AMM v4 (amm) vs CPMM (cpmm)
+ * - Meteora DLMM (dlmm) vs DAMM v1/v2 (damm_v1, damm_v2)
  */
 export function dexNameToType(dex: string, variant?: string): DexType {
   const dexLower = dex.toLowerCase();
@@ -567,28 +570,28 @@ export function dexNameToType(dex: string, variant?: string): DexType {
   
   // Raydium variants
   if (dexLower === 'raydium') {
-    if (variantLower === 'amm' || variantLower === 'amm_v4') return DexType.RaydiumAmm;
     if (variantLower === 'cpmm') return DexType.RaydiumCpmm;
-    return DexType.Raydium; // Default to CLMM
+    if (variantLower === 'amm' || variantLower === 'amm_v4') return DexType.RaydiumAmm;
+    // Default to CLMM (includes variant === 'clmm' or no variant)
+    return DexType.Raydium;
   }
-  if (dexLower === 'raydium-amm' || dexLower === 'raydium_amm') return DexType.RaydiumAmm;
-  if (dexLower === 'raydium-cpmm' || dexLower === 'raydium_cpmm') return DexType.RaydiumCpmm;
+  
+  // Meteora DAMM (Dynamic AMM / Balanced pools) - both v1 and v2
+  if (dexLower === 'meteora_balanced') {
+    return DexType.MeteoraDAMM;
+  }
   
   // Meteora variants
-  if (dexLower === 'meteora' || dexLower === 'meteora-dlmm') {
-    return DexType.Meteora; // DLMM
-  }
-  if (dexLower === 'meteora_balanced' || dexLower === 'meteora-damm') {
-    return DexType.MeteoraDAMM;
-  }
-  if (variantLower === 'damm_v1' || variantLower === 'damm_v2') {
-    return DexType.MeteoraDAMM;
+  if (dexLower === 'meteora') {
+    if (variantLower === 'damm_v1' || variantLower === 'damm_v2' || variantLower === 'damm' || variantLower === 'balanced') {
+      return DexType.MeteoraDAMM;
+    }
+    // Default to DLMM (includes variant === 'dlmm' or no variant)
+    return DexType.Meteora;
   }
   
-  // Orca
+  // Other DEXes
   if (dexLower === 'orca') return DexType.Orca;
-  
-  // PumpSwap
   if (dexLower === 'pumpswap') return DexType.PumpSwap;
   
   throw new Error(`Unsupported DEX: ${dex}/${variant}`);
