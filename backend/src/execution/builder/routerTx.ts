@@ -2654,7 +2654,7 @@ async function extractDexAccounts(
           SystemProgram.programId,                                             // 8: System Program
           pumpTokenProgramId,                                                  // 9: Token Program (SPL or Token-2022)
           SYSVAR_RENT_PUBKEY,                                                  // 10: Rent
-          programIdKey,                                                        // 11: PumpSwap Program
+          PUMPSWAP_PROGRAM,                                                    // 11: PumpSwap AMM Program (MUST be pAMMBay... not bonding curve)
         );
         break;
 
@@ -2866,6 +2866,12 @@ async function extractDexAccounts(
       const pad = accounts.length > 16 ? accounts[accounts.length - 1] : new PublicKey(hop.poolId.replace(/[#-]rev$/, ''));
       accounts.push(pad);
     }
+    return accounts;
+  }
+
+  // CRITICAL: For MeteoraDAMM, don't pad - the on-chain router detects v1 vs v2 by account count
+  // v1 = 11 accounts, v2 = 12 accounts
+  if (dexType === DexType.MeteoraDAMM) {
     return accounts;
   }
 

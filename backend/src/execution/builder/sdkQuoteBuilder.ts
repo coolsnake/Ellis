@@ -1426,12 +1426,9 @@ async function getRaydiumAmmSdkQuote(
       accounts.marketProgramId = marketProgramId.toBase58();
       accounts.lpMint = lpMint.toBase58();
       
-      // Derive AMM authority PDA
-      const [authority] = PublicKey.findProgramAddressSync(
-        [poolPk.toBuffer(), Buffer.from([97, 109, 109, 32, 97, 117, 116, 104, 111, 114, 105, 116, 121])],
-        RAYDIUM_AMM_V4_PROGRAM
-      );
-      accounts.ammAuthority = authority.toBase58();
+      // Raydium AMM v4 uses a GLOBAL authority, not per-pool derivation
+      // The authority is hardcoded and never changes across all AMM v4 pools
+      accounts.ammAuthority = '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1';
       
       // Now fetch the Serum/OpenBook market to get remaining accounts
       const marketAccountInfo = await connection.getAccountInfo(marketId);
