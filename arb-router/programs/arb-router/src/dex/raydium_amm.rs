@@ -21,8 +21,8 @@ use crate::error::ArbRouterError;
 // =============================================================================
 
 /// Number of accounts needed for Raydium AMM swap
-/// 17 accounts to Raydium + 1 program ID = 18 total
-pub const ACCOUNTS_NEEDED: usize = 18;
+/// 18 accounts to Raydium (including user signer at 17) + 1 program ID = 19 total
+pub const ACCOUNTS_NEEDED: usize = 19;
 
 // =============================================================================
 // Instruction Discriminators

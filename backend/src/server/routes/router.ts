@@ -1236,16 +1236,25 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const hopPoolIds = hops.map(h => h.poolId);
       const dexes = hops.map(h => {
         // Map dex name to variant for proper pool type identification
+        // IMPORTANT: Check specific DEX types FIRST before variant checks
+        // This prevents variant='amm' from incorrectly matching Pumpswap pools
         const dexLower = h.dex.toLowerCase();
         const variant = (h.variant || '').toLowerCase();
         
-        // Raydium variants
-        if (dexLower === 'raydium-amm' || variant === 'amm') return 'raydium.amm';
+        // Pumpswap - check FIRST since it uses variant='amm' internally
+        if (dexLower === 'pumpswap') return 'pumpswap';
+        
+        // Raydium variants - now safe to check variant='amm'
+        if (dexLower === 'raydium-amm') return 'raydium.amm';
+        if (dexLower === 'raydium' && variant === 'amm') return 'raydium.amm';
+        if (dexLower === 'raydium' && variant === 'cpmm') return 'raydium.cpmm';
         if (dexLower === 'raydium') return 'raydium-clmm';
         
-        // Meteora variants
-        if (dexLower === 'meteora-damm' || variant === 'damm_v1') return 'meteora_balanced_v1';
-        if (variant === 'damm_v2') return 'meteora_balanced_v2';
+        // Meteora variants - check dex first before variant
+        if (dexLower === 'meteora-damm') return 'meteora_balanced_v1';
+        if (dexLower === 'meteora_balanced' && variant === 'damm_v1') return 'meteora_balanced_v1';
+        if (dexLower === 'meteora_balanced' && variant === 'damm_v2') return 'meteora_balanced_v2';
+        if (dexLower === 'meteora_balanced') return 'meteora_balanced_v1';
         if (dexLower === 'meteora') return 'meteora-dlmm';
         
         return dexLower;
