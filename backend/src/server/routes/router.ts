@@ -28,6 +28,8 @@ import {
   peekOrcaPools,
   peekMeteoraPools,
   peekPumpswapPools,
+  peekMeteoraBalancedPools,
+  peekCpmmPools,
 } from '../pools.cache.js';
 import {
   // SDK
@@ -1053,7 +1055,9 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const raydium = peekRaydiumPools();
       const orca = peekOrcaPools();
       const meteora = peekMeteoraPools();
+      const meteoraBalanced = peekMeteoraBalancedPools();
       const pumpswap = peekPumpswapPools();
+      const raydiumCpmm = peekCpmmPools();
       
       // Helper to map pool to summary format
       const mapClmmPool = (p: any) => ({
@@ -1080,14 +1084,27 @@ export function createRouterRouter(io: SocketIOServer): Router {
         liquidityBase: p.liquidity_base,
       });
       
+      // Map CPMM pools (similar to AMM structure)
+      const mapCpmmPool = (p: any) => ({
+        id: p.id,
+        mintA: p.mint_a,
+        mintB: p.mint_b,
+        nativeMintA: p.native_mint_a,
+        nativeMintB: p.native_mint_b,
+        feeBps: p.fee_bps,
+        priceAPerB: p.price_a_per_b,
+      });
+      
       res.json({
         success: true,
         pools: {
           raydium: {
             clmm: raydium.clmm.slice(0, limit).map(mapClmmPool),
             amm: raydium.amm.slice(0, limit).map(mapAmmPool),
+            cpmm: raydiumCpmm.cpmm.slice(0, limit).map(mapCpmmPool),
             clmmCount: raydium.clmm.length,
             ammCount: raydium.amm.length,
+            cpmmCount: raydiumCpmm.cpmm.length,
           },
           orca: {
             clmm: orca.clmm.slice(0, limit).map(mapClmmPool),
@@ -1097,15 +1114,20 @@ export function createRouterRouter(io: SocketIOServer): Router {
             dlmm: meteora.clmm.slice(0, limit).map(mapClmmPool),
             dlmmCount: meteora.clmm.length,
           },
+          meteoraBalanced: {
+            amm: meteoraBalanced.amm.slice(0, limit).map(mapAmmPool),
+            ammCount: meteoraBalanced.amm.length,
+          },
           pumpswap: {
             amm: pumpswap.amm.slice(0, limit).map(mapAmmPool),
             ammCount: pumpswap.amm.length,
           },
         },
         totalPools: {
-          raydium: raydium.clmm.length + raydium.amm.length,
+          raydium: raydium.clmm.length + raydium.amm.length + raydiumCpmm.cpmm.length,
           orca: orca.clmm.length,
           meteora: meteora.clmm.length,
+          meteoraBalanced: meteoraBalanced.amm.length,
           pumpswap: pumpswap.amm.length,
         },
       });

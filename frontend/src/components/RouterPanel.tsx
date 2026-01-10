@@ -54,14 +54,23 @@ interface PoolSummary {
 }
 
 interface PoolsByDex {
-  raydium: { clmm: PoolSummary[]; amm: PoolSummary[]; clmmCount: number; ammCount: number };
+  raydium: { 
+    clmm: PoolSummary[]; 
+    amm: PoolSummary[]; 
+    cpmm: PoolSummary[];
+    clmmCount: number; 
+    ammCount: number;
+    cpmmCount: number;
+  };
   orca: { clmm: PoolSummary[]; clmmCount: number };
   meteora: { dlmm: PoolSummary[]; dlmmCount: number };
+  meteoraBalanced: { amm: PoolSummary[]; ammCount: number };
   pumpswap: { amm: PoolSummary[]; ammCount: number };
 }
 
 interface ExecuteHop {
-  dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap';
+  dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm' | 'meteora-damm-v2' | 'pumpswap';
+  variant?: 'clmm' | 'amm' | 'cpmm' | 'dlmm' | 'damm_v1' | 'damm_v2';
   poolId: string;
   inputMint: string;
   outputMint: string;
@@ -121,7 +130,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const [poolsByDex, setPoolsByDex] = useState<PoolsByDex | null>(null);
   const [loadingPools, setLoadingPools] = useState(false);
   const [executeHops, setExecuteHops] = useState<ExecuteHop[]>([
-    { dex: 'raydium', poolId: '', inputMint: '', outputMint: '' }
+    { dex: 'raydium', variant: 'clmm', poolId: '', inputMint: '', outputMint: '' }
   ]);
   const [executeAmountIn, setExecuteAmountIn] = useState('10000000');
   const [executeMinProfit, setExecuteMinProfit] = useState('-10000000'); // Allow loss for testing
@@ -218,6 +227,22 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
     }
   }, [status?.deployed, poolsByDex, fetchPools]);
 
+  // Helper to get pools for a DEX (used by updateExecuteHop before getPoolsForDex is defined)
+  const getPoolsForDexInternal = (dex: ExecuteHop['dex']): PoolSummary[] => {
+    if (!poolsByDex) return [];
+    switch (dex) {
+      case 'raydium': return poolsByDex.raydium?.clmm || [];
+      case 'raydium-amm': return poolsByDex.raydium?.amm || [];
+      case 'raydium-cpmm': return poolsByDex.raydium?.cpmm || [];
+      case 'orca': return poolsByDex.orca?.clmm || [];
+      case 'meteora': return poolsByDex.meteora?.dlmm || [];
+      case 'meteora-damm':
+      case 'meteora-damm-v2': return poolsByDex.meteoraBalanced?.amm || [];
+      case 'pumpswap': return poolsByDex.pumpswap?.amm || [];
+      default: return [];
+    }
+  };
+
   // Handler for execute hop changes
   const updateExecuteHop = (index: number, field: keyof ExecuteHop, value: string) => {
     setExecuteHops(prevHops => {
@@ -227,13 +252,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
       // Auto-populate mints when pool is selected
       if (field === 'poolId' && value && poolsByDex) {
         const dex = newHops[index].dex;
-        const pools = dex === 'raydium' 
-          ? [...(poolsByDex.raydium?.clmm || []), ...(poolsByDex.raydium?.amm || [])]
-          : dex === 'orca' 
-          ? (poolsByDex.orca?.clmm || [])
-          : dex === 'meteora'
-          ? (poolsByDex.meteora?.dlmm || [])
-          : (poolsByDex.pumpswap?.amm || []);
+        const pools = getPoolsForDexInternal(dex);
         
         const pool = pools.find(p => p.id === value);
         if (pool) {
@@ -250,9 +269,24 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   const handleExecuteDexChange = (index: number, newDex: string) => {
     setExecuteHops(prevHops => {
       const newHops = [...prevHops];
+      // Determine variant based on DEX selection
+      let variant: ExecuteHop['variant'];
+      switch (newDex) {
+        case 'raydium': variant = 'clmm'; break;
+        case 'raydium-amm': variant = 'amm'; break;
+        case 'raydium-cpmm': variant = 'cpmm'; break;
+        case 'orca': variant = 'clmm'; break;
+        case 'meteora': variant = 'dlmm'; break;
+        case 'meteora-damm': variant = 'damm_v1'; break;
+        case 'meteora-damm-v2': variant = 'damm_v2'; break;
+        case 'pumpswap': variant = 'amm'; break;
+        default: variant = undefined;
+      }
+      
       newHops[index] = {
         ...newHops[index],
         dex: newDex as ExecuteHop['dex'],
+        variant,
         poolId: '',
         inputMint: '',
         outputMint: '',
@@ -265,6 +299,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
     const lastHop = executeHops[executeHops.length - 1];
     setExecuteHops([...executeHops, {
       dex: 'raydium',
+      variant: 'clmm',
       poolId: '',
       inputMint: lastHop?.outputMint || '', // Chain output to next input
       outputMint: ''
@@ -291,6 +326,7 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
         hops: executeHops.map(h => ({
           poolId: h.poolId,
           dex: h.dex,
+          variant: h.variant,
           inputMint: h.inputMint,
           outputMint: h.outputMint,
         })),
@@ -307,15 +343,22 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
   };
 
   // Get pools for a specific DEX
-  const getPoolsForDex = (dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap'): PoolSummary[] => {
+  const getPoolsForDex = (dex: ExecuteHop['dex']): PoolSummary[] => {
     if (!poolsByDex) return [];
     switch (dex) {
       case 'raydium':
-        return [...(poolsByDex.raydium?.clmm || []), ...(poolsByDex.raydium?.amm || [])];
+        return poolsByDex.raydium?.clmm || [];
+      case 'raydium-amm':
+        return poolsByDex.raydium?.amm || [];
+      case 'raydium-cpmm':
+        return poolsByDex.raydium?.cpmm || [];
       case 'orca':
         return poolsByDex.orca?.clmm || [];
       case 'meteora':
         return poolsByDex.meteora?.dlmm || [];
+      case 'meteora-damm':
+      case 'meteora-damm-v2':
+        return poolsByDex.meteoraBalanced?.amm || [];
       case 'pumpswap':
         return poolsByDex.pumpswap?.amm || [];
       default:
@@ -1021,11 +1064,14 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
 
             {/* Pool Stats */}
             {poolsByDex && (
-              <div className="mb-4 p-2 bg-gray-800/50 rounded text-xs text-gray-400 flex gap-4">
-                <span>Raydium: {(poolsByDex.raydium?.clmmCount || 0) + (poolsByDex.raydium?.ammCount || 0)} pools</span>
-                <span>Orca: {poolsByDex.orca?.clmmCount || 0} pools</span>
-                <span>Meteora: {poolsByDex.meteora?.dlmmCount || 0} pools</span>
-                <span>PumpSwap: {poolsByDex.pumpswap?.ammCount || 0} pools</span>
+              <div className="mb-4 p-2 bg-gray-800/50 rounded text-xs text-gray-400 flex flex-wrap gap-x-4 gap-y-1">
+                <span>Raydium CLMM: {poolsByDex.raydium?.clmmCount || 0}</span>
+                <span>Raydium AMM: {poolsByDex.raydium?.ammCount || 0}</span>
+                <span>Raydium CPMM: {poolsByDex.raydium?.cpmmCount || 0}</span>
+                <span>Orca: {poolsByDex.orca?.clmmCount || 0}</span>
+                <span>Meteora DLMM: {poolsByDex.meteora?.dlmmCount || 0}</span>
+                <span>Meteora DAMM: {poolsByDex.meteoraBalanced?.ammCount || 0}</span>
+                <span>PumpSwap: {poolsByDex.pumpswap?.ammCount || 0}</span>
               </div>
             )}
 
@@ -1055,9 +1101,13 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
                         className="w-full bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 text-sm"
                       >
                         <option value="raydium">Raydium CLMM</option>
+                        <option value="raydium-amm">Raydium AMM</option>
+                        <option value="raydium-cpmm">Raydium CPMM</option>
                         <option value="orca">Orca Whirlpool</option>
                         <option value="meteora">Meteora DLMM</option>
-                        <option value="pumpswap">PumpSwap</option>
+                        <option value="meteora-damm">Meteora DAMM v1</option>
+                        <option value="meteora-damm-v2">Meteora DAMM v2</option>
+                        <option value="pumpswap">PumpSwap AMM</option>
                       </select>
                     </div>
                     
