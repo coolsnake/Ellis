@@ -82,6 +82,18 @@ export interface SdkProvidedAccounts {
   // Meteora DAMM (v1/v2)
   poolAuthority?: string;
   lpMint?: string;
+  // Meteora DAMM v1 - Mercurial Vault accounts
+  aVault?: string;           // Mercurial Vault account for token A
+  bVault?: string;           // Mercurial Vault account for token B
+  aTokenVault?: string;      // SPL Token account inside aVault
+  bTokenVault?: string;      // SPL Token account inside bVault
+  aVaultLpMint?: string;     // LP token mint of vault A
+  bVaultLpMint?: string;     // LP token mint of vault B
+  aVaultLp?: string;         // Pool's LP token account for vault A
+  bVaultLp?: string;         // Pool's LP token account for vault B
+  protocolTokenAFee?: string; // Protocol fee account for token A
+  protocolTokenBFee?: string; // Protocol fee account for token B
+  vaultProgram?: string;     // Mercurial Vault program ID
 
   // PumpSwap
   globalConfig?: string;
