@@ -3,7 +3,7 @@
 //! Program ID: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA (Post-graduation AMM)
 //!
 //! PumpSwap is the AMM used by Pump.fun for token trading after graduation.
-//! Account layout updated to match official @pump-fun/pump-swap-sdk IDL.
+//! Account layout updated to match official @pump-fun/pump-swap-sdk IDL v1.0.0.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
@@ -11,8 +11,8 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::constants::dex_programs::PUMPSWAP;
 use crate::error::ArbRouterError;
 
-/// Number of accounts needed for a PumpSwap swap (matches SDK IDL)
-pub const ACCOUNTS_NEEDED: usize = 19;
+/// Number of accounts needed for a PumpSwap swap (matches SDK IDL v1.0.0)
+pub const ACCOUNTS_NEEDED: usize = 23;
 
 /// PumpSwap buy instruction discriminator (from IDL)
 const BUY_DISCRIMINATOR: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
@@ -22,7 +22,7 @@ const SELL_DISCRIMINATOR: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
 
 /// Execute a swap on PumpSwap
 ///
-/// Expected accounts (in order, matching official SDK IDL):
+/// Expected accounts (in order, matching official SDK IDL v1.0.0):
 /// 0.  `[writable]` pool - The pool account
 /// 1.  `[signer, writable]` user - The user performing the swap
 /// 2.  `[]` global_config - Global configuration PDA
@@ -42,6 +42,10 @@ const SELL_DISCRIMINATOR: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
 /// 16. `[]` program - PumpSwap program ID
 /// 17. `[writable]` coin_creator_vault_ata - Coin creator's fee vault ATA
 /// 18. `[]` coin_creator_vault_authority - Coin creator's vault authority PDA
+/// 19. `[]` global_volume_accumulator - Global volume accumulator PDA
+/// 20. `[writable]` user_volume_accumulator - User's volume accumulator PDA
+/// 21. `[]` fee_config - Fee configuration PDA
+/// 22. `[]` fee_program - Pump fee program ID
 ///
 /// # Arguments
 /// * `accounts` - DEX-specific accounts in the order above
@@ -82,14 +86,14 @@ pub fn swap(
     }
 
     // Build account metas matching SDK IDL order
-    // Writable accounts: 0 (pool), 1 (user), 5-8 (token accounts), 10 (protocol fee ata), 17 (creator vault)
+    // Writable accounts: 0 (pool), 1 (user), 5-8 (token accounts), 10 (protocol fee ata), 17 (creator vault), 20 (user volume)
     // Signer: 1 (user)
     let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 1; // User at index 1 is the signer
-            let is_writable = matches!(i, 0 | 1 | 5 | 6 | 7 | 8 | 10 | 17);
+            let is_writable = matches!(i, 0 | 1 | 5 | 6 | 7 | 8 | 10 | 17 | 20);
             
             if is_signer {
                 AccountMeta::new(*acc.key, true)
@@ -155,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_accounts_needed() {
-        assert_eq!(ACCOUNTS_NEEDED, 19);
+        assert_eq!(ACCOUNTS_NEEDED, 23);
     }
 
     #[test]

@@ -566,7 +566,7 @@ export function getAccountsNeededForDex(dexType: DexType): number {
     case DexType.Orca:
       return 12; // Orca Whirlpool: 11 swap accounts + 1 program
     case DexType.PumpSwap:
-      return 19; // PumpSwap AMM: 19 accounts (matching @pump-fun/pump-swap-sdk IDL)
+      return 23; // PumpSwap AMM: 23 accounts (matching @pump-fun/pump-swap-sdk IDL v1.0.0)
     case DexType.RaydiumAmm:
       return 19; // Raydium AMM v4: 18 accounts + program
     case DexType.MeteoraDAMM:

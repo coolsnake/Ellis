@@ -36,8 +36,12 @@ import { getSdkQuoteAccountsForPlan, type SdkProvidedAccounts } from './sdkQuote
 import { 
   GLOBAL_CONFIG_PDA as PUMPSWAP_GLOBAL_CONFIG, 
   PUMP_AMM_EVENT_AUTHORITY_PDA as PUMPSWAP_EVENT_AUTHORITY,
+  GLOBAL_VOLUME_ACCUMULATOR_PDA as PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR,
+  PUMP_AMM_FEE_CONFIG_PDA as PUMPSWAP_FEE_CONFIG,
+  PUMP_FEE_PROGRAM_ID as PUMPSWAP_FEE_PROGRAM,
   coinCreatorVaultAuthorityPda as derivePumpswapCoinCreatorVault,
-  coinCreatorVaultAtaPda as derivePumpswapCoinCreatorVaultAta
+  coinCreatorVaultAtaPda as derivePumpswapCoinCreatorVaultAta,
+  userVolumeAccumulatorPda as derivePumpswapUserVolumeAccumulator
 } from '@pump-fun/pump-swap-sdk';
 
 // ============================================================================
@@ -2633,7 +2637,7 @@ async function extractDexAccounts(
         return accounts;
 
       case DexType.PumpSwap:
-        // PumpSwap AMM: 19 accounts (matching official @pump-fun/pump-swap-sdk IDL)
+        // PumpSwap AMM: 23 accounts (matching official @pump-fun/pump-swap-sdk IDL)
         // Account order:
         // 0: pool, 1: user, 2: global_config, 3: base_mint, 4: quote_mint,
         // 5: user_base_token_account, 6: user_quote_token_account,
@@ -2641,7 +2645,9 @@ async function extractDexAccounts(
         // 9: protocol_fee_recipient, 10: protocol_fee_recipient_token_account,
         // 11: base_token_program, 12: quote_token_program, 13: system_program,
         // 14: associated_token_program, 15: event_authority, 16: program,
-        // 17: coin_creator_vault_ata, 18: coin_creator_vault_authority
+        // 17: coin_creator_vault_ata, 18: coin_creator_vault_authority,
+        // 19: global_volume_accumulator, 20: user_volume_accumulator,
+        // 21: fee_config, 22: fee_program
         
         // Get pool data from cache
         const pumpBaseMint = stat?.onchain_base_mint || poolMintA || hop.inputMint;
@@ -2722,8 +2728,11 @@ async function extractDexAccounts(
           );
         }
         
+        // Derive user volume accumulator PDA (for volume tracking rewards)
+        const pumpUserVolumeAccumulator = derivePumpswapUserVolumeAccumulator(wallet);
+        
         // Log accounts for debugging
-        logger.info('routerTx.pumpswap.accounts.v2', {
+        logger.info('routerTx.pumpswap.accounts.v3', {
           cat: 'tx',
           poolId: hop.poolId,
           baseMint: pumpBaseMint,
@@ -2737,9 +2746,13 @@ async function extractDexAccounts(
           coinCreatorVaultAuthority: pumpCoinCreatorVaultAuthority.toBase58(),
           globalConfig: pumpGlobalConfig.toBase58(),
           eventAuthority: pumpEventAuthority.toBase58(),
+          globalVolumeAccumulator: PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR.toBase58(),
+          userVolumeAccumulator: pumpUserVolumeAccumulator.toBase58(),
+          feeConfig: PUMPSWAP_FEE_CONFIG.toBase58(),
+          feeProgram: PUMPSWAP_FEE_PROGRAM.toBase58(),
         });
         
-        // Push all 19 accounts in order matching SDK IDL
+        // Push all 23 accounts in order matching SDK IDL
         accounts.push(
           poolId,                                                              // 0: pool
           wallet,                                                              // 1: user (signer)
@@ -2760,6 +2773,10 @@ async function extractDexAccounts(
           PUMPSWAP_PROGRAM,                                                    // 16: program
           pumpCoinCreatorVaultAta,                                             // 17: coin_creator_vault_ata
           pumpCoinCreatorVaultAuthority,                                       // 18: coin_creator_vault_authority
+          PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR,                                  // 19: global_volume_accumulator
+          pumpUserVolumeAccumulator,                                           // 20: user_volume_accumulator
+          PUMPSWAP_FEE_CONFIG,                                                 // 21: fee_config
+          PUMPSWAP_FEE_PROGRAM,                                                // 22: fee_program
         );
         break;
 
@@ -2934,24 +2951,24 @@ async function extractDexAccounts(
             throw new Error(`Meteora DAMM v1: Missing required accounts: ${missingAccounts.join(', ')}. SDK quote may have failed.`);
           }
           
-          // Account order MUST match Meteora Dynamic AMM SDK's swap instruction
-          // See: @meteora-ag/dynamic-amm-sdk/src/amm/index.js swap() method
+          // Account order MUST match Meteora Dynamic AMM IDL swap instruction
+          // See: @meteora-ag/dynamic-amm-sdk/dist/cjs/src/amm/idl.d.ts lines 687-807
           accounts.push(
-            new PublicKey(aTokenVault),                                       // 0: aTokenVault (SPL Token in vault)
-            new PublicKey(bTokenVault),                                       // 1: bTokenVault (SPL Token in vault)
-            new PublicKey(aVault),                                            // 2: aVault (Mercurial Vault)
-            new PublicKey(bVault),                                            // 3: bVault (Mercurial Vault)
-            new PublicKey(aVaultLp),                                          // 4: aVaultLp (Pool's LP for vault A)
-            new PublicKey(bVaultLp),                                          // 5: bVaultLp (Pool's LP for vault B)
-            new PublicKey(aVaultLpMint),                                      // 6: aVaultLpMint
-            new PublicKey(bVaultLpMint),                                      // 7: bVaultLpMint
-            userSourceAta,                                                     // 8: userSourceToken
-            userDestAta,                                                       // 9: userDestinationToken
-            wallet,                                                            // 10: user (signer)
+            poolId,                                                            // 0: pool
+            userSourceAta,                                                     // 1: userSourceToken
+            userDestAta,                                                       // 2: userDestinationToken
+            new PublicKey(aVault),                                            // 3: aVault (Mercurial Vault)
+            new PublicKey(bVault),                                            // 4: bVault (Mercurial Vault)
+            new PublicKey(aTokenVault),                                       // 5: aTokenVault (SPL Token in vault)
+            new PublicKey(bTokenVault),                                       // 6: bTokenVault (SPL Token in vault)
+            new PublicKey(aVaultLpMint),                                      // 7: aVaultLpMint
+            new PublicKey(bVaultLpMint),                                      // 8: bVaultLpMint
+            new PublicKey(aVaultLp),                                          // 9: aVaultLp (Pool's LP for vault A)
+            new PublicKey(bVaultLp),                                          // 10: bVaultLp (Pool's LP for vault B)
             new PublicKey(protocolTokenFee),                                  // 11: protocolTokenFee
-            poolId,                                                            // 12: pool
-            TOKEN_PROGRAM_ID,                                                  // 13: tokenProgram
-            new PublicKey(vaultProgram),                                      // 14: vaultProgram
+            wallet,                                                            // 12: user (signer)
+            new PublicKey(vaultProgram),                                      // 13: vaultProgram
+            TOKEN_PROGRAM_ID,                                                  // 14: tokenProgram
             programIdKey,                                                      // 15: DAMM Program (CPI target)
           );
         }
