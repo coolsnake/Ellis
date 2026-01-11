@@ -177,6 +177,12 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		{ selector: 'edge[dex = "Raydium"]', style: { 'line-color': '#22c55e' } },
 		{ selector: 'edge[dex = "Orca"]', style: { 'line-color': '#f59e0b' } },
 		{ selector: 'edge[dex = "Meteora"]', style: { 'line-color': '#06b6d4' } },
+		{ selector: 'edge[dex = "MeteoraBalanced"]', style: { 'line-color': '#8b5cf6' } },
+		{ selector: 'edge[dex = "MeteoraBalanced_v1"]', style: { 'line-color': '#8b5cf6' } },
+		{ selector: 'edge[dex = "MeteoraBalanced_v2"]', style: { 'line-color': '#a855f7' } },
+		{ selector: 'edge[dex = "Pumpswap"]', style: { 'line-color': '#ec4899' } },
+		// CPMM pools use same color as Raydium since they're a Raydium variant
+		{ selector: 'edge[pool_kind = "cpmm"]', style: { 'line-style': 'dashed' } },
 		// Hide original edges when a combined edge is rendered
 		{ selector: 'edge[hiddenEdge = 1]', style: { 'display': 'none' } },
 		// Slightly emphasize combined edges
@@ -230,21 +236,30 @@ useEffect(() => {
 }, [containerRef.current]);
 
 	const toElements = (snap: GraphSnapshot): ElementDefinition[] => {
-		const hideDex = new Set<string>();
-		if (!filterDex.Raydium) hideDex.add('Raydium');
-		if (!filterDex.Orca) hideDex.add('Orca');
-		if (!filterDex.Meteora) hideDex.add('Meteora');
-		if (!filterDex.MeteoraBalanced) hideDex.add('MeteoraBalanced');
-		if (!filterDex.Pumpswap) hideDex.add('Pumpswap');
+		// Helper to check if a DEX should be hidden based on filter settings
+		const isDexHidden = (dex: string): boolean => {
+			const d = String(dex || '');
+			if (!filterDex.Raydium && d === 'Raydium') return true;
+			if (!filterDex.Orca && d === 'Orca') return true;
+			if (!filterDex.Meteora && d === 'Meteora') return true;
+			// Handle MeteoraBalanced variants (MeteoraBalanced, MeteoraBalanced_v1, MeteoraBalanced_v2)
+			if (!filterDex.MeteoraBalanced && d.startsWith('MeteoraBalanced')) return true;
+			if (!filterDex.Pumpswap && d === 'Pumpswap') return true;
+			return false;
+		};
 		const hideKind = new Set<string>();
-		if (!filterKind.AMM) hideKind.add('amm');
+		if (!filterKind.AMM) { hideKind.add('amm'); hideKind.add('cpmm'); } // CPMM treated as AMM variant
 		if (!filterKind.CLMM) hideKind.add('clmm');
 		const nodes: ElementDefinition[] = snap.nodes.map((n) => ({ data: { id: n.id, label: n.label || n.id } }));
 		// Build raw edge definitions (without DEX visibility filter yet for grouping)
 		let rawEdges: ElementDefinition[] = snap.edges
 			.filter((e) => {
 				const kind = (e as any).pool_kind;
-				return kind === 'amm' || kind === 'clmm' ? !hideKind.has(kind) : true;
+				// Filter by pool kind - cpmm is treated as AMM variant
+				if (kind === 'amm' || kind === 'clmm' || kind === 'cpmm') {
+					return !hideKind.has(kind);
+				}
+				return true;
 			})
 			.map((e) => ({ data: { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw, cpd: 0 } }));
 
@@ -267,7 +282,7 @@ useEffect(() => {
 		const edges: ElementDefinition[] = [];
     for (const [, arr] of byPair) {
 			// Consider only edges whose DEX is not hidden by filter
-			const visible = arr.filter((e) => !hideDex.has(String((e.data as any).dex)));
+			const visible = arr.filter((e) => !isDexHidden(String((e.data as any).dex)));
 			// Count distinct DEX among visible edges
 			const dexSet = new Set<string>();
 			for (const ed of visible) { dexSet.add(String((ed.data as any).dex)); }
@@ -457,7 +472,8 @@ useEffect(() => {
 					if (!filterDex.Raydium && dx === 'Raydium') return false;
 					if (!filterDex.Orca && dx === 'Orca') return false;
 					if (!filterDex.Meteora && dx === 'Meteora') return false;
-					if (!filterDex.MeteoraBalanced && dx === 'MeteoraBalanced') return false;
+					// Handle MeteoraBalanced variants (MeteoraBalanced, MeteoraBalanced_v1, MeteoraBalanced_v2)
+					if (!filterDex.MeteoraBalanced && dx.startsWith('MeteoraBalanced')) return false;
 					if (!filterDex.Pumpswap && dx === 'Pumpswap') return false;
 					return true;
 				});

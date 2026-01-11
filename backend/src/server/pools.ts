@@ -1256,6 +1256,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         r = {
           amm: filterByActivity(r.amm),
           clmm: filterByActivity(r.clmm),
+          cpmm: filterByActivity(r.cpmm),
         } as any;
         
         o = {
@@ -1369,6 +1370,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       
       countPools(r.amm);
       countPools(r.clmm);
+      countPools(r.cpmm);
       countPools(o.amm);
       countPools(o.clmm);
       countPools(m.amm);
@@ -1388,21 +1390,21 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         (arr || []).filter(p => allow.has(canonicalPairKey(p.mint_a, p.mint_b)));
       
       const beforeCounts = {
-        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0) + (r.cpmm?.length || 0),
         orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
         meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
         meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
         pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
       };
       
-      r = { amm: filt(r.amm), clmm: filt(r.clmm) } as any;
+      r = { amm: filt(r.amm), clmm: filt(r.clmm), cpmm: filt(r.cpmm || []) } as any;
       o = { amm: filt(o.amm), clmm: filt(o.clmm) } as any;
       m = { amm: filt(m.amm), clmm: filt(m.clmm) } as any;
       mb = { amm: filt(mb.amm || []), clmm: filt(mb.clmm || []) } as any;
       pump = { amm: filt(pump.amm || []), clmm: filt(pump.clmm || []) } as any;
       
       const afterCounts = {
-        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0) + (r.cpmm?.length || 0),
         orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
         meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
         meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),

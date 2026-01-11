@@ -3302,8 +3302,8 @@ export function createArbRouter(io: SocketIOServer): Router {
         active: alts.filter(a => !a.isDeactivated).length,
         deactivated: alts.filter(a => a.isDeactivated && !a.canClose).length,
         closeable: alts.filter(a => a.canClose).length,
-        totalRentSOL: (alts.reduce((sum, a) => sum + a.rentLamports, 0) / 1e9).toFixed(6),
-        recoverableRentSOL: (alts.filter(a => a.canClose).reduce((sum, a) => sum + a.rentLamports, 0) / 1e9).toFixed(6),
+        totalRentSOL: alts.reduce((sum, a) => sum + a.rentLamports, 0) / 1e9,
+        recoverableRentSOL: alts.filter(a => a.canClose).reduce((sum, a) => sum + a.rentLamports, 0) / 1e9,
       };
       
       res.json({

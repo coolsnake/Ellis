@@ -10,16 +10,29 @@ interface AltStatus {
   addresses: { [category: string]: string };
 }
 
-interface AltDetailedInfo {
+interface DiscoveredAlt {
   address: string;
   accountCount: number;
   isDeactivated: boolean;
-  deactivationSlot?: number;
   canClose: boolean;
-  slotsUntilCloseable?: number;
-  minutesUntilCloseable?: number;
-  rentAmount: number;
-  rentAmountSOL?: string;
+  rentLamports: number;
+  rentSOL: string;
+  inConfig: boolean;
+  category?: string;
+}
+
+interface DiscoverResponse {
+  status: string;
+  summary: {
+    total: number;
+    inConfig: number;
+    orphaned: number;
+    deactivated: number;
+    closeable: number;
+    totalRentSOL: number;
+    recoverableRentSOL: number;
+  };
+  alts: DiscoveredAlt[];
 }
 
 interface PoolPreview {
@@ -68,11 +81,17 @@ const DEX_CONFIGS: DexConfig[] = [
 
 export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string }> = ({ onClose, apiBase }) => {
   const [altStatus, setAltStatus] = useState<AltStatus | null>(null);
-  const [altInfos, setAltInfos] = useState<{ [category: string]: AltDetailedInfo }>({});
+  const [discoveredAlts, setDiscoveredAlts] = useState<DiscoverResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [discoverLoading, setDiscoverLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ dex: string; pools: PoolPreview[] } | null>(null);
+  const [activeTab, setActiveTab] = useState<'discover' | 'create'>('discover');
+  
+  // Track selected ALTs for bulk operations
+  const [selectedAlts, setSelectedAlts] = useState<Set<string>>(new Set());
+  const [bulkProcessing, setBulkProcessing] = useState(false);
   
   // Persist pool counts to localStorage
   const [uiPrefs, updateUiPrefs] = useModalConfig('altManagement', {
@@ -85,7 +104,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
   });
   
   const [poolCounts, setPoolCounts] = useState<{ [key: string]: number }>(uiPrefs.poolCounts);
-  const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
+  const [processingAddress, setProcessingAddress] = useState<string | null>(null);
   
   // Persist pool counts when they change
   useEffect(() => {
@@ -94,6 +113,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
 
   useEffect(() => {
     loadAltStatus();
+    discoverAllAlts();
   }, []);
 
   const loadAltStatus = async () => {
@@ -102,13 +122,25 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
       if (!resp.ok) throw new Error('Failed to load ALT status');
       const data = await resp.json();
       setAltStatus(data);
-      
-      // Load detailed info for each ALT
-      for (const category of data.categories) {
-        loadAltInfo(category);
-      }
     } catch (err: any) {
-      setError(err.message || 'Failed to load ALT status');
+      console.error('Failed to load ALT status:', err);
+    }
+  };
+
+  const discoverAllAlts = async () => {
+    setDiscoverLoading(true);
+    setError(null);
+    
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.discover}`);
+      if (!resp.ok) throw new Error('Failed to discover wallet ALTs');
+      const data: DiscoverResponse = await resp.json();
+      setDiscoveredAlts(data);
+      setSelectedAlts(new Set()); // Clear selection on refresh
+    } catch (err: any) {
+      setError(err.message || 'Failed to discover ALTs');
+    } finally {
+      setDiscoverLoading(false);
     }
   };
 
@@ -135,6 +167,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
       const data = await resp.json();
       setSuccess(data.message || 'ALT manager re-initialized successfully');
       await loadAltStatus();
+      await discoverAllAlts();
     } catch (err: any) {
       setError(err.message || 'Failed to reinitialize ALT manager');
     } finally {
@@ -142,32 +175,21 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
     }
   };
 
-  const loadAltInfo = async (category: string) => {
-    try {
-      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.info}/${category}`);
-      if (!resp.ok) return; // Silently fail for individual ALTs
-      const data = await resp.json();
-      setAltInfos(prev => ({ ...prev, [category]: data }));
-    } catch (err) {
-      // Silently fail
-    }
-  };
-
-  const handleDeactivate = async (category: string) => {
-    if (!confirm(`Deactivate ${category} ALT? You'll need to wait ~5 minutes before you can close it.`)) {
+  const handleDeactivateByAddress = async (address: string) => {
+    if (!confirm(`Deactivate ALT ${address.slice(0, 8)}...? You'll need to wait ~5 minutes before you can close it.`)) {
       return;
     }
 
-    setDeletingCategory(category);
+    setProcessingAddress(address);
     setLoading(true);
     setError(null);
     setSuccess(null);
 
     try {
-      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.deactivate}`, {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.deactivateByAddress}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category }),
+        body: JSON.stringify({ address }),
       });
       
       if (!resp.ok) {
@@ -176,34 +198,31 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
       }
       
       const data = await resp.json();
-      setSuccess(`Deactivated ${category} ALT. Wait ~5 minutes before closing.`);
-      await loadAltStatus();
+      setSuccess(`Deactivated ALT. Wait ~5 minutes before closing.`);
+      await discoverAllAlts();
     } catch (err: any) {
       setError(err.message || 'Failed to deactivate ALT');
     } finally {
       setLoading(false);
-      setDeletingCategory(null);
+      setProcessingAddress(null);
     }
   };
 
-  const handleClose = async (category: string) => {
-    const info = altInfos[category];
-    const rentStr = info?.rentAmountSOL || '~0.01';
-    
-    if (!confirm(`Close ${category} ALT and recover ${rentStr} SOL rent? This action cannot be undone.`)) {
+  const handleCloseByAddress = async (address: string, rentSOL: string) => {
+    if (!confirm(`Close ALT ${address.slice(0, 8)}... and recover ${rentSOL} SOL rent? This action cannot be undone.`)) {
       return;
     }
 
-    setDeletingCategory(category);
+    setProcessingAddress(address);
     setLoading(true);
     setError(null);
     setSuccess(null);
 
     try {
-      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.close}`, {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.closeByAddress}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category }),
+        body: JSON.stringify({ address }),
       });
       
       if (!resp.ok) {
@@ -212,14 +231,143 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
       }
       
       const data = await resp.json();
-      setSuccess(`Closed ${category} ALT. Recovered ${data.rentRecoveredSOL} SOL`);
-      await loadAltStatus();
+      setSuccess(`Closed ALT. Recovered ${data.rentRecoveredSOL} SOL`);
+      await discoverAllAlts();
     } catch (err: any) {
       setError(err.message || 'Failed to close ALT');
     } finally {
       setLoading(false);
-      setDeletingCategory(null);
+      setProcessingAddress(null);
     }
+  };
+
+  const handleBulkDeactivate = async () => {
+    const count = selectedAlts.size;
+    if (count === 0) return;
+    
+    // Filter to only active (non-deactivated) ALTs
+    const activeSelected = discoveredAlts?.alts
+      .filter(alt => selectedAlts.has(alt.address) && !alt.isDeactivated)
+      .map(alt => alt.address) || [];
+    
+    if (activeSelected.length === 0) {
+      setError('No active ALTs selected to deactivate');
+      return;
+    }
+    
+    if (!confirm(`Deactivate ${activeSelected.length} ALT(s)? You'll need to wait ~5 minutes before closing.`)) {
+      return;
+    }
+
+    setBulkProcessing(true);
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.bulkDeactivate}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addresses: activeSelected }),
+      });
+      
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to bulk deactivate ALTs');
+      }
+      
+      const data = await resp.json();
+      const successCount = data.success?.length || 0;
+      const failCount = data.failed?.length || 0;
+      
+      if (failCount > 0) {
+        setError(`${failCount} ALT(s) failed to deactivate`);
+      }
+      setSuccess(`Deactivated ${successCount} ALT(s). Wait ~5 minutes before closing.`);
+      setSelectedAlts(new Set());
+      await discoverAllAlts();
+    } catch (err: any) {
+      setError(err.message || 'Failed to bulk deactivate ALTs');
+    } finally {
+      setLoading(false);
+      setBulkProcessing(false);
+    }
+  };
+
+  const handleBulkClose = async () => {
+    // Filter to only closeable ALTs
+    const closeableSelected = discoveredAlts?.alts
+      .filter(alt => selectedAlts.has(alt.address) && alt.canClose)
+      .map(alt => alt.address) || [];
+    
+    if (closeableSelected.length === 0) {
+      setError('No closeable ALTs selected. ALTs must be deactivated and wait ~5 minutes.');
+      return;
+    }
+    
+    const totalRent = discoveredAlts?.alts
+      .filter(alt => closeableSelected.includes(alt.address))
+      .reduce((sum, alt) => sum + parseFloat(alt.rentSOL), 0)
+      .toFixed(6) || '0';
+    
+    if (!confirm(`Close ${closeableSelected.length} ALT(s) and recover ~${totalRent} SOL? This cannot be undone.`)) {
+      return;
+    }
+
+    setBulkProcessing(true);
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.bulkClose}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addresses: closeableSelected }),
+      });
+      
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to bulk close ALTs');
+      }
+      
+      const data = await resp.json();
+      const successCount = data.success?.length || 0;
+      const failCount = data.failed?.length || 0;
+      const rentRecovered = (data.totalRentRecovered / 1e9).toFixed(6);
+      
+      if (failCount > 0) {
+        setError(`${failCount} ALT(s) failed to close`);
+      }
+      setSuccess(`Closed ${successCount} ALT(s). Recovered ${rentRecovered} SOL`);
+      setSelectedAlts(new Set());
+      await discoverAllAlts();
+    } catch (err: any) {
+      setError(err.message || 'Failed to bulk close ALTs');
+    } finally {
+      setLoading(false);
+      setBulkProcessing(false);
+    }
+  };
+
+  const toggleSelectAll = () => {
+    if (!discoveredAlts?.alts) return;
+    
+    if (selectedAlts.size === discoveredAlts.alts.length) {
+      setSelectedAlts(new Set());
+    } else {
+      setSelectedAlts(new Set(discoveredAlts.alts.map(alt => alt.address)));
+    }
+  };
+
+  const toggleSelectAlt = (address: string) => {
+    const newSelected = new Set(selectedAlts);
+    if (newSelected.has(address)) {
+      newSelected.delete(address);
+    } else {
+      newSelected.add(address);
+    }
+    setSelectedAlts(newSelected);
   };
 
   const handlePreview = async (config: DexConfig) => {
@@ -270,6 +418,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
       const data = await resp.json();
       setSuccess(`Created ${config.name} ALT: ${data.address} (${data.accountCount} accounts)`);
       await loadAltStatus();
+      await discoverAllAlts();
       setPreview(null);
     } catch (err: any) {
       setError(err.message || 'Failed to create ALT');
@@ -302,6 +451,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
       const data = await resp.json();
       setSuccess(`Refreshed ${config.name} ALT: ${data.accountsAdded} accounts added (total: ${data.accountCount})`);
       await loadAltStatus();
+      await discoverAllAlts();
     } catch (err: any) {
       setError(err.message || 'Failed to refresh ALT');
     } finally {
@@ -313,9 +463,30 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
     return addr.length > 16 ? `${addr.slice(0, 8)}...${addr.slice(-8)}` : addr;
   };
 
+  const getStatusBadge = (alt: DiscoveredAlt) => {
+    if (alt.canClose) {
+      return <span className="px-2 py-0.5 bg-green-900/50 text-green-400 text-xs rounded">Ready to Close</span>;
+    }
+    if (alt.isDeactivated) {
+      return <span className="px-2 py-0.5 bg-yellow-900/50 text-yellow-400 text-xs rounded">Deactivated</span>;
+    }
+    if (!alt.inConfig) {
+      return <span className="px-2 py-0.5 bg-orange-900/50 text-orange-400 text-xs rounded">Orphaned</span>;
+    }
+    return <span className="px-2 py-0.5 bg-blue-900/50 text-blue-400 text-xs rounded">Active</span>;
+  };
+
+  // Group ALTs by status for better organization
+  const groupedAlts = discoveredAlts?.alts ? {
+    closeable: discoveredAlts.alts.filter(alt => alt.canClose),
+    deactivated: discoveredAlts.alts.filter(alt => alt.isDeactivated && !alt.canClose),
+    orphaned: discoveredAlts.alts.filter(alt => !alt.inConfig && !alt.isDeactivated),
+    active: discoveredAlts.alts.filter(alt => alt.inConfig && !alt.isDeactivated),
+  } : null;
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-gray-800 rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+      <div className="bg-gray-800 rounded-lg p-6 max-w-5xl w-full max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-2xl font-bold text-white">Manage Address Lookup Tables (ALTs)</h2>
           <button
@@ -338,182 +509,348 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
           </div>
         )}
 
-        {/* Current ALT Status */}
-        <div className="mb-6">
-          <div className="flex justify-between items-center mb-2">
-            <h3 className="text-lg font-semibold text-white">Current ALTs</h3>
-            <button
-              onClick={handleReinitialize}
-              disabled={loading}
-              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white px-3 py-1 rounded text-sm"
-            >
-              🔄 Refresh ALT Cache
-            </button>
-          </div>
-          {altStatus ? (
-            <div className="bg-gray-900 rounded p-4">
-              <div className="grid grid-cols-2 gap-2 text-sm mb-4">
-                <div className="text-gray-400">Total ALTs:</div>
-                <div className="text-white">{altStatus.altCount}</div>
-                <div className="text-gray-400">Categories:</div>
-                <div className="text-white">{altStatus.categories.join(', ') || 'None'}</div>
-              </div>
-              {Object.keys(altStatus.addresses).length > 0 && (
-                <div className="space-y-3">
-                  {Object.entries(altStatus.addresses).map(([category, address]) => {
-                    const info = altInfos[category];
-                    return (
-                      <div key={category} className="border border-gray-700 rounded p-3">
-                        <div className="flex justify-between items-start mb-2">
-                          <div>
-                            <span className="text-gray-400 text-sm">{category}</span>
-                            <div className="text-gray-300 font-mono text-xs">{truncateAddress(address)}</div>
-                          </div>
-                          {info && (
-                            <div className="text-right text-xs">
-                              <div className="text-gray-400">{info.accountCount} accounts</div>
-                              <div className="text-gray-400">{info.rentAmountSOL} SOL rent</div>
-                            </div>
-                          )}
-                        </div>
-                        
-                        {info && (
-                          <div className="flex gap-2 mt-2">
-                            {info.isDeactivated ? (
-                              info.canClose ? (
-                                <button
-                                  onClick={() => handleClose(category)}
-                                  disabled={loading && deletingCategory === category}
-                                  className="px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-xs"
-                                >
-                                  {loading && deletingCategory === category ? 'Closing...' : `Close & Recover ${info.rentAmountSOL} SOL`}
-                                </button>
-                              ) : (
-                                <div className="text-xs text-yellow-400">
-                                  ⏳ Wait {info.minutesUntilCloseable || 0} more minutes to close
-                                </div>
-                              )
-                            ) : (
-                              <button
-                                onClick={() => handleDeactivate(category)}
-                                disabled={loading && deletingCategory === category}
-                                className="px-2 py-1 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-xs"
-                              >
-                                {loading && deletingCategory === category ? 'Deactivating...' : 'Deactivate (Step 1)'}
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="text-gray-400">Loading...</div>
-          )}
+        {/* Tab Navigation */}
+        <div className="flex gap-2 mb-6 border-b border-gray-700 pb-2">
+          <button
+            onClick={() => setActiveTab('discover')}
+            className={`px-4 py-2 rounded-t font-medium ${
+              activeTab === 'discover'
+                ? 'bg-gray-700 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            📋 All Wallet ALTs
+          </button>
+          <button
+            onClick={() => setActiveTab('create')}
+            className={`px-4 py-2 rounded-t font-medium ${
+              activeTab === 'create'
+                ? 'bg-gray-700 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            ➕ Create DEX ALTs
+          </button>
         </div>
 
-        {/* DEX-specific ALT Management */}
-        <div className="space-y-4">
-          {DEX_CONFIGS.map((config) => {
-            const exists = altStatus?.categories.includes(config.defaultCategory);
-            return (
-              <div key={config.defaultCategory} className="bg-gray-900 rounded p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h4 className="text-white font-semibold">{config.name}</h4>
-                    <p className="text-xs text-gray-400">Category: {config.defaultCategory}</p>
+        {/* Discover All ALTs Tab */}
+        {activeTab === 'discover' && (
+          <div>
+            {/* Summary */}
+            {discoveredAlts && (
+              <div className="bg-gray-900 rounded p-4 mb-4">
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="text-lg font-semibold text-white">Wallet ALT Summary</h3>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={discoverAllAlts}
+                      disabled={discoverLoading}
+                      className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white px-3 py-1 rounded text-sm"
+                    >
+                      {discoverLoading ? '🔄 Scanning...' : '🔍 Re-scan On-Chain'}
+                    </button>
+                    <button
+                      onClick={handleReinitialize}
+                      disabled={loading}
+                      className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white px-3 py-1 rounded text-sm"
+                    >
+                      🔄 Refresh Cache
+                    </button>
                   </div>
-                  {exists && (
-                    <span className="px-2 py-1 bg-green-900/50 text-green-400 text-xs rounded">
-                      Active
-                    </span>
-                  )}
                 </div>
-
-                <div className="flex items-center gap-2 mb-2">
-                  <label className="text-sm text-gray-400">Pool Count:</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="100"
-                    value={poolCounts[config.defaultCategory] || 50}
-                    onChange={(e) =>
-                      setPoolCounts({
-                        ...poolCounts,
-                        [config.defaultCategory]: Math.min(100, Math.max(1, parseInt(e.target.value) || 50)),
-                      })
-                    }
-                    className="bg-gray-800 text-white px-2 py-1 rounded w-20 text-sm"
-                  />
-                  <span className="text-xs text-gray-500">(1-100)</span>
+                <div className="grid grid-cols-3 md:grid-cols-6 gap-4 text-sm">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-white">{discoveredAlts.summary.total}</div>
+                    <div className="text-gray-400">Total ALTs</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-blue-400">{discoveredAlts.summary.inConfig}</div>
+                    <div className="text-gray-400">Tracked</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-orange-400">{discoveredAlts.summary.orphaned}</div>
+                    <div className="text-gray-400">Orphaned</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-yellow-400">{discoveredAlts.summary.deactivated}</div>
+                    <div className="text-gray-400">Deactivated</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-green-400">{discoveredAlts.summary.closeable}</div>
+                    <div className="text-gray-400">Closeable</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-emerald-400">{discoveredAlts.summary.totalRentSOL.toFixed(4)}</div>
+                    <div className="text-gray-400">Total Rent (SOL)</div>
+                  </div>
                 </div>
+                {discoveredAlts.summary.recoverableRentSOL > 0 && (
+                  <div className="mt-3 text-center text-green-400 text-sm">
+                    💰 Recoverable rent from closeable ALTs: <strong>{discoveredAlts.summary.recoverableRentSOL.toFixed(6)} SOL</strong>
+                  </div>
+                )}
+              </div>
+            )}
 
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handlePreview(config)}
-                    disabled={loading}
-                    className="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
-                  >
-                    Preview Pools
-                  </button>
-                  {!exists ? (
+            {/* Bulk Actions */}
+            {discoveredAlts && discoveredAlts.alts.length > 0 && (
+              <div className="bg-gray-900 rounded p-4 mb-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-sm text-gray-300">
+                      <input
+                        type="checkbox"
+                        checked={selectedAlts.size === discoveredAlts.alts.length && selectedAlts.size > 0}
+                        onChange={toggleSelectAll}
+                        className="rounded"
+                      />
+                      Select All ({selectedAlts.size} selected)
+                    </label>
+                  </div>
+                  <div className="flex gap-2">
                     <button
-                      onClick={() => handleCreate(config)}
-                      disabled={loading}
-                      className="px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                      onClick={handleBulkDeactivate}
+                      disabled={loading || bulkProcessing || selectedAlts.size === 0}
+                      className="px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
                     >
-                      Create ALT
+                      {bulkProcessing ? '⏳ Processing...' : '🔶 Bulk Deactivate'}
                     </button>
-                  ) : (
                     <button
-                      onClick={() => handleRefresh(config)}
-                      disabled={loading}
-                      className="px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                      onClick={handleBulkClose}
+                      disabled={loading || bulkProcessing || selectedAlts.size === 0}
+                      className="px-3 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
                     >
-                      Refresh ALT
+                      {bulkProcessing ? '⏳ Processing...' : '❌ Bulk Close'}
                     </button>
-                  )}
+                  </div>
                 </div>
               </div>
-            );
-          })}
-        </div>
+            )}
 
-        {/* Pool Preview */}
-        {preview && (
-          <div className="mt-6 bg-gray-900 rounded p-4">
-            <h4 className="text-white font-semibold mb-3">
-              {preview.dex} - Top {preview.pools.length} Pools by Liquidity
-            </h4>
-            <div className="max-h-64 overflow-y-auto">
-              <table className="w-full text-sm">
-                <thead className="text-gray-400 border-b border-gray-700">
-                  <tr>
-                    <th className="text-left py-2">Pool ID</th>
-                    <th className="text-left py-2">Type</th>
-                    <th className="text-right py-2">TVL/Liquidity</th>
-                    <th className="text-right py-2">Fee (bps)</th>
-                  </tr>
-                </thead>
-                <tbody className="text-gray-300">
-                  {preview.pools.map((pool, idx) => (
-                    <tr key={idx} className="border-b border-gray-800">
-                      <td className="py-2 font-mono text-xs">{truncateAddress(pool.poolId)}</td>
-                      <td className="py-2 text-xs">{pool.poolKind}</td>
-                      <td className="py-2 text-right">${pool.tvl.toFixed(0)}</td>
-                      <td className="py-2 text-right">{pool.feeBps || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {/* ALT List by Status Groups */}
+            {groupedAlts && (
+              <div className="space-y-4">
+                {/* Closeable ALTs - Most Important */}
+                {groupedAlts.closeable.length > 0 && (
+                  <div className="bg-green-900/20 border border-green-700/50 rounded p-4">
+                    <h4 className="text-green-400 font-semibold mb-3">
+                      ✅ Ready to Close ({groupedAlts.closeable.length}) - Recover {groupedAlts.closeable.reduce((sum, a) => sum + parseFloat(a.rentSOL), 0).toFixed(4)} SOL
+                    </h4>
+                    <div className="space-y-2">
+                      {groupedAlts.closeable.map((alt) => (
+                        <AltRow
+                          key={alt.address}
+                          alt={alt}
+                          selected={selectedAlts.has(alt.address)}
+                          onToggle={() => toggleSelectAlt(alt.address)}
+                          onDeactivate={() => handleDeactivateByAddress(alt.address)}
+                          onClose={() => handleCloseByAddress(alt.address, alt.rentSOL)}
+                          processing={processingAddress === alt.address}
+                          disabled={loading}
+                          getStatusBadge={getStatusBadge}
+                          truncateAddress={truncateAddress}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Deactivated but not closeable yet */}
+                {groupedAlts.deactivated.length > 0 && (
+                  <div className="bg-yellow-900/20 border border-yellow-700/50 rounded p-4">
+                    <h4 className="text-yellow-400 font-semibold mb-3">
+                      ⏳ Deactivated - Waiting ({groupedAlts.deactivated.length})
+                    </h4>
+                    <div className="space-y-2">
+                      {groupedAlts.deactivated.map((alt) => (
+                        <AltRow
+                          key={alt.address}
+                          alt={alt}
+                          selected={selectedAlts.has(alt.address)}
+                          onToggle={() => toggleSelectAlt(alt.address)}
+                          onDeactivate={() => handleDeactivateByAddress(alt.address)}
+                          onClose={() => handleCloseByAddress(alt.address, alt.rentSOL)}
+                          processing={processingAddress === alt.address}
+                          disabled={loading}
+                          getStatusBadge={getStatusBadge}
+                          truncateAddress={truncateAddress}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Orphaned ALTs - Important to show */}
+                {groupedAlts.orphaned.length > 0 && (
+                  <div className="bg-orange-900/20 border border-orange-700/50 rounded p-4">
+                    <h4 className="text-orange-400 font-semibold mb-3">
+                      ⚠️ Orphaned - Not in Config ({groupedAlts.orphaned.length})
+                    </h4>
+                    <p className="text-orange-300/70 text-xs mb-3">
+                      These ALTs are owned by your wallet but not tracked in config. They may be from previous sessions or created manually.
+                    </p>
+                    <div className="space-y-2">
+                      {groupedAlts.orphaned.map((alt) => (
+                        <AltRow
+                          key={alt.address}
+                          alt={alt}
+                          selected={selectedAlts.has(alt.address)}
+                          onToggle={() => toggleSelectAlt(alt.address)}
+                          onDeactivate={() => handleDeactivateByAddress(alt.address)}
+                          onClose={() => handleCloseByAddress(alt.address, alt.rentSOL)}
+                          processing={processingAddress === alt.address}
+                          disabled={loading}
+                          getStatusBadge={getStatusBadge}
+                          truncateAddress={truncateAddress}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Active tracked ALTs */}
+                {groupedAlts.active.length > 0 && (
+                  <div className="bg-blue-900/20 border border-blue-700/50 rounded p-4">
+                    <h4 className="text-blue-400 font-semibold mb-3">
+                      🔵 Active Tracked ALTs ({groupedAlts.active.length})
+                    </h4>
+                    <div className="space-y-2">
+                      {groupedAlts.active.map((alt) => (
+                        <AltRow
+                          key={alt.address}
+                          alt={alt}
+                          selected={selectedAlts.has(alt.address)}
+                          onToggle={() => toggleSelectAlt(alt.address)}
+                          onDeactivate={() => handleDeactivateByAddress(alt.address)}
+                          onClose={() => handleCloseByAddress(alt.address, alt.rentSOL)}
+                          processing={processingAddress === alt.address}
+                          disabled={loading}
+                          getStatusBadge={getStatusBadge}
+                          truncateAddress={truncateAddress}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {discoveredAlts.alts.length === 0 && (
+                  <div className="text-center text-gray-400 py-8">
+                    No ALTs found for this wallet. Use the "Create DEX ALTs" tab to create new ones.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {discoverLoading && (
+              <div className="text-center text-gray-400 py-8">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
+                <p className="mt-2">Scanning blockchain for wallet ALTs...</p>
+              </div>
+            )}
           </div>
         )}
 
-        {loading && (
+        {/* Create DEX ALTs Tab */}
+        {activeTab === 'create' && (
+          <div className="space-y-4">
+            {DEX_CONFIGS.map((config) => {
+              const exists = altStatus?.categories.includes(config.defaultCategory);
+              return (
+                <div key={config.defaultCategory} className="bg-gray-900 rounded p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h4 className="text-white font-semibold">{config.name}</h4>
+                      <p className="text-xs text-gray-400">Category: {config.defaultCategory}</p>
+                    </div>
+                    {exists && (
+                      <span className="px-2 py-1 bg-green-900/50 text-green-400 text-xs rounded">
+                        Active
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 mb-2">
+                    <label className="text-sm text-gray-400">Pool Count:</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={poolCounts[config.defaultCategory] || 50}
+                      onChange={(e) =>
+                        setPoolCounts({
+                          ...poolCounts,
+                          [config.defaultCategory]: Math.min(100, Math.max(1, parseInt(e.target.value) || 50)),
+                        })
+                      }
+                      className="bg-gray-800 text-white px-2 py-1 rounded w-20 text-sm"
+                    />
+                    <span className="text-xs text-gray-500">(1-100)</span>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handlePreview(config)}
+                      disabled={loading}
+                      className="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                    >
+                      Preview Pools
+                    </button>
+                    {!exists ? (
+                      <button
+                        onClick={() => handleCreate(config)}
+                        disabled={loading}
+                        className="px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                      >
+                        Create ALT
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleRefresh(config)}
+                        disabled={loading}
+                        className="px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                      >
+                        Refresh ALT
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Pool Preview */}
+            {preview && (
+              <div className="mt-6 bg-gray-900 rounded p-4">
+                <h4 className="text-white font-semibold mb-3">
+                  {preview.dex} - Top {preview.pools.length} Pools by Liquidity
+                </h4>
+                <div className="max-h-64 overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-gray-400 border-b border-gray-700">
+                      <tr>
+                        <th className="text-left py-2">Pool ID</th>
+                        <th className="text-left py-2">Type</th>
+                        <th className="text-right py-2">TVL/Liquidity</th>
+                        <th className="text-right py-2">Fee (bps)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-gray-300">
+                      {preview.pools.map((pool, idx) => (
+                        <tr key={idx} className="border-b border-gray-800">
+                          <td className="py-2 font-mono text-xs">{truncateAddress(pool.poolId)}</td>
+                          <td className="py-2 text-xs">{pool.poolKind}</td>
+                          <td className="py-2 text-right">${pool.tvl.toFixed(0)}</td>
+                          <td className="py-2 text-right">{pool.feeBps || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {loading && !discoverLoading && (
           <div className="mt-4 text-center text-gray-400">
             <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
             <p className="mt-2">Processing...</p>
@@ -524,3 +861,68 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
   );
 };
 
+// Separate component for ALT row to keep code clean
+const AltRow: React.FC<{
+  alt: DiscoveredAlt;
+  selected: boolean;
+  onToggle: () => void;
+  onDeactivate: () => void;
+  onClose: () => void;
+  processing: boolean;
+  disabled: boolean;
+  getStatusBadge: (alt: DiscoveredAlt) => React.ReactNode;
+  truncateAddress: (addr: string) => string;
+}> = ({ alt, selected, onToggle, onDeactivate, onClose, processing, disabled, getStatusBadge, truncateAddress }) => {
+  return (
+    <div className="flex items-center justify-between bg-gray-800/50 rounded p-3">
+      <div className="flex items-center gap-3">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+          className="rounded"
+        />
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-sm text-gray-200">{truncateAddress(alt.address)}</span>
+            {getStatusBadge(alt)}
+          </div>
+          <div className="flex items-center gap-3 text-xs text-gray-400 mt-1">
+            <span>{alt.accountCount} accounts</span>
+            <span>{alt.rentSOL} SOL</span>
+            {alt.category && <span className="text-blue-400">({alt.category})</span>}
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        {alt.canClose ? (
+          <button
+            onClick={onClose}
+            disabled={disabled || processing}
+            className="px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-xs"
+          >
+            {processing ? '⏳' : `💰 Close & Recover`}
+          </button>
+        ) : alt.isDeactivated ? (
+          <span className="text-xs text-yellow-400 px-2 py-1">⏳ Waiting ~5min</span>
+        ) : (
+          <button
+            onClick={onDeactivate}
+            disabled={disabled || processing}
+            className="px-2 py-1 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-xs"
+          >
+            {processing ? '⏳' : '🔶 Deactivate'}
+          </button>
+        )}
+        <a
+          href={`https://solscan.io/account/${alt.address}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="px-2 py-1 bg-gray-700 text-gray-300 rounded hover:bg-gray-600 text-xs"
+        >
+          🔗
+        </a>
+      </div>
+    </div>
+  );
+};
