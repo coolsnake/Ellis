@@ -2747,25 +2747,27 @@ async function extractDexAccounts(
           }
         }
         
-        if (pumpCoinCreator && pumpCoinCreator !== SystemProgram.programId.toBase58()) {
-          // Use SDK's derivation functions with the actual creator
-          pumpCoinCreatorVaultAuthority = derivePumpswapCoinCreatorVault(new PublicKey(pumpCoinCreator));
-          pumpCoinCreatorVaultAta = derivePumpswapCoinCreatorVaultAta(
-            pumpCoinCreatorVaultAuthority,
-            new PublicKey(pumpQuoteMint),
-            pumpQuoteTokenProgram
-          );
-        } else {
-          // Fallback: If coinCreator is still System Program (0x0), the pool has no creator fees
-          // Use System Program as placeholder - this is allowed since creator fees are 0
-          logger.warn('routerTx.pumpswap.coinCreator.systemProgram', {
+        // Always derive PDAs from coinCreator, even if it's System Program (default/no creator)
+        // The SDK always derives PDAs - we can't pass System Program directly as writable
+        const coinCreatorPubkey = pumpCoinCreator 
+          ? new PublicKey(pumpCoinCreator) 
+          : SystemProgram.programId;
+        
+        if (coinCreatorPubkey.equals(SystemProgram.programId)) {
+          logger.info('routerTx.pumpswap.coinCreator.systemProgram', {
             cat: 'tx',
             poolId: hop.poolId,
-            msg: 'Pool has no coinCreator set (System Program), creator fees are disabled',
+            msg: 'Pool has no coinCreator set (System Program), deriving PDAs from System Program seed',
           });
-          pumpCoinCreatorVaultAuthority = SystemProgram.programId;
-          pumpCoinCreatorVaultAta = SystemProgram.programId;
         }
+        
+        // Derive vault authority PDA from coinCreator (even if System Program)
+        pumpCoinCreatorVaultAuthority = derivePumpswapCoinCreatorVault(coinCreatorPubkey);
+        pumpCoinCreatorVaultAta = derivePumpswapCoinCreatorVaultAta(
+          pumpCoinCreatorVaultAuthority,
+          new PublicKey(pumpQuoteMint),
+          pumpQuoteTokenProgram
+        );
         
         // Derive user volume accumulator PDA (for volume tracking rewards)
         const pumpUserVolumeAccumulator = derivePumpswapUserVolumeAccumulator(wallet);

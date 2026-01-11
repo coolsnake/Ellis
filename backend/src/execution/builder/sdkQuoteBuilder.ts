@@ -1591,6 +1591,44 @@ async function getMeteoraDammV1SdkQuote(
               rawAFee: pool.poolState.protocolTokenAFee?.toString?.(),
               rawBFee: pool.poolState.protocolTokenBFee?.toString?.(),
             });
+            
+            // Fallback: Parse protocol fees directly from pool account data if SDK didn't provide them
+            // Pool account layout (from Meteora IDL):
+            // - offset 234: protocolTokenAFee (32 bytes)
+            // - offset 266: protocolTokenBFee (32 bytes)
+            if (!accounts.protocolTokenAFee || !accounts.protocolTokenBFee) {
+              try {
+                const poolAccountInfo = await connection.getAccountInfo(poolPk);
+                if (poolAccountInfo?.data && poolAccountInfo.data.length >= 298) {
+                  const data = Buffer.from(poolAccountInfo.data);
+                  // Offsets: 8 (discriminator) + 32*7 (7 pubkeys) + 1 (bump) + 1 (enabled) = 234
+                  const PROTOCOL_A_FEE_OFFSET = 234;
+                  const PROTOCOL_B_FEE_OFFSET = 266;
+                  
+                  if (!accounts.protocolTokenAFee) {
+                    const protocolAFee = new PublicKey(data.subarray(PROTOCOL_A_FEE_OFFSET, PROTOCOL_A_FEE_OFFSET + 32));
+                    accounts.protocolTokenAFee = protocolAFee.toBase58();
+                  }
+                  if (!accounts.protocolTokenBFee) {
+                    const protocolBFee = new PublicKey(data.subarray(PROTOCOL_B_FEE_OFFSET, PROTOCOL_B_FEE_OFFSET + 32));
+                    accounts.protocolTokenBFee = protocolBFee.toBase58();
+                  }
+                  
+                  logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.parsedFromAccount', {
+                    cat: 'tx',
+                    poolId: poolId.slice(0, 8) + '...',
+                    protocolTokenAFee: accounts.protocolTokenAFee,
+                    protocolTokenBFee: accounts.protocolTokenBFee,
+                  });
+                }
+              } catch (parseErr) {
+                logger.debug('sdkQuoteBuilder.meteoraDammV1.protocolFee.parseError', {
+                  cat: 'tx',
+                  poolId: poolId.slice(0, 8) + '...',
+                  error: (parseErr as Error).message,
+                });
+              }
+            }
           }
           
           // Extract token vaults from the VaultImpl instances
