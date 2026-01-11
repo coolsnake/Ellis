@@ -22,8 +22,9 @@ use crate::error::ArbRouterError;
 // Account Counts
 // =============================================================================
 
-/// Number of accounts needed for Meteora DAMM v1 swap
+/// Minimum number of accounts needed for Meteora DAMM v1 swap
 /// v1 uses Mercurial Vault architecture requiring 15 accounts + 1 program ID = 16 total
+/// For stable/depeg pools, additional remaining accounts may be passed after position 15
 pub const ACCOUNTS_NEEDED_V1: usize = 16;
 
 /// Number of accounts needed for Meteora DAMM v2 swap  
@@ -99,7 +100,7 @@ pub fn swap_v1(
     min_amount_out: u64,
 ) -> Result<()> {
     if accounts.len() < ACCOUNTS_NEEDED_V1 {
-        msg!("Meteora DAMM v1: Insufficient accounts. Expected {}, got {}", 
+        msg!("Meteora DAMM v1: Insufficient accounts. Expected at least {}, got {}", 
              ACCOUNTS_NEEDED_V1, accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
@@ -114,19 +115,28 @@ pub fn swap_v1(
     data.extend_from_slice(&SWAP_V1_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
-    let program_idx = ACCOUNTS_NEEDED_V1 - 1; // 15
+    let program_idx = ACCOUNTS_NEEDED_V1 - 1; // 15 (fixed position of program ID)
     let dex_program_id = *accounts[program_idx].key;
+    
+    // Calculate remaining accounts count (accounts after position 15)
+    let remaining_accounts_count = accounts.len().saturating_sub(ACCOUNTS_NEEDED_V1);
+    
+    msg!("Meteora DAMM v1: {} total accounts, {} remaining accounts", 
+         accounts.len(), remaining_accounts_count);
 
     // Build account metas for Meteora Dynamic AMM swap
     // Account order matches Meteora IDL (idl.d.ts lines 687-807):
     //
-    // Writable accounts (indices 0-11):
-    //   pool, userSourceToken, userDestToken, aVault, bVault,
-    //   aTokenVault, bTokenVault, aVaultLpMint, bVaultLpMint,
-    //   aVaultLp, bVaultLp, protocolTokenFee
-    // Signer: user (index 12)
-    // Read-only: vaultProgram (13), tokenProgram (14)
-    let account_metas: Vec<AccountMeta> = accounts[..program_idx]
+    // Fixed accounts (indices 0-14):
+    //   Writable: pool(0), userSourceToken(1), userDestToken(2), aVault(3), bVault(4),
+    //             aTokenVault(5), bTokenVault(6), aVaultLpMint(7), bVaultLpMint(8),
+    //             aVaultLp(9), bVaultLp(10), protocolTokenFee(11)
+    //   Signer: user(12)
+    //   Read-only: vaultProgram(13), tokenProgram(14)
+    // 
+    // Remaining accounts (indices 16+) for stable/depeg pools:
+    //   These are read-only accounts used for price calculations (marinade, lido, splStake)
+    let mut account_metas: Vec<AccountMeta> = accounts[..program_idx]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
@@ -142,6 +152,12 @@ pub fn swap_v1(
             }
         })
         .collect();
+    
+    // Add remaining accounts (for stable/depeg pools)
+    // These come after the program ID (position 15) in our account array
+    for i in ACCOUNTS_NEEDED_V1..accounts.len() {
+        account_metas.push(AccountMeta::new_readonly(*accounts[i].key, false));
+    }
 
     let ix = Instruction {
         program_id: dex_program_id,
@@ -149,9 +165,11 @@ pub fn swap_v1(
         data,
     };
 
-    invoke(&ix, &accounts[..ACCOUNTS_NEEDED_V1])?;
+    // Pass all accounts to invoke (including remaining accounts)
+    invoke(&ix, accounts)?;
 
-    msg!("Meteora DAMM v1 swap executed: {} in, min {} out", amount_in, min_amount_out);
+    msg!("Meteora DAMM v1 swap executed: {} in, min {} out, {} remaining accounts", 
+         amount_in, min_amount_out, remaining_accounts_count);
     Ok(())
 }
 

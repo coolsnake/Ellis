@@ -97,6 +97,10 @@ export interface SdkProvidedAccounts {
   protocolTokenAFee?: string; // Protocol fee account for token A
   protocolTokenBFee?: string; // Protocol fee account for token B
   vaultProgram?: string;     // Mercurial Vault program ID
+  // Meteora DAMM v1 - Depeg pool remaining accounts
+  depegType?: 'none' | 'marinade' | 'lido' | 'splStake';
+  stakePool?: string;        // SPL stake pool pubkey for splStake depeg pools
+  remainingAccounts?: string[]; // Extra accounts needed for stable/depeg swaps
 
   // PumpSwap
   globalConfig?: string;
@@ -1651,6 +1655,42 @@ async function getMeteoraDammV1SdkQuote(
             accounts.lpMint = pool.poolInfo.lpMint?.toBase58?.();
           }
           
+          // Extract depeg info and remaining accounts for stable/depeg pools
+          // The swapCurve.getRemainingAccounts() returns extra accounts needed for depeg swaps
+          if (pool.swapCurve && typeof pool.swapCurve.getRemainingAccounts === 'function') {
+            try {
+              const remainingAccounts = pool.swapCurve.getRemainingAccounts();
+              if (Array.isArray(remainingAccounts) && remainingAccounts.length > 0) {
+                accounts.remainingAccounts = remainingAccounts.map((acc: any) => {
+                  const pk = acc.pubkey || acc;
+                  return typeof pk.toBase58 === 'function' ? pk.toBase58() : new PublicKey(pk as any).toBase58();
+                });
+                logger.info('sdkQuoteBuilder.meteoraDammV1.remainingAccounts', {
+                  cat: 'tx',
+                  poolId: poolId.slice(0, 8) + '...',
+                  count: accounts.remainingAccounts.length,
+                  accounts: accounts.remainingAccounts,
+                });
+              }
+            } catch (e) {
+              logger.debug('sdkQuoteBuilder.meteoraDammV1.remainingAccounts.error', {
+                cat: 'tx',
+                error: (e as Error).message,
+              });
+            }
+          }
+          
+          // Extract stake pool pubkey for splStake depeg pools
+          if (pool.poolState?.stake) {
+            const stake = pool.poolState.stake;
+            const stakeStr = typeof stake.toBase58 === 'function' ? stake.toBase58() : new PublicKey(stake as any).toBase58();
+            // Only set if not zero pubkey
+            if (stakeStr !== '11111111111111111111111111111111') {
+              accounts.stakePool = stakeStr;
+              accounts.depegType = 'splStake';
+            }
+          }
+          
           logger.info('sdkQuoteBuilder.meteoraDammV1.sdk.success', {
             cat: 'tx',
             poolId: poolId.slice(0, 8) + '...',
@@ -1663,6 +1703,9 @@ async function getMeteoraDammV1SdkQuote(
             protocolTokenBFee: accounts.protocolTokenBFee,
             tokenAMint: pool.poolState?.tokenAMint?.toBase58?.(),
             tokenBMint: pool.poolState?.tokenBMint?.toBase58?.(),
+            depegType: accounts.depegType,
+            stakePool: accounts.stakePool,
+            remainingAccountsCount: accounts.remainingAccounts?.length || 0,
           });
         }
       } catch (sdkErr) {

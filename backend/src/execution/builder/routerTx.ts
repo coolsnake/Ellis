@@ -1283,6 +1283,16 @@ function applysdkAccountsToHop(hop: DirectHop, sdkAccounts: SdkProvidedAccounts)
   if (sdkAccounts.vaultProgram) {
     (hop as any).vaultProgram = sdkAccounts.vaultProgram;
   }
+  // Meteora DAMM v1 depeg/remaining accounts
+  if (sdkAccounts.depegType) {
+    (hop as any).depegType = sdkAccounts.depegType;
+  }
+  if (sdkAccounts.stakePool) {
+    (hop as any).stakePool = sdkAccounts.stakePool;
+  }
+  if (sdkAccounts.remainingAccounts && sdkAccounts.remainingAccounts.length > 0) {
+    (hop as any).remainingAccounts = sdkAccounts.remainingAccounts;
+  }
 
   // PumpSwap accounts
   if (sdkAccounts.globalConfig) {
@@ -2991,6 +3001,9 @@ async function extractDexAccounts(
           if (!bVaultLp) missingAccounts.push('bVaultLp');
           if (!protocolTokenFee) missingAccounts.push('protocolTokenFee');
           
+          // Get remaining accounts for depeg/stable pools
+          const remainingAccounts = (hop as any).remainingAccounts as string[] | undefined;
+          
           logger.info('routerTx.meteoraDamm.v1.accounts', {
             cat: 'tx',
             poolId: hop.poolId,
@@ -3010,6 +3023,8 @@ async function extractDexAccounts(
             vaultProgram,
             missingCount: missingAccounts.length,
             missing: missingAccounts.length > 0 ? missingAccounts : undefined,
+            remainingAccountsCount: remainingAccounts?.length || 0,
+            remainingAccounts: remainingAccounts,
           });
           
           if (missingAccounts.length > 0) {
@@ -3036,6 +3051,20 @@ async function extractDexAccounts(
             TOKEN_PROGRAM_ID,                                                  // 14: tokenProgram
             programIdKey,                                                      // 15: DAMM Program (CPI target)
           );
+          
+          // Add remaining accounts for depeg/stable pools (after the program ID)
+          // These are required for stable swap pools with depeg types (marinade, lido, splStake)
+          if (remainingAccounts && remainingAccounts.length > 0) {
+            for (const acc of remainingAccounts) {
+              accounts.push(new PublicKey(acc));
+            }
+            logger.info('routerTx.meteoraDamm.v1.remainingAccounts.added', {
+              cat: 'tx',
+              poolId: hop.poolId.slice(0, 8) + '...',
+              count: remainingAccounts.length,
+              totalAccounts: accounts.length,
+            });
+          }
         }
         break;
 
