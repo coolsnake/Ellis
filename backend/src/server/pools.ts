@@ -247,7 +247,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   // Accumulator for phase stats (used for summary log)
   const phaseStats: {
-    fetch?: { raydium: { amm: number; clmm: number }; orca: { amm: number; clmm: number }; meteora: { amm: number; clmm: number }; meteora_balanced: { amm: number; clmm: number }; pumpswap: { amm: number; clmm: number } };
+    fetch?: { raydium: { amm: number; clmm: number; cpmm?: number }; orca: { amm: number; clmm: number }; meteora: { amm: number; clmm: number }; meteora_balanced: { amm: number; clmm: number }; pumpswap: { amm: number; clmm: number } };
     universe?: { mode: string; before: Record<string, number>; after: Record<string, number> };
     minPools1?: { minPools: number; before: Record<string, number>; after: Record<string, number> };
     tvl?: { minAmm: number; minClmm: number; before: Record<string, { a: number; c: number }>; after: Record<string, { a: number; c: number }> };
@@ -970,7 +970,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   try {
     const fetchCounts = {
-      raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
+      raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0, cpmm: r.cpmm?.length || 0 },
       orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
       meteora: { amm: m.amm?.length || 0, clmm: m.clmm?.length || 0 },
       meteora_balanced: { amm: mb.amm?.length || 0, clmm: mb.clmm?.length || 0 },
@@ -1467,7 +1467,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   logger.info('pools.refresh.phase.complete_all_filtering', { 
     finalCounts: {
-      raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
+      raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0, cpmm: r.cpmm?.length || 0 },
       orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
       meteora: { amm: m.amm?.length || 0, clmm: m.clmm?.length || 0 },
       meteora_balanced: { amm: mb.amm?.length || 0, clmm: mb.clmm?.length || 0 },
@@ -1674,15 +1674,15 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   // Build comprehensive refresh summary
   const refreshDurationMs = Date.now() - refreshStartTime;
   const finalCounts = {
-    raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
+    raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0, cpmm: r.cpmm?.length || 0 },
     orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
     meteora: { amm: m.amm?.length || 0, clmm: m.clmm?.length || 0 },
     meteora_balanced: { amm: mb.amm?.length || 0, clmm: mb.clmm?.length || 0 },
     pumpswap: { amm: pump.amm?.length || 0, clmm: pump.clmm?.length || 0 },
   };
-  const totalFinal = Object.values(finalCounts).reduce((sum, v) => sum + v.amm + v.clmm, 0);
+  const totalFinal = Object.values(finalCounts).reduce((sum, v) => sum + v.amm + v.clmm + ((v as any).cpmm || 0), 0);
   const totalFetched = phaseStats.fetch 
-    ? Object.values(phaseStats.fetch).reduce((sum, v) => sum + v.amm + v.clmm, 0) 
+    ? Object.values(phaseStats.fetch).reduce((sum, v) => sum + v.amm + v.clmm + ((v as any).cpmm || 0), 0) 
     : 0;
   
   const refreshSummary = {

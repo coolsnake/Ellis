@@ -70,21 +70,23 @@ pub struct SwapParams {
 /// is stored in Mercurial vaults that can earn yield. This requires passing all
 /// vault-related accounts for the CPI to work correctly.
 ///
-/// 0.  `[writable]` pool - The DAMM pool account
-/// 1.  `[writable]` userSourceToken - User's source token ATA
-/// 2.  `[writable]` userDestinationToken - User's destination token ATA
-/// 3.  `[writable]` aVault - Mercurial Vault account for token A
-/// 4.  `[writable]` bVault - Mercurial Vault account for token B
-/// 5.  `[writable]` aTokenVault - SPL Token account inside aVault
-/// 6.  `[writable]` bTokenVault - SPL Token account inside bVault
-/// 7.  `[writable]` aVaultLpMint - LP token mint of vault A
-/// 8.  `[writable]` bVaultLpMint - LP token mint of vault B
-/// 9.  `[writable]` aVaultLp - Pool's LP token account for vault A
-/// 10. `[writable]` bVaultLp - Pool's LP token account for vault B
+/// Account order matches @meteora-ag/dynamic-amm-sdk swap() method:
+///
+/// 0.  `[writable]` aTokenVault - SPL Token account inside aVault
+/// 1.  `[writable]` bTokenVault - SPL Token account inside bVault
+/// 2.  `[writable]` aVault - Mercurial Vault account for token A
+/// 3.  `[writable]` bVault - Mercurial Vault account for token B
+/// 4.  `[writable]` aVaultLp - Pool's LP token account for vault A
+/// 5.  `[writable]` bVaultLp - Pool's LP token account for vault B
+/// 6.  `[writable]` aVaultLpMint - LP token mint of vault A
+/// 7.  `[writable]` bVaultLpMint - LP token mint of vault B
+/// 8.  `[writable]` userSourceToken - User's source token ATA
+/// 9.  `[writable]` userDestinationToken - User's destination token ATA
+/// 10. `[signer]`   user - User wallet
 /// 11. `[writable]` protocolTokenFee - Protocol fee account (direction-dependent)
-/// 12. `[signer]`   user - User wallet
-/// 13. `[]`         vaultProgram - Mercurial Vault program
-/// 14. `[]`         tokenProgram - SPL Token program
+/// 12. `[writable]` pool - The DAMM pool account
+/// 13. `[]`         tokenProgram - SPL Token program
+/// 14. `[]`         vaultProgram - Mercurial Vault program
 /// 15. `[]`         dammProgram - Meteora DAMM v1 program (for CPI)
 ///
 /// # Arguments
@@ -116,20 +118,20 @@ pub fn swap_v1(
     let dex_program_id = *accounts[program_idx].key;
 
     // Build account metas for Meteora Dynamic AMM swap
-    // Based on IDL: https://github.com/MeteoraAg/dynamic-amm-sdk
+    // Account order matches @meteora-ag/dynamic-amm-sdk swap() method
     //
-    // Writable accounts (indices 0-11):
-    //   pool, userSourceToken, userDestToken, aVault, bVault,
-    //   aTokenVault, bTokenVault, aVaultLpMint, bVaultLpMint,
-    //   aVaultLp, bVaultLp, protocolTokenFee
-    // Signer: user (index 12)
-    // Read-only: vaultProgram (13), tokenProgram (14)
+    // Writable accounts (indices 0-12):
+    //   aTokenVault, bTokenVault, aVault, bVault, aVaultLp, bVaultLp,
+    //   aVaultLpMint, bVaultLpMint, userSourceToken, userDestToken,
+    //   user (also signer), protocolTokenFee, pool
+    // Signer: user (index 10)
+    // Read-only: tokenProgram (13), vaultProgram (14)
     let account_metas: Vec<AccountMeta> = accounts[..program_idx]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
-            let is_signer = i == 12;  // user at index 12
-            let is_writable = i <= 11; // indices 0-11 are writable
+            let is_signer = i == 10;  // user at index 10
+            let is_writable = i <= 12; // indices 0-12 are writable
             
             if is_signer {
                 AccountMeta::new(*acc.key, true)

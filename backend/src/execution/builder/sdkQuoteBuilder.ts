@@ -34,6 +34,9 @@ const METEORA_DAMM_V2_PROGRAM = new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSW
 // Use the post-graduation AMM program (not bonding curve) for Pumpswap
 const PUMPSWAP_PROGRAM = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
 
+// Import pre-computed PDA from SDK for accuracy
+import { GLOBAL_CONFIG_PDA as PUMPSWAP_GLOBAL_CONFIG_PDA } from '@pump-fun/pump-swap-sdk';
+
 const RAYDIUM_TICK_ARRAY_SIZE = 60;
 const RAYDIUM_BITMAP_RANGE = 512;
 const RAYDIUM_BITMAP_WORDS = 16;
@@ -1925,17 +1928,16 @@ async function getPumpswapSdkQuote(
       }
     }
     
-    // Always derive global config PDA
-    const [globalConfig] = PublicKey.findProgramAddressSync(
-      [Buffer.from('global')],
-      PUMPSWAP_PROGRAM
-    );
-    accounts.globalConfig = globalConfig.toBase58();
+    // Use SDK's pre-computed global config PDA (only if not already set from SDK call)
+    if (!accounts.globalConfig) {
+      accounts.globalConfig = PUMPSWAP_GLOBAL_CONFIG_PDA.toBase58();
+    }
     
     // If we don't have fee recipient from SDK, try to fetch it from global config account
     if (!accounts.protocolFeeRecipient) {
       try {
-        const globalConfigInfo = await connection.getAccountInfo(globalConfig);
+        const globalConfigPk = new PublicKey(accounts.globalConfig);
+        const globalConfigInfo = await connection.getAccountInfo(globalConfigPk);
         if (globalConfigInfo && globalConfigInfo.data) {
           const data = Buffer.from(globalConfigInfo.data);
           // PumpSwap global config layout: fee recipient is typically near the start

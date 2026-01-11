@@ -239,7 +239,7 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       res.json({ 
         ok: true, 
         counts: { 
-          raydium: { amm: out.raydium?.amm?.length || 0, clmm: out.raydium?.clmm?.length || 0 },
+          raydium: { amm: out.raydium?.amm?.length || 0, clmm: out.raydium?.clmm?.length || 0, cpmm: out.raydium?.cpmm?.length || 0 },
           orca: { amm: out.orca?.amm?.length || 0, clmm: out.orca?.clmm?.length || 0 },
           meteora: { clmm: out.meteora?.clmm?.length || 0 },
           meteora_balanced: { amm: out.meteora_balanced?.amm?.length || 0 },

@@ -816,7 +816,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
 
       try {
         logger.info('graph.pools.after_validation', {
-          raydium: { amm: rayValid.amm?.length || 0, clmm: rayValid.clmm?.length || 0 },
+          raydium: { amm: rayValid.amm?.length || 0, clmm: rayValid.clmm?.length || 0, cpmm: rayValid.cpmm?.length || 0 },
           orca: { amm: orcValid.amm?.length || 0, clmm: orcValid.clmm?.length || 0 },
           meteora: { clmm: metValid.clmm?.length || 0 },
           meteora_balanced: { amm: mblValid.amm?.length || 0 },
@@ -828,6 +828,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const allPools = [
         ...(rayValid.amm || []),
         ...(rayValid.clmm || []),
+        ...(rayValid.cpmm || []),
         ...(orc.amm || []),
         ...(orc.clmm || []),
         ...(met.clmm || []),

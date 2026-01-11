@@ -2934,23 +2934,25 @@ async function extractDexAccounts(
             throw new Error(`Meteora DAMM v1: Missing required accounts: ${missingAccounts.join(', ')}. SDK quote may have failed.`);
           }
           
+          // Account order MUST match Meteora Dynamic AMM SDK's swap instruction
+          // See: @meteora-ag/dynamic-amm-sdk/src/amm/index.js swap() method
           accounts.push(
-            poolId,                                                            // 0: Pool
-            userSourceAta,                                                     // 1: User Source Token
-            userDestAta,                                                       // 2: User Destination Token
-            new PublicKey(aVault),                                            // 3: aVault (Mercurial Vault)
-            new PublicKey(bVault),                                            // 4: bVault (Mercurial Vault)
-            new PublicKey(aTokenVault),                                       // 5: aTokenVault (SPL Token in vault)
-            new PublicKey(bTokenVault),                                       // 6: bTokenVault (SPL Token in vault)
-            new PublicKey(aVaultLpMint),                                      // 7: aVaultLpMint
-            new PublicKey(bVaultLpMint),                                      // 8: bVaultLpMint
-            new PublicKey(aVaultLp),                                          // 9: aVaultLp
-            new PublicKey(bVaultLp),                                          // 10: bVaultLp
-            new PublicKey(protocolTokenFee),                                  // 11: Protocol Token Fee
-            wallet,                                                            // 12: User (signer)
-            new PublicKey(vaultProgram),                                      // 13: Vault Program
-            TOKEN_PROGRAM_ID,                                                  // 14: Token Program
-            programIdKey,                                                      // 15: DAMM Program
+            new PublicKey(aTokenVault),                                       // 0: aTokenVault (SPL Token in vault)
+            new PublicKey(bTokenVault),                                       // 1: bTokenVault (SPL Token in vault)
+            new PublicKey(aVault),                                            // 2: aVault (Mercurial Vault)
+            new PublicKey(bVault),                                            // 3: bVault (Mercurial Vault)
+            new PublicKey(aVaultLp),                                          // 4: aVaultLp (Pool's LP for vault A)
+            new PublicKey(bVaultLp),                                          // 5: bVaultLp (Pool's LP for vault B)
+            new PublicKey(aVaultLpMint),                                      // 6: aVaultLpMint
+            new PublicKey(bVaultLpMint),                                      // 7: bVaultLpMint
+            userSourceAta,                                                     // 8: userSourceToken
+            userDestAta,                                                       // 9: userDestinationToken
+            wallet,                                                            // 10: user (signer)
+            new PublicKey(protocolTokenFee),                                  // 11: protocolTokenFee
+            poolId,                                                            // 12: pool
+            TOKEN_PROGRAM_ID,                                                  // 13: tokenProgram
+            new PublicKey(vaultProgram),                                      // 14: vaultProgram
+            programIdKey,                                                      // 15: DAMM Program (CPI target)
           );
         }
         break;

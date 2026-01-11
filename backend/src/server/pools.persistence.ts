@@ -134,14 +134,14 @@ export async function savePoolsSnapshot(): Promise<boolean> {
     };
 
     const counts = {
-      raydium: { amm: snapshot.raydium.amm?.length || 0, clmm: snapshot.raydium.clmm?.length || 0 },
-      orca: { amm: snapshot.orca.amm?.length || 0, clmm: snapshot.orca.clmm?.length || 0 },
-      meteora: { amm: snapshot.meteora.amm?.length || 0, clmm: snapshot.meteora.clmm?.length || 0 },
-      meteoraBalanced: { amm: snapshot.meteoraBalanced.amm?.length || 0, clmm: 0 },
-      pumpswap: { amm: snapshot.pumpswap.amm?.length || 0, clmm: 0 },
+      raydium: { amm: snapshot.raydium.amm?.length || 0, clmm: snapshot.raydium.clmm?.length || 0, cpmm: snapshot.raydium.cpmm?.length || 0 },
+      orca: { amm: snapshot.orca.amm?.length || 0, clmm: snapshot.orca.clmm?.length || 0, cpmm: 0 },
+      meteora: { amm: snapshot.meteora.amm?.length || 0, clmm: snapshot.meteora.clmm?.length || 0, cpmm: 0 },
+      meteoraBalanced: { amm: snapshot.meteoraBalanced.amm?.length || 0, clmm: 0, cpmm: 0 },
+      pumpswap: { amm: snapshot.pumpswap.amm?.length || 0, clmm: 0, cpmm: 0 },
     };
 
-    const total = Object.values(counts).reduce((sum, c) => sum + c.amm + c.clmm, 0);
+    const total = Object.values(counts).reduce((sum, c) => sum + c.amm + c.clmm + (c.cpmm || 0), 0);
     if (total === 0) {
       logger.info('pools.persistence.skip', { reason: 'no pools to save', cat: 'pools' });
       return false;

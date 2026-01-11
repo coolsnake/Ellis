@@ -1,15 +1,18 @@
 import { edgesFromPoolIncremental, edgeChangedSimple, isDexKindAllowed, isPoolValidForGraph, type EdgeBuildOptions } from './graph.edges.js';
 import type { GraphDiff, GraphEdge, GraphNode, GraphSnapshot } from './graph.types.js';
-import type { PoolsPayload, AmmPool, ClmmPool } from './pools/types.js';
+import type { PoolsPayload, AmmPool, ClmmPool, CpmmPool } from './pools/types.js';
 import type { GraphIncrementalRequest, GraphIncrementalResult } from '../workers/graphDiff.types.js';
 
-type Pool = AmmPool | ClmmPool;
+type Pool = AmmPool | ClmmPool | CpmmPool;
 
 const EPSILON = 1e-9;
 
 function poolChanged(prev: Pool | undefined, next: Pool): boolean {
   if (!prev) return true;
-  const kind = ((next as any)?.pool_kind || ((next as any)?.sqrt_price_x64_raw != null || typeof (next as any)?.sqrt_price_x64 === 'number') ? 'clmm' : 'amm') as 'amm' | 'clmm';
+  const poolKind = (next as any)?.pool_kind;
+  const kind = (poolKind === 'clmm' || poolKind === 'cpmm' || poolKind === 'amm') 
+    ? poolKind 
+    : (((next as any)?.sqrt_price_x64_raw != null || typeof (next as any)?.sqrt_price_x64 === 'number') ? 'clmm' : 'amm') as 'amm' | 'clmm' | 'cpmm';
   if (kind === 'clmm') {
     if ((prev as any).sqrt_price_x64_raw && (next as any).sqrt_price_x64_raw && (prev as any).sqrt_price_x64_raw !== (next as any).sqrt_price_x64_raw) return true;
     if ((prev as any).price_a_per_b_num && (prev as any).price_a_per_b_den && (next as any).price_a_per_b_num && (next as any).price_a_per_b_den) {
@@ -62,8 +65,10 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
 
   const prevA = new Set((previousPools?.amm || []).map((p: any) => String(p?.id || '')));
   const prevC = new Set((previousPools?.clmm || []).map((p: any) => String(p?.id || '')));
+  const prevCpmm = new Set((previousPools?.cpmm || []).map((p: any) => String(p?.id || '')));
   const nextA = new Set((nextPools?.amm || []).map((p: any) => String(p?.id || '')));
   const nextC = new Set((nextPools?.clmm || []).map((p: any) => String(p?.id || '')));
+  const nextCpmm = new Set((nextPools?.cpmm || []).map((p: any) => String(p?.id || '')));
 
   const droppedSet = new Set<string>((droppedPoolIds || []).map((s) => String(s)));
 
@@ -79,13 +84,18 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
       if (edgesMap.delete(id)) removedEdgeIds.push(id);
     }
   }
+  for (const id of prevCpmm) {
+    if (!nextCpmm.has(id)) {
+      if (edgesMap.delete(id)) removedEdgeIds.push(id);
+    }
+  }
 
   for (const pid of droppedSet) {
     if (edgesMap.delete(pid)) removedEdgeIds.push(pid);
   }
 
   const prevPoolsById: Map<string, Pool> = new Map(
-    [...(previousPools?.amm || []), ...(previousPools?.clmm || [])].map((p: any) => [String(p?.id || ''), p as Pool]),
+    [...(previousPools?.amm || []), ...(previousPools?.clmm || []), ...(previousPools?.cpmm || [])].map((p: any) => [String(p?.id || ''), p as Pool]),
   );
 
   const addedEdges: GraphEdge[] = [];
@@ -98,7 +108,7 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
   const originalNodeIds = new Set(prevSnapshot.nodes.map((n) => String(n.id)));
 
   const getUsd = buildPriceAccessor(priceMap || {});
-  const considered: Pool[] = [...(nextPools?.amm || []), ...(nextPools?.clmm || [])] as Pool[];
+  const considered: Pool[] = [...(nextPools?.amm || []), ...(nextPools?.clmm || []), ...(nextPools?.cpmm || [])] as Pool[];
   const edgeOptions: EdgeBuildOptions = { 
     priceClampMin, 
     priceClampMax,
@@ -115,7 +125,7 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
     const prevPool = prevPoolsById.get(id);
     const changed = poolChanged(prevPool, pool);
     const dex = String((pool as any)?.dex || '');
-    const kind = ((pool as any)?.pool_kind || (typeof (pool as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm' | 'clmm';
+    const kind = ((pool as any)?.pool_kind || (typeof (pool as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm' | 'clmm' | 'cpmm';
     
     if (!isDexKindAllowed(dex, kind, edgeAllow || {})) continue;
     
