@@ -335,7 +335,7 @@ export interface RaydiumCpmmPoolApiResponse {
 /** Raydium CPMM GraphQL response wrapper */
 export interface RaydiumCpmmGraphQLResponse {
   data?: {
-    Raydium_CPMM_PoolState?: RaydiumCpmmPoolApiResponse[];
+    raydium_cp_swap_PoolState?: RaydiumCpmmPoolApiResponse[];
   };
   errors?: Array<{ message: string }>;
 }

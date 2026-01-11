@@ -2694,16 +2694,15 @@ async function extractDexAccounts(
         const pumpEventAuthority = derivePumpswapEventAuthority();
         
         // Coin creator vault derivation
-        // Use the bonding curve program (6EF8r...) for creator vault derivation
-        const PUMP_BONDING_CURVE_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+        // Seed: 'creator_vault' with PUMP_AMM_PROGRAM_ID (from @pump-fun/pump-swap-sdk pda.ts)
         let pumpCoinCreatorVaultAuthority: PublicKey;
         let pumpCoinCreatorVaultAta: PublicKey;
         
         if (pumpCoinCreator && pumpCoinCreator !== SystemProgram.programId.toBase58()) {
-          // Derive creator vault authority PDA
+          // Derive creator vault authority PDA using AMM program
           const [vaultAuthority] = PublicKey.findProgramAddressSync(
-            [Buffer.from('creator-vault-authority'), new PublicKey(pumpCoinCreator).toBuffer()],
-            PUMP_BONDING_CURVE_PROGRAM
+            [Buffer.from('creator_vault'), new PublicKey(pumpCoinCreator).toBuffer()],
+            PUMPSWAP_PROGRAM
           );
           pumpCoinCreatorVaultAuthority = vaultAuthority;
           
@@ -2717,10 +2716,10 @@ async function extractDexAccounts(
         } else {
           // No creator configured - derive from pool as fallback
           // CRITICAL: Cannot use SystemProgram because index 17 is marked writable
-          // Use pool-based derivation as fallback (same as what the pool creator would be)
+          // Use pool-based derivation as fallback
           const [vaultAuthority] = PublicKey.findProgramAddressSync(
-            [Buffer.from('creator-vault-authority'), poolId.toBuffer()],
-            PUMP_BONDING_CURVE_PROGRAM
+            [Buffer.from('creator_vault'), poolId.toBuffer()],
+            PUMPSWAP_PROGRAM
           );
           pumpCoinCreatorVaultAuthority = vaultAuthority;
           
@@ -2902,9 +2901,11 @@ async function extractDexAccounts(
           const protocolTokenBFee = (hop as any).protocolTokenBFee;
           const vaultProgram = (hop as any).vaultProgram || '24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi';
           
-          // Select protocol fee based on swap direction (source token's fee account)
+          // Select protocol fee based on swap direction (OUTPUT token's fee account)
+          // A→B swap: output is B → use protocolTokenBFee
+          // B→A swap: output is A → use protocolTokenAFee
           const isAtoB = opts?.aToB ?? (hop.inputMint === poolMintA);
-          const protocolTokenFee = isAtoB ? protocolTokenAFee : protocolTokenBFee;
+          const protocolTokenFee = isAtoB ? protocolTokenBFee : protocolTokenAFee;
           
           // Verify we have all required accounts
           const missingAccounts: string[] = [];
@@ -3082,10 +3083,11 @@ function deriveMeteoraDlmmEventAuthority(): PublicKey {
 
 /**
  * Derive PumpSwap Global Config PDA
+ * Seed: 'global_config' (from @pump-fun/pump-swap-sdk)
  */
 function derivePumpswapGlobalConfig(): PublicKey {
   const [globalConfig] = PublicKey.findProgramAddressSync(
-    [Buffer.from('global')],
+    [Buffer.from('global_config')],
     PUMPSWAP_PROGRAM
   );
   return globalConfig;

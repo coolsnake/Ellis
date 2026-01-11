@@ -199,11 +199,11 @@ async function fetchRaydiumCpmmPoolsForMintBatch(opts: {
       await new Promise(r => setTimeout(r, opts.pageDelayMs));
     }
     
-    const data = await executeShyftGraphQL<{ Raydium_CPMM_PoolState: RaydiumCpmmPoolApiResponse[] }>({
+    const data = await executeShyftGraphQL<{ raydium_cp_swap_PoolState: RaydiumCpmmPoolApiResponse[] }>({
       dex: 'raydium-cpmm',
       query: `
         query RaydiumCpmmPoolsByMints($mints: [String!]!, $limit: Int!, $offset: Int!) {
-          Raydium_CPMM_PoolState(
+          raydium_cp_swap_PoolState(
             where: {_or: [
               {token0Mint: {_in: $mints}},
               {token1Mint: {_in: $mints}}
@@ -239,7 +239,7 @@ async function fetchRaydiumCpmmPoolsForMintBatch(opts: {
       backoffMs: opts.backoffMs,
     });
 
-    const pagePools = data?.Raydium_CPMM_PoolState || [];
+    const pagePools = data?.raydium_cp_swap_PoolState || [];
     if (pagePools.length === 0) break;
 
     allPools.push(...pagePools);
@@ -280,11 +280,11 @@ export async function fetchRaydiumCpmmPoolsByAddress(
     
     const chunk = chunks[i];
     try {
-      const data = await executeShyftGraphQL<{ Raydium_CPMM_PoolState: RaydiumCpmmPoolApiResponse[] }>({
+      const data = await executeShyftGraphQL<{ raydium_cp_swap_PoolState: RaydiumCpmmPoolApiResponse[] }>({
         dex: 'raydium-cpmm',
         query: `
           query RaydiumCpmmPoolsByAddress($ids: [String!]) {
-            Raydium_CPMM_PoolState(
+            raydium_cp_swap_PoolState(
               where: {pubkey: {_in: $ids}}
             ) {
               pubkey
@@ -314,7 +314,7 @@ export async function fetchRaydiumCpmmPoolsByAddress(
         extraLogContext: { phase: 'cpmm-detail', chunkIndex: i, chunkSize: chunk.length },
       });
 
-      const pools = data?.Raydium_CPMM_PoolState || [];
+      const pools = data?.raydium_cp_swap_PoolState || [];
       for (const pool of pools) {
         if (!pool?.pubkey) continue;
         result.set(pool.pubkey, pool);
