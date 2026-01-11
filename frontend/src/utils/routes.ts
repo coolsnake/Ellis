@@ -43,6 +43,7 @@ export const ROUTES = {
     snapshotLoad: '/arb/pools/snapshot/load',
     snapshotDelete: '/arb/pools/snapshot', // DELETE :name
     snapshotMerge: '/arb/pools/snapshot/merge',
+    snapshotFilter: '/arb/pools/snapshot/filter',
   },
   arb: {
     config: '/arb/config',

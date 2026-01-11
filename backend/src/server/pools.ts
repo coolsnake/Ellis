@@ -1002,7 +1002,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       const pScoped = filterPoolsByUniverse(pump as any, universe, anchorBridging);
       
       const beforeCounts = {
-        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0) + (r.cpmm?.length || 0),
         orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
         meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
         meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
@@ -1016,7 +1016,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       pump = pScoped as any;
       
       const afterCounts = {
-        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0) + (r.cpmm?.length || 0),
         orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
         meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
         meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
@@ -1062,6 +1062,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       
       countPools(r.amm);
       countPools(r.clmm);
+      countPools(r.cpmm);
       countPools(o.amm);
       countPools(o.clmm);
       countPools(m.amm);
@@ -1081,21 +1082,21 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         (arr || []).filter(p => allow.has(canonicalPairKey(p.mint_a, p.mint_b)));
       
       const beforeCounts = {
-        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0) + (r.cpmm?.length || 0),
         orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
         meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
         meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
         pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
       };
       
-      r = { amm: filt(r.amm), clmm: filt(r.clmm) } as any;
+      r = { amm: filt(r.amm), clmm: filt(r.clmm), cpmm: filt(r.cpmm || []) } as any;
       o = { amm: filt(o.amm), clmm: filt(o.clmm) } as any;
       m = { amm: filt(m.amm), clmm: filt(m.clmm) } as any;
       mb = { amm: filt(mb.amm || []), clmm: filt(mb.clmm || []) } as any;
       pump = { amm: filt(pump.amm || []), clmm: filt(pump.clmm || []) } as any;
       
       const afterCounts = {
-        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0) + (r.cpmm?.length || 0),
         orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
         meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
         meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
@@ -1151,13 +1152,14 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         const raw = Number((p as any)?.pool_liquidity_raw ?? 0);
         return Number.isFinite(raw) && raw > 0 ? raw : 0;
       };
-      const filt = (norm: { amm: any[]; clmm: any[] }) => ({
+      const filt = (norm: { amm: any[]; clmm: any[]; cpmm?: any[] }) => ({
         amm: minAmm > 0 ? (norm.amm || []).filter((p: any) => valAmm(p) >= minAmm) : (norm.amm || []),
         clmm: minClmm > 0 ? (norm.clmm || []).filter((p: any) => valClmm(p) >= minClmm) : (norm.clmm || []),
+        cpmm: minAmm > 0 ? (norm.cpmm || []).filter((p: any) => valAmm(p) >= minAmm) : (norm.cpmm || []),
       });
       
       const beforeCounts = {
-        raydium: { a: r.amm?.length || 0, c: r.clmm?.length || 0 },
+        raydium: { a: r.amm?.length || 0, c: r.clmm?.length || 0, cp: r.cpmm?.length || 0 },
         orca: { a: o.amm?.length || 0, c: o.clmm?.length || 0 },
         meteora: { a: m.amm?.length || 0, c: m.clmm?.length || 0 },
         meteora_balanced: { a: mb.amm?.length || 0, c: mb.clmm?.length || 0 },
@@ -1171,7 +1173,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       pump = filt(pump) as any;
       
       const afterCounts = {
-        raydium: { a: r.amm?.length || 0, c: r.clmm?.length || 0 },
+        raydium: { a: r.amm?.length || 0, c: r.clmm?.length || 0, cp: r.cpmm?.length || 0 },
         orca: { a: o.amm?.length || 0, c: o.clmm?.length || 0 },
         meteora: { a: m.amm?.length || 0, c: m.clmm?.length || 0 },
         meteora_balanced: { a: mb.amm?.length || 0, c: mb.clmm?.length || 0 },

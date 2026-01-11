@@ -1094,6 +1094,12 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [mergeMode, setMergeMode] = React.useState<'union' | 'intersection'>('union');
   const [mergeSaveName, setMergeSaveName] = React.useState<string>('');
   
+  // Filter state
+  const [filterMinAmmTvl, setFilterMinAmmTvl] = React.useState<string>('');
+  const [filterMinClmmTvl, setFilterMinClmmTvl] = React.useState<string>('');
+  const [filterMinCpmmTvl, setFilterMinCpmmTvl] = React.useState<string>('');
+  const [filterSaveName, setFilterSaveName] = React.useState<string>('');
+  
   // DEX fetcher states
   const [fetcherStates, setFetcherStates] = React.useState<Record<string, FetcherState>>({
     raydium: 'idle',
@@ -1307,6 +1313,60 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         alert(`Merged ${selectedSnapshots.size} snapshots (${mergeMode}) → ${data.poolCount} pools`);
       } else {
         alert(data.error || 'Failed to merge snapshots');
+      }
+    } catch {}
+    setSnapshotLoading(false);
+  };
+
+  // Filter a snapshot by TVL
+  const filterSelectedSnapshot = async () => {
+    if (selectedSnapshots.size !== 1) {
+      alert('Select exactly 1 snapshot to filter');
+      return;
+    }
+    const sourceName = Array.from(selectedSnapshots)[0];
+    const minAmmTvl = filterMinAmmTvl ? Number(filterMinAmmTvl) : undefined;
+    const minClmmTvl = filterMinClmmTvl ? Number(filterMinClmmTvl) : undefined;
+    const minCpmmTvl = filterMinCpmmTvl ? Number(filterMinCpmmTvl) : undefined;
+    
+    if (!minAmmTvl && !minClmmTvl && !minCpmmTvl) {
+      alert('Set at least one TVL filter value');
+      return;
+    }
+    
+    setSnapshotLoading(true);
+    try {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      const res = await fetch(`${apiBase}${ROUTES.pools.snapshotFilter}`, { 
+        method: 'POST', 
+        headers, 
+        body: JSON.stringify({ 
+          name: sourceName,
+          minAmmTvl,
+          minClmmTvl,
+          minCpmmTvl,
+          saveTo: filterSaveName.trim() || undefined,
+        }) 
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) {
+        setSelectedSnapshots(new Set());
+        setFilterMinAmmTvl('');
+        setFilterMinClmmTvl('');
+        setFilterMinCpmmTvl('');
+        setFilterSaveName('');
+        fetchSnapshots();
+        fetchMetrics();
+        alert(`Filtered "${sourceName}" → ${data.poolCount} pools (removed ${data.filteredOut})${data.savedAs ? ` - saved as "${data.savedAs}"` : ''}`);
+      } else {
+        alert(data.error || 'Failed to filter snapshot');
       }
     } catch {}
     setSnapshotLoading(false);
@@ -1808,6 +1868,78 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                   ? 'Combines all pools from selected snapshots, deduplicating by pool ID'
                   : 'Keeps only pools that exist in ALL selected snapshots'
                 }
+              </div>
+            </div>
+          )}
+          
+          {/* Filter panel - shows when exactly 1 snapshot selected */}
+          {selectedSnapshots.size === 1 && (
+            <div className="border border-cyan-700 rounded p-2 bg-cyan-900/20 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-cyan-300 font-medium text-sm">
+                  🔍 Filter "{Array.from(selectedSnapshots)[0]}" by TVL
+                </span>
+                <button
+                  className="text-xs text-gray-400 hover:text-gray-200"
+                  onClick={() => setSelectedSnapshots(new Set())}
+                >
+                  Clear
+                </button>
+              </div>
+              
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Min AMM TVL ($)</label>
+                  <input
+                    type="number"
+                    placeholder="0"
+                    value={filterMinAmmTvl}
+                    onChange={(e) => setFilterMinAmmTvl(e.target.value)}
+                    className="w-full px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Min CLMM TVL ($)</label>
+                  <input
+                    type="number"
+                    placeholder="0"
+                    value={filterMinClmmTvl}
+                    onChange={(e) => setFilterMinClmmTvl(e.target.value)}
+                    className="w-full px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Min CPMM TVL ($)</label>
+                  <input
+                    type="number"
+                    placeholder="0"
+                    value={filterMinCpmmTvl}
+                    onChange={(e) => setFilterMinCpmmTvl(e.target.value)}
+                    className="w-full px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+              
+              <div className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  placeholder="Save filtered result as... (optional)"
+                  value={filterSaveName}
+                  onChange={(e) => setFilterSaveName(e.target.value)}
+                  className="flex-1 px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded focus:border-cyan-500 focus:outline-none"
+                />
+                <button
+                  className="px-3 py-1 text-sm bg-cyan-700 hover:bg-cyan-600 text-cyan-100 rounded disabled:opacity-50"
+                  disabled={snapshotLoading || (!filterMinAmmTvl && !filterMinClmmTvl && !filterMinCpmmTvl)}
+                  onClick={filterSelectedSnapshot}
+                >
+                  🔍 Apply Filter
+                </button>
+              </div>
+              
+              <div className="text-xs text-cyan-400/70">
+                Removes pools below TVL thresholds. Leave blank to skip a pool type.
+                {filterSaveName.trim() ? ' Will save as new snapshot.' : ' Will load filtered pools directly.'}
               </div>
             </div>
           )}

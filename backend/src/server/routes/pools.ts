@@ -513,6 +513,42 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
   });
 
   /**
+   * POST /arb/pools/snapshot/filter
+   * Load a snapshot with TVL filtering applied
+   * Body: { 
+   *   name: string,           // Source snapshot name
+   *   minAmmTvl?: number,     // Min TVL for AMM pools (USD)
+   *   minClmmTvl?: number,    // Min TVL for CLMM pools (USD)
+   *   minCpmmTvl?: number,    // Min TVL for CPMM pools (USD)
+   *   saveTo?: string,        // Optional: save filtered result as new snapshot
+   *   buildGraph?: boolean    // Default: true
+   * }
+   */
+  api.post('/arb/pools/snapshot/filter', async (req, res) => {
+    try {
+      const { name, minAmmTvl, minClmmTvl, minCpmmTvl, saveTo, buildGraph = true } = req.body || {};
+      
+      if (!name || typeof name !== 'string') {
+        return res.status(400).json({ success: false, error: 'Source snapshot name is required' });
+      }
+      
+      const { filterSnapshot } = await import('../pools.persistence.js');
+      const result = await filterSnapshot(name, {
+        minAmmTvl: minAmmTvl != null ? Number(minAmmTvl) : undefined,
+        minClmmTvl: minClmmTvl != null ? Number(minClmmTvl) : undefined,
+        minCpmmTvl: minCpmmTvl != null ? Number(minCpmmTvl) : undefined,
+        saveTo: saveTo || undefined,
+        buildGraph,
+        setActive: true,
+      });
+      
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  /**
    * GET /arb/pools/validate-cache
    * Validate tick/bin array cache entries against on-chain state
    * 

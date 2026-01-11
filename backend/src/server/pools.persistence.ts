@@ -66,6 +66,15 @@ export interface SnapshotMeta {
   lastUpdated: string;
 }
 
+/**
+ * Options for filtering a snapshot by TVL thresholds
+ */
+export interface SnapshotFilterOptions {
+  minAmmTvl?: number;      // Minimum TVL for AMM pools (in USD)
+  minClmmTvl?: number;     // Minimum TVL for CLMM pools (in USD)
+  minCpmmTvl?: number;     // Minimum TVL for CPMM pools (in USD)
+}
+
 const SNAPSHOT_FILE = 'filtered-pools-snapshot.json';
 const SNAPSHOTS_DIR = 'pool-snapshots';
 const SNAPSHOT_META_FILE = 'snapshot-meta.json';
@@ -750,6 +759,174 @@ function countSnapshotPools(snapshot: PoolsSnapshot): {
   };
   counts.total = counts.raydium + counts.orca + counts.meteora + counts.meteoraBalanced + counts.pumpswap;
   return counts;
+}
+
+/**
+ * Extract TVL value from a pool object (unified logic for all pool types)
+ */
+function getPoolTvl(pool: any, poolKind: 'amm' | 'clmm' | 'cpmm'): number {
+  // Prefer tvl_usd when available
+  const tvl = Number(pool?.tvl_usd ?? 0);
+  if (Number.isFinite(tvl) && tvl > 0) return tvl;
+  
+  // Fall back to liquidity_display
+  const disp = Number(pool?.liquidity_display ?? 0);
+  if (Number.isFinite(disp) && disp > 0) return disp;
+  
+  // Pool-kind specific fallbacks
+  if (poolKind === 'amm' || poolKind === 'cpmm') {
+    const base = Number(pool?.liquidity_base ?? 0);
+    if (Number.isFinite(base) && base > 0) return base;
+  } else {
+    // CLMM fallback chain
+    const liq = Number(pool?.liquidity ?? 0);
+    if (Number.isFinite(liq) && liq > 0) return liq;
+    const raw = Number(pool?.pool_liquidity_raw ?? 0);
+    if (Number.isFinite(raw) && raw > 0) return raw;
+  }
+  
+  return 0;
+}
+
+/**
+ * Filter a PoolsPayload by TVL thresholds
+ */
+function filterPoolsPayloadByTvl(
+  pools: PoolsPayload,
+  options: SnapshotFilterOptions
+): PoolsPayload {
+  const { minAmmTvl = 0, minClmmTvl = 0, minCpmmTvl = 0 } = options;
+  
+  return {
+    amm: minAmmTvl > 0
+      ? pools.amm.filter(p => getPoolTvl(p, 'amm') >= minAmmTvl)
+      : pools.amm,
+    clmm: minClmmTvl > 0
+      ? pools.clmm.filter(p => getPoolTvl(p, 'clmm') >= minClmmTvl)
+      : pools.clmm,
+    cpmm: minCpmmTvl > 0
+      ? (pools.cpmm || []).filter(p => getPoolTvl(p, 'cpmm') >= minCpmmTvl)
+      : (pools.cpmm || []),
+  };
+}
+
+/**
+ * Filter a snapshot by TVL thresholds and optionally save to a new snapshot
+ */
+export async function filterSnapshot(
+  sourceName: string,
+  options: SnapshotFilterOptions & {
+    saveTo?: string;         // If provided, save filtered result as new snapshot
+    buildGraph?: boolean;    // If true, build graph after filtering (default: true)
+    setActive?: boolean;     // If true, set as active snapshot (default: true)
+  }
+): Promise<{ 
+  success: boolean; 
+  poolCount: number; 
+  beforeCount: number;
+  filteredOut: number;
+  savedAs?: string;
+  error?: string;
+}> {
+  const sanitizedName = sanitizeSnapshotName(sourceName);
+  
+  try {
+    // Load source snapshot
+    const filePath = getNamedSnapshotPath(sanitizedName);
+    const snapshot = await readJson<PoolsSnapshot>(filePath, null as any);
+    
+    if (!snapshot) {
+      return { success: false, poolCount: 0, beforeCount: 0, filteredOut: 0, error: 'Snapshot not found' };
+    }
+    
+    const beforeCounts = countSnapshotPools(snapshot);
+    
+    // Build filtered snapshot
+    const filteredSnapshot: PoolsSnapshot = {
+      ...snapshot,
+      name: options.saveTo ? sanitizeSnapshotName(options.saveTo) : snapshot.name,
+      description: options.saveTo 
+        ? `Filtered from "${sanitizedName}" (minAmm=${options.minAmmTvl || 0}, minClmm=${options.minClmmTvl || 0}, minCpmm=${options.minCpmmTvl || 0})`
+        : snapshot.description,
+      savedAt: new Date().toISOString(),
+      savedAtMs: Date.now(),
+      raydium: filterPoolsPayloadByTvl(snapshot.raydium || { amm: [], clmm: [], cpmm: [] }, options),
+      orca: filterPoolsPayloadByTvl(snapshot.orca || { amm: [], clmm: [], cpmm: [] }, options),
+      meteora: filterPoolsPayloadByTvl(snapshot.meteora || { amm: [], clmm: [], cpmm: [] }, options),
+      meteoraBalanced: filterPoolsPayloadByTvl(snapshot.meteoraBalanced || { amm: [], clmm: [], cpmm: [] }, options),
+      pumpswap: filterPoolsPayloadByTvl(snapshot.pumpswap || { amm: [], clmm: [], cpmm: [] }, options),
+    };
+    
+    const afterCounts = countSnapshotPools(filteredSnapshot);
+    const filteredOut = beforeCounts.total - afterCounts.total;
+    
+    // Hydrate caches with filtered data
+    hydratePoolCaches(filteredSnapshot);
+    
+    let savedAs: string | undefined;
+    
+    // Save if requested
+    if (options.saveTo) {
+      savedAs = sanitizeSnapshotName(options.saveTo);
+      const savePath = getNamedSnapshotPath(savedAs);
+      await ensureDir(getSnapshotsDir());
+      await writeJson(savePath, filteredSnapshot);
+      
+      if (options.setActive !== false) {
+        await saveSnapshotMeta({
+          activeSnapshot: savedAs,
+          lastUpdated: new Date().toISOString(),
+        });
+      }
+    } else if (options.setActive !== false) {
+      // Update active snapshot to source if not saving to new
+      await saveSnapshotMeta({
+        activeSnapshot: sanitizedName,
+        lastUpdated: new Date().toISOString(),
+      });
+    }
+    
+    // Build graph if requested
+    if (options.buildGraph !== false) {
+      try {
+        const { rebuildGraphNow } = await import('./graph.js');
+        await rebuildGraphNow(undefined, { pushToArb: false });
+      } catch (err: any) {
+        logger.warn('pools.snapshot.filter.graph_build.failed', { error: err.message, cat: 'pools' });
+      }
+    }
+    
+    logger.info('pools.snapshot.filtered', {
+      source: sanitizedName,
+      saveTo: options.saveTo,
+      savedAs,
+      before: beforeCounts.total,
+      after: afterCounts.total,
+      filteredOut,
+      options: { minAmmTvl: options.minAmmTvl, minClmmTvl: options.minClmmTvl, minCpmmTvl: options.minCpmmTvl },
+      cat: 'pools'
+    });
+    
+    try {
+      emit('log', {
+        level: 'info',
+        message: `pools:snapshot filtered "${sanitizedName}" → ${afterCounts.total} pools (removed ${filteredOut})`,
+        timestamp: new Date().toISOString(),
+        context: { cat: 'pools' }
+      });
+    } catch {}
+    
+    return { 
+      success: true, 
+      poolCount: afterCounts.total, 
+      beforeCount: beforeCounts.total,
+      filteredOut,
+      savedAs,
+    };
+  } catch (err: any) {
+    logger.error('pools.snapshot.filter.failed', { source: sanitizedName, error: err.message, cat: 'pools' });
+    return { success: false, poolCount: 0, beforeCount: 0, filteredOut: 0, error: err.message };
+  }
 }
 
 /**
