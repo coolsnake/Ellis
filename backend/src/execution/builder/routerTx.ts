@@ -2649,11 +2649,13 @@ async function extractDexAccounts(
         // 19: global_volume_accumulator, 20: user_volume_accumulator,
         // 21: fee_config, 22: fee_program
         
-        // Get pool data from cache
-        const pumpBaseMint = stat?.onchain_base_mint || poolMintA || hop.inputMint;
-        const pumpQuoteMint = stat?.onchain_quote_mint || poolMintB || hop.outputMint;
-        const pumpPoolBaseVault = stat?.onchain_base_vault || hop.vaultA || poolAccountA;
-        const pumpPoolQuoteVault = stat?.onchain_quote_vault || hop.vaultB || poolAccountB;
+        // Get pool data from cache - CRITICAL: Use native (on-chain) order, NOT canonical order!
+        // PumpSwap pools have fixed base/quote ordering that may differ from canonical alphabetical order
+        // native_mint_a/native_mint_b contain the on-chain order, mint_a/mint_b are canonicalized
+        const pumpBaseMint = stat?.onchain_base_mint || stat?.native_mint_a || hop.inputMint;
+        const pumpQuoteMint = stat?.onchain_quote_mint || stat?.native_mint_b || hop.outputMint;
+        const pumpPoolBaseVault = stat?.onchain_base_vault || stat?.native_account_a || hop.vaultA;
+        const pumpPoolQuoteVault = stat?.onchain_quote_vault || stat?.native_account_b || hop.vaultB;
         const pumpCoinCreator = stat?.creator || stat?.metadata_creator;
         
         // Determine token programs

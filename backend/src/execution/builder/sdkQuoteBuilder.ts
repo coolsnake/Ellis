@@ -1567,20 +1567,12 @@ async function getMeteoraDammV1SdkQuote(
             accounts.aVaultLp = pool.poolState.aVaultLp?.toBase58?.();
             accounts.bVaultLp = pool.poolState.bVaultLp?.toBase58?.();
             
-            // Extract protocol fee accounts from pool state
-            if (pool.poolState.protocolTokenAFee) {
-              const pfa = pool.poolState.protocolTokenAFee;
-              accounts.protocolTokenAFee = typeof pfa.toBase58 === 'function' ? pfa.toBase58() : new PublicKey(pfa as any).toBase58();
-            }
-            if (pool.poolState.protocolTokenBFee) {
-              const pfb = pool.poolState.protocolTokenBFee;
-              accounts.protocolTokenBFee = typeof pfb.toBase58 === 'function' ? pfb.toBase58() : new PublicKey(pfb as any).toBase58();
-            }
-            
-            // Fallback: Derive protocol fee accounts using PDA if not available from state
+            // Protocol fee accounts - use DERIVATION as primary (matches SDK's deriveProtocolTokenFee)
             // Seeds: ['fee', tokenMint, poolAddress] - from SDK utils.deriveProtocolTokenFee
+            // The pool state may contain stale or non-existent addresses, so derivation is more reliable
             const METEORA_DAMM_V1_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
-            if (!accounts.protocolTokenAFee && pool.poolState.tokenAMint) {
+            
+            if (pool.poolState.tokenAMint) {
               const tokenAMint = pool.poolState.tokenAMint;
               const [protocolFeeA] = PublicKey.findProgramAddressSync(
                 [Buffer.from('fee'), tokenAMint.toBuffer(), poolPk.toBuffer()],
@@ -1588,13 +1580,27 @@ async function getMeteoraDammV1SdkQuote(
               );
               accounts.protocolTokenAFee = protocolFeeA.toBase58();
             }
-            if (!accounts.protocolTokenBFee && pool.poolState.tokenBMint) {
+            if (pool.poolState.tokenBMint) {
               const tokenBMint = pool.poolState.tokenBMint;
               const [protocolFeeB] = PublicKey.findProgramAddressSync(
                 [Buffer.from('fee'), tokenBMint.toBuffer(), poolPk.toBuffer()],
                 METEORA_DAMM_V1_PROGRAM
               );
               accounts.protocolTokenBFee = protocolFeeB.toBase58();
+            }
+            
+            // Log derived vs stored values for debugging
+            const storedAFee = pool.poolState.protocolTokenAFee?.toBase58?.();
+            const storedBFee = pool.poolState.protocolTokenBFee?.toBase58?.();
+            if (storedAFee !== accounts.protocolTokenAFee || storedBFee !== accounts.protocolTokenBFee) {
+              logger.debug('sdkQuoteBuilder.meteoraDammV1.protocolFee.mismatch', {
+                cat: 'tx',
+                poolId: poolId.slice(0, 8) + '...',
+                derivedAFee: accounts.protocolTokenAFee,
+                storedAFee,
+                derivedBFee: accounts.protocolTokenBFee,
+                storedBFee,
+              });
             }
           }
           
