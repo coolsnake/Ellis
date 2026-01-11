@@ -1599,6 +1599,18 @@ async function getMeteoraDammV1SdkQuote(
             if (!accounts.protocolTokenAFee || !accounts.protocolTokenBFee) {
               try {
                 const poolAccountInfo = await connection.getAccountInfo(poolPk);
+                
+                logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.fallbackAttempt', {
+                  cat: 'tx',
+                  poolId: poolId.slice(0, 8) + '...',
+                  hasAccountInfo: !!poolAccountInfo,
+                  accountDataLength: poolAccountInfo?.data?.length || 0,
+                  accountOwner: poolAccountInfo?.owner?.toBase58(),
+                  expectedOwner: 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',
+                  missingAFee: !accounts.protocolTokenAFee,
+                  missingBFee: !accounts.protocolTokenBFee,
+                });
+                
                 if (poolAccountInfo?.data && poolAccountInfo.data.length >= 298) {
                   const data = Buffer.from(poolAccountInfo.data);
                   // Offsets: 8 (discriminator) + 32*7 (7 pubkeys) + 1 (bump) + 1 (enabled) = 234
@@ -1620,12 +1632,20 @@ async function getMeteoraDammV1SdkQuote(
                     protocolTokenAFee: accounts.protocolTokenAFee,
                     protocolTokenBFee: accounts.protocolTokenBFee,
                   });
+                } else {
+                  logger.warn('sdkQuoteBuilder.meteoraDammV1.protocolFee.accountTooSmall', {
+                    cat: 'tx',
+                    poolId: poolId.slice(0, 8) + '...',
+                    dataLength: poolAccountInfo?.data?.length || 0,
+                    requiredLength: 298,
+                  });
                 }
               } catch (parseErr) {
-                logger.debug('sdkQuoteBuilder.meteoraDammV1.protocolFee.parseError', {
+                logger.error('sdkQuoteBuilder.meteoraDammV1.protocolFee.parseError', {
                   cat: 'tx',
                   poolId: poolId.slice(0, 8) + '...',
                   error: (parseErr as Error).message,
+                  stack: (parseErr as Error).stack,
                 });
               }
             }
