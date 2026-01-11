@@ -675,13 +675,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; }
       };
 
-      type NormPools = { amm: any[]; clmm: any[] };
+      type NormPools = { amm: any[]; clmm: any[]; cpmm?: any[] };
       const validatePoolsForGraph = (norm: NormPools): NormPools => {
         if (!validationConfig.sanityEnabled) return norm;
-        const out: NormPools = { amm: [], clmm: [] };
-        const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0, amm: { total: 0, dropped: 0 }, clmm: { total: 0, dropped: 0 } } as any;
+        const out: NormPools = { amm: [], clmm: [], cpmm: [] };
+        const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0, amm: { total: 0, dropped: 0 }, clmm: { total: 0, dropped: 0 }, cpmm: { total: 0, dropped: 0 } } as any;
         
-        const checkPool = (p: any, kind: 'amm' | 'clmm') => {
+        const checkPool = (p: any, kind: 'amm' | 'clmm' | 'cpmm') => {
           drop[kind].total += 1;
           if (isPoolValidForGraph(p, getUsd, validationConfig)) {
             return true;
@@ -696,6 +696,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
 
         for (const p of (norm.amm || [])) { if (checkPool(p, 'amm')) out.amm.push(p); }
         for (const p of (norm.clmm || [])) { if (checkPool(p, 'clmm')) out.clmm.push(p); }
+        for (const p of (norm.cpmm || [])) { if (checkPool(p, 'cpmm')) out.cpmm!.push(p); }
         
         try { 
           logger.info('graph.sanity.filter', { 
@@ -703,8 +704,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             feeMax, 
             maxPriceDeviation, 
             dropped: drop,
-            before: { amm: norm.amm?.length || 0, clmm: norm.clmm?.length || 0 },
-            after: { amm: out.amm.length, clmm: out.clmm.length },
+            before: { amm: norm.amm?.length || 0, clmm: norm.clmm?.length || 0, cpmm: norm.cpmm?.length || 0 },
+            after: { amm: out.amm.length, clmm: out.clmm.length, cpmm: out.cpmm?.length || 0 },
             cat: 'graph'
           }); 
         } catch {}

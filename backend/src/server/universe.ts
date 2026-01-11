@@ -356,11 +356,11 @@ export async function computeTokenUniverse(mode?: UniverseMode): Promise<Set<str
 }
 
 export function filterPoolsByUniverse<T extends { mint_a: string; mint_b: string }>(
-  pools: { amm: T[]; clmm: T[] },
+  pools: { amm: T[]; clmm: T[]; cpmm?: T[] },
   tokenSet: Set<string>,
   enableAnchorBridging = true,
   anchors?: Set<string>,
-): { amm: T[]; clmm: T[] } {
+): { amm: T[]; clmm: T[]; cpmm: T[] } {
   const a = anchors || getAnchorSet();
   const allow = (x: T): boolean => {
     const inSetA = tokenSet.has(x.mint_a);
@@ -372,6 +372,7 @@ export function filterPoolsByUniverse<T extends { mint_a: string; mint_b: string
   return {
     amm: (pools.amm || []).filter(allow),
     clmm: (pools.clmm || []).filter(allow),
+    cpmm: (pools.cpmm || []).filter(allow),
   };
 }
 

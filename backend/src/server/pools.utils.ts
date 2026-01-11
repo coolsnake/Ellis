@@ -17,14 +17,15 @@ export function toB58Any(v: any): string {
 }
 
 export function applyTokenMintBlocklist<T extends { mint_a: string; mint_b: string }>(
-    pools: { amm: T[]; clmm: T[] },
+    pools: { amm: T[]; clmm: T[]; cpmm?: T[] },
     blocklist: Set<string>
-): { amm: T[]; clmm: T[] } {
-    if (!blocklist || blocklist.size === 0) return pools;
+): { amm: T[]; clmm: T[]; cpmm: T[] } {
+    if (!blocklist || blocklist.size === 0) return { ...pools, cpmm: pools.cpmm || [] };
     const allow = (p: T) => !blocklist.has(p.mint_a) && !blocklist.has(p.mint_b);
     return {
         amm: (pools.amm || []).filter(allow),
         clmm: (pools.clmm || []).filter(allow),
+        cpmm: (pools.cpmm || []).filter(allow),
     };
 }
 
