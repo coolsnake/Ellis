@@ -1568,19 +1568,49 @@ async function getMeteoraDammV1SdkQuote(
           }
           
           // Extract token vaults from the VaultImpl instances
-          // These are the actual SPL token accounts inside the Mercurial vaults
-          if (pool.vaultA?.vaultState) {
-            accounts.aTokenVault = pool.vaultA.vaultState.tokenVault?.toBase58?.();
-            accounts.aVaultLpMint = pool.vaultA.vaultState.lpMint?.toBase58?.();
+          // VaultImpl has:
+          // - vaultState.tokenVault: The actual on-chain token vault address (authoritative)
+          // - vaultState.lpMint: The actual on-chain LP mint address
+          // - tokenVaultPda: Derived PDA (should match but prefer on-chain)
+          // - tokenLpMint: The Mint object (use .address)
+          if (pool.vaultA) {
+            // Primary: Use on-chain vaultState (authoritative)
+            if (pool.vaultA.vaultState?.tokenVault) {
+              const tv = pool.vaultA.vaultState.tokenVault;
+              accounts.aTokenVault = typeof tv.toBase58 === 'function' ? tv.toBase58() : new PublicKey(tv as any).toBase58();
+            }
+            if (pool.vaultA.vaultState?.lpMint) {
+              const lm = pool.vaultA.vaultState.lpMint;
+              accounts.aVaultLpMint = typeof lm.toBase58 === 'function' ? lm.toBase58() : new PublicKey(lm as any).toBase58();
+            }
+            // Fallback: Use derived properties if on-chain not available
+            if (!accounts.aTokenVault && pool.vaultA.tokenVaultPda) {
+              accounts.aTokenVault = pool.vaultA.tokenVaultPda.toBase58();
+            }
+            if (!accounts.aVaultLpMint && pool.vaultA.tokenLpMint?.address) {
+              accounts.aVaultLpMint = pool.vaultA.tokenLpMint.address.toBase58();
+            }
           }
-          if (pool.vaultB?.vaultState) {
-            accounts.bTokenVault = pool.vaultB.vaultState.tokenVault?.toBase58?.();
-            accounts.bVaultLpMint = pool.vaultB.vaultState.lpMint?.toBase58?.();
+          if (pool.vaultB) {
+            if (pool.vaultB.vaultState?.tokenVault) {
+              const tv = pool.vaultB.vaultState.tokenVault;
+              accounts.bTokenVault = typeof tv.toBase58 === 'function' ? tv.toBase58() : new PublicKey(tv as any).toBase58();
+            }
+            if (pool.vaultB.vaultState?.lpMint) {
+              const lm = pool.vaultB.vaultState.lpMint;
+              accounts.bVaultLpMint = typeof lm.toBase58 === 'function' ? lm.toBase58() : new PublicKey(lm as any).toBase58();
+            }
+            if (!accounts.bTokenVault && pool.vaultB.tokenVaultPda) {
+              accounts.bTokenVault = pool.vaultB.tokenVaultPda.toBase58();
+            }
+            if (!accounts.bVaultLpMint && pool.vaultB.tokenLpMint?.address) {
+              accounts.bVaultLpMint = pool.vaultB.tokenLpMint.address.toBase58();
+            }
           }
           
-          // Get vault program ID
-          if (pool.vaultA?.vaultProgram?.programId) {
-            accounts.vaultProgram = pool.vaultA.vaultProgram.programId.toBase58();
+          // Get vault program ID from the VaultImpl's program instance
+          if (pool.vaultA?.['program']?.programId) {
+            accounts.vaultProgram = pool.vaultA['program'].programId.toBase58();
           } else {
             // Mercurial Vault program ID (mainnet)
             accounts.vaultProgram = '24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi';
@@ -1648,16 +1678,27 @@ async function getMeteoraDammV1SdkQuote(
           // This is a fallback - the SDK path above is preferred
           try {
             const [aVaultInfo, bVaultInfo] = await connection.getMultipleAccountsInfo([aVault, bVault]);
-            // Mercurial Vault layout: tokenVault at offset 40, lpMint at offset 72
-            if (aVaultInfo?.data && aVaultInfo.data.length >= 104) {
+            // Mercurial Vault account layout (after 8-byte Anchor discriminator):
+            // - offset 8: enabled (u8, 1 byte)
+            // - offset 9: bumps.vaultBump (u8, 1 byte)
+            // - offset 10: bumps.tokenVaultBump (u8, 1 byte)
+            // - offset 11: totalAmount (u64, 8 bytes)
+            // - offset 19: tokenVault (pubkey, 32 bytes)
+            // - offset 51: feeVault (pubkey, 32 bytes)
+            // - offset 83: tokenMint (pubkey, 32 bytes)
+            // - offset 115: lpMint (pubkey, 32 bytes)
+            const VAULT_TOKEN_VAULT_OFFSET = 19;
+            const VAULT_LP_MINT_OFFSET = 115;
+            
+            if (aVaultInfo?.data && aVaultInfo.data.length >= 147) {
               const aVaultData = Buffer.from(aVaultInfo.data);
-              accounts.aTokenVault = new PublicKey(aVaultData.subarray(40, 72)).toBase58();
-              accounts.aVaultLpMint = new PublicKey(aVaultData.subarray(72, 104)).toBase58();
+              accounts.aTokenVault = new PublicKey(aVaultData.subarray(VAULT_TOKEN_VAULT_OFFSET, VAULT_TOKEN_VAULT_OFFSET + 32)).toBase58();
+              accounts.aVaultLpMint = new PublicKey(aVaultData.subarray(VAULT_LP_MINT_OFFSET, VAULT_LP_MINT_OFFSET + 32)).toBase58();
             }
-            if (bVaultInfo?.data && bVaultInfo.data.length >= 104) {
+            if (bVaultInfo?.data && bVaultInfo.data.length >= 147) {
               const bVaultData = Buffer.from(bVaultInfo.data);
-              accounts.bTokenVault = new PublicKey(bVaultData.subarray(40, 72)).toBase58();
-              accounts.bVaultLpMint = new PublicKey(bVaultData.subarray(72, 104)).toBase58();
+              accounts.bTokenVault = new PublicKey(bVaultData.subarray(VAULT_TOKEN_VAULT_OFFSET, VAULT_TOKEN_VAULT_OFFSET + 32)).toBase58();
+              accounts.bVaultLpMint = new PublicKey(bVaultData.subarray(VAULT_LP_MINT_OFFSET, VAULT_LP_MINT_OFFSET + 32)).toBase58();
             }
           } catch (vaultErr) {
             logger.debug('sdkQuoteBuilder.meteoraDammV1.vaultFetch.error', {

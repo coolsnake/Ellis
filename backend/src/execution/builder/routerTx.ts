@@ -2715,9 +2715,22 @@ async function extractDexAccounts(
             pumpQuoteTokenProgram
           );
         } else {
-          // No creator configured - use System Program as placeholder
-          pumpCoinCreatorVaultAuthority = SystemProgram.programId;
-          pumpCoinCreatorVaultAta = SystemProgram.programId;
+          // No creator configured - derive from pool as fallback
+          // CRITICAL: Cannot use SystemProgram because index 17 is marked writable
+          // Use pool-based derivation as fallback (same as what the pool creator would be)
+          const [vaultAuthority] = PublicKey.findProgramAddressSync(
+            [Buffer.from('creator-vault-authority'), poolId.toBuffer()],
+            PUMP_BONDING_CURVE_PROGRAM
+          );
+          pumpCoinCreatorVaultAuthority = vaultAuthority;
+          
+          // Derive creator vault ATA for quote token using the vault authority
+          pumpCoinCreatorVaultAta = getAssociatedTokenAddressSync(
+            new PublicKey(pumpQuoteMint),
+            vaultAuthority,
+            true,
+            pumpQuoteTokenProgram
+          );
         }
         
         // Log accounts for debugging
