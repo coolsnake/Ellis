@@ -1582,73 +1582,19 @@ async function getMeteoraDammV1SdkQuote(
                 : new PublicKey(pfb as any).toBase58();
             }
             
-            // Log the protocol fee values from pool state
+            // Log the protocol fee values from pool state (with detailed info for debugging)
             logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.fromPoolState', {
               cat: 'tx',
               poolId: poolId.slice(0, 8) + '...',
               protocolTokenAFee: accounts.protocolTokenAFee,
               protocolTokenBFee: accounts.protocolTokenBFee,
-              rawAFee: pool.poolState.protocolTokenAFee?.toString?.(),
-              rawBFee: pool.poolState.protocolTokenBFee?.toString?.(),
+              rawAFee: pool.poolState.protocolTokenAFee?.toBase58?.() || pool.poolState.protocolTokenAFee?.toString?.() || String(pool.poolState.protocolTokenAFee),
+              rawBFee: pool.poolState.protocolTokenBFee?.toBase58?.() || pool.poolState.protocolTokenBFee?.toString?.() || String(pool.poolState.protocolTokenBFee),
+              hasAFeeField: 'protocolTokenAFee' in pool.poolState,
+              hasBFeeField: 'protocolTokenBFee' in pool.poolState,
+              aFeeType: typeof pool.poolState.protocolTokenAFee,
+              bFeeType: typeof pool.poolState.protocolTokenBFee,
             });
-            
-            // Fallback: Parse protocol fees directly from pool account data if SDK didn't provide them
-            // Pool account layout (from Meteora IDL):
-            // - offset 234: protocolTokenAFee (32 bytes)
-            // - offset 266: protocolTokenBFee (32 bytes)
-            if (!accounts.protocolTokenAFee || !accounts.protocolTokenBFee) {
-              try {
-                const poolAccountInfo = await connection.getAccountInfo(poolPk);
-                
-                logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.fallbackAttempt', {
-                  cat: 'tx',
-                  poolId: poolId.slice(0, 8) + '...',
-                  hasAccountInfo: !!poolAccountInfo,
-                  accountDataLength: poolAccountInfo?.data?.length || 0,
-                  accountOwner: poolAccountInfo?.owner?.toBase58(),
-                  expectedOwner: 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',
-                  missingAFee: !accounts.protocolTokenAFee,
-                  missingBFee: !accounts.protocolTokenBFee,
-                });
-                
-                if (poolAccountInfo?.data && poolAccountInfo.data.length >= 298) {
-                  const data = Buffer.from(poolAccountInfo.data);
-                  // Offsets: 8 (discriminator) + 32*7 (7 pubkeys) + 1 (bump) + 1 (enabled) = 234
-                  const PROTOCOL_A_FEE_OFFSET = 234;
-                  const PROTOCOL_B_FEE_OFFSET = 266;
-                  
-                  if (!accounts.protocolTokenAFee) {
-                    const protocolAFee = new PublicKey(data.subarray(PROTOCOL_A_FEE_OFFSET, PROTOCOL_A_FEE_OFFSET + 32));
-                    accounts.protocolTokenAFee = protocolAFee.toBase58();
-                  }
-                  if (!accounts.protocolTokenBFee) {
-                    const protocolBFee = new PublicKey(data.subarray(PROTOCOL_B_FEE_OFFSET, PROTOCOL_B_FEE_OFFSET + 32));
-                    accounts.protocolTokenBFee = protocolBFee.toBase58();
-                  }
-                  
-                  logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.parsedFromAccount', {
-                    cat: 'tx',
-                    poolId: poolId.slice(0, 8) + '...',
-                    protocolTokenAFee: accounts.protocolTokenAFee,
-                    protocolTokenBFee: accounts.protocolTokenBFee,
-                  });
-                } else {
-                  logger.warn('sdkQuoteBuilder.meteoraDammV1.protocolFee.accountTooSmall', {
-                    cat: 'tx',
-                    poolId: poolId.slice(0, 8) + '...',
-                    dataLength: poolAccountInfo?.data?.length || 0,
-                    requiredLength: 298,
-                  });
-                }
-              } catch (parseErr) {
-                logger.error('sdkQuoteBuilder.meteoraDammV1.protocolFee.parseError', {
-                  cat: 'tx',
-                  poolId: poolId.slice(0, 8) + '...',
-                  error: (parseErr as Error).message,
-                  stack: (parseErr as Error).stack,
-                });
-              }
-            }
           }
           
           // Extract token vaults from the VaultImpl instances
@@ -1737,6 +1683,53 @@ async function getMeteoraDammV1SdkQuote(
     // Default vault program if SDK didn't provide it
     if (!accounts.vaultProgram) {
       accounts.vaultProgram = '24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi';
+    }
+    
+    // ALWAYS try fallback parsing if protocol fees are missing (regardless of SDK success)
+    // This handles cases where SDK doesn't populate these fields
+    if (!accounts.protocolTokenAFee || !accounts.protocolTokenBFee) {
+      try {
+        const poolAccountInfo = await connection.getAccountInfo(poolPk);
+        logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.fallbackAttempt', {
+          cat: 'tx',
+          poolId: poolId.slice(0, 8) + '...',
+          hasAccountInfo: !!poolAccountInfo,
+          dataLength: poolAccountInfo?.data?.length || 0,
+          needsAFee: !accounts.protocolTokenAFee,
+          needsBFee: !accounts.protocolTokenBFee,
+        });
+        
+        if (poolAccountInfo?.data && poolAccountInfo.data.length >= 298) {
+          const data = Buffer.from(poolAccountInfo.data);
+          // Offsets from Meteora IDL:
+          // 8 (discriminator) + 32*7 (7 pubkeys) + 1 (bump) + 1 (enabled) = 234
+          const PROTOCOL_A_FEE_OFFSET = 234;
+          const PROTOCOL_B_FEE_OFFSET = 266;
+          
+          if (!accounts.protocolTokenAFee) {
+            const protocolAFee = new PublicKey(data.subarray(PROTOCOL_A_FEE_OFFSET, PROTOCOL_A_FEE_OFFSET + 32));
+            accounts.protocolTokenAFee = protocolAFee.toBase58();
+          }
+          if (!accounts.protocolTokenBFee) {
+            const protocolBFee = new PublicKey(data.subarray(PROTOCOL_B_FEE_OFFSET, PROTOCOL_B_FEE_OFFSET + 32));
+            accounts.protocolTokenBFee = protocolBFee.toBase58();
+          }
+          
+          logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.parsedFromAccount', {
+            cat: 'tx',
+            poolId: poolId.slice(0, 8) + '...',
+            protocolTokenAFee: accounts.protocolTokenAFee,
+            protocolTokenBFee: accounts.protocolTokenBFee,
+          });
+        }
+      } catch (parseErr) {
+        logger.error('sdkQuoteBuilder.meteoraDammV1.protocolFee.parseError', {
+          cat: 'tx',
+          poolId: poolId.slice(0, 8) + '...',
+          error: (parseErr as Error).message,
+          stack: (parseErr as Error).stack,
+        });
+      }
     }
     
     // If SDK didn't populate vaults, try manual decode from pool account

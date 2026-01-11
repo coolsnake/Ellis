@@ -44,7 +44,6 @@ import {
   userVolumeAccumulatorPda as derivePumpswapUserVolumeAccumulator,
   OnlinePumpAmmSdk
 } from '@pump-fun/pump-swap-sdk';
-import { getFeeRecipient } from '@pump-fun/pump-swap-sdk/src/sdk/fees';
 
 // ============================================================================
 // Constants
@@ -2683,102 +2682,45 @@ async function extractDexAccounts(
           pumpQuoteTokenProgram
         );
         
-        // Use SDK's pre-computed PDAs for global_config and event_authority
-        const pumpGlobalConfig = (hop as any).globalConfig 
-          ? new PublicKey((hop as any).globalConfig)
-          : PUMPSWAP_GLOBAL_CONFIG;
-        const pumpEventAuthority = PUMPSWAP_EVENT_AUTHORITY;
+        // Initialize SDK for PumpSwap account fetching
+        const connection = await getConnection();
+        const pumpSdk = new OnlinePumpAmmSdk(connection);
         
-        // Coin creator vault derivation using SDK functions
-        // CRITICAL: coinCreator must come from pool.coin_creator, NOT from poolId!
-        // The PDA is derived from the actual coin_creator stored in the pool account at offset 211
-        let pumpCoinCreatorVaultAuthority: PublicKey;
-        let pumpCoinCreatorVaultAta: PublicKey;
+        // Fetch globalConfig to get valid protocol fee recipients
         let pumpProtocolFeeRecipient: PublicKey;
-        
-        // Fetch pool and globalConfig data using SDK to get coinCreator, isMayhemMode, and protocolFeeRecipients
-        let poolData: any = null;
-        let globalConfigData: any = null;
-        
-        // If coinCreator or protocolFeeRecipient not in cache, fetch from SDK
-        const needsPoolData = !pumpCoinCreator || pumpCoinCreator === SystemProgram.programId.toBase58();
-        const needsProtocolFeeRecipient = !(hop as any).protocolFeeRecipient && !stat?.protocol_fee_recipient;
-        
-        if (needsPoolData || needsProtocolFeeRecipient) {
-          try {
-            const connection = await getConnection();
-            const pumpSdk = new OnlinePumpAmmSdk(connection);
-            
-            // Fetch pool data to get coinCreator and isMayhemMode
-            if (needsPoolData) {
-              poolData = await withRpcLimit(
-                () => pumpSdk.fetchPool(poolId),
-                1,
-                { module: 'routerTx', method: 'pumpswap.fetchPool' }
-              );
-              
-              if (poolData && poolData.coinCreator) {
-                pumpCoinCreator = poolData.coinCreator.toBase58();
-                
-                logger.info('routerTx.pumpswap.coinCreator.fetched', {
-                  cat: 'tx',
-                  poolId: hop.poolId,
-                  coinCreator: pumpCoinCreator,
-                  source: 'sdk',
-                });
-              }
-            }
-            
-            // Fetch globalConfig to get protocolFeeRecipients
-            if (needsProtocolFeeRecipient) {
-              globalConfigData = await withRpcLimit(
-                () => pumpSdk.fetchGlobalConfigAccount(),
-                1,
-                { module: 'routerTx', method: 'pumpswap.fetchGlobalConfig' }
-              );
-            }
-          } catch (fetchErr) {
-            logger.warn('routerTx.pumpswap.sdk.fetchFailed', {
+        try {
+          const globalConfigData = await withRpcLimit(
+            () => pumpSdk.fetchGlobalConfigAccount(),
+            1,
+            { module: 'routerTx', method: 'pumpswap.fetchGlobalConfig' }
+          );
+          
+          if (globalConfigData.protocolFeeRecipients && globalConfigData.protocolFeeRecipients.length > 0) {
+            // Pick a random valid fee recipient from globalConfig
+            pumpProtocolFeeRecipient = globalConfigData.protocolFeeRecipients[
+              Math.floor(Math.random() * globalConfigData.protocolFeeRecipients.length)
+            ];
+            logger.info('routerTx.pumpswap.protocolFeeRecipient.fetched', {
               cat: 'tx',
-              error: (fetchErr as Error).message,
-              poolId: hop.poolId,
+              recipient: pumpProtocolFeeRecipient.toBase58(),
+              totalRecipients: globalConfigData.protocolFeeRecipients.length,
+              source: 'globalConfig',
             });
+          } else {
+            throw new Error('No protocol fee recipients in globalConfig');
           }
-        }
-        
-        // Determine protocol fee recipient using SDK's getFeeRecipient function
-        if ((hop as any).protocolFeeRecipient) {
-          pumpProtocolFeeRecipient = new PublicKey((hop as any).protocolFeeRecipient);
-        } else if (stat?.protocol_fee_recipient) {
-          pumpProtocolFeeRecipient = new PublicKey(stat.protocol_fee_recipient);
-        } else if (globalConfigData) {
-          // Use SDK's getFeeRecipient - requires pool.isMayhemMode
-          const isMayhemMode = poolData?.isMayhemMode || false;
-          pumpProtocolFeeRecipient = getFeeRecipient(globalConfigData, isMayhemMode);
-          
-          logger.info('routerTx.pumpswap.protocolFeeRecipient.fetched', {
+        } catch (configErr) {
+          // Fallback to cached/hop value if fetch fails
+          logger.warn('routerTx.pumpswap.globalConfig.fetchFailed', {
             cat: 'tx',
+            error: (configErr as Error).message,
             poolId: hop.poolId,
-            protocolFeeRecipient: pumpProtocolFeeRecipient.toBase58(),
-            isMayhemMode,
-            source: 'sdk',
           });
-        } else {
-          // Fallback: use hardcoded list (should rarely happen)
-          const PUMPSWAP_PROTOCOL_FEE_RECIPIENTS = [
-            'ADyA8hdefbpkJYKuQsdGgmFkME9hyLD1k2FjSPwK8Mg4',
-            '8gTR2unjS9ss9PBuFChsQJbnW7xFgX7aRcK7ocHkHs3c',
-            'G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP',
-            'JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU'
-          ];
-          pumpProtocolFeeRecipient = new PublicKey(PUMPSWAP_PROTOCOL_FEE_RECIPIENTS[Math.floor(Math.random() * PUMPSWAP_PROTOCOL_FEE_RECIPIENTS.length)]);
-          
-          logger.warn('routerTx.pumpswap.protocolFeeRecipient.fallback', {
-            cat: 'tx',
-            poolId: hop.poolId,
-            protocolFeeRecipient: pumpProtocolFeeRecipient.toBase58(),
-            msg: 'Using hardcoded fallback - globalConfig fetch failed',
-          });
+          pumpProtocolFeeRecipient = (hop as any).protocolFeeRecipient
+            ? new PublicKey((hop as any).protocolFeeRecipient)
+            : stat?.protocol_fee_recipient
+              ? new PublicKey(stat.protocol_fee_recipient)
+              : new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM'); // Known valid fallback
         }
         
         // Protocol fee recipient's quote token account (ATA)
@@ -2788,6 +2730,46 @@ async function extractDexAccounts(
           true,
           pumpQuoteTokenProgram
         );
+        
+        // Use SDK's pre-computed PDAs for global_config and event_authority
+        const pumpGlobalConfig = (hop as any).globalConfig 
+          ? new PublicKey((hop as any).globalConfig)
+          : PUMPSWAP_GLOBAL_CONFIG;
+        const pumpEventAuthority = PUMPSWAP_EVENT_AUTHORITY;
+        
+        // Coin creator vault derivation using SDK functions
+        // CRITICAL: coinCreator must come from pool.coin_creator, NOT from poolId!
+        let pumpCoinCreatorVaultAuthority: PublicKey;
+        let pumpCoinCreatorVaultAta: PublicKey;
+        
+        // If coinCreator not in cache, fetch it from the pool account using SDK
+        if (!pumpCoinCreator || pumpCoinCreator === SystemProgram.programId.toBase58()) {
+          try {
+            // Use SDK to fetch and decode pool account - this properly extracts coinCreator
+            const poolData = await withRpcLimit(
+              () => pumpSdk.fetchPool(poolId),
+              1,
+              { module: 'routerTx', method: 'pumpswap.fetchPool' }
+            );
+            
+            if (poolData && poolData.coinCreator) {
+              pumpCoinCreator = poolData.coinCreator.toBase58();
+              
+              logger.info('routerTx.pumpswap.coinCreator.fetched', {
+                cat: 'tx',
+                poolId: hop.poolId,
+                coinCreator: pumpCoinCreator,
+                source: 'sdk',
+              });
+            }
+          } catch (fetchErr) {
+            logger.warn('routerTx.pumpswap.coinCreator.fetchFailed', {
+              cat: 'tx',
+              error: (fetchErr as Error).message,
+              poolId: hop.poolId,
+            });
+          }
+        }
         
         // Always derive PDAs from coinCreator, even if it's System Program (default/no creator)
         // The SDK always derives PDAs - we can't pass System Program directly as writable
