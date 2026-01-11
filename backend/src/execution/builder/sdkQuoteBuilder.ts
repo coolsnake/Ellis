@@ -1567,41 +1567,30 @@ async function getMeteoraDammV1SdkQuote(
             accounts.aVaultLp = pool.poolState.aVaultLp?.toBase58?.();
             accounts.bVaultLp = pool.poolState.bVaultLp?.toBase58?.();
             
-            // Protocol fee accounts - use DERIVATION as primary (matches SDK's deriveProtocolTokenFee)
-            // Seeds: ['fee', tokenMint, poolAddress] - from SDK utils.deriveProtocolTokenFee
-            // The pool state may contain stale or non-existent addresses, so derivation is more reliable
-            const METEORA_DAMM_V1_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
-            
-            if (pool.poolState.tokenAMint) {
-              const tokenAMint = pool.poolState.tokenAMint;
-              const [protocolFeeA] = PublicKey.findProgramAddressSync(
-                [Buffer.from('fee'), tokenAMint.toBuffer(), poolPk.toBuffer()],
-                METEORA_DAMM_V1_PROGRAM
-              );
-              accounts.protocolTokenAFee = protocolFeeA.toBase58();
+            // Protocol fee accounts - use pool state directly (exactly what SDK uses in swap())
+            // See SDK index.js line 1408-1410: SDK reads from this.poolState.protocolTokenAFee/B
+            if (pool.poolState.protocolTokenAFee) {
+              const pfa = pool.poolState.protocolTokenAFee;
+              accounts.protocolTokenAFee = typeof pfa.toBase58 === 'function' 
+                ? pfa.toBase58() 
+                : new PublicKey(pfa as any).toBase58();
             }
-            if (pool.poolState.tokenBMint) {
-              const tokenBMint = pool.poolState.tokenBMint;
-              const [protocolFeeB] = PublicKey.findProgramAddressSync(
-                [Buffer.from('fee'), tokenBMint.toBuffer(), poolPk.toBuffer()],
-                METEORA_DAMM_V1_PROGRAM
-              );
-              accounts.protocolTokenBFee = protocolFeeB.toBase58();
+            if (pool.poolState.protocolTokenBFee) {
+              const pfb = pool.poolState.protocolTokenBFee;
+              accounts.protocolTokenBFee = typeof pfb.toBase58 === 'function' 
+                ? pfb.toBase58() 
+                : new PublicKey(pfb as any).toBase58();
             }
             
-            // Log derived vs stored values for debugging
-            const storedAFee = pool.poolState.protocolTokenAFee?.toBase58?.();
-            const storedBFee = pool.poolState.protocolTokenBFee?.toBase58?.();
-            if (storedAFee !== accounts.protocolTokenAFee || storedBFee !== accounts.protocolTokenBFee) {
-              logger.debug('sdkQuoteBuilder.meteoraDammV1.protocolFee.mismatch', {
-                cat: 'tx',
-                poolId: poolId.slice(0, 8) + '...',
-                derivedAFee: accounts.protocolTokenAFee,
-                storedAFee,
-                derivedBFee: accounts.protocolTokenBFee,
-                storedBFee,
-              });
-            }
+            // Log the protocol fee values from pool state
+            logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.fromPoolState', {
+              cat: 'tx',
+              poolId: poolId.slice(0, 8) + '...',
+              protocolTokenAFee: accounts.protocolTokenAFee,
+              protocolTokenBFee: accounts.protocolTokenBFee,
+              rawAFee: pool.poolState.protocolTokenAFee?.toString?.(),
+              rawBFee: pool.poolState.protocolTokenBFee?.toString?.(),
+            });
           }
           
           // Extract token vaults from the VaultImpl instances
@@ -1748,24 +1737,8 @@ async function getMeteoraDammV1SdkQuote(
             });
           }
           
-          // Derive protocol fee accounts if not already set
-          // protocolTokenAFee and protocolTokenBFee are in the pool state at specific offsets
-          // For now, try to parse them from pool data if available
-          // Pool state has protocolTokenAFee after bVaultLpBump (1 byte), enabled (1 byte)
-          // Offset: 232 + some padding
-          if (data.length >= 360 && !accounts.protocolTokenAFee) {
-            // These offsets may need adjustment based on actual layout
-            // protocolTokenAFee is typically around offset 264
-            // protocolTokenBFee is typically around offset 296
-            try {
-              const protocolAFee = new PublicKey(data.subarray(264, 296));
-              const protocolBFee = new PublicKey(data.subarray(296, 328));
-              accounts.protocolTokenAFee = protocolAFee.toBase58();
-              accounts.protocolTokenBFee = protocolBFee.toBase58();
-            } catch {
-              // Ignore parse errors for protocol fees
-            }
-          }
+          // Note: Protocol fee accounts should come from SDK's pool.poolState above
+          // Manual offset parsing removed as it was producing incorrect addresses
         }
       }
     }

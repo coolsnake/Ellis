@@ -41,7 +41,8 @@ import {
   PUMP_FEE_PROGRAM_ID as PUMPSWAP_FEE_PROGRAM,
   coinCreatorVaultAuthorityPda as derivePumpswapCoinCreatorVault,
   coinCreatorVaultAtaPda as derivePumpswapCoinCreatorVaultAta,
-  userVolumeAccumulatorPda as derivePumpswapUserVolumeAccumulator
+  userVolumeAccumulatorPda as derivePumpswapUserVolumeAccumulator,
+  OnlinePumpAmmSdk
 } from '@pump-fun/pump-swap-sdk';
 
 // ============================================================================
@@ -2656,7 +2657,8 @@ async function extractDexAccounts(
         const pumpQuoteMint = stat?.onchain_quote_mint || stat?.native_mint_b || hop.outputMint;
         const pumpPoolBaseVault = stat?.onchain_base_vault || stat?.native_account_a || hop.vaultA;
         const pumpPoolQuoteVault = stat?.onchain_quote_vault || stat?.native_account_b || hop.vaultB;
-        const pumpCoinCreator = stat?.creator || stat?.metadata_creator;
+        // Check multiple field names for coinCreator from cache
+        let pumpCoinCreator = stat?.creator || (stat as any)?.onchain_creator || (stat as any)?.coin_creator || stat?.metadata_creator || (hop as any).coinCreator;
         
         // Determine token programs
         const pumpBaseTokenProgram = hop.inputMint === pumpBaseMint
@@ -2708,8 +2710,42 @@ async function extractDexAccounts(
         const pumpEventAuthority = PUMPSWAP_EVENT_AUTHORITY;
         
         // Coin creator vault derivation using SDK functions
+        // CRITICAL: coinCreator must come from pool.coin_creator, NOT from poolId!
+        // The PDA is derived from the actual coin_creator stored in the pool account at offset 211
         let pumpCoinCreatorVaultAuthority: PublicKey;
         let pumpCoinCreatorVaultAta: PublicKey;
+        
+        // If coinCreator not in cache, fetch it from the pool account using SDK
+        if (!pumpCoinCreator || pumpCoinCreator === SystemProgram.programId.toBase58()) {
+          try {
+            const connection = await getConnection();
+            const pumpSdk = new OnlinePumpAmmSdk(connection);
+            
+            // Use SDK to fetch and decode pool account - this properly extracts coinCreator
+            const poolData = await withRpcLimit(
+              () => pumpSdk.fetchPool(poolId),
+              1,
+              { module: 'routerTx', method: 'pumpswap.fetchPool' }
+            );
+            
+            if (poolData && poolData.coinCreator) {
+              pumpCoinCreator = poolData.coinCreator.toBase58();
+              
+              logger.info('routerTx.pumpswap.coinCreator.fetched', {
+                cat: 'tx',
+                poolId: hop.poolId,
+                coinCreator: pumpCoinCreator,
+                source: 'sdk',
+              });
+            }
+          } catch (fetchErr) {
+            logger.warn('routerTx.pumpswap.coinCreator.fetchFailed', {
+              cat: 'tx',
+              error: (fetchErr as Error).message,
+              poolId: hop.poolId,
+            });
+          }
+        }
         
         if (pumpCoinCreator && pumpCoinCreator !== SystemProgram.programId.toBase58()) {
           // Use SDK's derivation functions with the actual creator
@@ -2720,14 +2756,15 @@ async function extractDexAccounts(
             pumpQuoteTokenProgram
           );
         } else {
-          // No creator configured - derive from pool as fallback
-          // CRITICAL: Cannot use SystemProgram because index 17 is marked writable
-          pumpCoinCreatorVaultAuthority = derivePumpswapCoinCreatorVault(poolId);
-          pumpCoinCreatorVaultAta = derivePumpswapCoinCreatorVaultAta(
-            pumpCoinCreatorVaultAuthority,
-            new PublicKey(pumpQuoteMint),
-            pumpQuoteTokenProgram
-          );
+          // Fallback: If coinCreator is still System Program (0x0), the pool has no creator fees
+          // Use System Program as placeholder - this is allowed since creator fees are 0
+          logger.warn('routerTx.pumpswap.coinCreator.systemProgram', {
+            cat: 'tx',
+            poolId: hop.poolId,
+            msg: 'Pool has no coinCreator set (System Program), creator fees are disabled',
+          });
+          pumpCoinCreatorVaultAuthority = SystemProgram.programId;
+          pumpCoinCreatorVaultAta = SystemProgram.programId;
         }
         
         // Derive user volume accumulator PDA (for volume tracking rewards)
