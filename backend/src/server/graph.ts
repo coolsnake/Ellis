@@ -509,6 +509,10 @@ function buildPriceMap(priceStore: any, snapshot: GraphSnapshot, prev: PoolsPayl
       addMint((pool as any)?.mint_a);
       addMint((pool as any)?.mint_b);
     }
+    for (const pool of pools.cpmm || []) {
+      addMint((pool as any)?.mint_a);
+      addMint((pool as any)?.mint_b);
+    }
   };
 
   collect(prev);
@@ -562,7 +566,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // Before building, ensure we actually retained pools after scoping/filters
       try {
         const count =
-          (ray?.amm?.length || 0) + (ray?.clmm?.length || 0) +
+          (ray?.amm?.length || 0) + (ray?.clmm?.length || 0) + (ray?.cpmm?.length || 0) +
           (orc?.amm?.length || 0) + (orc?.clmm?.length || 0) +
           (met?.amm?.length || 0) + (met?.clmm?.length || 0) +
           (mbl?.amm?.length || 0) + (mbl?.clmm?.length || 0) +
@@ -830,11 +834,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         ...(rayValid.amm || []),
         ...(rayValid.clmm || []),
         ...(rayValid.cpmm || []),
-        ...(orc.amm || []),
-        ...(orc.clmm || []),
-        ...(met.clmm || []),
-        ...(mbl.amm || []),
-        ...(pump.amm || []),
+        ...(orcValid.amm || []),
+        ...(orcValid.clmm || []),
+        ...(metValid.clmm || []),
+        ...(mblValid.amm || []),
+        ...(pumpValid.amm || []),
       ];
       
       // Diagnostic: log label resolution stats
@@ -920,15 +924,40 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           raydium: { count: countDex('Raydium'), sample: sample('Raydium') },
           orca: { count: countDex('Orca'), sample: sample('Orca') },
           meteora: { count: countDex('Meteora'), sample: sample('Meteora') },
+          meteoraBalanced_v1: { count: countDex('MeteoraBalanced_v1'), sample: sample('MeteoraBalanced_v1') },
+          meteoraBalanced_v2: { count: countDex('MeteoraBalanced_v2'), sample: sample('MeteoraBalanced_v2') },
+          pumpswap: { count: countDex('Pumpswap'), sample: sample('Pumpswap') },
         });
-        // DIAGNOSTIC: Alert if Orca count is unexpectedly low
+        // DIAGNOSTIC: Alert if DEX edge count is unexpectedly low
         const orcaCount = countDex('Orca');
-        if (orcaCount === 0 && (orc.amm?.length || 0) + (orc.clmm?.length || 0) > 0) {
+        if (orcaCount === 0 && (orcValid.amm?.length || 0) + (orcValid.clmm?.length || 0) > 0) {
           try {
             logger.warn('graph.orca.missing_edges', {
-              orcaValidPools: (orc.amm?.length || 0) + (orc.clmm?.length || 0),
+              orcaValidPools: (orcValid.amm?.length || 0) + (orcValid.clmm?.length || 0),
               orcaEdges: orcaCount,
               hint: 'Orca pools passed validation but no edges were created',
+              cat: 'graph'
+            });
+          } catch {}
+        }
+        const pumpCount = countDex('Pumpswap');
+        if (pumpCount === 0 && (pumpValid.amm?.length || 0) > 0) {
+          try {
+            logger.warn('graph.pumpswap.missing_edges', {
+              pumpswapValidPools: pumpValid.amm?.length || 0,
+              pumpswapEdges: pumpCount,
+              hint: 'Pumpswap pools passed validation but no edges were created',
+              cat: 'graph'
+            });
+          } catch {}
+        }
+        const mblCount = countDex('MeteoraBalanced_v1') + countDex('MeteoraBalanced_v2');
+        if (mblCount === 0 && (mblValid.amm?.length || 0) > 0) {
+          try {
+            logger.warn('graph.meteoraBalanced.missing_edges', {
+              meteoraBalancedValidPools: mblValid.amm?.length || 0,
+              meteoraBalancedEdges: mblCount,
+              hint: 'MeteoraBalanced pools passed validation but no edges were created',
               cat: 'graph'
             });
           } catch {}

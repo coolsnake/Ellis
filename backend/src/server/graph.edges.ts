@@ -6,6 +6,8 @@ export type EdgeAllow = {
   raydium?: { amm?: boolean; clmm?: boolean; cpmm?: boolean };
   orca?: { amm?: boolean; clmm?: boolean };
   meteora?: { amm?: boolean; clmm?: boolean };
+  meteoraBalanced?: { amm?: boolean };
+  pumpswap?: { amm?: boolean };
 };
 
 const clampPriceInc = (px: number | undefined, min: number, max: number): number | undefined => {
@@ -246,7 +248,10 @@ export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm' | 'cpmm', all
   const k = String(kind || 'amm') as 'amm' | 'clmm' | 'cpmm';
   if (d.includes('raydium')) return (allow.raydium?.[k] !== false);
   if (d.includes('orca')) return (allow.orca?.[k] !== false);
+  // Check MeteoraBalanced BEFORE plain Meteora (more specific first)
+  if (d.includes('meteorabalanced')) return (allow.meteoraBalanced?.[k] !== false);
   if (d.includes('meteora')) return (allow.meteora?.[k] !== false);
+  if (d.includes('pumpswap')) return (allow.pumpswap?.[k] !== false);
   return true;
 }
 

@@ -217,7 +217,7 @@ export async function loadPoolsSnapshot(): Promise<PoolsSnapshot | null> {
     const ageHours = Math.round(ageMs / 3600000 * 10) / 10;
     
     const counts = {
-      raydium: (snapshot.raydium?.amm?.length || 0) + (snapshot.raydium?.clmm?.length || 0),
+      raydium: (snapshot.raydium?.amm?.length || 0) + (snapshot.raydium?.clmm?.length || 0) + (snapshot.raydium?.cpmm?.length || 0),
       orca: (snapshot.orca?.amm?.length || 0) + (snapshot.orca?.clmm?.length || 0),
       meteora: (snapshot.meteora?.amm?.length || 0) + (snapshot.meteora?.clmm?.length || 0),
       meteoraBalanced: (snapshot.meteoraBalanced?.amm?.length || 0),
@@ -550,6 +550,61 @@ export function populateExecutionCacheFromPools(
     } catch {}
   }
   
+  // Process CPMM pools (Raydium CPMM)
+  for (const pool of pools.cpmm || []) {
+    try {
+      const existing = executionCache.getStatic(pool.id) || {} as any;
+      const cpmmProgramId = 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
+      const staticData: any = {
+        ...existing,
+        programId: (pool as any).programId || cpmmProgramId,
+        dex,
+        pool_kind: 'cpmm',
+        mint_a: pool.mint_a,
+        mint_b: pool.mint_b,
+        decimals_a: pool.decimals_a,
+        decimals_b: pool.decimals_b,
+      };
+      
+      // Store vault/account references
+      if (pool.account_a) staticData.account_a = pool.account_a;
+      if (pool.account_b) staticData.account_b = pool.account_b;
+      if ((pool as any).vault_a) staticData.vault_a = (pool as any).vault_a;
+      if ((pool as any).vault_b) staticData.vault_b = (pool as any).vault_b;
+      if ((pool as any).amm_config) staticData.amm_config = (pool as any).amm_config;
+      if ((pool as any).observation_state) staticData.observation_state = (pool as any).observation_state;
+      
+      executionCache.setStatic(pool.id, staticData);
+      populated++;
+      
+      // Populate hot cache with price data if available
+      const hotData: any = {};
+      let hasHotData = false;
+      
+      if ((pool as any).reserve_a !== undefined) {
+        hotData.reserve_a = BigInt(String((pool as any).reserve_a));
+        hasHotData = true;
+      }
+      if ((pool as any).reserve_b !== undefined) {
+        hotData.reserve_b = BigInt(String((pool as any).reserve_b));
+        hasHotData = true;
+      }
+      if (pool.fee_bps !== undefined) {
+        hotData.feeRate = pool.fee_bps;
+        hasHotData = true;
+      }
+      if ((pool as any).protocol_fee_bps !== undefined) {
+        hotData.protocolFeeRate = (pool as any).protocol_fee_bps;
+        hasHotData = true;
+      }
+      
+      if (hasHotData) {
+        const existingHot = executionCache.getHot(pool.id) || {};
+        executionCache.setHot(pool.id, { ...existingHot, ...hotData });
+      }
+    } catch {}
+  }
+  
   return populated;
 }
 
@@ -751,7 +806,7 @@ function countSnapshotPools(snapshot: PoolsSnapshot): {
   pumpswap: number;
 } {
   const counts = {
-    raydium: (snapshot.raydium?.amm?.length || 0) + (snapshot.raydium?.clmm?.length || 0),
+    raydium: (snapshot.raydium?.amm?.length || 0) + (snapshot.raydium?.clmm?.length || 0) + (snapshot.raydium?.cpmm?.length || 0),
     orca: (snapshot.orca?.amm?.length || 0) + (snapshot.orca?.clmm?.length || 0),
     meteora: (snapshot.meteora?.amm?.length || 0) + (snapshot.meteora?.clmm?.length || 0),
     meteoraBalanced: (snapshot.meteoraBalanced?.amm?.length || 0),
