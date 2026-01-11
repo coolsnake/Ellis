@@ -33,6 +33,12 @@ import {
 } from '../../router/index.js';
 import { loadRouterConfig, isFlashLoanAvailable } from '../../server/routerConfigStore.js';
 import { getSdkQuoteAccountsForPlan, type SdkProvidedAccounts } from './sdkQuoteBuilder.js';
+import { 
+  GLOBAL_CONFIG_PDA as PUMPSWAP_GLOBAL_CONFIG, 
+  PUMP_AMM_EVENT_AUTHORITY_PDA as PUMPSWAP_EVENT_AUTHORITY,
+  coinCreatorVaultAuthorityPda as derivePumpswapCoinCreatorVault,
+  coinCreatorVaultAtaPda as derivePumpswapCoinCreatorVaultAta
+} from '@pump-fun/pump-swap-sdk';
 
 // ============================================================================
 // Constants
@@ -2687,47 +2693,31 @@ async function extractDexAccounts(
           pumpQuoteTokenProgram
         );
         
-        // Derive PDAs
+        // Use SDK's pre-computed PDAs for global_config and event_authority
         const pumpGlobalConfig = (hop as any).globalConfig 
           ? new PublicKey((hop as any).globalConfig)
-          : derivePumpswapGlobalConfig();
-        const pumpEventAuthority = derivePumpswapEventAuthority();
+          : PUMPSWAP_GLOBAL_CONFIG;
+        const pumpEventAuthority = PUMPSWAP_EVENT_AUTHORITY;
         
-        // Coin creator vault derivation
-        // Seed: 'creator_vault' with PUMP_AMM_PROGRAM_ID (from @pump-fun/pump-swap-sdk pda.ts)
+        // Coin creator vault derivation using SDK functions
         let pumpCoinCreatorVaultAuthority: PublicKey;
         let pumpCoinCreatorVaultAta: PublicKey;
         
         if (pumpCoinCreator && pumpCoinCreator !== SystemProgram.programId.toBase58()) {
-          // Derive creator vault authority PDA using AMM program
-          const [vaultAuthority] = PublicKey.findProgramAddressSync(
-            [Buffer.from('creator_vault'), new PublicKey(pumpCoinCreator).toBuffer()],
-            PUMPSWAP_PROGRAM
-          );
-          pumpCoinCreatorVaultAuthority = vaultAuthority;
-          
-          // Derive creator vault ATA for quote token
-          pumpCoinCreatorVaultAta = getAssociatedTokenAddressSync(
+          // Use SDK's derivation functions with the actual creator
+          pumpCoinCreatorVaultAuthority = derivePumpswapCoinCreatorVault(new PublicKey(pumpCoinCreator));
+          pumpCoinCreatorVaultAta = derivePumpswapCoinCreatorVaultAta(
+            pumpCoinCreatorVaultAuthority,
             new PublicKey(pumpQuoteMint),
-            vaultAuthority,
-            true,
             pumpQuoteTokenProgram
           );
         } else {
           // No creator configured - derive from pool as fallback
           // CRITICAL: Cannot use SystemProgram because index 17 is marked writable
-          // Use pool-based derivation as fallback
-          const [vaultAuthority] = PublicKey.findProgramAddressSync(
-            [Buffer.from('creator_vault'), poolId.toBuffer()],
-            PUMPSWAP_PROGRAM
-          );
-          pumpCoinCreatorVaultAuthority = vaultAuthority;
-          
-          // Derive creator vault ATA for quote token using the vault authority
-          pumpCoinCreatorVaultAta = getAssociatedTokenAddressSync(
+          pumpCoinCreatorVaultAuthority = derivePumpswapCoinCreatorVault(poolId);
+          pumpCoinCreatorVaultAta = derivePumpswapCoinCreatorVaultAta(
+            pumpCoinCreatorVaultAuthority,
             new PublicKey(pumpQuoteMint),
-            vaultAuthority,
-            true,
             pumpQuoteTokenProgram
           );
         }
@@ -3079,29 +3069,6 @@ function deriveMeteoraDlmmEventAuthority(): PublicKey {
     METEORA_DLMM_PROGRAM
   );
   return eventAuth;
-}
-
-/**
- * Derive PumpSwap Global Config PDA
- * Seed: 'global_config' (from @pump-fun/pump-swap-sdk)
- */
-function derivePumpswapGlobalConfig(): PublicKey {
-  const [globalConfig] = PublicKey.findProgramAddressSync(
-    [Buffer.from('global_config')],
-    PUMPSWAP_PROGRAM
-  );
-  return globalConfig;
-}
-
-/**
- * Derive PumpSwap Event Authority PDA
- */
-function derivePumpswapEventAuthority(): PublicKey {
-  const [eventAuthority] = PublicKey.findProgramAddressSync(
-    [Buffer.from('__event_authority')],
-    PUMPSWAP_PROGRAM
-  );
-  return eventAuthority;
 }
 
 /**

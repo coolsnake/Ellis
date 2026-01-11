@@ -1563,8 +1563,36 @@ async function getMeteoraDammV1SdkQuote(
             accounts.bVault = pool.poolState.bVault?.toBase58?.();
             accounts.aVaultLp = pool.poolState.aVaultLp?.toBase58?.();
             accounts.bVaultLp = pool.poolState.bVaultLp?.toBase58?.();
-            accounts.protocolTokenAFee = pool.poolState.protocolTokenAFee?.toBase58?.();
-            accounts.protocolTokenBFee = pool.poolState.protocolTokenBFee?.toBase58?.();
+            
+            // Extract protocol fee accounts from pool state
+            if (pool.poolState.protocolTokenAFee) {
+              const pfa = pool.poolState.protocolTokenAFee;
+              accounts.protocolTokenAFee = typeof pfa.toBase58 === 'function' ? pfa.toBase58() : new PublicKey(pfa as any).toBase58();
+            }
+            if (pool.poolState.protocolTokenBFee) {
+              const pfb = pool.poolState.protocolTokenBFee;
+              accounts.protocolTokenBFee = typeof pfb.toBase58 === 'function' ? pfb.toBase58() : new PublicKey(pfb as any).toBase58();
+            }
+            
+            // Fallback: Derive protocol fee accounts using PDA if not available from state
+            // Seeds: ['fee', tokenMint, poolAddress] - from SDK utils.deriveProtocolTokenFee
+            const METEORA_DAMM_V1_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
+            if (!accounts.protocolTokenAFee && pool.poolState.tokenAMint) {
+              const tokenAMint = pool.poolState.tokenAMint;
+              const [protocolFeeA] = PublicKey.findProgramAddressSync(
+                [Buffer.from('fee'), tokenAMint.toBuffer(), poolPk.toBuffer()],
+                METEORA_DAMM_V1_PROGRAM
+              );
+              accounts.protocolTokenAFee = protocolFeeA.toBase58();
+            }
+            if (!accounts.protocolTokenBFee && pool.poolState.tokenBMint) {
+              const tokenBMint = pool.poolState.tokenBMint;
+              const [protocolFeeB] = PublicKey.findProgramAddressSync(
+                [Buffer.from('fee'), tokenBMint.toBuffer(), poolPk.toBuffer()],
+                METEORA_DAMM_V1_PROGRAM
+              );
+              accounts.protocolTokenBFee = protocolFeeB.toBase58();
+            }
           }
           
           // Extract token vaults from the VaultImpl instances
@@ -1629,6 +1657,10 @@ async function getMeteoraDammV1SdkQuote(
             hasVaultLp: !!(accounts.aVaultLp && accounts.bVaultLp),
             hasVaultLpMints: !!(accounts.aVaultLpMint && accounts.bVaultLpMint),
             hasProtocolFees: !!(accounts.protocolTokenAFee && accounts.protocolTokenBFee),
+            protocolTokenAFee: accounts.protocolTokenAFee,
+            protocolTokenBFee: accounts.protocolTokenBFee,
+            tokenAMint: pool.poolState?.tokenAMint?.toBase58?.(),
+            tokenBMint: pool.poolState?.tokenBMint?.toBase58?.(),
           });
         }
       } catch (sdkErr) {
