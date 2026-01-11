@@ -1098,6 +1098,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [filterMinAmmTvl, setFilterMinAmmTvl] = React.useState<string>('');
   const [filterMinClmmTvl, setFilterMinClmmTvl] = React.useState<string>('');
   const [filterMinCpmmTvl, setFilterMinCpmmTvl] = React.useState<string>('');
+  const [filterMinPoolsPerPair, setFilterMinPoolsPerPair] = React.useState<string>('');
   const [filterSaveName, setFilterSaveName] = React.useState<string>('');
   
   // DEX fetcher states
@@ -1318,7 +1319,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     setSnapshotLoading(false);
   };
 
-  // Filter a snapshot by TVL
+  // Filter a snapshot by TVL and minPools
   const filterSelectedSnapshot = async () => {
     if (selectedSnapshots.size !== 1) {
       alert('Select exactly 1 snapshot to filter');
@@ -1328,9 +1329,10 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     const minAmmTvl = filterMinAmmTvl ? Number(filterMinAmmTvl) : undefined;
     const minClmmTvl = filterMinClmmTvl ? Number(filterMinClmmTvl) : undefined;
     const minCpmmTvl = filterMinCpmmTvl ? Number(filterMinCpmmTvl) : undefined;
+    const minPoolsPerPair = filterMinPoolsPerPair ? Number(filterMinPoolsPerPair) : undefined;
     
-    if (!minAmmTvl && !minClmmTvl && !minCpmmTvl) {
-      alert('Set at least one TVL filter value');
+    if (!minAmmTvl && !minClmmTvl && !minCpmmTvl && (!minPoolsPerPair || minPoolsPerPair <= 1)) {
+      alert('Set at least one filter value (TVL threshold or minPools > 1)');
       return;
     }
     
@@ -1352,6 +1354,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           minAmmTvl,
           minClmmTvl,
           minCpmmTvl,
+          minPoolsPerPair,
           saveTo: filterSaveName.trim() || undefined,
         }) 
       });
@@ -1361,6 +1364,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         setFilterMinAmmTvl('');
         setFilterMinClmmTvl('');
         setFilterMinCpmmTvl('');
+        setFilterMinPoolsPerPair('');
         setFilterSaveName('');
         fetchSnapshots();
         fetchMetrics();
@@ -1887,7 +1891,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 </button>
               </div>
               
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-4 gap-2">
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Min AMM TVL ($)</label>
                   <input
@@ -1918,6 +1922,17 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                     className="w-full px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded focus:border-cyan-500 focus:outline-none"
                   />
                 </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Min Pools/Pair</label>
+                  <input
+                    type="number"
+                    placeholder="1"
+                    min="1"
+                    value={filterMinPoolsPerPair}
+                    onChange={(e) => setFilterMinPoolsPerPair(e.target.value)}
+                    className="w-full px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
               </div>
               
               <div className="flex gap-2 items-center">
@@ -1930,7 +1945,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 />
                 <button
                   className="px-3 py-1 text-sm bg-cyan-700 hover:bg-cyan-600 text-cyan-100 rounded disabled:opacity-50"
-                  disabled={snapshotLoading || (!filterMinAmmTvl && !filterMinClmmTvl && !filterMinCpmmTvl)}
+                  disabled={snapshotLoading || (!filterMinAmmTvl && !filterMinClmmTvl && !filterMinCpmmTvl && (!filterMinPoolsPerPair || Number(filterMinPoolsPerPair) <= 1))}
                   onClick={filterSelectedSnapshot}
                 >
                   🔍 Apply Filter
@@ -1938,7 +1953,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               </div>
               
               <div className="text-xs text-cyan-400/70">
-                Removes pools below TVL thresholds. Leave blank to skip a pool type.
+                Filter by TVL thresholds and/or min pools per pair (across all DEXes). Leave blank to skip.
                 {filterSaveName.trim() ? ' Will save as new snapshot.' : ' Will load filtered pools directly.'}
               </div>
             </div>

@@ -67,12 +67,13 @@ export interface SnapshotMeta {
 }
 
 /**
- * Options for filtering a snapshot by TVL thresholds
+ * Options for filtering a snapshot by TVL thresholds and min pools per pair
  */
 export interface SnapshotFilterOptions {
-  minAmmTvl?: number;      // Minimum TVL for AMM pools (in USD)
-  minClmmTvl?: number;     // Minimum TVL for CLMM pools (in USD)
-  minCpmmTvl?: number;     // Minimum TVL for CPMM pools (in USD)
+  minAmmTvl?: number;        // Minimum TVL for AMM pools (in USD)
+  minClmmTvl?: number;       // Minimum TVL for CLMM pools (in USD)
+  minCpmmTvl?: number;       // Minimum TVL for CPMM pools (in USD)
+  minPoolsPerPair?: number;  // Minimum pools per token pair (across all DEXes)
 }
 
 const SNAPSHOT_FILE = 'filtered-pools-snapshot.json';
@@ -811,7 +812,87 @@ function filterPoolsPayloadByTvl(
 }
 
 /**
- * Filter a snapshot by TVL thresholds and optionally save to a new snapshot
+ * Create canonical pair key from two mints (sorted alphabetically)
+ */
+function canonicalPairKey(mintA: string, mintB: string): string {
+  const a = String(mintA || '');
+  const b = String(mintB || '');
+  return a <= b ? `${a}-${b}` : `${b}-${a}`;
+}
+
+/**
+ * Apply minPoolsPerPair filter across an entire snapshot
+ * This counts pools across ALL DEXes and only keeps pairs with >= minPools total pools
+ */
+function filterSnapshotByMinPools(snapshot: PoolsSnapshot, minPools: number): PoolsSnapshot {
+  if (minPools <= 1) return snapshot;
+  
+  // Count pools per pair across all DEXes
+  const poolCounts = new Map<string, number>();
+  
+  const countPools = (arr: any[]) => {
+    for (const p of (arr || [])) {
+      if (!p?.mint_a || !p?.mint_b) continue;
+      const pairKey = canonicalPairKey(p.mint_a, p.mint_b);
+      poolCounts.set(pairKey, (poolCounts.get(pairKey) || 0) + 1);
+    }
+  };
+  
+  // Count across all DEXes
+  countPools(snapshot.raydium?.amm);
+  countPools(snapshot.raydium?.clmm);
+  countPools(snapshot.raydium?.cpmm);
+  countPools(snapshot.orca?.amm);
+  countPools(snapshot.orca?.clmm);
+  countPools(snapshot.meteora?.amm);
+  countPools(snapshot.meteora?.clmm);
+  countPools(snapshot.meteoraBalanced?.amm);
+  countPools(snapshot.pumpswap?.amm);
+  
+  // Build set of allowed pairs
+  const allowedPairs = new Set<string>();
+  for (const [pairKey, count] of poolCounts.entries()) {
+    if (count >= minPools) {
+      allowedPairs.add(pairKey);
+    }
+  }
+  
+  // Filter function
+  const filterByPair = <T extends { mint_a: string; mint_b: string }>(arr: T[]): T[] =>
+    (arr || []).filter(p => allowedPairs.has(canonicalPairKey(p.mint_a, p.mint_b)));
+  
+  return {
+    ...snapshot,
+    raydium: {
+      amm: filterByPair(snapshot.raydium?.amm || []),
+      clmm: filterByPair(snapshot.raydium?.clmm || []),
+      cpmm: filterByPair(snapshot.raydium?.cpmm || []),
+    },
+    orca: {
+      amm: filterByPair(snapshot.orca?.amm || []),
+      clmm: filterByPair(snapshot.orca?.clmm || []),
+      cpmm: [],
+    },
+    meteora: {
+      amm: filterByPair(snapshot.meteora?.amm || []),
+      clmm: filterByPair(snapshot.meteora?.clmm || []),
+      cpmm: [],
+    },
+    meteoraBalanced: {
+      amm: filterByPair(snapshot.meteoraBalanced?.amm || []),
+      clmm: [],
+      cpmm: [],
+    },
+    pumpswap: {
+      amm: filterByPair(snapshot.pumpswap?.amm || []),
+      clmm: [],
+      cpmm: [],
+    },
+  };
+}
+
+/**
+ * Filter a snapshot by TVL thresholds, min pools per pair, and optionally save to a new snapshot
  */
 export async function filterSnapshot(
   sourceName: string,
@@ -841,12 +922,12 @@ export async function filterSnapshot(
     
     const beforeCounts = countSnapshotPools(snapshot);
     
-    // Build filtered snapshot
-    const filteredSnapshot: PoolsSnapshot = {
+    // Step 1: Apply TVL filtering first
+    let filteredSnapshot: PoolsSnapshot = {
       ...snapshot,
       name: options.saveTo ? sanitizeSnapshotName(options.saveTo) : snapshot.name,
       description: options.saveTo 
-        ? `Filtered from "${sanitizedName}" (minAmm=${options.minAmmTvl || 0}, minClmm=${options.minClmmTvl || 0}, minCpmm=${options.minCpmmTvl || 0})`
+        ? `Filtered from "${sanitizedName}" (minAmm=${options.minAmmTvl || 0}, minClmm=${options.minClmmTvl || 0}, minCpmm=${options.minCpmmTvl || 0}, minPools=${options.minPoolsPerPair || 1})`
         : snapshot.description,
       savedAt: new Date().toISOString(),
       savedAtMs: Date.now(),
@@ -856,6 +937,12 @@ export async function filterSnapshot(
       meteoraBalanced: filterPoolsPayloadByTvl(snapshot.meteoraBalanced || { amm: [], clmm: [], cpmm: [] }, options),
       pumpswap: filterPoolsPayloadByTvl(snapshot.pumpswap || { amm: [], clmm: [], cpmm: [] }, options),
     };
+    
+    // Step 2: Apply minPoolsPerPair filter (across all DEXes)
+    const minPools = options.minPoolsPerPair || 1;
+    if (minPools > 1) {
+      filteredSnapshot = filterSnapshotByMinPools(filteredSnapshot, minPools);
+    }
     
     const afterCounts = countSnapshotPools(filteredSnapshot);
     const filteredOut = beforeCounts.total - afterCounts.total;
@@ -903,7 +990,7 @@ export async function filterSnapshot(
       before: beforeCounts.total,
       after: afterCounts.total,
       filteredOut,
-      options: { minAmmTvl: options.minAmmTvl, minClmmTvl: options.minClmmTvl, minCpmmTvl: options.minCpmmTvl },
+      options: { minAmmTvl: options.minAmmTvl, minClmmTvl: options.minClmmTvl, minCpmmTvl: options.minCpmmTvl, minPoolsPerPair: options.minPoolsPerPair },
       cat: 'pools'
     });
     
