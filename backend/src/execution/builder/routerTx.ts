@@ -2901,11 +2901,11 @@ async function extractDexAccounts(
           const protocolTokenBFee = (hop as any).protocolTokenBFee;
           const vaultProgram = (hop as any).vaultProgram || '24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi';
           
-          // Select protocol fee based on swap direction (OUTPUT token's fee account)
-          // A→B swap: output is B → use protocolTokenBFee
-          // B→A swap: output is A → use protocolTokenAFee
+          // Select protocol fee based on swap direction (INPUT token's fee account)
+          // A→B swap: input is A → use protocolTokenAFee
+          // B→A swap: input is B → use protocolTokenBFee
           const isAtoB = opts?.aToB ?? (hop.inputMint === poolMintA);
-          const protocolTokenFee = isAtoB ? protocolTokenBFee : protocolTokenAFee;
+          const protocolTokenFee = isAtoB ? protocolTokenAFee : protocolTokenBFee;
           
           // Verify we have all required accounts
           const missingAccounts: string[] = [];

@@ -221,8 +221,8 @@ async function fetchRaydiumCpmmPoolsForMintBatch(opts: {
             lpMint
             ammConfig
             observationKey
-            mintDecimals0
-            mintDecimals1
+            mint0Decimals
+            mint1Decimals
             status
             openTime
             _updatedAt
@@ -298,11 +298,11 @@ export async function fetchRaydiumCpmmPoolsByAddress(
               lpSupply
               ammConfig
               observationKey
-              creator
+              poolCreator
               status
-              mintDecimals0
-              mintDecimals1
-              bump
+              mint0Decimals
+              mint1Decimals
+              authBump
               openTime
               _updatedAt
             }
@@ -582,8 +582,8 @@ export async function normalizeRaydiumCpmmGraphQL(raw: RaydiumCpmmPoolApiRespons
       if (!mint_a || !mint_b) continue;
       
       // Get decimals with fallback
-      const decA = pool.mintDecimals0 ?? decimalsMap.get(mint_a) ?? 9;
-      const decB = pool.mintDecimals1 ?? decimalsMap.get(mint_b) ?? 9;
+      const decA = pool.mint0Decimals ?? decimalsMap.get(mint_a) ?? 9;
+      const decB = pool.mint1Decimals ?? decimalsMap.get(mint_b) ?? 9;
       
       // Parse token programs
       const tokenProgramA = pool.token0Program === TOKEN_2022_PROGRAM_ID ? 'token-2022' : 'spl-token';
@@ -687,7 +687,7 @@ export async function normalizeRaydiumCpmmGraphQL(raw: RaydiumCpmmPoolApiRespons
         amm_config: pool.ammConfig,
         observation_key: pool.observationKey,
         lp_mint: pool.lpMint,
-        authority: pool.creator,
+        authority: pool.poolCreator,
         token_program_a: wasSwapped 
           ? (tokenProgramB as 'spl-token' | 'token-2022') 
           : (tokenProgramA as 'spl-token' | 'token-2022'),

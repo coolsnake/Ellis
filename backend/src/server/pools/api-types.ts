@@ -317,11 +317,11 @@ export interface RaydiumCpmmPoolApiResponse {
   lpSupply?: string | number;
   ammConfig: string;
   observationKey?: string;
-  creator?: string;
+  poolCreator?: string;
   status?: number;
-  mintDecimals0?: number;
-  mintDecimals1?: number;
-  bump?: number;
+  mint0Decimals?: number;
+  mint1Decimals?: number;
+  authBump?: number;
   openTime?: number | string;
   // Reserve amounts (if provided by API)
   token0Amount?: string | number;
