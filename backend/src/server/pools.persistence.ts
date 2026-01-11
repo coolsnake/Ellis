@@ -23,6 +23,7 @@ import {
 } from './pools.cache.js';
 import { emit } from './realtime.js';
 import { executionCache } from '../execution/cache.js';
+import { bulkActivatePoolIds, isLazyActivationEnabled } from './pools.activation.js';
 
 export interface PoolsSnapshot {
   version: number;
@@ -286,7 +287,7 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
   }
   
   const counts = {
-    raydium: (snapshot.raydium?.amm?.length || 0) + (snapshot.raydium?.clmm?.length || 0),
+    raydium: (snapshot.raydium?.amm?.length || 0) + (snapshot.raydium?.clmm?.length || 0) + ((snapshot.raydium as any)?.cpmm?.length || 0),
     orca: (snapshot.orca?.amm?.length || 0) + (snapshot.orca?.clmm?.length || 0),
     meteora: (snapshot.meteora?.amm?.length || 0) + (snapshot.meteora?.clmm?.length || 0),
     meteoraBalanced: (snapshot.meteoraBalanced?.amm?.length || 0),
@@ -295,6 +296,41 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
     executionCachePopulated,
   };
   counts.total = counts.raydium + counts.orca + counts.meteora + counts.meteoraBalanced + counts.pumpswap;
+  
+  // Bulk-activate all pool IDs when lazy activation is enabled
+  // This ensures pools loaded from snapshots are visible in the graph
+  if (isLazyActivationEnabled()) {
+    const allPoolIds: string[] = [];
+    
+    // Collect all pool IDs from snapshot
+    if (snapshot.raydium) {
+      allPoolIds.push(...(snapshot.raydium.amm || []).map(p => p.id));
+      allPoolIds.push(...(snapshot.raydium.clmm || []).map(p => p.id));
+      allPoolIds.push(...((snapshot.raydium as any).cpmm || []).map((p: any) => p.id));
+    }
+    if (snapshot.orca) {
+      allPoolIds.push(...(snapshot.orca.amm || []).map(p => p.id));
+      allPoolIds.push(...(snapshot.orca.clmm || []).map(p => p.id));
+    }
+    if (snapshot.meteora) {
+      allPoolIds.push(...(snapshot.meteora.amm || []).map(p => p.id));
+      allPoolIds.push(...(snapshot.meteora.clmm || []).map(p => p.id));
+    }
+    if (snapshot.meteoraBalanced) {
+      allPoolIds.push(...(snapshot.meteoraBalanced.amm || []).map(p => p.id));
+    }
+    if (snapshot.pumpswap) {
+      allPoolIds.push(...(snapshot.pumpswap.amm || []).map(p => p.id));
+    }
+    
+    const activatedCount = bulkActivatePoolIds(allPoolIds);
+    logger.info('pools.hydrate.bulk_activated', { 
+      activatedCount, 
+      totalPools: allPoolIds.length,
+      lazyModeEnabled: true,
+      cat: 'pools' 
+    });
+  }
   
   logger.info('pools.caches.hydrated', { counts, cat: 'pools' });
   

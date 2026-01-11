@@ -172,6 +172,45 @@ export function getActivatedPoolIds(): string[] {
 }
 
 /**
+ * Bulk-activate pools from a loaded snapshot.
+ * Call this after hydrating caches from a snapshot to mark all pools as activated.
+ * This ensures pools loaded from disk are visible in the graph when lazy mode is enabled.
+ */
+export function bulkActivatePoolIds(poolIds: string[]): number {
+  if (!lazyActivationEnabled) return 0;
+  
+  let activated = 0;
+  const now = Date.now();
+  
+  for (const poolId of poolIds) {
+    if (poolId && !activatedPoolIds.has(poolId)) {
+      activatedPoolIds.add(poolId);
+      activationTimestamps.set(poolId, now);
+      activated++;
+    }
+  }
+  
+  if (activated > 0) {
+    logger.info('pool.activation.bulk_activated', {
+      count: activated,
+      totalActivated: activatedPoolIds.size,
+      cat: 'pools'
+    });
+    
+    try {
+      emit('log', {
+        level: 'info',
+        message: `pools:activation ${activated} pools bulk-activated from snapshot`,
+        timestamp: new Date().toISOString(),
+        context: { cat: 'pools' }
+      });
+    } catch {}
+  }
+  
+  return activated;
+}
+
+/**
  * Clear all activation state (for testing or reset).
  */
 export function clearActivationState(): void {
