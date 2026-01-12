@@ -358,10 +358,15 @@ async function handleCpmmUpdate(
       ? (decoded as any).token_program_a 
       : (decoded as any).token_program_b,
     was_swapped: processedPrice?.wasSwapped || false,
-    reserve_a_raw: reserveA?.toString(),
-    reserve_b_raw: reserveB?.toString(),
-    amount_a_whole: amountAWhole,
-    amount_b_whole: amountBWhole,
+    // Reserves in canonical order (matching mint_a/mint_b)
+    reserve_a_raw: processedPrice?.wasSwapped ? reserveB?.toString() : reserveA?.toString(),
+    reserve_b_raw: processedPrice?.wasSwapped ? reserveA?.toString() : reserveB?.toString(),
+    // Native reserves preserved for reference
+    native_reserve_a_raw: reserveA?.toString(),
+    native_reserve_b_raw: reserveB?.toString(),
+    // Amounts in canonical order
+    amount_a_whole: processedPrice?.wasSwapped ? amountBWhole : amountAWhole,
+    amount_b_whole: processedPrice?.wasSwapped ? amountAWhole : amountBWhole,
     _pipelineProcessed: true,
   };
 

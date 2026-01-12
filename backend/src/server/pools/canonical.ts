@@ -140,6 +140,9 @@ export function canonicalOrientation(mintA: string, mintB: string): 'keep' | 'sw
 export function swapPoolFields<T extends Record<string, any>>(obj: T): T {
   const out: any = { ...obj };
   
+  // Mark that this pool was swapped from native orientation
+  out.was_swapped = true;
+  
   // Swap mints
   const aMint = out.mint_a;
   const bMint = out.mint_b;
@@ -209,7 +212,10 @@ export function canonicalizePools<T extends { mint_a: string; mint_b: string }>(
 ): T[] {
   return pools.map(pool => {
     const orientation = canonicalOrientation(pool.mint_a, pool.mint_b);
-    if (orientation === 'keep') return pool;
+    if (orientation === 'keep') {
+      // Explicitly mark as not swapped for clarity
+      return { ...pool, was_swapped: false } as T;
+    }
     
     const swapped = swapPoolFields(pool);
     
