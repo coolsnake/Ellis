@@ -1715,17 +1715,28 @@ function runWebsocketRefreshLoop(): void {
                   }
                   
                   // We have both vault balances - calculate price!
-                  const balanceA = vaultSide === 'A' ? newBalance : otherBalance;
-                  const balanceB = vaultSide === 'B' ? newBalance : otherBalance;
+                  // IMPORTANT: vaultSide A/B refers to native order (baseVault/quoteVault)
+                  // If was_swapped is true, canonical order is reversed
+                  const nativeBalanceA = vaultSide === 'A' ? newBalance : otherBalance;
+                  const nativeBalanceB = vaultSide === 'B' ? newBalance : otherBalance;
                   
-                  // Get decimals from pool cache
+                  // Get pool's was_swapped flag and decimals
                   const ammPool = pool as any;
-                  const decA = ammPool.native_decimals_a ?? ammPool.decimals_a ?? 9;
-                  const decB = ammPool.native_decimals_b ?? ammPool.decimals_b ?? 6;
+                  const wasSwapped = ammPool.was_swapped === true;
+                  
+                  // Map native balances to canonical order based on was_swapped
+                  // Native: baseVault (A) → baseMint, quoteVault (B) → quoteMint
+                  // If was_swapped: canonical mintA = quoteMint, canonical mintB = baseMint
+                  const canonicalBalanceA = wasSwapped ? nativeBalanceB : nativeBalanceA;
+                  const canonicalBalanceB = wasSwapped ? nativeBalanceA : nativeBalanceB;
+                  
+                  // Use canonical decimals (decimals_a/b are in canonical order)
+                  const decA = ammPool.decimals_a ?? ammPool.native_decimals_a ?? 9;
+                  const decB = ammPool.decimals_b ?? ammPool.native_decimals_b ?? 6;
                   
                   // Calculate price: (reserveA / reserveB) * (10^decB / 10^decA)
-                  const reserveANum = Number(balanceA);
-                  const reserveBNum = Number(balanceB);
+                  const reserveANum = Number(canonicalBalanceA);
+                  const reserveBNum = Number(canonicalBalanceB);
                   
                   if (reserveANum <= 0 || reserveBNum <= 0) {
                     logger.debug('pools.ws vault.amm.zero_reserve', { 
@@ -1733,6 +1744,7 @@ function runWebsocketRefreshLoop(): void {
                       pool: derivedMeta.poolId.slice(0,8)+'…',
                       reserveA: reserveANum,
                       reserveB: reserveBNum,
+                      wasSwapped,
                       cat: 'pools' 
                     });
                     return;
@@ -1761,12 +1773,12 @@ function runWebsocketRefreshLoop(): void {
                     const prevPool = cachedPools.amm[poolIdx];
                     const hasDelta = prevPool.price_a_per_b !== price_a_per_b;
                     
-                    // Update pool with new price and reserves
+                    // Update pool with new price and reserves (in canonical order)
                     cachedPools.amm[poolIdx] = {
                       ...prevPool,
                       price_a_per_b,
-                      reserve_a_raw: balanceA.toString(),
-                      reserve_b_raw: balanceB.toString(),
+                      reserve_a_raw: canonicalBalanceA.toString(),
+                      reserve_b_raw: canonicalBalanceB.toString(),
                       updated_ms: Date.now(),
                     };
                     raydiumCache.ts = Date.now();
@@ -1779,6 +1791,7 @@ function runWebsocketRefreshLoop(): void {
                       price: price_a_per_b.toFixed(8),
                       reserveA: reserveANum,
                       reserveB: reserveBNum,
+                      wasSwapped,
                       hasDelta,
                       cat: 'pools' 
                     });
