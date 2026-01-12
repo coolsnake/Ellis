@@ -20,9 +20,10 @@ const wsCounts: Record<DexSource, number> = {
   raydium: 0,
   'raydium-cpmm': 0,
   orca: 0,
-  meteora: 0,
+  meteora_dlmm: 0,
+  meteora_damm_v1: 0,
+  meteora_damm_v2: 0,
   pumpswap: 0,
-  meteora_balanced: 0,
 };
 
 /**
@@ -52,9 +53,10 @@ export function resetWsCount(dex: DexSource): void {
 export function resetAllWsCounts(): void {
   wsCounts.raydium = 0;
   wsCounts.orca = 0;
-  wsCounts.meteora = 0;
+  wsCounts.meteora_dlmm = 0;
+  wsCounts.meteora_damm_v1 = 0;
+  wsCounts.meteora_damm_v2 = 0;
   wsCounts.pumpswap = 0;
-  wsCounts.meteora_balanced = 0;
 }
 
 /**

@@ -598,7 +598,10 @@ export function populateExecutionCacheFromPools(
       if ((pool as any).vault_a) staticData.vault_a = (pool as any).vault_a;
       if ((pool as any).vault_b) staticData.vault_b = (pool as any).vault_b;
       if ((pool as any).amm_config) staticData.amm_config = (pool as any).amm_config;
-      if ((pool as any).observation_state) staticData.observation_state = (pool as any).observation_state;
+      // CPMM pools use observation_key (not observation_state like CLMM)
+      if ((pool as any).observation_key) staticData.observation_key = (pool as any).observation_key;
+      if ((pool as any).native_account_a) staticData.native_account_a = (pool as any).native_account_a;
+      if ((pool as any).native_account_b) staticData.native_account_b = (pool as any).native_account_b;
       
       executionCache.setStatic(pool.id, staticData);
       populated++;

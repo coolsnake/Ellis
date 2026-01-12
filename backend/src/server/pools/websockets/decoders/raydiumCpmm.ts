@@ -18,7 +18,6 @@ import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { tryActivatePool } from '../../../pools.activation.js';
-import { PublicKey } from '@solana/web3.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -33,59 +32,29 @@ const RAYDIUM_CPMM_PROGRAM = 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
 const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 
-// CPMM Pool State Layout offsets (anchor with 8-byte discriminator)
-// Based on Raydium CPMM IDL
-const CPMM_LAYOUT = {
-  DISCRIMINATOR_SIZE: 8,
-  AMM_CONFIG_OFFSET: 8,
-  POOL_CREATOR_OFFSET: 40,
-  TOKEN_0_VAULT_OFFSET: 72,
-  TOKEN_1_VAULT_OFFSET: 104,
-  LP_MINT_OFFSET: 136,
-  TOKEN_0_MINT_OFFSET: 168,
-  TOKEN_1_MINT_OFFSET: 200,
-  TOKEN_0_PROGRAM_OFFSET: 232,
-  TOKEN_1_PROGRAM_OFFSET: 264,
-  OBSERVATION_KEY_OFFSET: 296,
-  AUTH_BUMP_OFFSET: 328,
-  STATUS_OFFSET: 329,
-  LP_DECIMALS_OFFSET: 330,
-  MINT_0_DECIMALS_OFFSET: 331,
-  MINT_1_DECIMALS_OFFSET: 332,
-  LP_SUPPLY_OFFSET: 333,
-  PROTOCOL_FEES_0_OFFSET: 341,
-  PROTOCOL_FEES_1_OFFSET: 349,
-  FUND_FEES_0_OFFSET: 357,
-  FUND_FEES_1_OFFSET: 365,
-  OPEN_TIME_OFFSET: 373,
-  // Add padding for future fields
-  TOTAL_SIZE: 381,
-};
+// Minimum buffer length for basic validation before SDK decode
+const MIN_CPMM_BUFFER_LENGTH = 200;
+
+// Cached SDK layout for performance (loaded lazily)
+let CpmmPoolInfoLayout: any = null;
 
 // Debounce state for graph updates
 let cpmmApplyState: { baseline: { cpmm: CpmmPool[] } | null; timer: NodeJS.Timeout | null } = { baseline: null, timer: null };
 const DEBOUNCE_MS = 50;
 
 /**
- * Convert value to base58 string safely
+ * Load the CPMM layout from SDK (lazy initialization)
  */
-function toB58(val: any): string {
-  if (!val) return '';
-  if (typeof val === 'string') return val;
-  if (typeof val.toBase58 === 'function') return val.toBase58();
-  return String(val);
-}
-
-/**
- * Safely read PublicKey from buffer
- */
-function readPubkey(data: Buffer, offset: number): string {
+async function loadCpmmLayout(): Promise<any> {
+  if (CpmmPoolInfoLayout) return CpmmPoolInfoLayout;
+  
   try {
-    if (offset + 32 > data.length) return '';
-    const slice = data.slice(offset, offset + 32);
-    return new PublicKey(slice).toBase58();
-  } catch {
-    return '';
+    const cpmmLayoutModule = await import('@raydium-io/raydium-sdk-v2/lib/raydium/cpmm/layout.js');
+    CpmmPoolInfoLayout = cpmmLayoutModule.CpmmPoolInfoLayout;
+    return CpmmPoolInfoLayout;
+  } catch (e) {
+    logCatchDebug('raydiumCpmm.loadLayout', e);
+    return null;
   }
 }
 
@@ -125,7 +94,8 @@ async function scheduleCpmmApply(baseline: { cpmm: CpmmPool[] }): Promise<void> 
 /**
  * Decode Raydium CPMM pool from account data
  * 
- * Uses raw buffer parsing since we don't need the full SDK
+ * Uses the Raydium SDK's CpmmPoolInfoLayout for reliable decoding.
+ * This is more robust than manual buffer parsing as it uses the official IDL.
  */
 export async function decodeRaydiumCpmmPool(
   data: Buffer,
@@ -133,7 +103,7 @@ export async function decodeRaydiumCpmmPool(
   derivedAccountToPool?: Map<string, DerivedAccountInfo>
 ): Promise<DecodedPool | null> {
   try {
-    if (!data || data.length < CPMM_LAYOUT.TOTAL_SIZE) {
+    if (!data || data.length < MIN_CPMM_BUFFER_LENGTH) {
       return null;
     }
 
@@ -150,23 +120,32 @@ export async function decodeRaydiumCpmmPool(
       return null;
     }
 
-    // Extract fields from buffer
-    const ammConfig = readPubkey(data, CPMM_LAYOUT.AMM_CONFIG_OFFSET);
-    const creator = readPubkey(data, CPMM_LAYOUT.POOL_CREATOR_OFFSET);
-    const token0Vault = readPubkey(data, CPMM_LAYOUT.TOKEN_0_VAULT_OFFSET);
-    const token1Vault = readPubkey(data, CPMM_LAYOUT.TOKEN_1_VAULT_OFFSET);
-    const lpMint = readPubkey(data, CPMM_LAYOUT.LP_MINT_OFFSET);
-    const token0Mint = readPubkey(data, CPMM_LAYOUT.TOKEN_0_MINT_OFFSET);
-    const token1Mint = readPubkey(data, CPMM_LAYOUT.TOKEN_1_MINT_OFFSET);
-    const token0Program = readPubkey(data, CPMM_LAYOUT.TOKEN_0_PROGRAM_OFFSET);
-    const token1Program = readPubkey(data, CPMM_LAYOUT.TOKEN_1_PROGRAM_OFFSET);
-    const observationKey = readPubkey(data, CPMM_LAYOUT.OBSERVATION_KEY_OFFSET);
-    
-    const authBump = data[CPMM_LAYOUT.AUTH_BUMP_OFFSET];
-    const status = data[CPMM_LAYOUT.STATUS_OFFSET];
-    const lpDecimals = data[CPMM_LAYOUT.LP_DECIMALS_OFFSET];
-    const mint0Decimals = data[CPMM_LAYOUT.MINT_0_DECIMALS_OFFSET];
-    const mint1Decimals = data[CPMM_LAYOUT.MINT_1_DECIMALS_OFFSET];
+    // Load SDK layout (cached after first call)
+    const layout = await loadCpmmLayout();
+    if (!layout?.decode) {
+      logCatchDebug('raydium.decodeCpmm.layout_unavailable', 'SDK layout not available');
+      return null;
+    }
+
+    // Decode using SDK layout - more reliable than manual offset parsing
+    const state = layout.decode(data);
+    if (!state) {
+      return null;
+    }
+
+    // Extract fields from decoded state
+    const token0Mint = state.mintA?.toBase58?.() || '';
+    const token1Mint = state.mintB?.toBase58?.() || '';
+    const token0Vault = state.vaultA?.toBase58?.() || '';
+    const token1Vault = state.vaultB?.toBase58?.() || '';
+    const ammConfig = state.configId?.toBase58?.() || '';
+    const observationKey = state.observationId?.toBase58?.() || '';
+    const lpMint = state.mintLp?.toBase58?.() || '';
+    const creator = state.poolCreator?.toBase58?.() || '';
+    const token0Program = state.mintProgramA?.toBase58?.() || '';
+    const token1Program = state.mintProgramB?.toBase58?.() || '';
+    const mint0Decimals = state.mintDecimalA ?? 9;
+    const mint1Decimals = state.mintDecimalB ?? 6;
     
     // Validate required fields
     if (!token0Mint || !token1Mint) {
@@ -376,11 +355,8 @@ async function handleCpmmUpdate(
   // Validate decoded pool
   const validation = validateDecodedPool('raydium-cpmm', item as any, poolId);
   if (!validation.valid) {
-    if (!wsDecodeStats['raydium-cpmm']) {
-      wsDecodeStats['raydium-cpmm'] = { attempts: 0, successes: 0, failures: 0 };
-    }
-    wsDecodeStats['raydium-cpmm'].failures += 1;
-    incrementSkipReason('raydium-cpmm' as any, `validation_failed:${validation.reasons.join(',')}`);
+    wsDecodeStats.raydium_cpmm.failures += 1;
+    incrementSkipReason('raydium_cpmm', `validation_failed:${validation.reasons.join(',')}`);
     return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
   }
 
@@ -456,15 +432,8 @@ async function handleCpmmUpdate(
   }
 
   // Update stats and cache
-  if (!wsDecodeStats['raydium-cpmm']) {
-    wsDecodeStats['raydium-cpmm'] = { attempts: 0, successes: 0, failures: 0 };
-  }
-  wsDecodeStats['raydium-cpmm'].successes += 1;
-  
-  if (!wsDeltaStats['raydium-cpmm']) {
-    wsDeltaStats['raydium-cpmm'] = { decoded: 0, applied: 0, skipped: 0 };
-  }
-  wsDeltaStats['raydium-cpmm'].decoded += 1;
+  wsDecodeStats.raydium_cpmm.successes += 1;
+  wsDeltaStats.raydium_cpmm.decoded += 1;
 
   // Check for delta
   const prevPool = prev.cpmm.find(p => p.id === item.id);
@@ -474,10 +443,10 @@ async function handleCpmmUpdate(
     prevPool.reserve_b_raw !== item.reserve_b_raw;
 
   if (hasDelta) {
-    wsDeltaStats['raydium-cpmm'].applied += 1;
+    wsDeltaStats.raydium_cpmm.applied += 1;
   } else {
-    wsDeltaStats['raydium-cpmm'].skipped += 1;
-    incrementSkipReason('raydium-cpmm' as any, 'no_delta_detected');
+    wsDeltaStats.raydium_cpmm.skipped += 1;
+    incrementSkipReason('raydium_cpmm', 'no_delta_detected');
   }
 
   cpmmCache.data = next;
@@ -624,10 +593,7 @@ export async function handleRaydiumCpmmUpdate(
   derivedAccountToPool: Map<string, DerivedAccountInfo> = new Map()
 ): Promise<UpdateResult> {
   try {
-    if (!wsDecodeStats['raydium-cpmm']) {
-      wsDecodeStats['raydium-cpmm'] = { attempts: 0, successes: 0, failures: 0 };
-    }
-    wsDecodeStats['raydium-cpmm'].attempts += 1;
+    wsDecodeStats.raydium_cpmm.attempts += 1;
     
     const owner = typeof info.owner === 'string' ? info.owner : info.owner?.toBase58?.() || '';
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
@@ -649,13 +615,10 @@ export async function handleRaydiumCpmmUpdate(
     }
 
     // Decode failed
-    wsDecodeStats['raydium-cpmm'].failures += 1;
+    wsDecodeStats.raydium_cpmm.failures += 1;
     return { success: false, error: 'decode_failed', skipped: true };
   } catch (e) {
-    if (!wsDecodeStats['raydium-cpmm']) {
-      wsDecodeStats['raydium-cpmm'] = { attempts: 0, successes: 0, failures: 0 };
-    }
-    wsDecodeStats['raydium-cpmm'].failures += 1;
+    wsDecodeStats.raydium_cpmm.failures += 1;
     logCatchError('raydiumCpmm.handleUpdate', e, { poolId: poolId.slice(0, 8) + '…' });
     return { success: false, error: String((e as Error)?.message || e) };
   }

@@ -22,6 +22,9 @@ import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { CONFIG } from '../../../../utils/config.js';
 // Import pool activation tracking for lazy activation mode
 import { tryActivatePool } from '../../../pools.activation.js';
+// Import PumpSwap SDK for reliable buffer decoding via Anchor IDL
+import { PUMP_AMM_SDK } from '@pump-fun/pump-swap-sdk';
+import { PublicKey } from '@solana/web3.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -42,26 +45,8 @@ export const PUMPSWAP_PROGRAM_ID = PUMPSWAP_AMM_PROGRAM_ID;
 // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
 const DEFAULT_FEE_BPS = 25;
 
-/**
- * Pumpswap pool account layout offsets
- * 
- * Pool account structure:
- * [discriminator(8), pool_bump(1), index(2), creator(32), base_mint(32), quote_mint(32),
- *  lp_mint(32), pool_base_token_account(32), pool_quote_token_account(32), lp_supply(8), ...]
- */
-const POOL_LAYOUT = {
-  DISCRIMINATOR: 0,
-  POOL_BUMP: 8,
-  INDEX: 9,
-  CREATOR: 11,
-  BASE_MINT: 43,
-  QUOTE_MINT: 75,
-  LP_MINT: 107,
-  VAULT_A: 139,  // pool_base_token_account
-  VAULT_B: 171,  // pool_quote_token_account
-  LP_SUPPLY: 203,
-  MIN_LENGTH: 211,  // Minimum buffer length to decode vault addresses
-} as const;
+// Minimum buffer length for basic validation before SDK decode
+const MIN_POOL_BUFFER_LENGTH = 50;
 
 /**
  * Decoded pumpswap pool state from account data
@@ -72,53 +57,41 @@ interface PumpswapPoolState {
   vaultA: string;
   vaultB: string;
   lpSupply?: bigint;
+  coinCreator?: string;
 }
 
 /**
- * Decode pumpswap pool state from account data buffer
+ * Decode pumpswap pool state from account data buffer using SDK
  * 
- * Extracts mint addresses and vault addresses from the pool account.
- * This allows us to look up vault balances and calculate price.
+ * Uses the PumpSwap SDK's Anchor-based decoder for reliable decoding.
+ * This is more robust than manual buffer parsing as it uses the official IDL.
  */
 export function decodePumpswapPoolState(data: Buffer): PumpswapPoolState | null {
   try {
-    if (!data || data.length < POOL_LAYOUT.MIN_LENGTH) {
+    if (!data || data.length < MIN_POOL_BUFFER_LENGTH) {
       return null;
     }
 
-    // Import PublicKey dynamically to avoid circular dependencies
-    const { PublicKey } = require('@solana/web3.js');
+    // Use SDK's Anchor-based decoder - NO RPC calls required
+    // The SDK uses an offline program coder that decodes directly from buffer
+    const decoded = PUMP_AMM_SDK.decodePoolNullable({
+      data,
+      owner: new PublicKey(PUMPSWAP_AMM_PROGRAM_ID),
+      executable: false,
+      lamports: 0,
+    });
 
-    // Extract base_mint (32 bytes at offset 43)
-    const baseMintBytes = data.subarray(POOL_LAYOUT.BASE_MINT, POOL_LAYOUT.BASE_MINT + 32);
-    const baseMint = new PublicKey(baseMintBytes).toBase58();
-
-    // Extract quote_mint (32 bytes at offset 75)
-    const quoteMintBytes = data.subarray(POOL_LAYOUT.QUOTE_MINT, POOL_LAYOUT.QUOTE_MINT + 32);
-    const quoteMint = new PublicKey(quoteMintBytes).toBase58();
-
-    // Extract vault_a / pool_base_token_account (32 bytes at offset 139)
-    const vaultABytes = data.subarray(POOL_LAYOUT.VAULT_A, POOL_LAYOUT.VAULT_A + 32);
-    const vaultA = new PublicKey(vaultABytes).toBase58();
-
-    // Extract vault_b / pool_quote_token_account (32 bytes at offset 171)
-    const vaultBBytes = data.subarray(POOL_LAYOUT.VAULT_B, POOL_LAYOUT.VAULT_B + 32);
-    const vaultB = new PublicKey(vaultBBytes).toBase58();
-
-    // Optionally extract lp_supply (8 bytes at offset 203)
-    let lpSupply: bigint | undefined;
-    if (data.length >= POOL_LAYOUT.LP_SUPPLY + 8) {
-      // Read 8 bytes as little-endian u64
-      const view = new DataView(data.buffer, data.byteOffset + POOL_LAYOUT.LP_SUPPLY, 8);
-      lpSupply = view.getBigUint64(0, true); // true = little-endian
+    if (!decoded) {
+      return null;
     }
 
     return {
-      baseMint,
-      quoteMint,
-      vaultA,
-      vaultB,
-      lpSupply,
+      baseMint: decoded.baseMint.toBase58(),
+      quoteMint: decoded.quoteMint.toBase58(),
+      vaultA: decoded.poolBaseTokenAccount.toBase58(),
+      vaultB: decoded.poolQuoteTokenAccount.toBase58(),
+      lpSupply: decoded.lpSupply ? BigInt(decoded.lpSupply.toString()) : undefined,
+      coinCreator: decoded.coinCreator?.toBase58(),
     };
   } catch (e) {
     logCatchDebug('pumpswap.decodePoolState', e);

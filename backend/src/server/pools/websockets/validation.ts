@@ -15,9 +15,10 @@ const wsValidationStats: Record<DexSource, ValidationStats> = {
   raydium: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   'raydium-cpmm': { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   orca: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
-  meteora: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  meteora_dlmm: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  meteora_damm_v1: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  meteora_damm_v2: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   pumpswap: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
-  meteora_balanced: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
 };
 
 /**
@@ -35,9 +36,10 @@ export function getAllValidationStats(): Record<DexSource, ValidationStats> {
     raydium: { ...wsValidationStats.raydium },
     'raydium-cpmm': { ...wsValidationStats['raydium-cpmm'] },
     orca: { ...wsValidationStats.orca },
-    meteora: { ...wsValidationStats.meteora },
+    meteora_dlmm: { ...wsValidationStats.meteora_dlmm },
+    meteora_damm_v1: { ...wsValidationStats.meteora_damm_v1 },
+    meteora_damm_v2: { ...wsValidationStats.meteora_damm_v2 },
     pumpswap: { ...wsValidationStats.pumpswap },
-    meteora_balanced: { ...wsValidationStats.meteora_balanced },
   };
 }
 
@@ -172,9 +174,10 @@ const priceDeltaStats: Record<DexSource, { warnings: number; maxDelta: number }>
   raydium: { warnings: 0, maxDelta: 0 },
   'raydium-cpmm': { warnings: 0, maxDelta: 0 },
   orca: { warnings: 0, maxDelta: 0 },
-  meteora: { warnings: 0, maxDelta: 0 },
+  meteora_dlmm: { warnings: 0, maxDelta: 0 },
+  meteora_damm_v1: { warnings: 0, maxDelta: 0 },
+  meteora_damm_v2: { warnings: 0, maxDelta: 0 },
   pumpswap: { warnings: 0, maxDelta: 0 },
-  meteora_balanced: { warnings: 0, maxDelta: 0 },
 };
 
 /**

@@ -434,8 +434,8 @@ async function handleClmmUpdate(
   }
 
   if (!processedPrice) {
-    wsDeltaStats.raydium.skipped += 1;
-    incrementSkipReason('raydium', 'price_calc_failed:clmm');
+    wsDeltaStats.raydium_clmm.skipped += 1;
+    incrementSkipReason('raydium_clmm', 'price_calc_failed');
     return { success: false, error: 'price_calc_failed', skipped: true, skipReason: 'price_calc_failed:clmm' };
   }
 
@@ -466,10 +466,13 @@ async function handleClmmUpdate(
   // Validate decoded pool
   const validation = validateDecodedPool('raydium', item, poolId);
   if (!validation.valid) {
-    wsDecodeStats.raydium.failures += 1;
-    incrementSkipReason('raydium', `validation_failed:${validation.reasons.join(',')}`);
+    wsDecodeStats.raydium_clmm.failures += 1;
+    incrementSkipReason('raydium_clmm', `validation_failed:${validation.reasons.join(',')}`);
     return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
   }
+
+  // Track CLMM attempt
+  wsDecodeStats.raydium_clmm.attempts += 1;
 
   // Update cache
   const prev = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
@@ -617,8 +620,8 @@ async function handleClmmUpdate(
   }
 
   // Update stats and cache
-  wsDecodeStats.raydium.successes += 1;
-  wsDeltaStats.raydium.decoded += 1;
+  wsDecodeStats.raydium_clmm.successes += 1;
+  wsDeltaStats.raydium_clmm.decoded += 1;
   
   const delta = diffNormalizedPools(prev, next);
   raydiumCache.data = next;
@@ -626,9 +629,9 @@ async function handleClmmUpdate(
 
   const hasDelta = delta.amm.length || delta.clmm.length || delta.addedAmm || delta.removedAmm || delta.addedClmm || delta.removedClmm;
   if (hasDelta) {
-    wsDeltaStats.raydium.applied += 1;
+    wsDeltaStats.raydium_clmm.applied += 1;
   } else {
-    wsDeltaStats.raydium.skipped += 1;
+    wsDeltaStats.raydium_clmm.skipped += 1;
     const prevPool = prev.clmm.find(p => p.id === item.id);
     if (prevPool) {
       const reasons: string[] = [];
@@ -636,9 +639,9 @@ async function handleClmmUpdate(
       if ((prevPool as any).liquidity_raw === item.liquidity_raw) reasons.push('liquidity_raw_unchanged');
       if (Math.abs((prevPool.liquidity || 0) - (item.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');
       if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
-      incrementSkipReason('raydium', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+      incrementSkipReason('raydium_clmm', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
     } else {
-      incrementSkipReason('raydium', 'new_pool');
+      incrementSkipReason('raydium_clmm', 'new_pool');
     }
   }
 
@@ -781,10 +784,13 @@ async function handleAmmUpdate(
   // Validate decoded pool
   const validation = validateDecodedPool('raydium', item, poolId);
   if (!validation.valid) {
-    wsDecodeStats.raydium.failures += 1;
-    incrementSkipReason('raydium', `validation_failed:${validation.reasons.join(',')}`);
+    wsDecodeStats.raydium_amm.failures += 1;
+    incrementSkipReason('raydium_amm', `validation_failed:${validation.reasons.join(',')}`);
     return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
   }
+
+  // Track AMM attempt
+  wsDecodeStats.raydium_amm.attempts += 1;
 
   // Canonicalize pool
   const [canonicalItem] = canonicalizePools([{ ...item }]);
@@ -854,8 +860,8 @@ async function handleAmmUpdate(
   } catch {}
 
   // Update stats and cache
-  wsDecodeStats.raydium.successes += 1;
-  wsDeltaStats.raydium.decoded += 1;
+  wsDecodeStats.raydium_amm.successes += 1;
+  wsDeltaStats.raydium_amm.decoded += 1;
   
   const delta = diffNormalizedPools(prev, next);
   raydiumCache.data = next;
@@ -863,18 +869,18 @@ async function handleAmmUpdate(
 
   const hasDelta = delta.amm.length || delta.clmm.length || delta.addedAmm || delta.removedAmm || delta.addedClmm || delta.removedClmm;
   if (hasDelta) {
-    wsDeltaStats.raydium.applied += 1;
+    wsDeltaStats.raydium_amm.applied += 1;
   } else {
-    wsDeltaStats.raydium.skipped += 1;
+    wsDeltaStats.raydium_amm.skipped += 1;
     const prevPool = prev.amm.find(p => p.id === item.id);
     if (prevPool) {
       const reasons: string[] = [];
       if ((prevPool as any).reserve_a_raw === (item as any).reserve_a_raw && (prevPool as any).reserve_b_raw === (item as any).reserve_b_raw) reasons.push('reserves_unchanged');
       if (Math.abs((prevPool.liquidity_base || 0) - (item.liquidity_base || 0)) === 0) reasons.push('liquidity_unchanged');
       if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
-      incrementSkipReason('raydium', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+      incrementSkipReason('raydium_amm', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
     } else {
-      incrementSkipReason('raydium', 'new_pool');
+      incrementSkipReason('raydium_amm', 'new_pool');
     }
   }
 
@@ -917,7 +923,7 @@ export async function handleRaydiumUpdate(
   derivedAccountToPool: Map<string, DerivedAccountInfo> = new Map()
 ): Promise<UpdateResult> {
   try {
-    wsDecodeStats.raydium.attempts += 1;
+    // Note: Attempts are tracked in individual handlers (raydium_clmm, raydium_amm)
     
     const owner = typeof info.owner === 'string' ? info.owner : info.owner?.toBase58?.() || '';
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
@@ -938,11 +944,10 @@ export async function handleRaydiumUpdate(
       return handleAmmUpdate(info, poolId, derivedAccountToPool);
     }
 
-    // Neither decoder succeeded
-    wsDecodeStats.raydium.failures += 1;
+    // Neither decoder succeeded - track as unknown type failure
+    // We don't increment specific type failures since the pool type is indeterminate
     return { success: false, error: 'decode_failed_both', skipped: true };
   } catch (e) {
-    wsDecodeStats.raydium.failures += 1;
     logCatchError('raydium.handleUpdate', e, { poolId: poolId.slice(0, 8) + '…' });
     return { success: false, error: String((e as Error)?.message || e) };
   }

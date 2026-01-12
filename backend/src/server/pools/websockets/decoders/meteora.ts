@@ -297,7 +297,7 @@ export async function handleMeteoraUpdate(
   accountPubkey?: any
 ): Promise<UpdateResult> {
   try {
-    wsDecodeStats.meteora.attempts += 1;
+    wsDecodeStats.meteora_dlmm.attempts += 1;
     
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
     
@@ -308,7 +308,7 @@ export async function handleMeteoraUpdate(
     // Decode the pool
     const decoded = await decodeMeteoraLbPair(data, poolId);
     if (!decoded) {
-      wsDecodeStats.meteora.failures += 1;
+      wsDecodeStats.meteora_dlmm.failures += 1;
       return { success: false, error: 'decode_failed', skipped: true };
     }
 
@@ -380,8 +380,8 @@ export async function handleMeteoraUpdate(
     });
 
     if (!tokenX || !tokenY) {
-      wsDeltaStats.meteora.skipped += 1;
-      incrementSkipReason('meteora', 'missing_tokens');
+      wsDeltaStats.meteora_dlmm.skipped += 1;
+      incrementSkipReason('meteora_dlmm', 'missing_tokens');
       return { success: false, error: 'missing_tokens', skipped: true };
     }
 
@@ -498,9 +498,9 @@ export async function handleMeteoraUpdate(
     }
 
     if (!processedPrice) {
-      wsDeltaStats.meteora.skipped += 1;
+      wsDeltaStats.meteora_dlmm.skipped += 1;
       const tokenReason = `missing_${!tokenX ? 'tokenX' : ''}${!tokenY ? 'tokenY' : ''}_priceCalc`;
-      incrementSkipReason('meteora', tokenReason);
+      incrementSkipReason('meteora_dlmm', tokenReason);
       return { success: false, error: 'price_calc_failed', skipped: true, skipReason: tokenReason };
     }
 
@@ -509,8 +509,9 @@ export async function handleMeteoraUpdate(
     const liquidity = liquidityRaw ? Number(liquidityRaw) : Number(state?.liquidity ?? 0);
     const sqrtPriceRaw = anyToBigInt(state?.sqrtPriceX64 ?? state?.sqrt_price_x64 ?? 0);
     
-    // CRITICAL: Meteora DLMM pools may store fee in nested parameters structure.
-    // The SDK-decoded state may not have tradeFeeRate/feeRate fields.
+    // CRITICAL: Meteora DLMM fee extraction
+    // Priority order: tradeFeeRate > feeRate > fee_rate > fees > baseFee
+    // DO NOT use parameters.baseFactor - it's a pricing parameter, NOT the fee rate!
     // Fee values may be in PPM (parts per million) - need to convert to BPS.
     // Fallback to cached fee_bps from HTTP fetch or execution cache to preserve correct fees.
     let feeBps = Number(
@@ -519,14 +520,16 @@ export async function handleMeteoraUpdate(
       state?.fee_rate ?? 
       state?.fees ??
       state?.baseFee ??
-      state?.parameters?.baseFactor ??
-      0
+      0  // Removed: parameters.baseFactor is NOT a fee rate
     );
     
     // Convert from PPM to BPS if value appears to be in PPM format
-    // PPM values are typically > 10000 for any fee (since 10000 BPS = 100%)
-    // Values like 12500 PPM = 125 BPS = 1.25% fee
-    if (Number.isFinite(feeBps) && feeBps > 10000) {
+    // PPM values >= 1000 are likely in PPM format (1000 PPM = 10 BPS = 0.1% fee)
+    // Example conversions:
+    //   1000 PPM = 10 BPS = 0.1% fee
+    //  10000 PPM = 100 BPS = 1% fee
+    //  12500 PPM = 125 BPS = 1.25% fee
+    if (Number.isFinite(feeBps) && feeBps >= 1000) {
       feeBps = Math.round(feeBps / 100);
     }
     
@@ -697,10 +700,10 @@ export async function handleMeteoraUpdate(
     }
 
     // Validate decoded pool
-    const validation = validateDecodedPool('meteora', item, poolId);
+    const validation = validateDecodedPool('meteora_dlmm', item, poolId);
     if (!validation.valid) {
-      wsDecodeStats.meteora.failures += 1;
-      incrementSkipReason('meteora', `validation_failed:${validation.reasons.join(',')}`);
+      wsDecodeStats.meteora_dlmm.failures += 1;
+      incrementSkipReason('meteora_dlmm', `validation_failed:${validation.reasons.join(',')}`);
       logger.warn('meteora.ws.validation.failed', { id: poolId, reasons: validation.reasons, cat: 'pools' });
       return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
     }
@@ -712,7 +715,7 @@ export async function handleMeteoraUpdate(
 
     // Validate price delta against previous value
     if (idx >= 0) {
-      validatePriceDelta('meteora', poolId, item.price_a_per_b, next.clmm[idx].price_a_per_b);
+      validatePriceDelta('meteora_dlmm', poolId, item.price_a_per_b, next.clmm[idx].price_a_per_b);
     }
 
     if (idx >= 0) {
@@ -743,8 +746,8 @@ export async function handleMeteoraUpdate(
     }
 
     // Update stats and cache
-    wsDecodeStats.meteora.successes += 1;
-    wsDeltaStats.meteora.decoded += 1;
+    wsDecodeStats.meteora_dlmm.successes += 1;
+    wsDeltaStats.meteora_dlmm.decoded += 1;
     
     const delta = diffNormalizedPools(prev, next);
     meteoraCache.data = next;
@@ -752,9 +755,9 @@ export async function handleMeteoraUpdate(
 
     const hasDelta = delta.amm.length || delta.clmm.length || delta.addedAmm || delta.removedAmm || delta.addedClmm || delta.removedClmm;
     if (hasDelta) {
-      wsDeltaStats.meteora.applied += 1;
+      wsDeltaStats.meteora_dlmm.applied += 1;
     } else {
-      wsDeltaStats.meteora.skipped += 1;
+      wsDeltaStats.meteora_dlmm.skipped += 1;
       const prevPool = prev.clmm.find(p => p.id === item.id);
       if (prevPool) {
         const reasons: string[] = [];
@@ -770,9 +773,9 @@ export async function handleMeteoraUpdate(
         if ((prevPool as any).liquidity_raw === item.liquidity_raw) reasons.push('liquidity_raw_unchanged');
         if (Math.abs((prevPool.liquidity || 0) - (item.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');
         if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
-        incrementSkipReason('meteora', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+        incrementSkipReason('meteora_dlmm', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
       } else {
-        incrementSkipReason('meteora', 'prev_pool_missing');
+        incrementSkipReason('meteora_dlmm', 'prev_pool_missing');
       }
     }
 
@@ -818,7 +821,7 @@ export async function handleMeteoraUpdate(
 
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {
-    wsDecodeStats.meteora.failures += 1;
+    wsDecodeStats.meteora_dlmm.failures += 1;
     logCatchError('meteora.handleUpdate', e, { poolId: poolId.slice(0, 8) + '…' });
     return { success: false, error: String((e as Error)?.message || e) };
   }

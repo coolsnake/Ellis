@@ -8,8 +8,14 @@ import type { AmmPool, ClmmPool, PoolsPayload } from '../../types.js';
 
 /**
  * DEX source identifier
+ * - Raydium variants: raydium (AMM/CLMM combined), raydium-cpmm
+ * - Meteora variants: meteora_dlmm (DLMM), meteora_damm_v1 (Dynamic AMM v1), meteora_damm_v2 (CP-AMM)
  */
-export type DexSource = 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+export type DexSource = 
+  | 'raydium' | 'raydium-cpmm' 
+  | 'orca' 
+  | 'meteora_dlmm' | 'meteora_damm_v1' | 'meteora_damm_v2' 
+  | 'pumpswap';
 
 /**
  * Pool type identifier

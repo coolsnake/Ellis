@@ -699,7 +699,7 @@ const wsCounts: { raydium: number; 'raydium-cpmm'?: number; orca: number; meteor
 let meteoraProgramInstance: any | null = null;
 
 // Validation counters for detailed failure tracking
-const wsValidationStats: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced', { 
+const wsValidationStats: Record<'raydium' | 'orca' | 'meteora_dlmm' | 'meteora_damm_v1' | 'meteora_damm_v2' | 'pumpswap', { 
   missingMints: number; 
   invalidPrice: number; 
   invalidLiquidity: number;
@@ -709,9 +709,10 @@ const wsValidationStats: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'm
 }> = {
   raydium: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   orca: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
-  meteora: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  meteora_dlmm: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  meteora_damm_v1: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  meteora_damm_v2: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   pumpswap: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
-  meteora_balanced: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
 };
 
 /**
@@ -719,7 +720,7 @@ const wsValidationStats: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'm
  * Returns validation result with specific failure reasons for debugging
  */
 function validateDecodedPool(
-  dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced',
+  dex: 'raydium' | 'orca' | 'meteora_dlmm' | 'meteora_damm_v1' | 'meteora_damm_v2' | 'pumpswap',
   pool: { mint_a?: string; mint_b?: string; price_a_per_b?: number; liquidity?: number; liquidity_base?: number; fee_bps?: number; tick_spacing?: number; sqrt_price_x64?: number },
   poolId: string
 ): { valid: boolean; reasons: string[] } {
@@ -1804,7 +1805,7 @@ function runWebsocketRefreshLoop(): void {
             // INLINE DECODER LOGIC (used when modular decoders are disabled or as fallback)
             if (owner === ownerRayAmm || owner === ownerRayClmm) {
               try { wsCounts.raydium += 1; } catch {}
-              try { wsDecodeStats.raydium.attempts += 1; } catch {}
+              // Note: Attempts tracked per pool type in their respective sections
               const pk58 = toB58Any(pk);
               let updated = false;
               try {
@@ -2011,12 +2012,15 @@ function runWebsocketRefreshLoop(): void {
                         // Validate decoded pool before applying
                         const validation = validateDecodedPool('raydium', item, pk58);
                         if (!validation.valid) {
-                          try { wsDecodeStats.raydium.failures += 1; } catch {}
-                          incrementSkipReason('raydium', `validation_failed:${validation.reasons.join(',')}`);
+                          try { wsDecodeStats.raydium_clmm.failures += 1; } catch {}
+                          incrementSkipReason('raydium_clmm', `validation_failed:${validation.reasons.join(',')}`);
                           try { logger.warn('raydium.ws clmm.validation.failed', { id: pk58, reasons: validation.reasons, cat: 'pools' }); } catch {}
                           updated = true; // Mark as processed to avoid further handling
                           throw new Error(`validation failed: ${validation.reasons.join(',')}`); // Skip this update
                         }
+                        
+                        // Track CLMM attempt
+                        try { wsDecodeStats.raydium_clmm.attempts += 1; } catch {}
                         
                         // Pipeline already canonicalized, use item directly
                         const finalItem = item;
@@ -2160,16 +2164,16 @@ function runWebsocketRefreshLoop(): void {
                           try { logger.debug('raydium.ws.cache_update_failed', { pool: pk58.slice(0, 8) + '…', error: String((cacheErr as any)?.message || cacheErr) }); } catch {}
                         }
                         
-                        try { wsDecodeStats.raydium.successes += 1; } catch {}
-                        wsDeltaStats.raydium.decoded += 1;
+                        try { wsDecodeStats.raydium_clmm.successes += 1; } catch {}
+                        wsDeltaStats.raydium_clmm.decoded += 1;
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
                         
                         const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                         if (hasDelta) { 
-                          wsDeltaStats.raydium.applied += 1; 
+                          wsDeltaStats.raydium_clmm.applied += 1; 
                         } else { 
-                          wsDeltaStats.raydium.skipped += 1;
+                          wsDeltaStats.raydium_clmm.skipped += 1;
                           // Diagnose why no delta detected
                           const prevPool = prev.clmm.find(p => p.id === item.id);
                           if (prevPool) {
@@ -2179,9 +2183,9 @@ function runWebsocketRefreshLoop(): void {
                             if (Math.abs((prevPool.liquidity || 0) - (item.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');
                             if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
                             if ((prevPool as any).price_a_per_b_num === (item as any).price_a_per_b_num && (prevPool as any).price_a_per_b_den === (item as any).price_a_per_b_den) reasons.push('ratio_unchanged');
-                            incrementSkipReason('raydium', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                            incrementSkipReason('raydium_clmm', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
                           } else {
-                            incrementSkipReason('raydium', 'new_pool');
+                            incrementSkipReason('raydium_clmm', 'new_pool');
                           }
                         }
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
@@ -2200,8 +2204,8 @@ function runWebsocketRefreshLoop(): void {
                         }
                       } else {
                         // Price calculation failed, skip this update
-                        wsDeltaStats.raydium.skipped += 1;
-                        incrementSkipReason('raydium', 'price_calc_failed:clmm');
+                        wsDeltaStats.raydium_clmm.skipped += 1;
+                        incrementSkipReason('raydium_clmm', 'price_calc_failed');
                         try { logger.debug('raydium.ws clmm.skip.no_price', { id: pk58, cat: 'pools' }); } catch {}
                         updated = true;
                       }
@@ -2322,12 +2326,15 @@ function runWebsocketRefreshLoop(): void {
                         // Validate decoded pool before applying
                         const validation = validateDecodedPool('raydium', item, pk58);
                         if (!validation.valid) {
-                          try { wsDecodeStats.raydium.failures += 1; } catch {}
-                          incrementSkipReason('raydium', `validation_failed:${validation.reasons.join(',')}`);
+                          try { wsDecodeStats.raydium_amm.failures += 1; } catch {}
+                          incrementSkipReason('raydium_amm', `validation_failed:${validation.reasons.join(',')}`);
                           try { logger.warn('raydium.ws amm.validation.failed', { id: pk58, reasons: validation.reasons, cat: 'pools' }); } catch {}
                           updated = true;
                           throw new Error(`validation failed: ${validation.reasons.join(',')}`);
                         }
+                        
+                        // Track AMM attempt
+                        try { wsDecodeStats.raydium_amm.attempts += 1; } catch {}
                         
                         // Canonicalize pool to ensure consistent mint orientation and price
                         const [canonicalItem] = canonicalizePools([{ ...item }]);
@@ -2371,15 +2378,15 @@ function runWebsocketRefreshLoop(): void {
                           });
                         } catch {}
                         
-                        try { wsDecodeStats.raydium.successes += 1; } catch {}
-                        wsDeltaStats.raydium.decoded += 1;
+                        try { wsDecodeStats.raydium_amm.successes += 1; } catch {}
+                        wsDeltaStats.raydium_amm.decoded += 1;
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
                         const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                         if (hasDelta) { 
-                          wsDeltaStats.raydium.applied += 1; 
+                          wsDeltaStats.raydium_amm.applied += 1; 
                         } else { 
-                          wsDeltaStats.raydium.skipped += 1;
+                          wsDeltaStats.raydium_amm.skipped += 1;
                           // Diagnose why no delta detected
                           const prevPool = prev.amm.find(p => p.id === item.id);
                           if (prevPool) {
@@ -2387,9 +2394,9 @@ function runWebsocketRefreshLoop(): void {
                             if ((prevPool as any).reserve_a_raw === (item as any).reserve_a_raw && (prevPool as any).reserve_b_raw === (item as any).reserve_b_raw) reasons.push('reserves_unchanged');
                             if (Math.abs((prevPool.liquidity_base || 0) - (item.liquidity_base || 0)) === 0) reasons.push('liquidity_unchanged');
                             if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
-                            incrementSkipReason('raydium', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                            incrementSkipReason('raydium_amm', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
                           } else {
-                            incrementSkipReason('raydium', 'new_pool');
+                            incrementSkipReason('raydium_amm', 'new_pool');
                           }
                         }
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
@@ -2414,7 +2421,7 @@ function runWebsocketRefreshLoop(): void {
                   } catch {}
                 }
               } catch (e:any) {
-                try { wsDecodeStats.raydium.failures += 1; } catch {}
+                // Generic failure - don't track to specific type since we don't know which decoder failed
                 try { logger.warn('raydium.ws.decode failed', { id: pk58.slice(0,6)+'…', error: String(e?.message || e) }); } catch {}
               }
               // Unparsed events are tracked in aggregate metrics, no need for individual debug logs
@@ -2813,7 +2820,7 @@ function runWebsocketRefreshLoop(): void {
               // Do not fallback to HTTP refresh when user subscribed; leave updates to manual refresh
             } else if ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget) {
               try { wsCounts.meteora = (wsCounts.meteora || 0) + 1; } catch {}
-              try { wsDecodeStats.meteora.attempts += 1; } catch {}
+              try { wsDecodeStats.meteora_dlmm.attempts += 1; } catch {}
               const pk58 = toB58Any(pk);
               const parentPoolId = meteoraBinAccountToPool.get(pk58);
               if (parentPoolId) {
@@ -3227,11 +3234,11 @@ function runWebsocketRefreshLoop(): void {
                     const finalItem = item;
                     
                     // Validate decoded pool before applying
-                    const validation = validateDecodedPool('meteora', finalItem, poolId);
+                    const validation = validateDecodedPool('meteora_dlmm', finalItem, poolId);
                     if (!validation.valid) {
-                      try { wsDecodeStats.meteora.failures += 1; } catch {}
-                      incrementSkipReason('meteora', `validation_failed:${validation.reasons.join(',')}`);
-                      try { logger.warn('meteora.ws validation.failed', { id: poolId, reasons: validation.reasons, cat: 'pools' }); } catch {}
+                      try { wsDecodeStats.meteora_dlmm.failures += 1; } catch {}
+                      incrementSkipReason('meteora_dlmm', `validation_failed:${validation.reasons.join(',')}`);
+                      try { logger.warn('meteora_dlmm.ws validation.failed', { id: poolId, reasons: validation.reasons, cat: 'pools' }); } catch {}
                       updated = true;
                       throw new Error(`validation failed: ${validation.reasons.join(',')}`);
                     }
@@ -3288,15 +3295,15 @@ function runWebsocketRefreshLoop(): void {
                       next.clmm.push(finalItem);
                     }
                     
-                    try { wsDecodeStats.meteora.successes += 1; } catch {}
-                    wsDeltaStats.meteora.decoded += 1;
+                    try { wsDecodeStats.meteora_dlmm.successes += 1; } catch {}
+                    wsDeltaStats.meteora_dlmm.decoded += 1;
                     const d = diffNormalizedPools(prev, next);
                     meteoraCache.data = next; meteoraCache.ts = Date.now();
                     const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                     if (hasDelta) { 
-                      wsDeltaStats.meteora.applied += 1; 
+                      wsDeltaStats.meteora_dlmm.applied += 1; 
                     } else { 
-                      wsDeltaStats.meteora.skipped += 1;
+                      wsDeltaStats.meteora_dlmm.skipped += 1;
                       // Diagnose why no delta detected
                       const prevPool = prev.clmm.find(p => p.id === finalItem.id);
                       if (prevPool) {
@@ -3306,9 +3313,9 @@ function runWebsocketRefreshLoop(): void {
                         if (Math.abs((prevPool.liquidity || 0) - (finalItem.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');
                         if (Math.abs((prevPool.price_a_per_b || 0) - (finalItem.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
                         if ((prevPool as any).meteora_bin_hash === (finalItem as any).meteora_bin_hash) reasons.push('bin_hash_unchanged');
-                        incrementSkipReason('meteora', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                        incrementSkipReason('meteora_dlmm', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
                       } else {
-                        incrementSkipReason('meteora', 'prev_pool_missing');
+                        incrementSkipReason('meteora_dlmm', 'prev_pool_missing');
                       }
                     }
                     try {
@@ -3323,10 +3330,10 @@ function runWebsocketRefreshLoop(): void {
                     try { logger.debug('meteora.ws clmm.fields', { id: poolId, priceForward: processedPrice.priceForward, binStep: tickSpacing, activeId, decimals: { a: processedPrice.decimalsA, b: processedPrice.decimalsB }, wasSwapped: processedPrice.wasSwapped, cat: 'pools' }); } catch {}
                     updated = true;
                   } else {
-                    wsDeltaStats.meteora.skipped += 1;
+                    wsDeltaStats.meteora_dlmm.skipped += 1;
                     const tokenReason = `missing_${!tokenX ? 'tokenX' : ''}${!tokenY ? 'tokenY' : ''}${!processedPrice ? '_priceCalc' : ''}`;
-                    incrementSkipReason('meteora', tokenReason);
-                    try { logger.debug('meteora.ws state.skip', { id: poolId, hasTokenX: !!tokenX, hasTokenY: !!tokenY, hasProcessedPrice: !!processedPrice, activeId, binStep, cat: 'pools' }); } catch {}
+                    incrementSkipReason('meteora_dlmm', tokenReason);
+                    try { logger.debug('meteora_dlmm.ws state.skip', { id: poolId, hasTokenX: !!tokenX, hasTokenY: !!tokenY, hasProcessedPrice: !!processedPrice, activeId, binStep, cat: 'pools' }); } catch {}
                   }
                 }
               } catch {}
@@ -3580,7 +3587,7 @@ function runWebsocketRefreshLoop(): void {
         const applyMeteoraBinHash = async (poolId: string): Promise<void> => {
           const tracker = meteoraBinTrackers.get(poolId);
           if (!tracker) return;
-          wsDeltaStats.meteora.decoded += 1;
+          wsDeltaStats.meteora_dlmm.decoded += 1;
           const aggregate = (() => {
             if (tracker.binHashes.size === 0) return undefined;
             const digest = createHash('sha256');
@@ -3594,8 +3601,8 @@ function runWebsocketRefreshLoop(): void {
             return digest.digest('hex');
           })();
           if (aggregate === tracker.aggregate) {
-            wsDeltaStats.meteora.skipped += 1;
-            incrementSkipReason('meteora', 'bin_hash_aggregate_unchanged');
+            wsDeltaStats.meteora_dlmm.skipped += 1;
+            incrementSkipReason('meteora_dlmm', 'bin_hash_aggregate_unchanged');
             return;
           }
           tracker.aggregate = aggregate;
@@ -3604,8 +3611,8 @@ function runWebsocketRefreshLoop(): void {
           const idx = next.clmm.findIndex(p => p.id === poolId);
           if (idx === -1) {
             // Pool snapshot not yet cached; bin state will be included on next pair update
-            wsDeltaStats.meteora.skipped += 1;
-            incrementSkipReason('meteora', 'bin_update_pool_not_cached');
+            wsDeltaStats.meteora_dlmm.skipped += 1;
+            incrementSkipReason('meteora_dlmm', 'bin_update_pool_not_cached');
             return;
           }
           const updated: any = { ...next.clmm[idx] };
@@ -3615,10 +3622,10 @@ function runWebsocketRefreshLoop(): void {
           meteoraCache.data = next; meteoraCache.ts = Date.now();
           const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
           if (hasDelta) {
-            wsDeltaStats.meteora.applied += 1;
+            wsDeltaStats.meteora_dlmm.applied += 1;
           } else {
-            wsDeltaStats.meteora.skipped += 1;
-            incrementSkipReason('meteora', 'bin_update_no_delta');
+            wsDeltaStats.meteora_dlmm.skipped += 1;
+            incrementSkipReason('meteora_dlmm', 'bin_update_no_delta');
           }
           try {
             const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
@@ -5300,21 +5307,28 @@ function runWebsocketRefreshLoop(): void {
             }
             
             logger.info('pools.ws aggregate', logData);
-            wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.raydium_amm = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.raydium_clmm = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.raydium_cpmm = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
-            wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.meteora_dlmm = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.meteora_damm_v1 = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.meteora_damm_v2 = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDeltaStats.pumpswap = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
-            wsDeltaStats.meteora_balanced = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
-            wsDecodeStats.raydium = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.raydium_amm = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.raydium_clmm = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.raydium_cpmm = { attempts: 0, successes: 0, failures: 0 };
             wsDecodeStats.orca = { attempts: 0, successes: 0, failures: 0 };
-            wsDecodeStats.meteora = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.meteora_dlmm = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.meteora_damm_v1 = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.meteora_damm_v2 = { attempts: 0, successes: 0, failures: 0 };
             wsDecodeStats.pumpswap = { attempts: 0, successes: 0, failures: 0 };
-            wsDecodeStats.meteora_balanced = { attempts: 0, successes: 0, failures: 0 };
             wsValidationStats.raydium = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
             wsValidationStats.orca = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
-            wsValidationStats.meteora = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
+            wsValidationStats.meteora_dlmm = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
+            wsValidationStats.meteora_damm_v1 = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
+            wsValidationStats.meteora_damm_v2 = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
             wsValidationStats.pumpswap = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
-            wsValidationStats.meteora_balanced = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try {
               emit('ws-activity', {
