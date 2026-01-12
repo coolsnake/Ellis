@@ -205,18 +205,18 @@ export function edgesFromPoolIncremental(
   // If price_a_per_b is missing, try to derive from reserves (CPMM) or sqrt_price (CLMM)
   if (!Number.isFinite(fwdRaw) || fwdRaw <= 0) {
     if (kind === 'cpmm') {
-      // CPMM: price = reserve_b / reserve_a (adjusted for decimals)
+      // CPMM: Price A-per-B = reserveA / reserveB (adjusted for decimals)
+      // Same formula as AMM constant product
       try {
         const reserveA = BigInt(String((p as any)?.reserve_a_raw || (p as any)?.native_reserve_a_raw || 0));
         const reserveB = BigInt(String((p as any)?.reserve_b_raw || (p as any)?.native_reserve_b_raw || 0));
         const decA = Number((p as any)?.decimals_a || (p as any)?.native_decimals_a || 9);
         const decB = Number((p as any)?.decimals_b || (p as any)?.native_decimals_b || 9);
         if (reserveA > 0n && reserveB > 0n) {
-          // Price in raw terms: reserveB / reserveA
-          // Adjust for decimals: price_a_per_b = (reserveB / 10^decB) / (reserveA / 10^decA)
-          //                                    = reserveB * 10^decA / (reserveA * 10^decB)
-          const decimalAdjust = 10 ** (decA - decB);
-          fwdRaw = (Number(reserveB) / Number(reserveA)) * decimalAdjust;
+          // Price A-per-B = (reserveA / 10^decA) / (reserveB / 10^decB)
+          //               = (reserveA / reserveB) * 10^(decB - decA)
+          const decimalAdjust = 10 ** (decB - decA);
+          fwdRaw = (Number(reserveA) / Number(reserveB)) * decimalAdjust;
         }
       } catch {}
     } else if (kind === 'clmm') {

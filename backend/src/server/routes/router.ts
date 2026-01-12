@@ -1057,7 +1057,10 @@ export function createRouterRouter(io: SocketIOServer): Router {
       const meteora = peekMeteoraPools();
       const meteoraBalanced = peekMeteoraBalancedPools();
       const pumpswap = peekPumpswapPools();
-      const raydiumCpmm = peekCpmmPools();
+      // CPMM pools: use raydium.cpmm (HTTP refresh) as primary, cpmmCache (WebSocket) as fallback
+      const cpmmFromRaydium = raydium.cpmm || [];
+      const cpmmFromWs = peekCpmmPools().cpmm || [];
+      const allCpmm = cpmmFromRaydium.length > 0 ? cpmmFromRaydium : cpmmFromWs;
       
       // Helper to map pool to summary format
       const mapClmmPool = (p: any) => ({
@@ -1102,10 +1105,10 @@ export function createRouterRouter(io: SocketIOServer): Router {
           raydium: {
             clmm: raydium.clmm.slice(0, limit).map(mapClmmPool),
             amm: raydium.amm.slice(0, limit).map(mapAmmPool),
-            cpmm: raydiumCpmm.cpmm.slice(0, limit).map(mapCpmmPool),
+            cpmm: allCpmm.slice(0, limit).map(mapCpmmPool),
             clmmCount: raydium.clmm.length,
             ammCount: raydium.amm.length,
-            cpmmCount: raydiumCpmm.cpmm.length,
+            cpmmCount: allCpmm.length,
           },
           orca: {
             clmm: orca.clmm.slice(0, limit).map(mapClmmPool),

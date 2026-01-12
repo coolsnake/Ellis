@@ -130,7 +130,8 @@ export function processPriceThroughPipeline(
       input.rawPrice = calculateMeteoraPrice(input.activeId, input.binStep, input.tokenXMint, input.tokenYMint, input.mintA, input.mintB, input.decimalsA, input.decimalsB);
     } else if (input.poolType === 'clmm' && input.sqrtPriceX64) {
       input.rawPrice = calculateClmmPrice(input.sqrtPriceX64, input.decimalsA, input.decimalsB, input.mintA, input.mintB);
-    } else if (input.poolType === 'amm' && input.reserveA != null && input.reserveB != null) {
+    } else if ((input.poolType === 'amm' || input.poolType === 'cpmm') && input.reserveA != null && input.reserveB != null) {
+      // AMM and CPMM both use constant product formula: Price A-per-B = reserveA / reserveB
       input.rawPrice = calculateAmmPrice(input.reserveA, input.reserveB, input.decimalsA, input.decimalsB);
     }
   }
