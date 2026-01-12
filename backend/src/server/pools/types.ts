@@ -153,11 +153,14 @@ export type CpmmPool = {
   token_program_b?: 'spl-token' | 'token-2022';
   authority?: string;
   creator?: string;
-  // Liquidity
+  // Liquidity (canonical order - matches mint_a/mint_b)
   reserve_a_raw?: string;
   reserve_b_raw?: string;
   amount_a_whole?: number;
   amount_b_whole?: number;
+  // Native reserves (on-chain order - matches native_mint_a/native_mint_b)
+  native_reserve_a_raw?: string;
+  native_reserve_b_raw?: string;
   tvl_usd?: number;
   liquidity_display?: number;
   pool_liquidity_raw?: number;
