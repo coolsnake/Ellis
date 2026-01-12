@@ -60,6 +60,7 @@ async function loadCpmmLayout(): Promise<any> {
 
 /**
  * Schedule debounced graph update for CPMM
+ * Wraps CPMM pools in PoolsPayload format expected by applyPoolUpdates
  */
 async function scheduleCpmmApply(baseline: { cpmm: CpmmPool[] }): Promise<void> {
   try {
@@ -74,9 +75,21 @@ async function scheduleCpmmApply(baseline: { cpmm: CpmmPool[] }): Promise<void> 
         const gmod: any = await import('../../../graph.js');
         const current = cpmmCache.data;
         if (current && cpmmApplyState.baseline) {
-          // Use applyPoolUpdates for incremental graph updates
-          if (typeof gmod?.applyCpmmPoolUpdates === 'function') {
-            await gmod.applyCpmmPoolUpdates(cpmmApplyState.baseline, current, { pushToArb: false });
+          // Wrap CPMM pools in PoolsPayload format for applyPoolUpdates
+          const prevPayload = { amm: [], clmm: [], cpmm: cpmmApplyState.baseline.cpmm || [] };
+          const nextPayload = { amm: [], clmm: [], cpmm: current.cpmm || [] };
+          
+          // Use standard applyPoolUpdates for incremental graph updates
+          if (typeof gmod?.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(prevPayload, nextPayload, { pushToArb: false });
+            try {
+              const { logger } = await import('../../../../utils/logger.js');
+              logger.debug('raydiumCpmm.graph_update.applied', { 
+                prevCount: prevPayload.cpmm.length, 
+                nextCount: nextPayload.cpmm.length,
+                cat: 'pools' 
+              });
+            } catch {}
           }
         }
       } catch (e) {
@@ -566,6 +579,14 @@ export async function handleCpmmVaultUpdate(
                     ts: Date.now()
                   });
                 } catch {}
+                
+                // Schedule graph update for vault balance changes
+                wsDeltaStats.raydium_cpmm.applied += 1;
+                await scheduleCpmmApply(prev);
+                
+                // Try to activate pool with new price data
+                const hasValidPrice = processedPrice.priceForward > 0;
+                tryActivatePool(poolId, 'raydium-cpmm' as any, hasValidPrice);
                 
                 return { success: true };
               }
