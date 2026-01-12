@@ -861,6 +861,24 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         });
       } catch {}
       
+      // DIAGNOSTIC: Log dex distribution on pools BEFORE edge creation
+      try {
+        const poolDexCounts: Record<string, number> = {};
+        const poolsWithoutDex: string[] = [];
+        for (const p of allPools) {
+          const dex = String((p as any)?.dex || '');
+          if (!dex) {
+            poolsWithoutDex.push(String((p as any)?.id || 'unknown').slice(0, 12));
+          }
+          poolDexCounts[dex || 'MISSING'] = (poolDexCounts[dex || 'MISSING'] || 0) + 1;
+        }
+        logger.info('graph.pools.dex_distribution', {
+          poolDexCounts,
+          poolsWithoutDex: poolsWithoutDex.slice(0, 10),
+          cat: 'graph'
+        });
+      } catch {}
+
       createEdgesFromPools(allPools, 'Unknown');
 
       // Compute degree (optional)
@@ -1010,6 +1028,21 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         nodes: Object.values(nodesMap),
         edges: Object.values(edgesMap),
       };
+      
+      // DIAGNOSTIC: Log final edge breakdown by DEX
+      try {
+        const edgeDexCounts: Record<string, number> = {};
+        for (const e of snapshot.edges) {
+          const dex = String(e.dex || 'MISSING');
+          edgeDexCounts[dex] = (edgeDexCounts[dex] || 0) + 1;
+        }
+        logger.info('graph.edges.final_dex_breakdown', {
+          edgeDexCounts,
+          totalEdges: snapshot.edges.length,
+          cat: 'graph'
+        });
+      } catch {}
+      
       try { logger.debug('graph.consistency.summary', { ray: consistency.ray, orc: consistency.orc, met: consistency.met, cat: 'graph' }); } catch {}
       
       // Validate edges: forward * reverse ≈ 1

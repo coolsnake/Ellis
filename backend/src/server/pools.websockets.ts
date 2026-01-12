@@ -8,7 +8,7 @@ import { emit } from './realtime.js';
 import { readJson } from '../utils/fs.js';
 import { canonicalizePools } from './pools/canonical.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
-import { raydiumCache, orcaCache, meteoraCache, metbalCache, pumpswapCache, vaultBalanceCache, findPoolInCache } from './pools.cache.js';
+import { raydiumCache, orcaCache, meteoraCache, metbalCache, pumpswapCache, cpmmCache, vaultBalanceCache, findPoolInCache } from './pools.cache.js';
 import { diffNormalizedPools, parseTokenAccountAmount, toB58Any } from './pools.utils.js';
 import { executionCache } from '../execution/cache.js';
 import { deriveOrcaFeeBps } from './pools/orca.js';
@@ -21,14 +21,17 @@ import { isValidPublicKey } from '../execution/builder/utils.js';
 // These decoders handle all DEX-specific account parsing and price pipeline processing
 import {
   handleRaydiumUpdate,
+  handleRaydiumCpmmUpdate,
   handleOrcaUpdate,
   handleMeteoraUpdate,
   handlePumpswapUpdate,
   handleMeteoraBalancedUpdate,
   isRaydiumOwner,
+  isRaydiumCpmmOwner,
   isOrcaOwner,
   isMeteoraOwner,
   RAYDIUM_PROGRAMS,
+  RAYDIUM_CPMM_PROGRAM_ID,
   ORCA_PROGRAM,
   METEORA_PROGRAM,
 } from './pools/websockets/decoders/index.js';
@@ -690,7 +693,7 @@ let healthTimer: any | undefined;
 let lastWsEventMs: number = Date.now();
 let wsHealthy: boolean = false;
 let aggTimer: any | undefined;
-const wsCounts: { raydium: number; orca: number; meteora?: number; pumpswap?: number; meteora_balanced?: number } = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0, meteora_balanced: 0 };
+const wsCounts: { raydium: number; 'raydium-cpmm'?: number; orca: number; meteora?: number; pumpswap?: number; meteora_balanced?: number } = { raydium: 0, 'raydium-cpmm': 0, orca: 0, meteora: 0, pumpswap: 0, meteora_balanced: 0 };
 // wsDeltaStats, wsDecodeStats, incrementSkipReason, wsDebugCounters, and wsTargetDebugCounters
 // are imported from ./pools.metrics.ts.
 let meteoraProgramInstance: any | null = null;
@@ -977,6 +980,92 @@ async function preloadMeteoraBalancedVaultCache(): Promise<void> {
     });
   }
 }
+
+// Pre-populate vault balance cache for Raydium CPMM pools before WebSocket subscriptions
+// This prevents pool decode failures when pool events arrive before vault events
+async function preloadRaydiumCpmmVaultCache(): Promise<void> {
+  const pools = cpmmCache.data?.cpmm || [];
+  if (pools.length === 0) {
+    try { logger.debug('raydium_cpmm.vault_cache.preload.skip', { reason: 'no_pools', cat: 'pools' }); } catch {}
+    return;
+  }
+  
+  const vaults: string[] = [];
+  for (const pool of pools) {
+    // CPMM pools use token0Vault/token1Vault or account_a/account_b
+    const vaultA = (pool as any).token0Vault || (pool as any).vault_a || (pool as any).account_a;
+    const vaultB = (pool as any).token1Vault || (pool as any).vault_b || (pool as any).account_b;
+    if (vaultA) vaults.push(vaultA);
+    if (vaultB) vaults.push(vaultB);
+  }
+  
+  if (vaults.length === 0) {
+    try { logger.debug('raydium_cpmm.vault_cache.preload.skip', { reason: 'no_vaults', cat: 'pools' }); } catch {}
+    return;
+  }
+  
+  try {
+    logger.info('raydium_cpmm.vault_cache.preload.start', { vaultCount: vaults.length, poolCount: pools.length, cat: 'pools' });
+    
+    const web3 = await import('@solana/web3.js');
+    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    const batchSize = 100;
+    let cached = 0;
+    let failed = 0;
+    
+    for (let i = 0; i < vaults.length; i += batchSize) {
+      const batch = vaults.slice(i, i + batchSize);
+      const pubkeys = batch.map(v => new web3.PublicKey(v));
+      
+      try {
+        // Use RPC limiter for rate limiting
+        const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
+        const accounts = await withRpcLimit(
+          () => wsConn.getMultipleAccountsInfo(pubkeys),
+          weight,
+          { module: 'pools', method: 'getMultipleAccountsInfo' }
+        ) as Array<{ data: Buffer; executable: boolean; lamports: number; owner: any; rentEpoch?: number } | null>;
+        
+        for (let j = 0; j < accounts.length; j++) {
+          const acc = accounts[j];
+          const vaultAddr = batch[j];
+          
+          if (acc?.data && acc.data.length >= 72) {
+            const amount = parseTokenAccountAmount(acc.data);
+            if (amount !== null) {
+              vaultBalanceCache.set(vaultAddr, amount);
+              cached++;
+            } else {
+              failed++;
+            }
+          } else {
+            failed++;
+          }
+        }
+      } catch (e: any) {
+        logger.warn('raydium_cpmm.vault_cache.preload.batch_failed', { 
+          batchIndex: Math.floor(i / batchSize),
+          error: String(e?.message || e), 
+          cat: 'pools' 
+        });
+        failed += batch.length;
+      }
+    }
+    
+    logger.info('raydium_cpmm.vault_cache.preload.complete', { 
+      cached, 
+      failed,
+      total: vaults.length,
+      cat: 'pools' 
+    });
+  } catch (e: any) {
+    logger.warn('raydium_cpmm.vault_cache.preload.failed', { 
+      error: String(e?.message || e), 
+      cat: 'pools' 
+    });
+  }
+}
+
 // Batching queue for getAccountInfo calls during subscription setup
 const accountInfoQueue: Map<string, { resolve: (info: any) => void; reject: (err: any) => void }[]> = new Map();
 let accountInfoBatchTimer: NodeJS.Timeout | null = null;
@@ -1443,6 +1532,7 @@ function runWebsocketRefreshLoop(): void {
         };
         const rayAmm = new web3.PublicKey(String(CONFIG.raydium?.ammV4Program).trim());
         const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram).trim());
+        const rayCpmm = new web3.PublicKey(RAYDIUM_CPMM_PROGRAM_ID);
         const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
         const subs: Array<{ kind: 'account' | 'program'; id: number }> = [];
         // Track explicit targets so we can classify events for SPL Token vault accounts (e.g., Raydium AMM vaults)
@@ -1608,6 +1698,7 @@ function runWebsocketRefreshLoop(): void {
             const owner = toB58Any((info as any)?.owner);
             const ownerRayAmm = rayAmm.toBase58();
             const ownerRayClmm = rayClmm.toBase58();
+            const ownerRayCpmm = rayCpmm.toBase58();
             const ownerOrca = orcaProg.toBase58();
             const ownerMeteora = String((CONFIG as any)?.meteora?.programId || '').trim();
             const isMeteoraTarget = meteoraTargets.has(pk58);
@@ -1645,7 +1736,7 @@ function runWebsocketRefreshLoop(): void {
             
             try {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
-              const src = mapped || ((owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget ? 'meteora' : 'unknown')));
+              const src = mapped || ((owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerRayCpmm ? 'raydium-cpmm' : (owner === ownerOrca ? 'orca' : ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget ? 'meteora' : 'unknown'))));
               // Emit raw event snapshot (truncated) for audit
               const raw = {
                 owner,
@@ -1676,6 +1767,10 @@ function runWebsocketRefreshLoop(): void {
                 if (owner === ownerRayAmm || owner === ownerRayClmm) {
                   wsCounts.raydium += 1;
                   await handleRaydiumUpdate(accountInfo, pk58, derivedAccountToPool);
+                  return;
+                } else if (owner === ownerRayCpmm) {
+                  wsCounts['raydium-cpmm'] = (wsCounts['raydium-cpmm'] || 0) + 1;
+                  await handleRaydiumCpmmUpdate(accountInfo, pk58, derivedAccountToPool);
                   return;
                 } else if (owner === ownerOrca) {
                   wsCounts.orca += 1;
@@ -3745,6 +3840,85 @@ function runWebsocketRefreshLoop(): void {
             logger.info('raydium.clmm.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
           }
         };
+
+        // Helper: attach Raydium CPMM vault accounts for a given CPMM pool address
+        // CPMM Program ID: CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C
+        const RAYDIUM_CPMM_PROGRAM = 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
+        const attachRaydiumCpmmAccounts = async (poolAddr: string, opts?: { poolAccount?: any }) => {
+          try {
+            logger.info('raydium.cpmm.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+            const pk = new web3.PublicKey(poolAddr);
+            const { withRpcRetry } = await import('../utils/rpcLimiter.js');
+            
+            // Prefer caller-provided account data to avoid duplicate RPC fetches
+            const acc: any = opts?.poolAccount ?? await withRpcRetry(
+              () => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any),
+              { 
+                timeoutMs: 5000,
+                retries: 2,
+                weight: 1,
+                module: 'pools',
+                method: 'getAccountInfo',
+                label: 'raydium.cpmm.getAccountInfo'
+              }
+            ).catch((err) => {
+              logger.info('raydium.cpmm.attach.rpc_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+              return null;
+            });
+            
+            if (!acc || !acc.data) return;
+            
+            // CPMM pool layout offsets (anchor with 8-byte discriminator)
+            // token0Vault at offset 72, token1Vault at offset 104
+            const CPMM_TOKEN_0_VAULT_OFFSET = 72;
+            const CPMM_TOKEN_1_VAULT_OFFSET = 104;
+            const MIN_LENGTH = 136; // Need at least 104 + 32 bytes for both vaults
+            
+            const data = Buffer.from(acc.data);
+            if (data.length < MIN_LENGTH) {
+              logger.info('raydium.cpmm.attach.data_too_short', { 
+                pool: poolAddr.slice(0,8)+'…', 
+                dataLen: data.length,
+                required: MIN_LENGTH,
+                cat: 'pools' 
+              });
+              return;
+            }
+            
+            // Extract vault addresses using raw buffer parsing (same as decoder)
+            const readPubkey = (buf: Buffer, offset: number): string => {
+              try {
+                if (offset + 32 > buf.length) return '';
+                const slice = buf.slice(offset, offset + 32);
+                return new web3.PublicKey(slice).toBase58();
+              } catch { return ''; }
+            };
+            
+            const vA = readPubkey(data, CPMM_TOKEN_0_VAULT_OFFSET);
+            const vB = readPubkey(data, CPMM_TOKEN_1_VAULT_OFFSET);
+            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
+            
+            for (const v of vaults) {
+              try {
+                const vpk = new web3.PublicKey(v as string);
+                const id = await subscribeAccountWithRetry(vpk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(v), 'raydium');
+                debugLogTargeted('raydium', String(v), { kind: 'cpmm_vault' });
+                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
+              } catch {}
+            }
+            
+            logger.info('raydium.cpmm.attach.complete', { 
+              pool: poolAddr.slice(0,8)+'…', 
+              vaultCount: vaults.length,
+              cat: 'pools' 
+            });
+          } catch (err) {
+            logger.info('raydium.cpmm.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+          }
+        };
+
         // Helper: attach Orca Whirlpool vault, oracle, and tick array accounts for a given pool address
         const attachOrcaWhirlpoolAccounts = async (poolAddr: string) => {
           try {
@@ -4390,6 +4564,7 @@ function runWebsocketRefreshLoop(): void {
           const rayKnown: string[] = [];
           try { for (const p of (raydiumCache.data?.amm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
           try { for (const p of (raydiumCache.data?.clmm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
+          try { for (const p of (cpmmCache.data?.cpmm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
           const startTsRay = Date.now();
           // In lazy mode, edgePoolIds will be empty so we'll use rayKnown (cache)
           const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : rayKnown;
@@ -4413,6 +4588,13 @@ function runWebsocketRefreshLoop(): void {
             sequential: isSequentialMode,
             cat: 'pools' 
           });
+          
+          // CRITICAL: Pre-populate vault balance cache for CPMM pools before subscribing to WebSocket
+          // This ensures pool events can decode immediately without waiting for vault events
+          if ((cpmmCache.data?.cpmm || []).length > 0) {
+            await preloadRaydiumCpmmVaultCache();
+          }
+          
           for (let i = 0; i < uniqueRay.length; i++) {
             const addr = uniqueRay[i];
             try {
@@ -4447,6 +4629,11 @@ function runWebsocketRefreshLoop(): void {
                     // AMM pool: attach vaults
                     await attachRaydiumAmmVaults(addr, { poolAccount: poolAcc }).catch((err) => {
                       try { logger.info('raydium.amm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
+                    });
+                  } else if (owner === RAYDIUM_CPMM_PROGRAM) {
+                    // CPMM pool: attach vaults
+                    await attachRaydiumCpmmAccounts(addr, { poolAccount: poolAcc }).catch((err) => {
+                      try { logger.info('raydium.cpmm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                     });
                   } else {
                     // Unknown type, try AMM first (more common)

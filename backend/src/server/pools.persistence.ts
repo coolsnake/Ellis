@@ -265,35 +265,61 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
     logger.warn('pools.hydrate.execution_cache_clear_failed', { error: String(e), cat: 'pools' });
   }
   
+  // Helper to ensure pools have the dex field set (for backward compatibility with older snapshots)
+  // Also ensures _pipelineProcessed is set to avoid graph builder warnings
+  const ensureDexField = (pools: PoolsPayload, defaultDex: string): PoolsPayload => {
+    const setDex = (arr: any[], dex: string) => arr.map(p => ({ 
+      ...p, 
+      dex: p.dex || dex,
+      _pipelineProcessed: p._pipelineProcessed ?? true // Assume snapshot pools were processed
+    }));
+    return {
+      amm: setDex(pools.amm || [], defaultDex),
+      clmm: setDex(pools.clmm || [], defaultDex),
+      cpmm: setDex((pools as any).cpmm || [], defaultDex),
+    };
+  };
+
   if (snapshot.raydium) {
-    raydiumCache.data = snapshot.raydium;
+    raydiumCache.data = ensureDexField(snapshot.raydium, 'Raydium');
     raydiumCache.ts = savedAtMs;
     // Populate execution cache for Raydium pools
-    executionCachePopulated += populateExecutionCacheFromPools(snapshot.raydium, 'Raydium');
+    executionCachePopulated += populateExecutionCacheFromPools(raydiumCache.data, 'Raydium');
   }
   if (snapshot.orca) {
-    orcaCache.data = snapshot.orca;
+    orcaCache.data = ensureDexField(snapshot.orca, 'Orca');
     orcaCache.ts = savedAtMs;
     // Populate execution cache for Orca pools
-    executionCachePopulated += populateExecutionCacheFromPools(snapshot.orca, 'Orca');
+    executionCachePopulated += populateExecutionCacheFromPools(orcaCache.data, 'Orca');
   }
   if (snapshot.meteora) {
-    meteoraCache.data = snapshot.meteora;
+    meteoraCache.data = ensureDexField(snapshot.meteora, 'Meteora');
     meteoraCache.ts = savedAtMs;
     // Populate execution cache for Meteora pools
-    executionCachePopulated += populateExecutionCacheFromPools(snapshot.meteora, 'Meteora');
+    executionCachePopulated += populateExecutionCacheFromPools(meteoraCache.data, 'Meteora');
   }
   if (snapshot.meteoraBalanced) {
-    metbalCache.data = snapshot.meteoraBalanced;
+    // MeteoraBalanced pools may have version-specific dex (MeteoraBalanced_v1 or MeteoraBalanced_v2)
+    // Only set default if dex is completely missing
+    const setMblDex = (arr: any[]) => arr.map(p => ({ 
+      ...p, 
+      dex: p.dex || (p.pool_version === 1 ? 'MeteoraBalanced_v1' : 'MeteoraBalanced_v2'),
+      _pipelineProcessed: p._pipelineProcessed ?? true // Assume snapshot pools were processed
+    }));
+    metbalCache.data = {
+      amm: setMblDex(snapshot.meteoraBalanced.amm || []),
+      clmm: [],
+      cpmm: [],
+    };
     metbalCache.ts = savedAtMs;
     // Populate execution cache for Meteora Balanced pools
-    executionCachePopulated += populateExecutionCacheFromPools(snapshot.meteoraBalanced, 'MeteoraBalanced');
+    executionCachePopulated += populateExecutionCacheFromPools(metbalCache.data, 'MeteoraBalanced');
   }
   if (snapshot.pumpswap) {
-    pumpswapCache.data = snapshot.pumpswap;
+    pumpswapCache.data = ensureDexField(snapshot.pumpswap, 'Pumpswap');
     pumpswapCache.ts = savedAtMs;
     // Populate execution cache for Pumpswap pools
-    executionCachePopulated += populateExecutionCacheFromPools(snapshot.pumpswap, 'Pumpswap');
+    executionCachePopulated += populateExecutionCacheFromPools(pumpswapCache.data, 'Pumpswap');
   }
   
   const counts = {

@@ -21,6 +21,7 @@ import { emit } from "../../realtime.js";
 import type { AccountInfo, DerivedAccountInfo } from "../websockets/decoders/types.js";
 import {
   handleRaydiumUpdate,
+  handleRaydiumCpmmUpdate,
   handleOrcaUpdate,
   handleMeteoraUpdate,
   handlePumpswapUpdate,
@@ -46,7 +47,7 @@ export interface GrpcAdapterConfig {
 
 export interface PoolSubscription {
   poolId: string;
-  dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+  dex: 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
   derivedAccounts?: string[];  // Vault accounts, tick arrays, etc.
 }
 
@@ -61,6 +62,7 @@ const COMMITMENT_MAP = {
 const PROGRAM_TO_DEX: Record<string, PoolSubscription['dex']> = {
   '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'raydium',  // AMM v4
   'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK': 'raydium',  // CLMM
+  'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C': 'raydium-cpmm',  // CPMM
   'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc': 'orca',
   'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo': 'meteora',
   '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P': 'pumpswap',  // Bonding curve
@@ -87,6 +89,7 @@ export class GrpcStreamAdapter {
   // Per-DEX metrics for monitoring
   private dexMetrics: DexMetricsMap = {
     raydium: { updates: 0, errors: 0, lastUpdateMs: 0 },
+    'raydium-cpmm': { updates: 0, errors: 0, lastUpdateMs: 0 },
     orca: { updates: 0, errors: 0, lastUpdateMs: 0 },
     meteora: { updates: 0, errors: 0, lastUpdateMs: 0 },
     pumpswap: { updates: 0, errors: 0, lastUpdateMs: 0 },
@@ -313,6 +316,9 @@ export class GrpcStreamAdapter {
       switch (dex) {
         case 'raydium':
           await handleRaydiumUpdate(info, poolId, this.derivedAccountToPool);
+          break;
+        case 'raydium-cpmm':
+          await handleRaydiumCpmmUpdate(info, poolId, this.derivedAccountToPool);
           break;
         case 'orca':
           // Orca SDK requires PublicKey for parsing - create from the base58 pubkey
