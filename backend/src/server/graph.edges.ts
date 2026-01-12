@@ -79,11 +79,19 @@ export function isPoolValidForGraph(
   const dex = String((p as any)?.dex || '');
 
   // Allow CLMM pools that can derive price from sqrt even if price_a_per_b is missing
+  // Allow CPMM pools that have valid reserves (price can be computed from reserves)
   if (!Number.isFinite(price) || price <= 0) {
-    if (!(kind === 'clmm' && s64 > 0)) {
-      // Log when we filter out a pool for missing price (use info for CLMM to debug)
+    const clmmCanDerive = kind === 'clmm' && s64 > 0;
+    
+    // CPMM pools can derive price from reserves
+    const reserveA = BigInt(String((p as any)?.reserve_a_raw || (p as any)?.native_reserve_a_raw || 0));
+    const reserveB = BigInt(String((p as any)?.reserve_b_raw || (p as any)?.native_reserve_b_raw || 0));
+    const cpmmCanDerive = kind === 'cpmm' && reserveA > 0n && reserveB > 0n;
+    
+    if (!clmmCanDerive && !cpmmCanDerive) {
+      // Log when we filter out a pool for missing price (use info for CLMM/CPMM to debug)
       try {
-        const logLevel = kind === 'clmm' ? 'info' : 'debug';
+        const logLevel = (kind === 'clmm' || kind === 'cpmm') ? 'info' : 'debug';
         logger[logLevel]('graph.sanity.filter.price', {
           dex,
           kind,
@@ -94,12 +102,14 @@ export function isPoolValidForGraph(
           sqrt_price_x64: (p as any)?.sqrt_price_x64,
           sqrt_price_x64_raw: (p as any)?.sqrt_price_x64_raw,
           s64_converted: s64,
+          reserve_a_raw: (p as any)?.reserve_a_raw,
+          reserve_b_raw: (p as any)?.reserve_b_raw,
           reason: 'nonFinitePrice',
           cat: 'graph'
         });
       } catch {}
       return false; // 'nonFinitePrice'
-    } else if (kind === 'clmm' && s64 > 0) {
+    } else if (clmmCanDerive) {
       // Log successful CLMM validation with sqrt fallback
       try {
         logger.debug('graph.sanity.filter.clmm.sqrt_fallback', {
@@ -109,6 +119,18 @@ export function isPoolValidForGraph(
           sqrt_price_x64: (p as any)?.sqrt_price_x64,
           sqrt_price_x64_raw: (p as any)?.sqrt_price_x64_raw,
           s64_converted: s64,
+          cat: 'graph'
+        });
+      } catch {}
+    } else if (cpmmCanDerive) {
+      // Log successful CPMM validation with reserves fallback
+      try {
+        logger.debug('graph.sanity.filter.cpmm.reserves_fallback', {
+          dex,
+          pool_id: (p as any)?.id?.slice(0, 12),
+          price,
+          reserve_a_raw: String(reserveA),
+          reserve_b_raw: String(reserveB),
           cat: 'graph'
         });
       } catch {}
@@ -123,6 +145,7 @@ export function isPoolValidForGraph(
   const sourceSanitized = (
     // All CLMMs receive orientation/clamp handling in their dedicated blocks
     (kind === 'clmm') ||
+    (kind === 'cpmm') || // CPMM also goes through pipeline
     (dex === 'Raydium' && kind === 'amm') // Assuming sanity_applyRaydiumAmm is true
   );
   
@@ -173,9 +196,46 @@ export function edgesFromPoolIncremental(
   const fee = Number((p as any)?.fee_bps || 0);
   const liq = liqDisplayFromPool(p);
   const w = weightFrom(liq, fee);
-  const fwdRaw = Number((p as any)?.price_a_per_b);
+  let fwdRaw = Number((p as any)?.price_a_per_b);
   const clampMin = Number.isFinite(options?.priceClampMin) ? Number(options?.priceClampMin) : 1e-12;
   const clampMax = Number.isFinite(options?.priceClampMax) ? Number(options?.priceClampMax) : 1e12;
+  
+  const kind = (p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
+  
+  // If price_a_per_b is missing, try to derive from reserves (CPMM) or sqrt_price (CLMM)
+  if (!Number.isFinite(fwdRaw) || fwdRaw <= 0) {
+    if (kind === 'cpmm') {
+      // CPMM: price = reserve_b / reserve_a (adjusted for decimals)
+      try {
+        const reserveA = BigInt(String((p as any)?.reserve_a_raw || (p as any)?.native_reserve_a_raw || 0));
+        const reserveB = BigInt(String((p as any)?.reserve_b_raw || (p as any)?.native_reserve_b_raw || 0));
+        const decA = Number((p as any)?.decimals_a || (p as any)?.native_decimals_a || 9);
+        const decB = Number((p as any)?.decimals_b || (p as any)?.native_decimals_b || 9);
+        if (reserveA > 0n && reserveB > 0n) {
+          // Price in raw terms: reserveB / reserveA
+          // Adjust for decimals: price_a_per_b = (reserveB / 10^decB) / (reserveA / 10^decA)
+          //                                    = reserveB * 10^decA / (reserveA * 10^decB)
+          const decimalAdjust = 10 ** (decA - decB);
+          fwdRaw = (Number(reserveB) / Number(reserveA)) * decimalAdjust;
+        }
+      } catch {}
+    } else if (kind === 'clmm') {
+      // CLMM: derive from sqrt_price_x64
+      try {
+        const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
+        if (s64 > 0n) {
+          const decA = Number((p as any)?.decimals_a || (p as any)?.native_decimals_a || 9);
+          const decB = Number((p as any)?.decimals_b || (p as any)?.native_decimals_b || 9);
+          // sqrt_price_x64^2 / 2^128 = price_b_per_a (in raw units)
+          // price_a_per_b = 1 / price_b_per_a (adjusted for decimals)
+          const two128 = BigInt(2) ** BigInt(128);
+          const sqPriceNum = Number(s64 * s64) / Number(two128);
+          const decimalAdjust = 10 ** (decA - decB);
+          fwdRaw = (1 / sqPriceNum) * decimalAdjust;
+        }
+      } catch {}
+    }
+  }
   
   // Trust the pipeline price directly - only clamp for safety
   const fwd = clampPriceInc(fwdRaw, clampMin, clampMax);
@@ -194,8 +254,6 @@ export function edgesFromPoolIncremental(
       });
     } catch {}
   }
-  
-  const kind = (p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
 
   const forward: GraphEdge = {
     id: id || `${a}->${b}-${dex}`,
