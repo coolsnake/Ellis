@@ -19,7 +19,7 @@ import { logger } from '../utils/logger.js';
 import type { PoolsPayload, ClmmPool } from './pools/types.js';
 import { 
   raydiumCache, orcaCache, meteoraCache, 
-  metbalCache, pumpswapCache 
+  metbalCache, pumpswapCache, cpmmCache 
 } from './pools.cache.js';
 import { emit } from './realtime.js';
 import { executionCache } from '../execution/cache.js';
@@ -285,6 +285,18 @@ export function hydratePoolCaches(snapshot: PoolsSnapshot): {
     raydiumCache.ts = savedAtMs;
     // Populate execution cache for Raydium pools
     executionCachePopulated += populateExecutionCacheFromPools(raydiumCache.data, 'Raydium');
+    
+    // CRITICAL: Also populate the separate cpmmCache for WebSocket subscription lookup
+    // The WebSocket setup code looks at cpmmCache.data?.cpmm to find CPMM pools
+    const cpmmPools = (snapshot.raydium as any).cpmm || [];
+    if (cpmmPools.length > 0) {
+      cpmmCache.data = { cpmm: cpmmPools.map((p: any) => ({ ...p, dex: p.dex || 'Raydium' })) };
+      cpmmCache.ts = savedAtMs;
+      logger.info('pools.hydrate.cpmm_cache_populated', { 
+        count: cpmmPools.length, 
+        cat: 'pools' 
+      });
+    }
   }
   if (snapshot.orca) {
     orcaCache.data = ensureDexField(snapshot.orca, 'Orca');
