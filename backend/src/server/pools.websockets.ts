@@ -59,7 +59,12 @@ type MeteoraBinTracker = {
 };
 const meteoraBinTrackers: Map<string, MeteoraBinTracker> = new Map();
 const meteoraBinAccountToPool: Map<string, string> = new Map();
-const derivedAccountToPool: Map<string, { poolId: string; accountType: 'vault' | 'reserve' | 'tick_array' | 'oracle' | 'observation' }> = new Map();
+const derivedAccountToPool: Map<string, { 
+  poolId: string; 
+  accountType: 'vault' | 'reserve' | 'tick_array' | 'oracle' | 'observation';
+  vaultSide?: 'A' | 'B';  // For AMM pools: which side of the pair
+  otherVault?: string;    // For AMM pools: address of the other vault
+}> = new Map();
 const poolsWithDerivedAccounts: Set<string> = new Set();
 
 // ============================================================================
@@ -1119,10 +1124,11 @@ async function batchGetAccountInfo(conn: any, address: string): Promise<any> {
 }
 
 let attachedOrcaPools: number = 0;
-  let attachedRaydiumPools: number = 0;
-  let attachedMeteoraPools: number = 0;
-  let attachedPumpswapPools: number = 0;
-  let attachedMeteoraBalancedPools: number = 0;
+let attachedRaydiumPools: number = 0;
+let attachedRaydiumCpmmPools: number = 0; // Subset of raydium that are CPMM
+let attachedMeteoraPools: number = 0;
+let attachedPumpswapPools: number = 0;
+let attachedMeteoraBalancedPools: number = 0;
 
 // When true, the next call to runWebsocketRefreshLoop will attach WS subscriptions
 // without starting timers or triggering an extra initial HTTP warmup fetch.
@@ -1136,13 +1142,22 @@ export function startPoolWebsocketsOnlyOnce(): void {
 export function getWsActivity(): {
   orca: { attached: number; events: number };
   raydium: { attached: number; events: number };
+  raydium_amm_clmm: { events: number };
+  raydium_cpmm: { events: number };
   meteora: { attached: number; events: number };
   pumpswap: { attached: number; events: number };
   meteora_balanced: { attached: number; events: number };
 } {
+  // Combine raydium AMM/CLMM and CPMM events for overall raydium health
+  const raydiumAmmClmmEvents = wsCounts.raydium || 0;
+  const raydiumCpmmEvents = wsCounts['raydium-cpmm'] || 0;
+  const totalRaydiumEvents = raydiumAmmClmmEvents + raydiumCpmmEvents;
+  
   return {
     orca: { attached: attachedOrcaPools, events: wsCounts.orca || 0 },
-    raydium: { attached: attachedRaydiumPools, events: wsCounts.raydium || 0 },
+    raydium: { attached: attachedRaydiumPools, events: totalRaydiumEvents },
+    raydium_amm_clmm: { events: raydiumAmmClmmEvents },
+    raydium_cpmm: { events: raydiumCpmmEvents },
     meteora: { attached: attachedMeteoraPools, events: (wsCounts.meteora || 0) as number },
     pumpswap: { attached: attachedPumpswapPools, events: wsCounts.pumpswap || 0 },
     meteora_balanced: { attached: attachedMeteoraBalancedPools, events: wsCounts.meteora_balanced || 0 },
@@ -1196,7 +1211,7 @@ export function getPoolCacheAges(): { raydium: number; orca: number; meteora: nu
 
 // Retarget WS: unsubscribe and re-subscribe to current graph-derived targets
 // Uses sequential subscription with throttling to avoid RPC burst
-export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; meteora: number; meteora_balanced: number; pumpswap: number } }> {
+export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; raydium_cpmm: number; meteora: number; meteora_balanced: number; pumpswap: number } }> {
   const subscriptionMode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
   
   // When lazy activation is enabled, clear the graph and activation state
@@ -1230,7 +1245,7 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
           cat: 'grpc' 
         });
         // Return placeholder counts - gRPC doesn't separate by DEX
-        return { attached: { orca: 0, raydium: 0, meteora: 0, meteora_balanced: 0, pumpswap: 0 } };
+        return { attached: { orca: 0, raydium: 0, raydium_cpmm: 0, meteora: 0, meteora_balanced: 0, pumpswap: 0 } };
       }
     } catch (err) {
       logger.error('pools.grpc.retarget.error', {
@@ -1332,7 +1347,14 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
   // Step 6: Check health and report results
   try {
     const st = getPoolWsStatus();
-    const attached = { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools, meteora_balanced: attachedMeteoraBalancedPools, pumpswap: attachedPumpswapPools };
+    const attached = { 
+      orca: attachedOrcaPools, 
+      raydium: attachedRaydiumPools, 
+      raydium_cpmm: attachedRaydiumCpmmPools,
+      meteora: attachedMeteoraPools, 
+      meteora_balanced: attachedMeteoraBalancedPools, 
+      pumpswap: attachedPumpswapPools 
+    };
     if (!st.healthy) {
       try { 
         logger.warn('pools.ws retarget.unhealthy', { attached, cat: 'pools' });
@@ -1356,7 +1378,7 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
     }
   } catch {}
   
-  return { attached: { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools, meteora_balanced: attachedMeteoraBalancedPools, pumpswap: attachedPumpswapPools } };
+  return { attached: { orca: attachedOrcaPools, raydium: attachedRaydiumPools, raydium_cpmm: attachedRaydiumCpmmPools, meteora: attachedMeteoraPools, meteora_balanced: attachedMeteoraBalancedPools, pumpswap: attachedPumpswapPools } };
 }
 
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
@@ -1606,6 +1628,11 @@ function runWebsocketRefreshLoop(): void {
                 try { wsCounts.pumpswap = (wsCounts.pumpswap || 0) + 1; } catch {}
               } else if (vaultSource === 'meteora_balanced') {
                 try { wsCounts.meteora_balanced = (wsCounts.meteora_balanced || 0) + 1; } catch {}
+              } else if (vaultSource === 'raydium') {
+                // Count raydium AMM vault events for health tracking
+                try { wsCounts.raydium += 1; } catch {}
+              } else if (vaultSource === 'raydium-cpmm') {
+                try { wsCounts['raydium-cpmm'] = (wsCounts['raydium-cpmm'] || 0) + 1; } catch {}
               }
               
               // Process vault/reserve updates locally without RPC calls
@@ -1658,18 +1685,129 @@ function runWebsocketRefreshLoop(): void {
                     return; // CLMM: price isn't derived from vaults, skip
                   }
                   
-                  // For AMM pools: we could compute price from vault balances
-                  // But we'd need to track both vaults A and B, and know which vault is which
-                  // For now, rely on pool WebSocket updates
-                  // The vault balances are now cached, so when the pool update arrives,
-                  // we can use cached vaults instead of making RPC calls
-                  logger.debug('pools.ws vault.amm.cached', { 
-                    vault: pk58.slice(0,8)+'…', 
-                    pool: derivedMeta.poolId.slice(0,8)+'…',
-                    balance: newBalance.toString(),
-                    reason: 'awaiting_pool_update_with_cached_vaults',
-                    cat: 'pools' 
-                  });
+                  // For AMM pools: compute price from vault balances
+                  // Now that we track vault sides, we can calculate price when both are cached
+                  const vaultSide = derivedMeta.vaultSide;
+                  const otherVault = derivedMeta.otherVault;
+                  
+                  if (!vaultSide || !otherVault) {
+                    // Legacy vault without side tracking - just cache and skip
+                    logger.debug('pools.ws vault.amm.no_side', { 
+                      vault: pk58.slice(0,8)+'…', 
+                      pool: derivedMeta.poolId.slice(0,8)+'…',
+                      cat: 'pools' 
+                    });
+                    return;
+                  }
+                  
+                  // Get the other vault's cached balance
+                  const otherBalance = vaultBalanceCache.get(otherVault);
+                  if (otherBalance === undefined) {
+                    // Other vault not yet cached - wait for it
+                    logger.debug('pools.ws vault.amm.waiting_other', { 
+                      vault: pk58.slice(0,8)+'…', 
+                      pool: derivedMeta.poolId.slice(0,8)+'…',
+                      side: vaultSide,
+                      otherVault: otherVault.slice(0,8)+'…',
+                      cat: 'pools' 
+                    });
+                    return;
+                  }
+                  
+                  // We have both vault balances - calculate price!
+                  const balanceA = vaultSide === 'A' ? newBalance : otherBalance;
+                  const balanceB = vaultSide === 'B' ? newBalance : otherBalance;
+                  
+                  // Get decimals from pool cache
+                  const ammPool = pool as any;
+                  const decA = ammPool.native_decimals_a ?? ammPool.decimals_a ?? 9;
+                  const decB = ammPool.native_decimals_b ?? ammPool.decimals_b ?? 6;
+                  
+                  // Calculate price: (reserveA / reserveB) * (10^decB / 10^decA)
+                  const reserveANum = Number(balanceA);
+                  const reserveBNum = Number(balanceB);
+                  
+                  if (reserveANum <= 0 || reserveBNum <= 0) {
+                    logger.debug('pools.ws vault.amm.zero_reserve', { 
+                      vault: pk58.slice(0,8)+'…', 
+                      pool: derivedMeta.poolId.slice(0,8)+'…',
+                      reserveA: reserveANum,
+                      reserveB: reserveBNum,
+                      cat: 'pools' 
+                    });
+                    return;
+                  }
+                  
+                  const atomicRatio = reserveANum / reserveBNum;
+                  const decimalAdjustment = Math.pow(10, decB - decA);
+                  const price_a_per_b = atomicRatio * decimalAdjustment;
+                  
+                  if (!Number.isFinite(price_a_per_b) || price_a_per_b <= 0) {
+                    logger.debug('pools.ws vault.amm.invalid_price', { 
+                      vault: pk58.slice(0,8)+'…', 
+                      pool: derivedMeta.poolId.slice(0,8)+'…',
+                      price: price_a_per_b,
+                      cat: 'pools' 
+                    });
+                    return;
+                  }
+                  
+                  // Update pool in cache
+                  const poolId = derivedMeta.poolId;
+                  const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
+                  const poolIdx = cachedPools.amm.findIndex(p => p.id === poolId);
+                  
+                  if (poolIdx >= 0) {
+                    const prevPool = cachedPools.amm[poolIdx];
+                    const hasDelta = prevPool.price_a_per_b !== price_a_per_b;
+                    
+                    // Update pool with new price and reserves
+                    cachedPools.amm[poolIdx] = {
+                      ...prevPool,
+                      price_a_per_b,
+                      reserve_a_raw: balanceA.toString(),
+                      reserve_b_raw: balanceB.toString(),
+                      updated_ms: Date.now(),
+                    };
+                    raydiumCache.ts = Date.now();
+                    
+                    // Increment event counter for raydium
+                    try { wsCounts.raydium += 1; } catch {}
+                    
+                    logger.debug('pools.ws vault.amm.price_updated', { 
+                      pool: poolId.slice(0,8)+'…',
+                      price: price_a_per_b.toFixed(8),
+                      reserveA: reserveANum,
+                      reserveB: reserveBNum,
+                      hasDelta,
+                      cat: 'pools' 
+                    });
+                    
+                    // Schedule graph update if price changed
+                    if (hasDelta) {
+                      try {
+                        const gmod: any = await import('./graph.js');
+                        if (typeof gmod?.applyPoolUpdates === 'function') {
+                          const prev = { amm: [prevPool], clmm: [], cpmm: [] };
+                          const next = { amm: [cachedPools.amm[poolIdx]], clmm: [], cpmm: [] };
+                          void gmod.applyPoolUpdates(prev, next, { pushToArb: false }).catch(() => {});
+                        }
+                      } catch {}
+                      
+                      // Track stats
+                      try {
+                        wsDeltaStats.raydium_amm.decoded += 1;
+                        wsDeltaStats.raydium_amm.applied += 1;
+                      } catch {}
+                    }
+                    
+                    // Try to activate pool for lazy mode
+                    try {
+                      const { tryActivatePool } = await import('./pools.activation.js');
+                      tryActivatePool(poolId, 'raydium', true);
+                    } catch {}
+                  }
+                  
                   return;
                   
                 } catch (err) {
@@ -3734,20 +3872,49 @@ function runWebsocketRefreshLoop(): void {
             
             const vA = state?.baseVault?.toBase58?.() || state?.vaultA?.toBase58?.();
             const vB = state?.quoteVault?.toBase58?.() || state?.vaultB?.toBase58?.();
-            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
             
-            for (const v of vaults) {
+            // Subscribe to vault A with side tracking
+            if (vA) {
               try {
-                const vpk = new web3.PublicKey(v as string);
+                const vpk = new web3.PublicKey(vA);
                 const id = await subscribeAccountWithRetry(vpk, handle);
                 subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(String(v), 'raydium');
-                    debugLogTargeted('raydium', String(v), { kind: 'vault' });
-                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
+                targetedSourceByAccount.set(vA, 'raydium');
+                debugLogTargeted('raydium', vA, { kind: 'vault_a' });
+                // Track vault side for AMM price calculation
+                derivedAccountToPool.set(vA, { 
+                  poolId: poolAddr, 
+                  accountType: 'vault',
+                  vaultSide: 'A',
+                  otherVault: vB || undefined
+                });
               } catch {}
             }
             
-            logger.info('raydium.amm.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+            // Subscribe to vault B with side tracking
+            if (vB && vB !== vA) {
+              try {
+                const vpk = new web3.PublicKey(vB);
+                const id = await subscribeAccountWithRetry(vpk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(vB, 'raydium');
+                debugLogTargeted('raydium', vB, { kind: 'vault_b' });
+                // Track vault side for AMM price calculation
+                derivedAccountToPool.set(vB, { 
+                  poolId: poolAddr, 
+                  accountType: 'vault',
+                  vaultSide: 'B',
+                  otherVault: vA || undefined
+                });
+              } catch {}
+            }
+            
+            logger.info('raydium.amm.attach.complete', { 
+              pool: poolAddr.slice(0,8)+'…', 
+              vaultA: vA?.slice(0,8)+'…',
+              vaultB: vB?.slice(0,8)+'…',
+              cat: 'pools' 
+            });
           } catch (err) {
             logger.info('raydium.amm.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
           }
@@ -4655,6 +4822,7 @@ function runWebsocketRefreshLoop(): void {
           }
           const uniqueRay = Array.from(new Set(base.filter(Boolean)));
           let attachedRay = 0;
+          attachedRaydiumCpmmPools = 0; // Reset CPMM counter before loop
           // Rate-limit new attachments per second based on config
           // During retarget (sequential mode), use slower rate to avoid overwhelming RPC limiter
           const basePerSecRay = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
@@ -4716,6 +4884,7 @@ function runWebsocketRefreshLoop(): void {
                   } else if (owner === rayCpmmOwner) {
                     // CPMM pool: attach vaults
                     logger.info('raydium.cpmm.attach.detected', { pool: addr.slice(0,8)+'…', cat: 'pools' });
+                    attachedRaydiumCpmmPools++;
                     await attachRaydiumCpmmAccounts(addr, { poolAccount: poolAcc }).catch((err) => {
                       try { logger.info('raydium.cpmm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                     });
@@ -4741,7 +4910,12 @@ function runWebsocketRefreshLoop(): void {
             if (i < uniqueRay.length - 1 && intervalMsRay > 0) { await sleepRay(intervalMsRay); }
           }
           attachedRaydiumPools = attachedRay;
-          logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay, target: uniqueRay.length, ms: Date.now() - startTsRay });
+          logger.info('pools.ws subscribe raydium.pools', { 
+            attached: attachedRay, 
+            cpmm: attachedRaydiumCpmmPools,
+            target: uniqueRay.length, 
+            ms: Date.now() - startTsRay 
+          });
           // Fallback to program-level if none attached and explicit fallback is allowed
           if (attachedRay === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms) && ((CONFIG.system as any)?.wsFallbackAllowZeroTargets === true)) {
             try { logger.info('pools.ws subscribe raydium.amm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
@@ -5343,12 +5517,13 @@ function runWebsocketRefreshLoop(): void {
           try {
             const snapshot = { 
               raydium: wsCounts.raydium, 
+              raydium_cpmm: wsCounts['raydium-cpmm'] || 0,
               orca: wsCounts.orca, 
               meteora: wsCounts.meteora,
               pumpswap: wsCounts.pumpswap || 0,
               meteora_balanced: wsCounts.meteora_balanced || 0
             } as any;
-            wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0; wsCounts.pumpswap = 0; wsCounts.meteora_balanced = 0;
+            wsCounts.raydium = 0; wsCounts['raydium-cpmm'] = 0; wsCounts.orca = 0; wsCounts.meteora = 0; wsCounts.pumpswap = 0; wsCounts.meteora_balanced = 0;
             
             // Only log non-zero metrics to reduce size
             const activeProtocols = Object.entries(snapshot)

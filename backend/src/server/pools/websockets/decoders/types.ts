@@ -164,6 +164,8 @@ export interface PoolCache {
 export interface DerivedAccountInfo {
   poolId: string;
   accountType: 'vault' | 'reserve' | 'tick_array' | 'oracle' | 'observation';
+  vaultSide?: 'A' | 'B';  // For AMM pools: which side of the pair
+  otherVault?: string;    // For AMM pools: address of the other vault
 }
 
 /**
