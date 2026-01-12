@@ -3718,9 +3718,14 @@ function runWebsocketRefreshLoop(): void {
             }
             
             const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
-            const ammLayout = rmod?.LiquidityStateLayoutV4 || rmod?.LIQUIDITY_STATE_LAYOUT_V4;
+            // SDK v2 exports: liquidityStateV4Layout (lowercase 'l')
+            const ammLayout = rmod?.liquidityStateV4Layout || rmod?.LiquidityStateLayoutV4 || rmod?.LIQUIDITY_STATE_LAYOUT_V4;
             if (!ammLayout || typeof ammLayout.decode !== 'function') {
-              logger.info('raydium.amm.attach.no_layout', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              logger.info('raydium.amm.attach.no_layout', { 
+                pool: poolAddr.slice(0,8)+'…', 
+                availableKeys: Object.keys(rmod || {}).filter((k: string) => k.toLowerCase().includes('liquidity')).slice(0, 5),
+                cat: 'pools' 
+              });
               return;
             }
             
@@ -3782,9 +3787,14 @@ function runWebsocketRefreshLoop(): void {
             }
             
             const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
-            const clmmLayout = rmod?.PoolInfoLayout || rmod?.AmmV3PoolPersonalPosition || rmod?.PoolState;
+            // SDK v2 exports: PoolInfoLayout for CLMM pools
+            const clmmLayout = rmod?.PoolInfoLayout || rmod?.Clmm?.PoolInfoLayout || rmod?.AmmV3PoolPersonalPosition || rmod?.PoolState;
             if (!clmmLayout || typeof clmmLayout.decode !== 'function') {
-              logger.info('raydium.clmm.attach.no_layout', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              logger.info('raydium.clmm.attach.no_layout', { 
+                pool: poolAddr.slice(0,8)+'…', 
+                availableKeys: Object.keys(rmod || {}).filter((k: string) => k.toLowerCase().includes('pool')).slice(0, 5),
+                cat: 'pools' 
+              });
               return;
             }
             
@@ -4607,8 +4617,33 @@ function runWebsocketRefreshLoop(): void {
           try { for (const p of (raydiumCache.data?.clmm || [])) if (p?.id) { rayKnown.push(String(p.id)); clmmCount++; } } catch {}
           try { for (const p of (cpmmCache.data?.cpmm || [])) if (p?.id) { rayKnown.push(String(p.id)); cpmmCount++; } } catch {}
           const startTsRay = Date.now();
+          
+          // Log CPMM cache status for debugging
+          logger.info('pools.ws raydium.cpmm_cache_status', {
+            cpmmCacheExists: !!cpmmCache.data,
+            cpmmPoolCount: cpmmCache.data?.cpmm?.length || 0,
+            cpmmCountAdded: cpmmCount,
+            cat: 'pools'
+          });
+          
           // In lazy mode, edgePoolIds will be empty so we'll use rayKnown (cache)
-          const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : rayKnown;
+          // IMPORTANT: Always include CPMM pools from cache even in non-lazy mode
+          // since they may not be in graph edges yet
+          let base: string[];
+          if (edgePoolIds.size > 0) {
+            // Merge graph edges with CPMM pools from cache
+            const cpmmPoolIds = (cpmmCache.data?.cpmm || []).map(p => p?.id).filter(Boolean) as string[];
+            base = [...Array.from(edgePoolIds), ...cpmmPoolIds];
+            logger.info('pools.ws targets.raydium merged', { 
+              fromGraph: edgePoolIds.size,
+              cpmmFromCache: cpmmPoolIds.length,
+              total: base.length,
+              cat: 'pools'
+            });
+          } else {
+            base = rayKnown;
+          }
+          
           if (isLazyActivationEnabled() && rayKnown.length > 0) {
             try { logger.info('pools.ws targets.raydium from cache (lazy mode)', { 
               size: rayKnown.length, 
@@ -4666,6 +4701,7 @@ function runWebsocketRefreshLoop(): void {
                   const owner = poolAcc.owner?.toBase58?.();
                   const rayAmmOwner = rayAmm.toBase58();
                   const rayClmmOwner = rayClmm.toBase58();
+                  const rayCpmmOwner = rayCpmm.toBase58();
                   
                   if (owner === rayClmmOwner) {
                     // CLMM pool: attach vaults, observation, tick arrays
@@ -4677,8 +4713,9 @@ function runWebsocketRefreshLoop(): void {
                     await attachRaydiumAmmVaults(addr, { poolAccount: poolAcc }).catch((err) => {
                       try { logger.info('raydium.amm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                     });
-                  } else if (owner === RAYDIUM_CPMM_PROGRAM) {
+                  } else if (owner === rayCpmmOwner) {
                     // CPMM pool: attach vaults
+                    logger.info('raydium.cpmm.attach.detected', { pool: addr.slice(0,8)+'…', cat: 'pools' });
                     await attachRaydiumCpmmAccounts(addr, { poolAccount: poolAcc }).catch((err) => {
                       try { logger.info('raydium.cpmm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                     });
