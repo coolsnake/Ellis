@@ -204,9 +204,9 @@ let metbalApplyState: { baseline: PoolsPayload | null; timer: NodeJS.Timeout | n
 const DEBOUNCE_MS = 50;
 
 /**
- * Schedule debounced graph update for Meteora Balanced
+ * Schedule debounced graph update for Meteora Balanced (DAMM v1/v2)
  */
-async function scheduleDexApply(source: 'meteora_balanced', baseline: PoolsPayload): Promise<void> {
+async function scheduleDexApply(source: 'meteora_damm_v1' | 'meteora_damm_v2', baseline: PoolsPayload): Promise<void> {
   try {
     if (!metbalApplyState.baseline) {
       metbalApplyState.baseline = baseline;
@@ -577,7 +577,7 @@ export async function handleMeteoraBalancedVaultUpdate(
 
     // Schedule graph update
     if (hasDelta) {
-      await scheduleDexApply('meteora_balanced', prev);
+      await scheduleDexApply('meteora_damm_v2', prev);
     }
 
     // Try to activate pool for lazy activation mode (only activates on first valid price update)
@@ -586,7 +586,7 @@ export async function handleMeteoraBalancedVaultUpdate(
       Number.isFinite(processedPrice.priceForward) &&
       processedPrice.priceForward > 0
     );
-    tryActivatePool(poolId, 'meteora_balanced', hasValidPrice);
+    tryActivatePool(poolId, 'meteora_damm_v2', hasValidPrice);
 
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {
@@ -831,7 +831,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     
     // Schedule graph update
     if (hasDelta) {
-      await scheduleDexApply('meteora_balanced', prev);
+      await scheduleDexApply('meteora_damm_v1', prev);
     }
     
     // Try to activate pool for lazy activation mode
@@ -840,7 +840,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
       Number.isFinite(processedPrice.priceForward) &&
       processedPrice.priceForward > 0
     );
-    tryActivatePool(poolId, 'meteora_balanced', hasValidPrice);
+    tryActivatePool(poolId, 'meteora_damm_v1', hasValidPrice);
     
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {

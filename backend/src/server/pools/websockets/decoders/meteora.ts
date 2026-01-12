@@ -129,9 +129,9 @@ async function ensureMeteoraProgram(): Promise<any> {
 }
 
 /**
- * Schedule debounced graph update for Meteora
+ * Schedule debounced graph update for Meteora DLMM
  */
-async function scheduleDexApply(source: 'meteora', baseline: PoolsPayload): Promise<void> {
+async function scheduleDexApply(source: 'meteora_dlmm', baseline: PoolsPayload): Promise<void> {
   try {
     if (!meteoraApplyState.baseline) {
       meteoraApplyState.baseline = baseline;
@@ -798,7 +798,7 @@ export async function handleMeteoraUpdate(
 
     // Schedule graph update
     if (hasDelta) {
-      await scheduleDexApply('meteora', prev);
+      await scheduleDexApply('meteora_dlmm', prev);
     }
 
     logger.debug('meteora.ws.clmm.fields', {

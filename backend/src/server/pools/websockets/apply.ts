@@ -19,9 +19,10 @@ const wsApply: Record<DexSource, DexApplyState> = {
   raydium: { baseline: null, timer: null },
   'raydium-cpmm': { baseline: null, timer: null },
   orca: { baseline: null, timer: null },
-  meteora: { baseline: null, timer: null },
+  meteora_dlmm: { baseline: null, timer: null },
+  meteora_damm_v1: { baseline: null, timer: null },
+  meteora_damm_v2: { baseline: null, timer: null },
   pumpswap: { baseline: null, timer: null },
-  meteora_balanced: { baseline: null, timer: null },
 };
 
 /**
@@ -89,7 +90,7 @@ export async function scheduleDexApply(dex: DexSource, baseline: any): Promise<v
  * Clear all debounce timers
  */
 export function clearAllApplyTimers(): void {
-  for (const dex of ['raydium', 'raydium-cpmm', 'orca', 'meteora', 'pumpswap', 'meteora_balanced'] as DexSource[]) {
+  for (const dex of ['raydium', 'raydium-cpmm', 'orca', 'meteora_dlmm', 'meteora_damm_v1', 'meteora_damm_v2', 'pumpswap'] as DexSource[]) {
     if (wsApply[dex].timer) {
       clearTimeout(wsApply[dex].timer);
       wsApply[dex].timer = null;
@@ -106,9 +107,10 @@ export function getApplyState(): Record<DexSource, { hasBaseline: boolean; hasTi
     raydium: { hasBaseline: !!wsApply.raydium.baseline, hasTimer: !!wsApply.raydium.timer },
     'raydium-cpmm': { hasBaseline: !!wsApply['raydium-cpmm'].baseline, hasTimer: !!wsApply['raydium-cpmm'].timer },
     orca: { hasBaseline: !!wsApply.orca.baseline, hasTimer: !!wsApply.orca.timer },
-    meteora: { hasBaseline: !!wsApply.meteora.baseline, hasTimer: !!wsApply.meteora.timer },
+    meteora_dlmm: { hasBaseline: !!wsApply.meteora_dlmm.baseline, hasTimer: !!wsApply.meteora_dlmm.timer },
+    meteora_damm_v1: { hasBaseline: !!wsApply.meteora_damm_v1.baseline, hasTimer: !!wsApply.meteora_damm_v1.timer },
+    meteora_damm_v2: { hasBaseline: !!wsApply.meteora_damm_v2.baseline, hasTimer: !!wsApply.meteora_damm_v2.timer },
     pumpswap: { hasBaseline: !!wsApply.pumpswap.baseline, hasTimer: !!wsApply.pumpswap.timer },
-    meteora_balanced: { hasBaseline: !!wsApply.meteora_balanced.baseline, hasTimer: !!wsApply.meteora_balanced.timer },
   };
 }
 

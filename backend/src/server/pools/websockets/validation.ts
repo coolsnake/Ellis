@@ -105,7 +105,7 @@ export function validateDecodedPool(
     }
     // Warn about zero fees for Raydium/Meteora (these DEXes store fees elsewhere)
     // Don't fail validation, just log a warning for monitoring
-    if (pool.fee_bps === 0 && (dex === 'raydium' || dex === 'meteora')) {
+    if (pool.fee_bps === 0 && (dex === 'raydium' || dex === 'meteora_dlmm')) {
       try {
         logger.warn(`${dex}.ws.zero_fee_warning`, {
           poolId: poolId.slice(0, 8) + '…',
@@ -117,7 +117,7 @@ export function validateDecodedPool(
     }
   } else {
     // Fee is missing entirely
-    if (dex === 'raydium' || dex === 'meteora') {
+    if (dex === 'raydium' || dex === 'meteora_dlmm') {
       try {
         logger.debug(`${dex}.ws.missing_fee`, {
           poolId: poolId.slice(0, 8) + '…',
@@ -135,9 +135,9 @@ export function validateDecodedPool(
     }
   }
   
-  // Validate sqrt_price_x64 for CLMM (except Meteora which uses bin-based pricing)
+  // Validate sqrt_price_x64 for CLMM (except Meteora DLMM which uses bin-based pricing)
   // Meteora DLMM doesn't store sqrt_price_x64; it calculates price from activeId/binStep
-  if (pool.sqrt_price_x64 != null && dex !== 'meteora') {
+  if (pool.sqrt_price_x64 != null && dex !== 'meteora_dlmm') {
     if (!Number.isFinite(pool.sqrt_price_x64) || pool.sqrt_price_x64 <= 0) {
       reasons.push('invalid_sqrt_price');
       try { wsValidationStats[dex].invalidPrice += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
