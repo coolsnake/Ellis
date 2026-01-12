@@ -26,8 +26,14 @@ export interface RefreshSourcesOptions {
 
 /**
  * DEX source identifier
+ * - Raydium variants: raydium (AMM/CLMM), raydium-cpmm
+ * - Meteora variants: meteora_dlmm (DLMM), meteora_damm_v1 (Dynamic AMM v1), meteora_damm_v2 (CP-AMM)
  */
-export type DexSource = 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
+export type DexSource = 
+  | 'raydium' | 'raydium-cpmm' 
+  | 'orca' 
+  | 'meteora_dlmm' | 'meteora_damm_v1' | 'meteora_damm_v2' 
+  | 'pumpswap';
 
 /**
  * Pool decoder interface - each DEX decoder must implement these methods

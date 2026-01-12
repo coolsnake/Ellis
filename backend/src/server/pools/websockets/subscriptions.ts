@@ -49,14 +49,15 @@ export function setSubscriptionCount(dex: DexSource, count: number): void {
     case 'orca':
       subscriptionState.attachedOrcaPools = count;
       break;
-    case 'meteora':
+    case 'meteora_dlmm':
       subscriptionState.attachedMeteoraPools = count;
+      break;
+    case 'meteora_damm_v1':
+    case 'meteora_damm_v2':
+      subscriptionState.attachedMeteoraBalancedPools = count;
       break;
     case 'pumpswap':
       subscriptionState.attachedPumpswapPools = count;
-      break;
-    case 'meteora_balanced':
-      subscriptionState.attachedMeteoraBalancedPools = count;
       break;
   }
 }
@@ -72,12 +73,13 @@ export function getSubscriptionCount(dex: DexSource): number {
       return subscriptionState.attachedRaydiumCpmmPools;
     case 'orca':
       return subscriptionState.attachedOrcaPools;
-    case 'meteora':
+    case 'meteora_dlmm':
       return subscriptionState.attachedMeteoraPools;
+    case 'meteora_damm_v1':
+    case 'meteora_damm_v2':
+      return subscriptionState.attachedMeteoraBalancedPools;
     case 'pumpswap':
       return subscriptionState.attachedPumpswapPools;
-    case 'meteora_balanced':
-      return subscriptionState.attachedMeteoraBalancedPools;
   }
 }
 

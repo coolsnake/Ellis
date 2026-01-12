@@ -101,8 +101,13 @@ async function loadDammV1Program(): Promise<any> {
       skipPreflight: true,
     });
     
-    // Create the program instance
-    dammV1Program = new Program(AmmIdl, new PublicKey(METEORA_BALANCED_V1_PROGRAM), provider);
+    // Create the program instance - Anchor v0.30+ signature: new Program(idl, provider)
+    // The program ID is derived from the IDL metadata
+    const idlWithAddress = {
+      ...AmmIdl,
+      address: METEORA_BALANCED_V1_PROGRAM,
+    };
+    dammV1Program = new Program(idlWithAddress as any, provider);
     
     logger.info('meteora_balanced.dammV1Program.init.success', {
       programId: METEORA_BALANCED_V1_PROGRAM,
@@ -635,15 +640,15 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     if (!Number.isFinite(decA)) {
       // Try to resolve from mint cache
       try {
-        const { getDecimals } = await import('../../decimals.js');
-        decA = await getDecimals(decoded.tokenAMint);
+        const { resolveDecimals } = await import('../../decimals.js');
+        decA = await resolveDecimals(decoded.tokenAMint);
       } catch {}
       if (!Number.isFinite(decA)) decA = 9;
     }
     if (!Number.isFinite(decB)) {
       try {
-        const { getDecimals } = await import('../../decimals.js');
-        decB = await getDecimals(decoded.tokenBMint);
+        const { resolveDecimals } = await import('../../decimals.js');
+        decB = await resolveDecimals(decoded.tokenBMint);
       } catch {}
       if (!Number.isFinite(decB)) decB = 6;
     }

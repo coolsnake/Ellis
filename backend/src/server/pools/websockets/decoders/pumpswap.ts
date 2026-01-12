@@ -248,7 +248,7 @@ export async function handlePumpswapPoolAccountUpdate(
   try {
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
     
-    if (!data || data.length < POOL_LAYOUT.MIN_LENGTH) {
+    if (!data || data.length < MIN_POOL_BUFFER_LENGTH) {
       logger.debug('pumpswap.pool_update.data_too_short', {
         pool: poolId.slice(0, 8) + '…',
         len: data?.length || 0,
