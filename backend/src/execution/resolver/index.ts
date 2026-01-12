@@ -472,7 +472,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       } catch (e) { logCatchError('resolver.index', e); }
     }
     
-    const { quoteHopOut, applyMinOut } = await import('./quotes.js');
+    const { quoteHopOut } = await import('./quotes.js');
     for (let i = 0; i < hops.length; i++) {
       // Set traceId on each hop for downstream logging
       (hops[i] as any)._traceId = traceId;
@@ -726,11 +726,11 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       const isFinalHop = i === hops.length - 1;
       
       if (isFinalHop) {
-        // Final hop: apply slippage protection only
-        // NOTE: Profitability for arb cycles is now enforced at the router program level
-        // via the execute instruction's min_profit parameter, NOT via minOutRaw override.
-        // This allows intermediate hops to have slippage as long as total route is profitable.
-        try { hops[i].minOutRaw = applyMinOut(out, eff); } catch { hops[i].minOutRaw = 0n; }
+        // Final hop: NO per-hop slippage protection
+        // Profitability is enforced at the router program level via the execute
+        // instruction's min_profit parameter. This allows all hops to slip as needed
+        // as long as the total route meets the profit threshold.
+        hops[i].minOutRaw = 1n;
         
         if (isArbCycle) {
           try {
