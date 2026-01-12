@@ -1725,7 +1725,7 @@ function runWebsocketRefreshLoop(): void {
             if (mapped === 'pumpswap' || mapped === 'meteora_balanced') {
               const idleBeforeMs = Date.now() - beforeMs;
               try {
-                logger.info('pools.ws.event_received', {
+                logger.debug('pools.ws.event_received', {
                   source: mapped,
                   account: pk58.slice(0, 8) + '…',
                   idleBeforeMs,
@@ -3707,11 +3707,22 @@ function runWebsocketRefreshLoop(): void {
               return null;
             });
             
-            if (!acc || !acc.data) return;
+            if (!acc || !acc.data) {
+              logger.info('raydium.amm.attach.no_data', { 
+                pool: poolAddr.slice(0,8)+'…', 
+                hasAcc: !!acc,
+                hasData: !!(acc?.data),
+                cat: 'pools' 
+              });
+              return;
+            }
             
             const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
             const ammLayout = rmod?.LiquidityStateLayoutV4 || rmod?.LIQUIDITY_STATE_LAYOUT_V4;
-            if (!ammLayout || typeof ammLayout.decode !== 'function') return;
+            if (!ammLayout || typeof ammLayout.decode !== 'function') {
+              logger.info('raydium.amm.attach.no_layout', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              return;
+            }
             
             let state: any = null;
             try { state = ammLayout.decode((acc as any).data); } catch { state = null; }
@@ -3760,14 +3771,28 @@ function runWebsocketRefreshLoop(): void {
               return null;
             });
             
-            if (!acc || !acc.data) return;
+            if (!acc || !acc.data) {
+              logger.info('raydium.clmm.attach.no_data', { 
+                pool: poolAddr.slice(0,8)+'…', 
+                hasAcc: !!acc,
+                hasData: !!(acc?.data),
+                cat: 'pools' 
+              });
+              return;
+            }
             
             const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
             const clmmLayout = rmod?.PoolInfoLayout || rmod?.AmmV3PoolPersonalPosition || rmod?.PoolState;
-            if (!clmmLayout || typeof clmmLayout.decode !== 'function') return;
+            if (!clmmLayout || typeof clmmLayout.decode !== 'function') {
+              logger.info('raydium.clmm.attach.no_layout', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              return;
+            }
             
             let state: any = null;
-            try { state = clmmLayout.decode((acc as any).data); } catch { return; }
+            try { state = clmmLayout.decode((acc as any).data); } catch {
+              logger.info('raydium.clmm.attach.decode_fail', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              return;
+            }
             
             // Subscribe to vaults
             const vA = state?.vaultA?.toBase58?.() || state?.tokenVault0?.toBase58?.();
@@ -3873,7 +3898,15 @@ function runWebsocketRefreshLoop(): void {
               return null;
             });
             
-            if (!acc || !acc.data) return;
+            if (!acc || !acc.data) {
+              logger.info('raydium.cpmm.attach.no_data', { 
+                pool: poolAddr.slice(0,8)+'…', 
+                hasAcc: !!acc,
+                hasData: !!(acc?.data),
+                cat: 'pools' 
+              });
+              return;
+            }
             
             // CPMM pool layout offsets (anchor with 8-byte discriminator)
             // token0Vault at offset 72, token1Vault at offset 104
@@ -4569,14 +4602,21 @@ function runWebsocketRefreshLoop(): void {
             } catch {}
           }
           const rayKnown: string[] = [];
-          try { for (const p of (raydiumCache.data?.amm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
-          try { for (const p of (raydiumCache.data?.clmm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
-          try { for (const p of (cpmmCache.data?.cpmm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
+          let ammCount = 0, clmmCount = 0, cpmmCount = 0;
+          try { for (const p of (raydiumCache.data?.amm || [])) if (p?.id) { rayKnown.push(String(p.id)); ammCount++; } } catch {}
+          try { for (const p of (raydiumCache.data?.clmm || [])) if (p?.id) { rayKnown.push(String(p.id)); clmmCount++; } } catch {}
+          try { for (const p of (cpmmCache.data?.cpmm || [])) if (p?.id) { rayKnown.push(String(p.id)); cpmmCount++; } } catch {}
           const startTsRay = Date.now();
           // In lazy mode, edgePoolIds will be empty so we'll use rayKnown (cache)
           const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : rayKnown;
           if (isLazyActivationEnabled() && rayKnown.length > 0) {
-            try { logger.info('pools.ws targets.raydium from cache (lazy mode)', { size: rayKnown.length }); } catch {}
+            try { logger.info('pools.ws targets.raydium from cache (lazy mode)', { 
+              size: rayKnown.length, 
+              amm: ammCount, 
+              clmm: clmmCount, 
+              cpmm: cpmmCount,
+              cat: 'pools' 
+            }); } catch {}
           }
           const uniqueRay = Array.from(new Set(base.filter(Boolean)));
           let attachedRay = 0;
@@ -4644,13 +4684,18 @@ function runWebsocketRefreshLoop(): void {
                     });
                   } else {
                     // Unknown type, try AMM first (more common)
+                    logger.debug('raydium.pool.unknown_owner', { pool: addr.slice(0,8)+'…', owner: owner?.slice(0,8)+'…', cat: 'pools' });
                     await attachRaydiumAmmVaults(addr, { poolAccount: poolAcc }).catch((err) => {
                       try { logger.info('raydium.unknown.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                     });
                   }
+                } else {
+                  // Pool account fetch returned null - account may not exist or RPC rate limited
+                  logger.info('raydium.pool.fetch_null', { pool: addr.slice(0,8)+'…', cat: 'pools' });
                 }
-              } catch {
-                // Fallback: try AMM first
+              } catch (fetchErr: any) {
+                // Fallback: try AMM first when pool type detection fails
+                logger.info('raydium.pool.fetch_error', { pool: addr.slice(0,8)+'…', error: String(fetchErr?.message || fetchErr), cat: 'pools' });
                 await attachRaydiumAmmVaults(addr).catch((err) => {
                   try { logger.info('raydium.attach.fallback.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                 });
