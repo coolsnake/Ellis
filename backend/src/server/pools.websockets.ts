@@ -813,7 +813,7 @@ function validateDecodedPool(
   return { valid, reasons };
 }
 
-function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap', account: string, extra: Record<string, unknown>): void {
+function debugLogTargeted(source: 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap', account: string, extra: Record<string, unknown>): void {
   try {
     const limit = Number((CONFIG.system as any)?.wsDebugAccountLogLimit ?? 10);
     if (!(limit > 0)) return;
@@ -1766,7 +1766,7 @@ function runWebsocketRefreshLoop(): void {
                   
                   // Update pool in cache - handle both AMM and CPMM pools
                   const poolId = derivedMeta.poolId;
-                  const isCpmm = pool.pool_kind === 'cpmm' || source === 'raydium-cpmm';
+                  const isCpmm = (pool as any).pool_kind === 'cpmm' || source === 'raydium-cpmm';
                   
                   if (isCpmm) {
                     // CPMM pool: update cpmmCache
