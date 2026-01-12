@@ -1764,61 +1764,122 @@ function runWebsocketRefreshLoop(): void {
                     return;
                   }
                   
-                  // Update pool in cache
+                  // Update pool in cache - handle both AMM and CPMM pools
                   const poolId = derivedMeta.poolId;
-                  const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
-                  const poolIdx = cachedPools.amm.findIndex(p => p.id === poolId);
+                  const isCpmm = pool.pool_kind === 'cpmm' || source === 'raydium-cpmm';
                   
-                  if (poolIdx >= 0) {
-                    const prevPool = cachedPools.amm[poolIdx];
-                    const hasDelta = prevPool.price_a_per_b !== price_a_per_b;
+                  if (isCpmm) {
+                    // CPMM pool: update cpmmCache
+                    const cpmmPools = cpmmCache.data || { cpmm: [] };
+                    const poolIdx = cpmmPools.cpmm.findIndex(p => p.id === poolId);
                     
-                    // Update pool with new price and reserves (in canonical order)
-                    cachedPools.amm[poolIdx] = {
-                      ...prevPool,
-                      price_a_per_b,
-                      reserve_a_raw: canonicalBalanceA.toString(),
-                      reserve_b_raw: canonicalBalanceB.toString(),
-                      updated_ms: Date.now(),
-                    };
-                    raydiumCache.ts = Date.now();
-                    
-                    // Increment event counter for raydium
-                    try { wsCounts.raydium += 1; } catch {}
-                    
-                    logger.debug('pools.ws vault.amm.price_updated', { 
-                      pool: poolId.slice(0,8)+'…',
-                      price: price_a_per_b.toFixed(8),
-                      reserveA: reserveANum,
-                      reserveB: reserveBNum,
-                      wasSwapped,
-                      hasDelta,
-                      cat: 'pools' 
-                    });
-                    
-                    // Schedule graph update if price changed
-                    if (hasDelta) {
-                      try {
-                        const gmod: any = await import('./graph.js');
-                        if (typeof gmod?.applyPoolUpdates === 'function') {
-                          const prev = { amm: [prevPool], clmm: [], cpmm: [] };
-                          const next = { amm: [cachedPools.amm[poolIdx]], clmm: [], cpmm: [] };
-                          void gmod.applyPoolUpdates(prev, next, { pushToArb: false }).catch(() => {});
-                        }
-                      } catch {}
+                    if (poolIdx >= 0) {
+                      const prevPool = cpmmPools.cpmm[poolIdx];
+                      const hasDelta = prevPool.price_a_per_b !== price_a_per_b;
                       
-                      // Track stats
+                      // Update pool with new price and reserves (in canonical order)
+                      cpmmPools.cpmm[poolIdx] = {
+                        ...prevPool,
+                        price_a_per_b,
+                        reserve_a_raw: canonicalBalanceA.toString(),
+                        reserve_b_raw: canonicalBalanceB.toString(),
+                        updated_ms: Date.now(),
+                      };
+                      cpmmCache.ts = Date.now();
+                      
+                      // Increment event counter for cpmm
+                      try { wsCounts['raydium-cpmm'] = (wsCounts['raydium-cpmm'] || 0) + 1; } catch {}
+                      
+                      logger.debug('pools.ws vault.cpmm.price_updated', { 
+                        pool: poolId.slice(0,8)+'…',
+                        price: price_a_per_b.toFixed(8),
+                        reserveA: reserveANum,
+                        reserveB: reserveBNum,
+                        wasSwapped,
+                        hasDelta,
+                        cat: 'pools' 
+                      });
+                      
+                      // Schedule graph update if price changed
+                      if (hasDelta) {
+                        try {
+                          const gmod: any = await import('./graph.js');
+                          if (typeof gmod?.applyPoolUpdates === 'function') {
+                            const prev = { amm: [], clmm: [], cpmm: [prevPool] };
+                            const next = { amm: [], clmm: [], cpmm: [cpmmPools.cpmm[poolIdx]] };
+                            void gmod.applyPoolUpdates(prev, next, { pushToArb: false }).catch(() => {});
+                          }
+                        } catch {}
+                        
+                        // Track stats
+                        try {
+                          wsDeltaStats.raydium_cpmm.decoded += 1;
+                          wsDeltaStats.raydium_cpmm.applied += 1;
+                        } catch {}
+                      }
+                      
+                      // Try to activate pool for lazy mode
                       try {
-                        wsDeltaStats.raydium_amm.decoded += 1;
-                        wsDeltaStats.raydium_amm.applied += 1;
+                        const { tryActivatePool } = await import('./pools.activation.js');
+                        tryActivatePool(poolId, 'raydium-cpmm' as any, true);
                       } catch {}
                     }
+                  } else {
+                    // AMM pool: update raydiumCache.amm
+                    const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
+                    const poolIdx = cachedPools.amm.findIndex(p => p.id === poolId);
                     
-                    // Try to activate pool for lazy mode
-                    try {
-                      const { tryActivatePool } = await import('./pools.activation.js');
-                      tryActivatePool(poolId, 'raydium', true);
-                    } catch {}
+                    if (poolIdx >= 0) {
+                      const prevPool = cachedPools.amm[poolIdx];
+                      const hasDelta = prevPool.price_a_per_b !== price_a_per_b;
+                      
+                      // Update pool with new price and reserves (in canonical order)
+                      cachedPools.amm[poolIdx] = {
+                        ...prevPool,
+                        price_a_per_b,
+                        reserve_a_raw: canonicalBalanceA.toString(),
+                        reserve_b_raw: canonicalBalanceB.toString(),
+                        updated_ms: Date.now(),
+                      };
+                      raydiumCache.ts = Date.now();
+                      
+                      // Increment event counter for raydium
+                      try { wsCounts.raydium += 1; } catch {}
+                      
+                      logger.debug('pools.ws vault.amm.price_updated', { 
+                        pool: poolId.slice(0,8)+'…',
+                        price: price_a_per_b.toFixed(8),
+                        reserveA: reserveANum,
+                        reserveB: reserveBNum,
+                        wasSwapped,
+                        hasDelta,
+                        cat: 'pools' 
+                      });
+                      
+                      // Schedule graph update if price changed
+                      if (hasDelta) {
+                        try {
+                          const gmod: any = await import('./graph.js');
+                          if (typeof gmod?.applyPoolUpdates === 'function') {
+                            const prev = { amm: [prevPool], clmm: [], cpmm: [] };
+                            const next = { amm: [cachedPools.amm[poolIdx]], clmm: [], cpmm: [] };
+                            void gmod.applyPoolUpdates(prev, next, { pushToArb: false }).catch(() => {});
+                          }
+                        } catch {}
+                        
+                        // Track stats
+                        try {
+                          wsDeltaStats.raydium_amm.decoded += 1;
+                          wsDeltaStats.raydium_amm.applied += 1;
+                        } catch {}
+                      }
+                      
+                      // Try to activate pool for lazy mode
+                      try {
+                        const { tryActivatePool } = await import('./pools.activation.js');
+                        tryActivatePool(poolId, 'raydium', true);
+                      } catch {}
+                    }
                   }
                   
                   return;
@@ -4126,22 +4187,47 @@ function runWebsocketRefreshLoop(): void {
             
             const vA = readPubkey(data, CPMM_TOKEN_0_VAULT_OFFSET);
             const vB = readPubkey(data, CPMM_TOKEN_1_VAULT_OFFSET);
-            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
             
-            for (const v of vaults) {
+            // Subscribe to vault A (token0) with side tracking
+            if (vA) {
               try {
-                const vpk = new web3.PublicKey(v as string);
+                const vpk = new web3.PublicKey(vA);
                 const id = await subscribeAccountWithRetry(vpk, handle);
                 subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(String(v), 'raydium');
-                debugLogTargeted('raydium', String(v), { kind: 'cpmm_vault' });
-                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
+                targetedSourceByAccount.set(vA, 'raydium-cpmm');
+                debugLogTargeted('raydium-cpmm', vA, { kind: 'cpmm_vault_a' });
+                // Track vault side for CPMM price calculation
+                derivedAccountToPool.set(vA, { 
+                  poolId: poolAddr, 
+                  accountType: 'vault',
+                  vaultSide: 'A',
+                  otherVault: vB || undefined
+                });
+              } catch {}
+            }
+            
+            // Subscribe to vault B (token1) with side tracking
+            if (vB && vB !== vA) {
+              try {
+                const vpk = new web3.PublicKey(vB);
+                const id = await subscribeAccountWithRetry(vpk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(vB, 'raydium-cpmm');
+                debugLogTargeted('raydium-cpmm', vB, { kind: 'cpmm_vault_b' });
+                // Track vault side for CPMM price calculation
+                derivedAccountToPool.set(vB, { 
+                  poolId: poolAddr, 
+                  accountType: 'vault',
+                  vaultSide: 'B',
+                  otherVault: vA || undefined
+                });
               } catch {}
             }
             
             logger.info('raydium.cpmm.attach.complete', { 
               pool: poolAddr.slice(0,8)+'…', 
-              vaultCount: vaults.length,
+              vaultA: vA?.slice(0,8)+'…',
+              vaultB: vB?.slice(0,8)+'…',
               cat: 'pools' 
             });
           } catch (err) {
