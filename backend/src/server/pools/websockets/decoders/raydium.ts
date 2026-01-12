@@ -480,8 +480,32 @@ async function handleClmmUpdate(
   const idx = next.clmm.findIndex(p => p.id === item.id);
 
   // Validate price delta against previous value
+  // CRITICAL: Check was_swapped to handle orientation differences between HTTP and WS updates
   if (idx >= 0) {
-    validatePriceDelta('raydium', poolId, item.price_a_per_b, next.clmm[idx].price_a_per_b);
+    const prevPool = next.clmm[idx];
+    const prevWasSwapped = (prevPool as any).was_swapped ?? false;
+    const newWasSwapped = processedPrice?.wasSwapped ?? false;
+    
+    // Only validate price delta if orientations match
+    if (prevWasSwapped === newWasSwapped) {
+      validatePriceDelta('raydium', poolId, item.price_a_per_b, prevPool.price_a_per_b);
+    } else {
+      // Orientation changed - compare with inverted previous price to avoid false alarms
+      const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
+        ? 1 / prevPool.price_a_per_b 
+        : undefined;
+      validatePriceDelta('raydium', poolId, item.price_a_per_b, adjustedPrevPrice);
+      
+      logger.debug('raydium.clmm.ws.orientation_flip', {
+        poolId: poolId.slice(0, 8) + '…',
+        prevWasSwapped,
+        newWasSwapped,
+        prevPrice: prevPool.price_a_per_b,
+        newPrice: item.price_a_per_b,
+        adjustedPrevPrice,
+        cat: 'pools'
+      });
+    }
   }
 
   if (idx >= 0) {
@@ -802,8 +826,34 @@ async function handleAmmUpdate(
   const idx = next.amm.findIndex(p => p.id === finalItem.id);
 
   // Validate price delta against previous value
+  // CRITICAL: Check orientation to handle differences between HTTP and WS updates
+  // For Raydium AMM, we use canonicalizePools which may swap mints
   if (idx >= 0) {
-    validatePriceDelta('raydium', poolId, finalItem.price_a_per_b, next.amm[idx].price_a_per_b);
+    const prevPool = next.amm[idx];
+    // Detect if canonicalization changed the orientation
+    const wasSwappedByCanon = item.mint_a !== finalItem.mint_a;
+    const prevWasSwapped = (prevPool as any).was_swapped ?? false;
+    
+    // Only validate price delta if orientations match
+    if (prevWasSwapped === wasSwappedByCanon) {
+      validatePriceDelta('raydium', poolId, finalItem.price_a_per_b, prevPool.price_a_per_b);
+    } else {
+      // Orientation changed - compare with inverted previous price to avoid false alarms
+      const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
+        ? 1 / prevPool.price_a_per_b 
+        : undefined;
+      validatePriceDelta('raydium', poolId, finalItem.price_a_per_b, adjustedPrevPrice);
+      
+      logger.debug('raydium.amm.ws.orientation_flip', {
+        poolId: poolId.slice(0, 8) + '…',
+        prevWasSwapped,
+        wasSwappedByCanon,
+        prevPrice: prevPool.price_a_per_b,
+        newPrice: finalItem.price_a_per_b,
+        adjustedPrevPrice,
+        cat: 'pools'
+      });
+    }
   }
 
   if (idx >= 0) {

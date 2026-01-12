@@ -426,8 +426,32 @@ export async function handlePumpswapPoolAccountUpdate(
     const idx = next.amm.findIndex(p => p.id === item.id);
 
     // Validate price delta against previous value
+    // CRITICAL: Check was_swapped to handle orientation differences between HTTP and WS updates
     if (idx >= 0) {
-      validatePriceDelta('pumpswap', poolId, item.price_a_per_b, next.amm[idx].price_a_per_b);
+      const prevPool = next.amm[idx];
+      const prevWasSwapped = (prevPool as any).was_swapped ?? false;
+      const newWasSwapped = processedPrice.wasSwapped ?? false;
+      
+      // Only validate price delta if orientations match
+      if (prevWasSwapped === newWasSwapped) {
+        validatePriceDelta('pumpswap', poolId, item.price_a_per_b, prevPool.price_a_per_b);
+      } else {
+        // Orientation changed - compare with inverted previous price to avoid false alarms
+        const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
+          ? 1 / prevPool.price_a_per_b 
+          : undefined;
+        validatePriceDelta('pumpswap', poolId, item.price_a_per_b, adjustedPrevPrice);
+        
+        logger.debug('pumpswap.pool.ws.orientation_flip', {
+          poolId: poolId.slice(0, 8) + '…',
+          prevWasSwapped,
+          newWasSwapped,
+          prevPrice: prevPool.price_a_per_b,
+          newPrice: item.price_a_per_b,
+          adjustedPrevPrice,
+          cat: 'pools'
+        });
+      }
     }
 
     if (idx >= 0) {
@@ -692,8 +716,32 @@ export async function handlePumpswapVaultUpdate(
     const idx = next.amm.findIndex(p => p.id === item.id);
 
     // Validate price delta against previous value
+    // CRITICAL: Check was_swapped to handle orientation differences between HTTP and WS updates
     if (idx >= 0) {
-      validatePriceDelta('pumpswap', poolId, item.price_a_per_b, next.amm[idx].price_a_per_b);
+      const prevPool = next.amm[idx];
+      const prevWasSwapped = (prevPool as any).was_swapped ?? false;
+      const newWasSwapped = processedPrice.wasSwapped ?? false;
+      
+      // Only validate price delta if orientations match
+      if (prevWasSwapped === newWasSwapped) {
+        validatePriceDelta('pumpswap', poolId, item.price_a_per_b, prevPool.price_a_per_b);
+      } else {
+        // Orientation changed - compare with inverted previous price to avoid false alarms
+        const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
+          ? 1 / prevPool.price_a_per_b 
+          : undefined;
+        validatePriceDelta('pumpswap', poolId, item.price_a_per_b, adjustedPrevPrice);
+        
+        logger.debug('pumpswap.vault.ws.orientation_flip', {
+          poolId: poolId.slice(0, 8) + '…',
+          prevWasSwapped,
+          newWasSwapped,
+          prevPrice: prevPool.price_a_per_b,
+          newPrice: item.price_a_per_b,
+          adjustedPrevPrice,
+          cat: 'pools'
+        });
+      }
     }
 
     if (idx >= 0) {

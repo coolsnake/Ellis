@@ -917,9 +917,32 @@ export async function handleOrcaUpdate(
     const idx = next.clmm.findIndex(p => p.id === poolId);
     
     // Validate price delta against previous value
+    // CRITICAL: Check was_swapped to handle orientation differences between HTTP and WS updates
     if (idx >= 0) {
       const prevPool = next.clmm[idx];
-      validatePriceDelta('orca', poolId, clmmItem.price_a_per_b, prevPool.price_a_per_b);
+      const prevWasSwapped = (prevPool as any).was_swapped ?? false;
+      const newWasSwapped = processedPrice.wasSwapped ?? false;
+      
+      // Only validate price delta if orientations match
+      if (prevWasSwapped === newWasSwapped) {
+        validatePriceDelta('orca', poolId, clmmItem.price_a_per_b, prevPool.price_a_per_b);
+      } else {
+        // Orientation changed - compare with inverted previous price to avoid false alarms
+        const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
+          ? 1 / prevPool.price_a_per_b 
+          : undefined;
+        validatePriceDelta('orca', poolId, clmmItem.price_a_per_b, adjustedPrevPrice);
+        
+        logger.debug('orca.ws.orientation_flip', {
+          poolId: poolId.slice(0, 8) + '…',
+          prevWasSwapped,
+          newWasSwapped,
+          prevPrice: prevPool.price_a_per_b,
+          newPrice: clmmItem.price_a_per_b,
+          adjustedPrevPrice,
+          cat: 'pools'
+        });
+      }
     }
     
     if (idx >= 0) {
