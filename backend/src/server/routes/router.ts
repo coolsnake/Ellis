@@ -1134,7 +1134,7 @@ export function createRouterRouter(io: SocketIOServer): Router {
           },
         },
         totalPools: {
-          raydium: raydium.clmm.length + raydium.amm.length + raydiumCpmm.cpmm.length,
+          raydium: raydium.clmm.length + raydium.amm.length + allCpmm.length,
           orca: orca.clmm.length,
           meteora: meteora.clmm.length,
           meteoraBalanced: meteoraBalanced.amm.length,
