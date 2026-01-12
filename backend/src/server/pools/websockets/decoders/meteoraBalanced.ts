@@ -517,8 +517,32 @@ export async function handleMeteoraBalancedVaultUpdate(
     const idx = next.amm.findIndex(p => p.id === item.id);
 
     // Validate price delta against previous value
+    // CRITICAL: Check was_swapped to handle orientation differences between HTTP and WS updates
     if (idx >= 0) {
-      validatePriceDelta('meteora_damm_v2', poolId, item.price_a_per_b, next.amm[idx].price_a_per_b);
+      const prevPool = next.amm[idx];
+      const prevWasSwapped = (prevPool as any).was_swapped ?? false;
+      const newWasSwapped = processedPrice.wasSwapped ?? false;
+      
+      // Only validate price delta if orientations match
+      if (prevWasSwapped === newWasSwapped) {
+        validatePriceDelta('meteora_damm_v2', poolId, item.price_a_per_b, prevPool.price_a_per_b);
+      } else {
+        // Orientation changed - compare with inverted previous price to avoid false alarms
+        const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
+          ? 1 / prevPool.price_a_per_b 
+          : undefined;
+        validatePriceDelta('meteora_damm_v2', poolId, item.price_a_per_b, adjustedPrevPrice);
+        
+        logger.debug('meteora_balanced.vault.orientation_flip', {
+          poolId: poolId.slice(0, 8) + '…',
+          prevWasSwapped,
+          newWasSwapped,
+          prevPrice: prevPool.price_a_per_b,
+          newPrice: item.price_a_per_b,
+          adjustedPrevPrice,
+          cat: 'pools'
+        });
+      }
     }
 
     if (idx >= 0) {
@@ -781,8 +805,32 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     const idx = next.amm.findIndex(p => p.id === item.id);
     
     // Validate price delta against previous value
+    // CRITICAL: Check was_swapped to handle orientation differences between HTTP and WS updates
     if (idx >= 0) {
-      validatePriceDelta('meteora_damm_v1', poolId, item.price_a_per_b, next.amm[idx].price_a_per_b);
+      const prevPool = next.amm[idx];
+      const prevWasSwapped = (prevPool as any).was_swapped ?? false;
+      const newWasSwapped = processedPrice?.wasSwapped ?? false;
+      
+      // Only validate price delta if orientations match
+      if (prevWasSwapped === newWasSwapped) {
+        validatePriceDelta('meteora_damm_v1', poolId, item.price_a_per_b, prevPool.price_a_per_b);
+      } else {
+        // Orientation changed - compare with inverted previous price to avoid false alarms
+        const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
+          ? 1 / prevPool.price_a_per_b 
+          : undefined;
+        validatePriceDelta('meteora_damm_v1', poolId, item.price_a_per_b, adjustedPrevPrice);
+        
+        logger.debug('meteora_balanced.v1.orientation_flip', {
+          poolId: poolId.slice(0, 8) + '…',
+          prevWasSwapped,
+          newWasSwapped,
+          prevPrice: prevPool.price_a_per_b,
+          newPrice: item.price_a_per_b,
+          adjustedPrevPrice,
+          cat: 'pools'
+        });
+      }
     }
     
     if (idx >= 0) {
@@ -868,15 +916,45 @@ export async function handleMeteoraBalancedUpdate(
     const owner = typeof info.owner === 'string' ? info.owner : info.owner?.toBase58?.() || '';
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
     
-    // Check if this is a pool account (owned by DAMM v1 program)
+    // Check if this is a pool account (owned by DAMM v1 or v2 program)
     if (owner === METEORA_BALANCED_V1_PROGRAM) {
-      // This is a direct pool account update
+      // This is a direct DAMM v1 pool account update
       logger.debug('meteora_balanced.update.pool_account', {
         account: accountAddress.slice(0, 8) + '…',
         dataLen: data.length,
+        version: 'v1',
         cat: 'pools'
       });
       return handleMeteoraBalancedPoolAccountUpdate(info, accountAddress);
+    }
+    
+    if (owner === METEORA_BALANCED_V2_PROGRAM) {
+      // This is a direct DAMM v2 (CP-AMM) pool account update
+      // Note: V2 pools are typically updated via vault balance changes,
+      // but direct pool account updates should also be handled
+      logger.debug('meteora_balanced.update.pool_account', {
+        account: accountAddress.slice(0, 8) + '…',
+        dataLen: data.length,
+        version: 'v2',
+        cat: 'pools'
+      });
+      // V2 pool accounts have different structure - route to vault update path
+      // since we track V2 pools via their vault balances
+      const poolData = findPoolInCache(accountAddress);
+      if (poolData && poolData.source === 'meteora_balanced') {
+        // Pool is known, but we need vault balances to update price
+        // Log and skip - vault updates will provide the balance data
+        logger.debug('meteora_balanced.update.v2_pool_direct', {
+          account: accountAddress.slice(0, 8) + '…',
+          hint: 'V2 pools update via vault balances',
+          cat: 'pools'
+        });
+        return { success: true, skipped: true, skipReason: 'v2_pool_via_vault' };
+      }
+      // Unknown V2 pool - skip for now
+      wsDeltaStats.meteora_damm_v2.skipped += 1;
+      incrementSkipReason('meteora_damm_v2', 'unknown_v2_pool');
+      return { success: true, skipped: true, skipReason: 'unknown_v2_pool' };
     }
     
     // Check if this is a derived account (vault)
