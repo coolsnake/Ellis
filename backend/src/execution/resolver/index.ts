@@ -183,10 +183,10 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         const { resolveRaydiumClmm } = await import('./raydiumClmm.js');
         return await resolveRaydiumClmm(hop);
       } else if (hop.dex === 'orca') {
-        try { logger.info('tx.resolve.orca.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, traceId, ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, traceId } as any }); } catch (e) { logCatchError('resolver.index', e); }
+        try { logger.debug('tx.resolve.orca.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, traceId, ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, traceId } as any }); } catch (e) { logCatchError('resolver.index', e); }
         const { resolveOrca } = await import('./orca.js');
         const resolved = await resolveOrca(hop, traceId);
-        try { logger.info('tx.resolve.orca.complete', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, traceId, ctx: { poolId: resolved.poolId, hasTickArrays: !!(resolved.tickArrayLower && resolved.tickArrayCenter && resolved.tickArrayUpper), traceId } as any }); } catch (e) { logCatchError('resolver.index', e); }
+        try { logger.debug('tx.resolve.orca.complete', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, traceId, ctx: { poolId: resolved.poolId, hasTickArrays: !!(resolved.tickArrayLower && resolved.tickArrayCenter && resolved.tickArrayUpper), traceId } as any }); } catch (e) { logCatchError('resolver.index', e); }
         return resolved;
       } else if (hop.dex === 'pumpswap') {
         const { resolvePumpswap } = await import('./pumpswap.js');
@@ -455,7 +455,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     
     if (isArbCycle) {
       try {
-        logger.info('tx.resolve.arb_cycle_detected', {
+        logger.debug('tx.resolve.arb_cycle_detected', {
           cat: 'tx',
           code: LogCode.TX_RESOLVE_OK,
           traceId,
@@ -491,7 +491,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           // Use the exact quotedOutputRaw from previous hop, not curIn which might have rounding
           curIn = prevHop.quotedOutputRaw;
           try {
-            logger.info('tx.resolve.hop.amount.use_exact_quoted', {
+            logger.debug('tx.resolve.hop.amount.use_exact_quoted', {
               cat: 'tx',
               code: LogCode.TX_RESOLVE_OK,
               traceId,
@@ -532,7 +532,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
 
       // Add logging to debug amount propagation
       try {
-        logger.info('tx.resolve.hop.amount.set', {
+        logger.debug('tx.resolve.hop.amount.set', {
           cat: 'tx',
           code: LogCode.TX_RESOLVE_OK,
           traceId,
@@ -558,7 +558,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         
         // Log decimal check for debugging
         try {
-          logger.info('tx.resolve.hop.decimal_check', {
+          logger.debug('tx.resolve.hop.decimal_check', {
             cat: 'tx',
             code: LogCode.TX_RESOLVE_OK,
             traceId,
@@ -734,7 +734,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         
         if (isArbCycle) {
           try {
-            logger.info('tx.resolve.arb.router_level_enforcement', {
+            logger.debug('tx.resolve.arb.router_level_enforcement', {
               cat: 'tx',
               code: LogCode.TX_RESOLVE_OK,
               traceId,
@@ -778,7 +778,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         curIn = out; // Always use exact quoted output, not conservative amount
         
         try {
-          logger.info('tx.resolve.hop.propagate', {
+          logger.debug('tx.resolve.hop.propagate', {
             cat: 'tx',
             code: LogCode.TX_RESOLVE_OK,
             traceId,

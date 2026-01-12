@@ -20,6 +20,7 @@ import {
   hasQuarantinedPool,
 } from './poolFailureTracker.js';
 import { analyzeTransactionFailure } from './poolFailureAnalyzer.js';
+import { parseSimulationLogs, buildSimulationReport, formatSimReportForLog } from './simLogParser.js';
 // PERF: Static imports to avoid dynamic import overhead in hot paths
 import { buildTransactionSummary } from '../server/arb.build.worker.compute.js';
 import { writeTxFullDump } from '../utils/txTrace.js';
@@ -337,15 +338,15 @@ export class ArbExecutor {
   }
 
   private async processOpportunities(opportunities: Opportunity[]): Promise<void> {
-    // Log incoming batch
-    logger.info('arb.executor.batch_received', {
+    // Log incoming batch (debug - fires every ~100ms)
+    logger.debug('arb.executor.batch_received', {
       cat: 'arb',
       count: opportunities.length,
       enabled: this.config.enabled,
     });
 
     if (!this.config.enabled) {
-      logger.info('arb.executor.batch_skipped', {
+      logger.debug('arb.executor.batch_skipped', {
         cat: 'arb',
         reason: 'executor_disabled',
         count: opportunities.length,
@@ -363,7 +364,7 @@ export class ArbExecutor {
     // Check rate limit
     if (this.config.maxExecutionsPerMinute && 
         this.state.executionsThisMinute >= this.config.maxExecutionsPerMinute) {
-      logger.info('arb.executor.batch_rate_limited', {
+      logger.debug('arb.executor.batch_rate_limited', {
         cat: 'arb',
         count: opportunities.length,
         executionsThisMinute: this.state.executionsThisMinute,
@@ -398,8 +399,8 @@ export class ArbExecutor {
       }
     }
     
-    // Summary log
-    logger.info('arb.executor.batch_processed', {
+    // Summary log (debug - fires every batch)
+    logger.debug('arb.executor.batch_processed', {
       cat: 'arb',
       total: opportunities.length,
       accepted,
@@ -414,8 +415,8 @@ export class ArbExecutor {
     const pathStr = opp.path.join('->');
     const profitBps = opp.net_bps ?? opp.profit_bps;
 
-    // Log incoming opportunity for detailed tracing
-    logger.info('arb.executor.opportunity_check', {
+    // Log incoming opportunity for detailed tracing (debug - fires per opportunity)
+    logger.debug('arb.executor.opportunity_check', {
       cat: 'arb',
       path: pathStr,
       profitBps,
@@ -426,7 +427,7 @@ export class ArbExecutor {
 
     // Check if already in flight
     if (this.state.inFlight.has(oppKey)) {
-      logger.info('arb.executor.filtered', {
+      logger.debug('arb.executor.filtered', {
         cat: 'arb',
         reason: 'already_in_flight',
         path: pathStr,
@@ -437,7 +438,7 @@ export class ArbExecutor {
 
     // Check profit threshold
     if (profitBps < this.config.minProfitBps) {
-      logger.info('arb.executor.filtered', {
+      logger.debug('arb.executor.filtered', {
         cat: 'arb',
         reason: 'low_profit',
         path: pathStr,
@@ -449,7 +450,7 @@ export class ArbExecutor {
 
     // Check hop count
     if (this.config.maxHops && opp.hop_count && opp.hop_count > this.config.maxHops) {
-      logger.info('arb.executor.filtered', {
+      logger.debug('arb.executor.filtered', {
         cat: 'arb',
         reason: 'too_many_hops',
         path: pathStr,
@@ -462,7 +463,7 @@ export class ArbExecutor {
     // Check reserves
     if (this.config.minReservesUsd && opp.reserves_min && 
         opp.reserves_min < this.config.minReservesUsd) {
-      logger.info('arb.executor.filtered', {
+      logger.debug('arb.executor.filtered', {
         cat: 'arb',
         reason: 'low_reserves',
         path: pathStr,
@@ -477,7 +478,7 @@ export class ArbExecutor {
     if (lastExecution) {
       const elapsed = Date.now() - lastExecution;
       if (elapsed < this.config.cooldownMs) {
-        logger.info('arb.executor.filtered', {
+        logger.debug('arb.executor.filtered', {
           cat: 'arb',
           reason: 'cooldown',
           path: pathStr,
@@ -490,7 +491,7 @@ export class ArbExecutor {
 
     // Check blacklist
     if (this.config.blacklistedPaths?.some(bp => pathStr.includes(bp))) {
-      logger.info('arb.executor.filtered', {
+      logger.debug('arb.executor.filtered', {
         cat: 'arb',
         reason: 'blacklisted',
         path: pathStr,
@@ -501,7 +502,7 @@ export class ArbExecutor {
     // Check global cooldown
     const timeSinceLastExec = Date.now() - this.state.lastExecutionTime;
     if (timeSinceLastExec < 100) { // Minimum 100ms between any executions
-      logger.info('arb.executor.filtered', {
+      logger.debug('arb.executor.filtered', {
         cat: 'arb',
         reason: 'global_cooldown',
         path: pathStr,
@@ -518,7 +519,7 @@ export class ArbExecutor {
           const reasons = Array.from(result.reasons.entries())
             .map(([id, reason]) => `${id.slice(0, 8)}...: ${reason}`)
             .join(', ');
-          logger.info('arb.executor.filtered', {
+          logger.debug('arb.executor.filtered', {
             cat: 'arb',
             reason: 'quarantined_pool',
             path: pathStr,
@@ -551,7 +552,7 @@ export class ArbExecutor {
           const canUseFlashloan = this.config.flashloanSettings?.enabled && 
             (startToken === SOL_MINT || startToken === USDC_MINT);
           if (!canUseFlashloan) {
-            logger.info('arb.executor.filtered', {
+            logger.debug('arb.executor.filtered', {
               cat: 'arb',
               reason: 'balance_unknown',
               path: pathStr,
@@ -570,7 +571,7 @@ export class ArbExecutor {
             (startToken === SOL_MINT || startToken === USDC_MINT);
           
           if (!hasBalance && !canUseFlashloan) {
-            logger.info('arb.executor.filtered', {
+            logger.debug('arb.executor.filtered', {
               cat: 'arb',
               reason: 'no_balance',
               path: pathStr,
@@ -581,16 +582,16 @@ export class ArbExecutor {
             return false;
           }
           
-          // Log balance check
+          // Log balance check (debug - fires per opportunity)
           if (hasBalance) {
-            logger.info('arb.executor.balance_check_passed', {
+            logger.debug('arb.executor.balance_check_passed', {
               cat: 'arb',
               path: pathStr,
               startToken: startToken.slice(0, 8) + '...',
               balance,
             });
           } else {
-            logger.info('arb.executor.balance_check_flashloan_available', {
+            logger.debug('arb.executor.balance_check_flashloan_available', {
               cat: 'arb',
               path: pathStr,
               startToken: startToken.slice(0, 8) + '...',
@@ -812,7 +813,7 @@ export class ArbExecutor {
             
             // First check: do we have any balance at all?
             if (balance <= 0) {
-              logger.info('arb.executor.skipped.no_balance', {
+              logger.debug('arb.executor.skipped.no_balance', {
                 cat: 'arb',
                 traceId,
                 path: executionPath.join('->'),
@@ -844,7 +845,7 @@ export class ArbExecutor {
             } else {
               // Have balance but no price - use FRESH balance for raw size
               // Don't rely on stale _rawBalanceFallback from sizing phase
-              logger.info('arb.executor.using_raw_balance', {
+              logger.debug('arb.executor.using_raw_balance', {
                 cat: 'arb',
                 traceId,
                 path: executionPath.join('->'),
@@ -912,7 +913,7 @@ export class ArbExecutor {
               
               // Sanity check: ensure rawAtoms is positive and reasonable
               if (rawAtoms > 0n) {
-                logger.info('arb.executor.using_raw_size', {
+                logger.debug('arb.executor.using_raw_size', {
                   cat: 'arb',
                   traceId,
                   path: executionPath.join('->'),
@@ -1223,37 +1224,81 @@ export class ArbExecutor {
           } catch {}
         }
         
-        logger.info('arb.executor.simulated', {
-          cat: 'arb',
-          traceId,
-          path: pathStr,
-          result: simResult,
-          // Include opportunity data for context
-          opportunity: {
-            path: opp.path,
-            profit_bps: opp.profit_bps,
-            net_bps: opp.net_bps,
-            est_profit_usd: opp.est_profit_usd,
-            dexes: opp.dexes,
-            hop_dexes: opp.hop_dexes,
-            hop_rates: opp.hop_rates,
-            hop_outs: opp.hop_outs,
-            hop_pool_ids: opp.hop_pool_ids,
-            hop_fee_bps: opp.hop_fee_bps,
-            hop_liquidity_display: opp.hop_liquidity_display,
-            hop_count: opp.hop_count,
-            rate_product: opp.rate_product,
-            link_edges_used: opp.link_edges_used,
-            link_penalty_bps_total: opp.link_penalty_bps_total,
-            min_edge_liquidity: opp.min_edge_liquidity,
-            est_capacity: opp.est_capacity,
-            bottleneck: opp.bottleneck,
-            detected_ms: opp.detected_ms,
-            first_seen_ms: opp.first_seen_ms,
-            last_verified_ms: opp.last_verified_ms,
-            detections: opp.detections,
-          },
-        });
+        // Parse simulation logs for analysis (both success and failure)
+        const simAnalysis = parseSimulationLogs(simResult.logs);
+        const simReport = buildSimulationReport(opp, plan, simAnalysis);
+        const condensedReport = formatSimReportForLog(simReport);
+        
+        if (simResult.err) {
+          // Simulation failed - log detailed error analysis
+          logger.error('arb.executor.simulate.failed', {
+            cat: 'arb',
+            traceId,
+            path: pathStr,
+            error: simResult.err,
+            simulation: {
+              swapsExecuted: simAnalysis.swapsExecuted.length,
+              totalHops: plan.hops.length,
+              profitCheckFailed: simAnalysis.profitCheckFailed,
+              errorCode: simAnalysis.errorCode,
+              errorMessage: simAnalysis.errorMessage,
+              lastSuccessfulStep: simAnalysis.lastSuccessfulStep,
+            },
+            comparison: {
+              expectedProfitBps: opp.profit_bps,
+              expectedNetBps: opp.net_bps,
+              expectedRateProduct: opp.rate_product,
+              quotedMinProfit: simReport.quoted?.calculatedMinProfit,
+              actualProfit: simAnalysis.profitValue?.toString(),
+              isArbCycle: plan.isArbCycle,
+              initialInputRaw: plan.initialInputRaw?.toString(),
+            },
+            hopComparison: condensedReport.hopComparison,
+            logs: simResult.logs?.slice(-10),
+          });
+          
+          emit('arb:simulation:failed', {
+            path: pathStr,
+            error: `Simulation failed: ${simResult.err}`,
+            timestamp: Date.now(),
+            analysis: {
+              swapsExecuted: simAnalysis.swapsExecuted.length,
+              totalHops: plan.hops.length,
+              profitCheckFailed: simAnalysis.profitCheckFailed,
+              failedAt: simReport.analysis?.failedAtHop,
+            },
+          });
+        } else {
+          // Simulation succeeded - log with analysis
+          logger.info('arb.executor.simulated', {
+            cat: 'arb',
+            traceId,
+            path: pathStr,
+            simResult: {
+              err: simResult.err,
+              logsCount: simResult.logs?.length,
+            },
+            analysis: {
+              swapsExecuted: simAnalysis.swapsExecuted.length,
+              totalHops: plan.hops.length,
+              profitValue: simAnalysis.profitValue?.toString(),
+              profitCheckFailed: simAnalysis.profitCheckFailed,
+            },
+            // Include opportunity data for context
+            opportunity: {
+              path: opp.path,
+              profit_bps: opp.profit_bps,
+              net_bps: opp.net_bps,
+              est_profit_usd: opp.est_profit_usd,
+              hop_dexes: opp.hop_dexes,
+              hop_rates: opp.hop_rates,
+              hop_outs: opp.hop_outs,
+              hop_pool_ids: opp.hop_pool_ids,
+              rate_product: opp.rate_product,
+            },
+            hopComparison: condensedReport.hopComparison,
+          });
+        }
         this.state.successfulExecutions++;
       } else if (mode === 'simulate_then_execute') {
         // Simulate first, then execute only if simulation succeeds
@@ -1266,18 +1311,51 @@ export class ArbExecutor {
 
         // Check if simulation succeeded (no error)
         if (simResult.err) {
+          // Parse simulation logs for detailed analysis
+          const simAnalysis = parseSimulationLogs(simResult.logs);
+          const simReport = buildSimulationReport(opp, plan, simAnalysis);
+          const condensedReport = formatSimReportForLog(simReport);
+          
           logger.error('arb.executor.simulate_then_execute.sim_failed', {
             cat: 'arb',
             traceId,
             path: pathStr,
             error: simResult.err,
-            logs: simResult.logs?.slice(-5),
+            // Include detailed simulation analysis
+            simulation: {
+              swapsExecuted: simAnalysis.swapsExecuted.length,
+              totalHops: plan.hops.length,
+              profitCheckFailed: simAnalysis.profitCheckFailed,
+              errorCode: simAnalysis.errorCode,
+              errorMessage: simAnalysis.errorMessage,
+              lastSuccessfulStep: simAnalysis.lastSuccessfulStep,
+            },
+            // Expected vs actual comparison
+            comparison: {
+              expectedProfitBps: opp.profit_bps,
+              expectedNetBps: opp.net_bps,
+              expectedRateProduct: opp.rate_product,
+              quotedMinProfit: simReport.quoted?.calculatedMinProfit,
+              actualProfit: simAnalysis.profitValue?.toString(),
+              isArbCycle: plan.isArbCycle,
+              initialInputRaw: plan.initialInputRaw?.toString(),
+            },
+            // Condensed hop comparison for quick debugging
+            hopComparison: condensedReport.hopComparison,
+            // Last 10 logs for context
+            logs: simResult.logs?.slice(-10),
           });
 
           emit('arb:execution:failed', {
             path: pathStr,
             error: `Simulation failed: ${simResult.err}`,
             timestamp: Date.now(),
+            analysis: {
+              swapsExecuted: simAnalysis.swapsExecuted.length,
+              totalHops: plan.hops.length,
+              profitCheckFailed: simAnalysis.profitCheckFailed,
+              failedAt: simReport.analysis?.failedAtHop,
+            },
           });
 
           throw new Error(`Simulation failed before execute: ${simResult.err}`);
@@ -1914,7 +1992,7 @@ export class ArbExecutor {
             // Store on opportunity so execution can use raw size instead of USD
             (opp as any)._rawBalanceFallback = balance;
             (opp as any)._rawBalanceStartToken = startToken;
-            logger.info('arb.executor.sizing.no_price_using_raw_balance', {
+            logger.debug('arb.executor.sizing.no_price_using_raw_balance', {
               cat: 'arb',
               path: opp.path.join('->'),
               startToken: startToken.slice(0, 8) + '...',
@@ -1957,7 +2035,7 @@ export class ArbExecutor {
           
           // Log capacity constraint info if present (important for CLMM/DLMM sizing)
           if (result.capacityInfo?.wasConstrained) {
-            logger.info('arb.executor.sizing.capacity_constrained', {
+            logger.debug('arb.executor.sizing.capacity_constrained', {
               cat: 'arb',
               path: opp.path.join('->'),
               capacityConstraintUsd: result.capacityInfo.capacityConstraintUsd.toFixed(2),
@@ -1983,7 +2061,7 @@ export class ArbExecutor {
           // Fall through to heuristic if optimal calculation fails
           // Check if this was due to capacity constraints
           if (result.capacityInfo?.wasConstrained) {
-            logger.info('arb.executor.sizing.capacity_rejection', {
+            logger.debug('arb.executor.sizing.capacity_rejection', {
               cat: 'arb',
               path: opp.path.join('->'),
               reason: 'capacity_below_minimum',
