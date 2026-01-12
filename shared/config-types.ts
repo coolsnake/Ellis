@@ -55,7 +55,7 @@ export interface SharedFeesConfig {
 }
 
 export interface ExecEngineConfigPublic {
-  mode: 'simulate' | 'direct';
+  mode: 'simulate' | 'direct' | 'simulate_then_execute';
   slippageBpsDefault: number;
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;

@@ -243,8 +243,8 @@ export function OpportunityList(
                   const j = await r.json().catch(()=>({}));
                   if (!r.ok) {
                     setSimErr(String((j && (j.error || j.err)) || 'send_failed'));
-                  } else if (j && j.mode && j.mode !== 'direct') {
-                    setSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' in Exec Config.`);
+                  } else if (j && j.mode && j.mode !== 'direct' && j.mode !== 'simulate_then_execute') {
+                    setSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' or 'simulate → execute' in Exec Config.`);
                   }
                   try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); /* best-effort */ } catch {}
                 } catch {}

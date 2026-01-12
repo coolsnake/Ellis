@@ -1055,8 +1055,8 @@ export class ArbExecutor {
       // Use ALT addresses from built transaction, fallback to exec config
       const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
       
-      // If flashloan is needed and mode is direct, use router's flashloan execution
-      if (useFlashloan && mode === 'direct') {
+      // If flashloan is needed and mode is direct or simulate_then_execute, use router's flashloan execution
+      if (useFlashloan && (mode === 'direct' || mode === 'simulate_then_execute')) {
         logger.info('arb.executor.flashloan.executing', {
           cat: 'arb',
           traceId,
@@ -1255,6 +1255,126 @@ export class ArbExecutor {
           },
         });
         this.state.successfulExecutions++;
+      } else if (mode === 'simulate_then_execute') {
+        // Simulate first, then execute only if simulation succeeds
+        const simResult = await assembleAndSimulate(built.instructions, {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: altAddresses,
+          traceId,
+        });
+
+        // Check if simulation succeeded (no error)
+        if (simResult.err) {
+          logger.error('arb.executor.simulate_then_execute.sim_failed', {
+            cat: 'arb',
+            traceId,
+            path: pathStr,
+            error: simResult.err,
+            logs: simResult.logs?.slice(-5),
+          });
+
+          emit('arb:execution:failed', {
+            path: pathStr,
+            error: `Simulation failed: ${simResult.err}`,
+            timestamp: Date.now(),
+          });
+
+          throw new Error(`Simulation failed before execute: ${simResult.err}`);
+        }
+
+        logger.info('arb.executor.simulate_then_execute.sim_ok', {
+          cat: 'arb',
+          traceId,
+          path: pathStr,
+          logs: simResult.logs?.slice(-3),
+        });
+
+        // Simulation passed - proceed with actual execution
+        let tipResult: TipResult | null = null;
+        const firstHop = plan.hops[0];
+        if (firstHop && opp.profit_bps > 0) {
+          try {
+            const kp = await ensureWallet(CONFIG.walletPath);
+            tipResult = await calculateProfitBasedTip(kp.publicKey, {
+              inputMint: firstHop.inputMint,
+              inputAmountRaw: firstHop.amountInRaw,
+              inputDecimals: firstHop.inputDecimals ?? 6,
+              profitBps: opp.profit_bps,
+            });
+          } catch (tipErr: any) {
+            logger.warn('arb.executor.tip_calc_failed', { 
+              cat: 'arb', 
+              traceId,
+              error: String(tipErr?.message || tipErr) 
+            });
+          }
+        }
+
+        const instructionsWithTip = tipResult?.tipIx 
+          ? [...built.instructions, tipResult.tipIx] 
+          : built.instructions;
+
+        const jitoCfg = await loadJitoConfig();
+        const jitoEnabled = jitoCfg.enabled;
+
+        const sendResult = await assembleAndSend(instructionsWithTip, {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: altAddresses,
+          traceId,
+          jito: jitoEnabled ? {
+            enabled: true,
+            sendToBlockEngine: async (wireBase64: string) => {
+              const sig = await sendToBlockEngine(wireBase64);
+              logger.info('arb.jito.parallel_sent', { 
+                cat: 'tx', 
+                traceId,
+                signature: sig.slice(0, 16),
+                tipLamports: tipResult?.tipLamports ?? 0,
+                hasTip: !!tipResult,
+              });
+              return sig;
+            },
+          } : undefined,
+        });
+        signature = sendResult?.signature || null;
+
+        if (signature) {
+          logger.info('arb.executor.simulate_then_execute.success', {
+            cat: 'arb',
+            traceId,
+            path: pathStr,
+            signature,
+            durationMs: Date.now() - startTime,
+          });
+
+          this.state.successfulExecutions++;
+          await this.notifyExecuted(opp);
+
+          await addTxRecord({
+            id: signature.slice(0, 8),
+            timeMs: Date.now(),
+            path: plan.path,
+            hops: plan.hops.map((h: any) => ({
+              dex: h.dex,
+              variant: h.variant,
+              poolId: h.poolId,
+            })),
+            ixCount: built.ixCount,
+            txSizeBytes: built.sizeBytes,
+            signature,
+            status: 'send_ok',
+          });
+
+          emit('arb:execution', {
+            path: pathStr,
+            signature,
+            profitBps: opp.profit_bps,
+            netBps: opp.net_bps,
+            timestamp: Date.now(),
+          });
+        }
       } else {
         // Calculate Jito tip based on expected profit
         // Note: calculateProfitBasedTip checks stored jito config internally and returns null if disabled

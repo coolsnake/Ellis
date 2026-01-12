@@ -11,7 +11,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   });
   
   const [det, setDet] = useState<any>(uiPrefs.lastValues || {});
-  const [execMode, setExecMode] = useState<'simulate'|'direct'>('simulate');
+  const [execMode, setExecMode] = useState<'simulate'|'direct'|'simulate_then_execute'>('simulate');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (k: string, v: any) => setDet((p: any) => ({ ...p, [k]: v }));
@@ -34,7 +34,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           setDet({ ...j, anchor_mints_csv: anchorMintsCsv });
         }
       } catch {}
-      try { const r = await fetch(`${apiBase}${ROUTES.exec.config}`); if (r.ok) { const j = await r.json(); setExecMode((j?.mode === 'direct') ? 'direct' : 'simulate'); } } catch {}
+      try { const r = await fetch(`${apiBase}${ROUTES.exec.config}`); if (r.ok) { const j = await r.json(); setExecMode(j?.mode === 'direct' ? 'direct' : j?.mode === 'simulate_then_execute' ? 'simulate_then_execute' : 'simulate'); } } catch {}
       try { 
         const r = await fetch(`${apiBase}/arb/executor/config`); 
         if (r.ok) { 

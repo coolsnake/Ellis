@@ -645,8 +645,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                       const j = await r.json().catch(()=>({}));
                       if (!r.ok) {
                         setNmSimErr(String((j && (j.error || j.err)) || 'send_failed'));
-                      } else if (j && j.mode && j.mode !== 'direct') {
-                        setNmSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' in Exec Config.`);
+                      } else if (j && j.mode && j.mode !== 'direct' && j.mode !== 'simulate_then_execute') {
+                        setNmSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' or 'simulate → execute' in Exec Config.`);
                       }
                       try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); const allItems = Array.isArray(jh?.items) ? jh.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
                     } catch (e: any) {

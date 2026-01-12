@@ -85,7 +85,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   const onSave = async () => {
     if (saving) return; setSaving(true); setError(null);
     const execBody: ExecEngineConfigPublic = {
-      mode: (cfg.mode === 'direct' ? 'direct' : 'simulate'),
+      mode: cfg.mode === 'direct' ? 'direct' : cfg.mode === 'simulate_then_execute' ? 'simulate_then_execute' : 'simulate',
       slippageBpsDefault: Number(cfg.slippageBpsDefault) || 0,
       computeUnitLimit: Number(cfg.computeUnitLimit) || 0,
       computeUnitPriceMicroLamports: Number(cfg.computeUnitPriceMicroLamports) || 0,
@@ -134,7 +134,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           <div className="bg-gray-700 rounded p-4">
             <h3 className="text-lg font-semibold mb-3">Direct Execution</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div><label className="block text-sm mb-1">Mode</label><select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.mode} onChange={(e)=>set('mode', e.target.value)}><option value="simulate">simulate</option><option value="direct">direct</option></select></div>
+              <div><label className="block text-sm mb-1">Mode</label><select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.mode} onChange={(e)=>set('mode', e.target.value)}><option value="simulate">simulate</option><option value="direct">direct</option><option value="simulate_then_execute">simulate → execute</option></select></div>
               <div><label className="block text-sm mb-1">Default Slippage (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.slippageBpsDefault} onChange={(e)=>set('slippageBpsDefault', Number(e.target.value)||0)} /></div>
               <div><label className="block text-sm mb-1">Compute Unit Limit</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.computeUnitLimit} onChange={(e)=>set('computeUnitLimit', Number(e.target.value)||0)} /></div>
               <div><label className="block text-sm mb-1">Priority Fee (microLamports)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.computeUnitPriceMicroLamports} onChange={(e)=>set('computeUnitPriceMicroLamports', Number(e.target.value)||0)} /></div>
