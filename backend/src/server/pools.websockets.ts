@@ -1559,7 +1559,7 @@ function runWebsocketRefreshLoop(): void {
         const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
         const subs: Array<{ kind: 'account' | 'program'; id: number }> = [];
         // Track explicit targets so we can classify events for SPL Token vault accounts (e.g., Raydium AMM vaults)
-        const targetedSourceByAccount: Map<string, 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap'> = new Map();
+        const targetedSourceByAccount: Map<string, 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap'> = new Map();
         // Debounce frequent program change bursts to at most one refresh per source per min gap
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
         let lastRay = 0; let lastOrc = 0;
