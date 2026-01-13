@@ -347,8 +347,8 @@ export async function fetchRaydiumCpmmGraphQL(mints: string[]): Promise<RaydiumC
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-cpmm-graphql-raw.json');
   const retries = Number((CONFIG as any)?.raydiumCpmm?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.raydiumCpmm?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.raydiumCpmm?.pageSize || 1000);
-  const maxPages = Number((CONFIG as any)?.raydiumCpmm?.maxPages || 50);
+  const pageSize = Number((CONFIG as any)?.raydiumCpmm?.graphqlPageSize || (CONFIG as any)?.raydiumCpmm?.pageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.raydiumCpmm?.graphqlMaxPages || (CONFIG as any)?.raydiumCpmm?.maxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.raydiumCpmm?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.raydiumCpmm?.detailBatchSize || 50);
   const detailDelayMs = Number((CONFIG as any)?.raydiumCpmm?.detailBatchDelayMs ?? pageDelayMs);

@@ -159,7 +159,7 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'meteora-graphql-raw.json');
   const retries = Number((CONFIG as any)?.meteora?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.meteora?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.meteora?.pageSize || 1000);
+  const pageSize = Number((CONFIG as any)?.meteora?.graphqlPageSize || (CONFIG as any)?.meteora?.pageSize || 1000);
   // Use graphqlMaxPages for batch queries (higher limit for anchor tokens)
   const maxPages = Number((CONFIG as any)?.meteora?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.meteora?.pageDelayMs || 200);

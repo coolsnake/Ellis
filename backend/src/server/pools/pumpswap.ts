@@ -191,7 +191,7 @@ export async function fetchPumpswapGraphQL(providedMints?: string[]): Promise<Pu
 
   const retries = Number((CONFIG as any)?.pumpswap?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.pumpswap?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.pumpswap?.pageSize || 1000);
+  const pageSize = Number((CONFIG as any)?.pumpswap?.graphqlPageSize || (CONFIG as any)?.pumpswap?.pageSize || 1000);
   // Use graphqlMaxPages for batch queries (higher limit for anchor tokens)
   const maxPages = Number((CONFIG as any)?.pumpswap?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.pumpswap?.pageDelayMs || 200);

@@ -661,7 +661,7 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-graphql-raw.json');
   const retries = Number((CONFIG as any)?.raydium?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.raydium?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.raydium?.pageSize || 1000);
+  const pageSize = Number((CONFIG as any)?.raydium?.graphqlPageSize || (CONFIG as any)?.raydium?.pageSize || 1000);
   // Use graphqlMaxPages for batch queries (higher limit for anchor tokens)
   const maxPages = Number((CONFIG as any)?.raydium?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.raydium?.pageDelayMs || 200);
@@ -1157,9 +1157,9 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-clmm-graphql-raw.json');
   const retries = Number((CONFIG as any)?.raydiumClmm?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.raydiumClmm?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.raydiumClmm?.pageSize || 1000);
-  // Use higher maxPages for batch queries (anchor tokens have many pools)
-  const maxPages = Number((CONFIG as any)?.raydiumClmm?.maxPages || 50);
+  const pageSize = Number((CONFIG as any)?.raydiumClmm?.graphqlPageSize || (CONFIG as any)?.raydiumClmm?.pageSize || 1000);
+  // Use graphqlMaxPages for batch queries (anchor tokens have many pools)
+  const maxPages = Number((CONFIG as any)?.raydiumClmm?.graphqlMaxPages || (CONFIG as any)?.raydiumClmm?.maxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.raydiumClmm?.detailBatchSize || 50);
   const detailDelayMs = Number((CONFIG as any)?.raydiumClmm?.detailBatchDelayMs ?? pageDelayMs);

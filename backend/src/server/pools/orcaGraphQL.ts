@@ -155,7 +155,7 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'orca-graphql-raw.json');
   const retries = Number((CONFIG as any)?.orca?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.orca?.httpBackoffMs || 500);
-  const pageSize = Number((CONFIG as any)?.orca?.pageSize || 1000);
+  const pageSize = Number((CONFIG as any)?.orca?.graphqlPageSize || (CONFIG as any)?.orca?.pageSize || 1000);
   // Use graphqlMaxPages for batch queries (higher limit for anchor tokens)
   const maxPages = Number((CONFIG as any)?.orca?.graphqlMaxPages || 50);
   const pageDelayMs = Number((CONFIG as any)?.orca?.pageDelayMs || 200);
