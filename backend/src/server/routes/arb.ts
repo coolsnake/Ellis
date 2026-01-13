@@ -435,8 +435,6 @@ export function createArbRouter(io: SocketIOServer): Router {
             return normalizedEdgeDex === 'meteora_damm_v2' || normalizedEdgeDex === 'meteora-damm-v2';
           case 'pumpswap':
             return normalizedEdgeDex === 'pumpswap';
-          default:
-            return normalizedEdgeDex === dex.toLowerCase();
         }
       };
 

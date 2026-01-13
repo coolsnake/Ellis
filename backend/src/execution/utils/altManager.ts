@@ -1303,8 +1303,8 @@ export class DexAltManager {
    * @returns Array of PublicKeys for all accounts needed for the top pools
    */
   async collectDexPoolAccounts(
-    dex: 'raydium' | 'orca' | 'meteora' | 'meteora-balanced',
-    poolType: 'amm' | 'clmm' | 'both' = 'both',
+    dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap',
+    poolType: 'amm' | 'clmm' | 'cpmm' | 'both' = 'both',
     maxPools: number = 30
   ): Promise<PublicKey[]> {
     const accounts: PublicKey[] = [];
