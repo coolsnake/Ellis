@@ -88,7 +88,7 @@ impl Config {
 }
 
 /// DEX type enum for routing
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum DexType {
     Raydium = 0,      // Raydium CLMM (Concentrated Liquidity)
