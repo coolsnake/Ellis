@@ -90,6 +90,9 @@ export async function fetchPumpswapSummaryOnly(providedMints?: string[]): Promis
     totalMints: mints.length,
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    maxPoolsPerAnchor: pageSize * maxPages,
     cat: 'pumpswap',
   });
 
@@ -241,6 +244,9 @@ export async function fetchPumpswapGraphQL(providedMints?: string[]): Promise<Pu
     totalMints: mintsSet.size,
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    maxPoolsPerAnchor: pageSize * maxPages,
     cat: 'pumpswap',
   });
 

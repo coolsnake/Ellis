@@ -44,6 +44,9 @@ export async function fetchOrcaSummaryOnly(mints: string[]): Promise<SummaryPool
     totalMints: mints.length,
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    maxPoolsPerAnchor: pageSize * maxPages,
     cat: 'orca',
   });
 
@@ -186,6 +189,9 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
     totalMints: mints.length,
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    maxPoolsPerAnchor: pageSize * maxPages,
     cat: 'orca',
   });
 

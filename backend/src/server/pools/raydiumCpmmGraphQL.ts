@@ -71,6 +71,9 @@ export async function fetchRaydiumCpmmSummaryOnly(mints: string[]): Promise<Summ
     totalMints: mints.length,
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    maxPoolsPerAnchor: pageSize * maxPages,
     cat: 'raydium-cpmm',
   });
 
@@ -370,6 +373,9 @@ export async function fetchRaydiumCpmmGraphQL(mints: string[]): Promise<RaydiumC
     totalMints: mints.length,
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    maxPoolsPerAnchor: pageSize * maxPages,
     cat: 'raydium-cpmm',
   });
 

@@ -46,6 +46,9 @@ export async function fetchMeteoraSummaryOnly(mints: string[]): Promise<SummaryP
     totalMints: mints.length,
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    maxPoolsPerAnchor: pageSize * maxPages,
     cat: 'meteora',
   });
 
@@ -190,6 +193,9 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
     totalMints: mints.length,
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    maxPoolsPerAnchor: pageSize * maxPages,
     cat: 'meteora',
   });
 
