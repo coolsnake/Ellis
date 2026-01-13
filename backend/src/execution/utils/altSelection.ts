@@ -151,8 +151,10 @@ export async function loadAltsForRoute(
   // Select ALTs for this route
   const selectedAlts = selectAltsForRoute(poolIds, altConfig);
   
-  // Load ALT accounts from cache
+  // Load ALT accounts from cache, with on-demand fallback for uncached ALTs
   const lookupTables: AddressLookupTableAccount[] = [];
+  const uncachedAlts: string[] = [];
+  
   for (const altAddr of selectedAlts) {
     const cached = dexAltManager.getCachedAltByAddress(altAddr);
     if (cached) {
@@ -163,7 +165,57 @@ export async function loadAltsForRoute(
       const found = allCached.find(alt => alt.key.toBase58() === altAddr);
       if (found) {
         lookupTables.push(found);
+      } else {
+        // Track uncached ALT for on-demand loading
+        uncachedAlts.push(altAddr);
       }
+    }
+  }
+  
+  // CRITICAL: Load uncached ALTs on-demand
+  // This handles cases where ALTs are in config but not yet cached
+  if (uncachedAlts.length > 0) {
+    try {
+      const { getConnection } = await import('../../wallet/wallet.js');
+      const connection = getConnection();
+      
+      for (const altAddr of uncachedAlts) {
+        try {
+          const { PublicKey } = await import('@solana/web3.js');
+          const pk = new PublicKey(altAddr);
+          const altAccount = await connection.getAddressLookupTable(pk);
+          
+          if (altAccount.value) {
+            lookupTables.push(altAccount.value);
+            // Cache it for future use
+            dexAltManager.addAltToCache(altAddr, altAccount.value);
+            
+            try {
+              logger.debug('alt.selection.loadedUncached', {
+                cat: 'tx',
+                ctx: { 
+                  altAddress: altAddr.slice(0, 8) + '...', 
+                  accountCount: altAccount.value.state.addresses.length 
+                },
+              });
+            } catch {}
+          }
+        } catch (e) {
+          try {
+            logger.warn('alt.selection.loadUncached.failed', {
+              cat: 'tx',
+              ctx: { altAddress: altAddr.slice(0, 8) + '...', error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
+      }
+    } catch (e) {
+      try {
+        logger.warn('alt.selection.loadUncachedAlts.error', {
+          cat: 'tx',
+          ctx: { uncachedCount: uncachedAlts.length, error: String((e as any)?.message || e) },
+        });
+      } catch {}
     }
   }
 

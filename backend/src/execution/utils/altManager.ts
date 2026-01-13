@@ -128,6 +128,59 @@ export class DexAltManager {
               }
             }
           }
+
+          // CRITICAL: Also load DEX ALTs from dexAlts config
+          // These are multi-ALT sets for DEX pools that may not be in config.alts
+          if (this.altConfig.dexAlts) {
+            let dexAltCount = 0;
+            for (const [dex, dexAltSet] of Object.entries(this.altConfig.dexAlts)) {
+              if (!dexAltSet?.addresses) continue;
+              
+              for (let i = 0; i < dexAltSet.addresses.length; i++) {
+                const address = dexAltSet.addresses[i];
+                if (!address) continue;
+                
+                // Skip if already loaded
+                if (this.altAccounts.has(address)) {
+                  dexAltCount++;
+                  continue;
+                }
+                
+                try {
+                  const pk = new PublicKey(address);
+                  const altAccount = await withRpcLimit(
+                    () => connection.getAddressLookupTable(pk),
+                    1,
+                    { module: 'alt', method: 'getAddressLookupTable' }
+                  );
+                  
+                  if (altAccount.value) {
+                    const category = `${dex}-pools-${i}`;
+                    this.altAddresses.set(category, pk);
+                    this.altAccounts.set(address, altAccount.value);
+                    dexAltCount++;
+                  }
+                } catch (e) {
+                  // Log but continue - some ALTs may have been deleted
+                  try {
+                    logger.warn('alt.manager.init.dexAlt.error', {
+                      cat: 'tx',
+                      ctx: { dex, address, error: String((e as any)?.message || e) },
+                    });
+                  } catch {}
+                }
+              }
+            }
+            
+            if (dexAltCount > 0) {
+              try {
+                logger.info('alt.manager.init.dexAlts.loaded', {
+                  cat: 'tx',
+                  ctx: { dexAltCount, dexes: Object.keys(this.altConfig.dexAlts) },
+                });
+              } catch {}
+            }
+          }
         } catch (error) {
           // If altConfig loading fails, continue without it
           try {
@@ -1548,6 +1601,110 @@ export class DexAltManager {
             });
           } catch {}
         }
+      } else if (dexLower === 'raydium-cpmm') {
+        // Raydium CPMM (Constant Product AMM) accounts
+        try {
+          const poolInfo = await withRpcLimit(
+            () => connection.getAccountInfo(poolPk),
+            1,
+            { module: 'alt', method: 'getAccountInfo' }
+          );
+          if (poolInfo) {
+            const cpmmAccounts = await this.parseRaydiumCpmmAccounts(poolPk, poolInfo);
+            accounts.push(...cpmmAccounts);
+            try {
+              logger.info('alt.manager.raydium.cpmm.collected', {
+                cat: 'tx',
+                ctx: { poolId: cleanPoolId, accountCount: cpmmAccounts.length },
+              });
+            } catch {}
+          }
+        } catch (e) {
+          try {
+            logger.warn('alt.manager.raydium.cpmm.parse.error', {
+              cat: 'tx',
+              ctx: { poolId: cleanPoolId, error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
+      } else if (dexLower === 'meteora-damm-v1' || dexLower === 'meteora_damm_v1') {
+        // Meteora Dynamic AMM v1 accounts
+        try {
+          const poolInfo = await withRpcLimit(
+            () => connection.getAccountInfo(poolPk),
+            1,
+            { module: 'alt', method: 'getAccountInfo' }
+          );
+          if (poolInfo) {
+            const dammAccounts = await this.parseMeteoraDammAccounts(poolPk, poolInfo, 'v1');
+            accounts.push(...dammAccounts);
+            try {
+              logger.info('alt.manager.meteora.damm.v1.collected', {
+                cat: 'tx',
+                ctx: { poolId: cleanPoolId, accountCount: dammAccounts.length },
+              });
+            } catch {}
+          }
+        } catch (e) {
+          try {
+            logger.warn('alt.manager.meteora.damm.v1.parse.error', {
+              cat: 'tx',
+              ctx: { poolId: cleanPoolId, error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
+      } else if (dexLower === 'meteora-damm-v2' || dexLower === 'meteora_damm_v2') {
+        // Meteora Dynamic AMM v2 (CP-AMM) accounts
+        try {
+          const poolInfo = await withRpcLimit(
+            () => connection.getAccountInfo(poolPk),
+            1,
+            { module: 'alt', method: 'getAccountInfo' }
+          );
+          if (poolInfo) {
+            const dammAccounts = await this.parseMeteoraDammAccounts(poolPk, poolInfo, 'v2');
+            accounts.push(...dammAccounts);
+            try {
+              logger.info('alt.manager.meteora.damm.v2.collected', {
+                cat: 'tx',
+                ctx: { poolId: cleanPoolId, accountCount: dammAccounts.length },
+              });
+            } catch {}
+          }
+        } catch (e) {
+          try {
+            logger.warn('alt.manager.meteora.damm.v2.parse.error', {
+              cat: 'tx',
+              ctx: { poolId: cleanPoolId, error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
+      } else if (dexLower === 'pumpswap') {
+        // Pumpswap (post-graduation AMM) accounts
+        try {
+          const poolInfo = await withRpcLimit(
+            () => connection.getAccountInfo(poolPk),
+            1,
+            { module: 'alt', method: 'getAccountInfo' }
+          );
+          if (poolInfo) {
+            const pumpswapAccounts = await this.parsePumpswapAccounts(poolPk, poolInfo);
+            accounts.push(...pumpswapAccounts);
+            try {
+              logger.info('alt.manager.pumpswap.collected', {
+                cat: 'tx',
+                ctx: { poolId: cleanPoolId, accountCount: pumpswapAccounts.length },
+              });
+            } catch {}
+          }
+        } catch (e) {
+          try {
+            logger.warn('alt.manager.pumpswap.parse.error', {
+              cat: 'tx',
+              ctx: { poolId: cleanPoolId, error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
       }
 
       return accounts;
@@ -1576,7 +1733,7 @@ export class DexAltManager {
    * @returns DexAltSet with all created ALT info
    */
   async createDexPoolAlts(
-    dex: 'raydium' | 'orca' | 'meteora',
+    dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap',
     maxPoolsTotal: number = 100
   ): Promise<DexAltSet> {
     const { ensureWallet } = await import('../../wallet/wallet.js');
@@ -1586,10 +1743,16 @@ export class DexAltManager {
     const MAX_ACCOUNTS_PER_ALT = 230;
     
     // Estimated accounts per pool by DEX
+    // Note: These include pool-specific accounts that appear in every swap
     const ACCOUNTS_PER_POOL: Record<string, number> = {
-      raydium: 12,  // pool, config, vaults, mints, observation, tick arrays
-      orca: 10,     // pool, vaults, mints, oracle, tick arrays
-      meteora: 10,  // pair, reserves, mints, oracle, bin arrays
+      raydium: 12,         // CLMM: pool, config, vaults, mints, observation, tick arrays
+      'raydium-amm': 15,   // AMM v4: pool, authority, vaults, mints, markets, orders
+      'raydium-cpmm': 10,  // CPMM: pool, config, vaults, mints, observation
+      orca: 10,            // Whirlpool: pool, vaults, mints, oracle, tick arrays
+      meteora: 10,         // DLMM: pair, reserves, mints, oracle, bin arrays
+      'meteora-damm-v1': 10, // Dynamic AMM v1: pool, vaults, mints, oracle
+      'meteora-damm-v2': 10, // CP-AMM v2: pool, vaults, mints
+      pumpswap: 8,         // Post-graduation AMM: pool, vaults, mints
     };
     
     const result: DexAltSet = {
@@ -2438,6 +2601,261 @@ export class DexAltManager {
   }
 
   /**
+   * Parse Raydium CPMM (Constant Product AMM) pool accounts
+   * Program ID: CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C
+   */
+  private async parseRaydiumCpmmAccounts(
+    poolPk: PublicKey,
+    poolInfo: any
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      if (!poolInfo?.data || poolInfo.data.length < 100) return accounts;
+
+      const data = poolInfo.data;
+      
+      const asPk = (v: any): PublicKey | null => {
+        try {
+          if (!v) return null;
+          if (v instanceof PublicKey) return v;
+          return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+
+      // CPMM pool layout (approximate offsets)
+      // The structure includes: amm_config, creator, token0_mint, token1_mint,
+      // token0_vault, token1_vault, observation_key, lp_mint
+
+      try {
+        // AMM config
+        const ammConfig = asPk(data.slice(8, 40));
+        if (ammConfig) accounts.push(ammConfig);
+      } catch {}
+
+      try {
+        // Token 0 mint
+        const token0Mint = asPk(data.slice(72, 104));
+        if (token0Mint) accounts.push(token0Mint);
+      } catch {}
+
+      try {
+        // Token 1 mint
+        const token1Mint = asPk(data.slice(104, 136));
+        if (token1Mint) accounts.push(token1Mint);
+      } catch {}
+
+      try {
+        // Token 0 vault
+        const token0Vault = asPk(data.slice(136, 168));
+        if (token0Vault) accounts.push(token0Vault);
+      } catch {}
+
+      try {
+        // Token 1 vault
+        const token1Vault = asPk(data.slice(168, 200));
+        if (token1Vault) accounts.push(token1Vault);
+      } catch {}
+
+      try {
+        // LP mint
+        const lpMint = asPk(data.slice(200, 232));
+        if (lpMint) accounts.push(lpMint);
+      } catch {}
+
+      try {
+        // Observation key
+        const observation = asPk(data.slice(232, 264));
+        if (observation) accounts.push(observation);
+      } catch {}
+
+      try {
+        logger.debug('alt.manager.raydium.cpmm.parsed', {
+          cat: 'tx',
+          ctx: {
+            pool: poolPk.toBase58(),
+            accountCount: accounts.length,
+          },
+        });
+      } catch {}
+    } catch (error) {
+      try {
+        logger.debug('alt.manager.raydium.cpmm.parse.failed', {
+          cat: 'tx',
+          ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return accounts;
+  }
+
+  /**
+   * Parse Meteora Dynamic AMM (DAMM) pool accounts
+   * Supports both v1 (Dynamic AMM) and v2 (CP-AMM)
+   */
+  private async parseMeteoraDammAccounts(
+    poolPk: PublicKey,
+    poolInfo: any,
+    version: 'v1' | 'v2'
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      if (!poolInfo?.data || poolInfo.data.length < 100) return accounts;
+
+      const data = poolInfo.data;
+      
+      const asPk = (v: any): PublicKey | null => {
+        try {
+          if (!v) return null;
+          if (v instanceof PublicKey) return v;
+          return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+
+      // DAMM pool layout (approximate offsets, may vary by version)
+      // Includes: token_a_mint, token_b_mint, token_a_vault, token_b_vault, lp_mint
+
+      try {
+        // Token A mint
+        const tokenAMint = asPk(data.slice(8, 40));
+        if (tokenAMint) accounts.push(tokenAMint);
+      } catch {}
+
+      try {
+        // Token B mint
+        const tokenBMint = asPk(data.slice(40, 72));
+        if (tokenBMint) accounts.push(tokenBMint);
+      } catch {}
+
+      try {
+        // Token A vault
+        const tokenAVault = asPk(data.slice(72, 104));
+        if (tokenAVault) accounts.push(tokenAVault);
+      } catch {}
+
+      try {
+        // Token B vault
+        const tokenBVault = asPk(data.slice(104, 136));
+        if (tokenBVault) accounts.push(tokenBVault);
+      } catch {}
+
+      try {
+        // LP mint
+        const lpMint = asPk(data.slice(136, 168));
+        if (lpMint) accounts.push(lpMint);
+      } catch {}
+
+      // V2 may have additional config accounts
+      if (version === 'v2') {
+        try {
+          // Protocol fee vault or similar
+          const configAccount = asPk(data.slice(168, 200));
+          if (configAccount) accounts.push(configAccount);
+        } catch {}
+      }
+
+      try {
+        logger.debug(`alt.manager.meteora.damm.${version}.parsed`, {
+          cat: 'tx',
+          ctx: {
+            pool: poolPk.toBase58(),
+            version,
+            accountCount: accounts.length,
+          },
+        });
+      } catch {}
+    } catch (error) {
+      try {
+        logger.debug(`alt.manager.meteora.damm.${version}.parse.failed`, {
+          cat: 'tx',
+          ctx: { pool: poolPk.toBase58(), version, error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return accounts;
+  }
+
+  /**
+   * Parse Pumpswap (post-graduation AMM) pool accounts
+   * Program ID: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
+   */
+  private async parsePumpswapAccounts(
+    poolPk: PublicKey,
+    poolInfo: any
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      if (!poolInfo?.data || poolInfo.data.length < 100) return accounts;
+
+      const data = poolInfo.data;
+      
+      const asPk = (v: any): PublicKey | null => {
+        try {
+          if (!v) return null;
+          if (v instanceof PublicKey) return v;
+          return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+
+      // Pumpswap pool layout (approximate offsets)
+      // Simple AMM structure: base_mint, quote_mint, base_vault, quote_vault
+
+      try {
+        // Base mint (usually the graduated token)
+        const baseMint = asPk(data.slice(8, 40));
+        if (baseMint) accounts.push(baseMint);
+      } catch {}
+
+      try {
+        // Quote mint (usually SOL wrapped)
+        const quoteMint = asPk(data.slice(40, 72));
+        if (quoteMint) accounts.push(quoteMint);
+      } catch {}
+
+      try {
+        // Base vault
+        const baseVault = asPk(data.slice(72, 104));
+        if (baseVault) accounts.push(baseVault);
+      } catch {}
+
+      try {
+        // Quote vault
+        const quoteVault = asPk(data.slice(104, 136));
+        if (quoteVault) accounts.push(quoteVault);
+      } catch {}
+
+      try {
+        logger.debug('alt.manager.pumpswap.parsed', {
+          cat: 'tx',
+          ctx: {
+            pool: poolPk.toBase58(),
+            accountCount: accounts.length,
+          },
+        });
+      } catch {}
+    } catch (error) {
+      try {
+        logger.debug('alt.manager.pumpswap.parse.failed', {
+          cat: 'tx',
+          ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return accounts;
+  }
+
+  /**
    * Get ALT addresses for a transaction
    * Returns addresses that should be used based on the accounts in the transaction
    * @param accounts - Accounts used in the transaction
@@ -2690,6 +3108,19 @@ export class DexAltManager {
    */
   getCachedAltByAddress(address: string): AddressLookupTableAccount | undefined {
     return this.altAccounts.get(address);
+  }
+
+  /**
+   * Add an ALT to the cache (for on-demand loading)
+   * @param address ALT address as string
+   * @param account The AddressLookupTableAccount to cache
+   */
+  addAltToCache(address: string, account: AddressLookupTableAccount): void {
+    this.altAccounts.set(address, account);
+    // Also add to altAddresses if not present
+    if (!Array.from(this.altAddresses.values()).some(pk => pk.toBase58() === address)) {
+      this.altAddresses.set(`cached-${Date.now()}-${address.slice(0, 8)}`, account.key);
+    }
   }
 
   /**
@@ -3171,6 +3602,43 @@ export class DexAltManager {
           } catch (e) {
             errors.push(`Failed to validate ALT ${category}: ${String(e)}`);
           }
+        }
+      }
+
+      // 3b. CRITICAL: Also load and validate DEX ALTs from dexAlts config
+      // These are multi-ALT sets created for DEX pools
+      if (opts.validateExisting && this.altConfig.dexAlts) {
+        let dexAltCount = 0;
+        for (const [dex, dexAltSet] of Object.entries(this.altConfig.dexAlts)) {
+          if (!dexAltSet?.addresses) continue;
+          
+          for (let i = 0; i < dexAltSet.addresses.length; i++) {
+            const address = dexAltSet.addresses[i];
+            if (!address) continue;
+            
+            try {
+              const exists = await this.validateAltExists(address);
+              if (exists.valid) {
+                const category = `${dex}-pools-${i}`;
+                this.altAddresses.set(category, new PublicKey(address));
+                results[category] = address;
+                dexAltCount++;
+              } else {
+                errors.push(`DEX ALT ${dex}[${i}] (${address}) is invalid: ${exists.reason}`);
+              }
+            } catch (e) {
+              errors.push(`Failed to validate DEX ALT ${dex}[${i}]: ${String(e)}`);
+            }
+          }
+        }
+        
+        if (dexAltCount > 0) {
+          try {
+            logger.info('alt.startup.dexAlts.validated', {
+              cat: 'tx',
+              ctx: { dexAltCount, dexes: Object.keys(this.altConfig.dexAlts) },
+            });
+          } catch {}
         }
       }
 
@@ -4214,12 +4682,27 @@ export class DexAltManager {
       if (dexLower === 'raydium') {
         const clmmAccounts = await this.parseRaydiumClmmAccounts(poolPk, poolInfo);
         accounts.push(...clmmAccounts);
+      } else if (dexLower === 'raydium-amm') {
+        const ammAccounts = await this.parseRaydiumAmmAccounts(poolPk, poolInfo);
+        accounts.push(...ammAccounts);
+      } else if (dexLower === 'raydium-cpmm') {
+        const cpmmAccounts = await this.parseRaydiumCpmmAccounts(poolPk, poolInfo);
+        accounts.push(...cpmmAccounts);
       } else if (dexLower === 'orca') {
         const whirlpoolAccounts = await this.parseOrcaWhirlpoolAccounts(poolPk, poolInfo);
         accounts.push(...whirlpoolAccounts);
       } else if (dexLower === 'meteora') {
         const dlmmAccounts = await this.parseMeteoraDlmmAccounts(poolPk, poolInfo);
         accounts.push(...dlmmAccounts);
+      } else if (dexLower === 'meteora-damm-v1' || dexLower === 'meteora_damm_v1') {
+        const dammAccounts = await this.parseMeteoraDammAccounts(poolPk, poolInfo, 'v1');
+        accounts.push(...dammAccounts);
+      } else if (dexLower === 'meteora-damm-v2' || dexLower === 'meteora_damm_v2') {
+        const dammAccounts = await this.parseMeteoraDammAccounts(poolPk, poolInfo, 'v2');
+        accounts.push(...dammAccounts);
+      } else if (dexLower === 'pumpswap') {
+        const pumpswapAccounts = await this.parsePumpswapAccounts(poolPk, poolInfo);
+        accounts.push(...pumpswapAccounts);
       }
       
       return accounts;
@@ -4242,7 +4725,7 @@ export class DexAltManager {
    * @returns DexAltSet with all created ALT info
    */
   async createAllDexPoolAlts(
-    dex: 'raydium' | 'orca' | 'meteora'
+    dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap'
   ): Promise<DexAltSet> {
     const { ensureWallet } = await import('../../wallet/wallet.js');
     const wallet = await ensureWallet(CONFIG.walletPath);
@@ -4252,9 +4735,14 @@ export class DexAltManager {
     
     // Accounts per pool (static accounts only - excludes tick/bin arrays)
     const STATIC_ACCOUNTS_PER_POOL: Record<string, number> = {
-      raydium: 8,  // pool, amm_config, vaultA, vaultB, mintA, mintB, observation, [exBitmap]
-      orca: 7,     // pool, vaultA, vaultB, mintA, mintB, oracle, whirlpoolsConfig
-      meteora: 8,  // pair, reserveX, reserveY, mintX, mintY, oracle, eventAuthority, [bitmapExt]
+      raydium: 8,           // CLMM: pool, amm_config, vaultA, vaultB, mintA, mintB, observation, [exBitmap]
+      'raydium-amm': 12,    // AMM v4: pool, authority, openOrders, targetOrders, vaults, mints, markets
+      'raydium-cpmm': 8,    // CPMM: pool, config, vaultA, vaultB, mintA, mintB, observation, authority
+      orca: 7,              // Whirlpool: pool, vaultA, vaultB, mintA, mintB, oracle, whirlpoolsConfig
+      meteora: 8,           // DLMM: pair, reserveX, reserveY, mintX, mintY, oracle, eventAuthority, [bitmapExt]
+      'meteora-damm-v1': 8, // Dynamic AMM v1: pool, vaults, mints, oracle, authority
+      'meteora-damm-v2': 8, // CP-AMM v2: pool, vaults, mints, config
+      pumpswap: 6,          // Post-graduation: pool, vaults, mints, authority
     };
     
     const result: DexAltSet = {

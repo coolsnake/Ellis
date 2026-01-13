@@ -53,29 +53,57 @@ interface DexConfig {
 }
 
 const DEX_CONFIGS: DexConfig[] = [
+  // Raydium variants
   {
-    name: 'Raydium AMM',
+    name: 'Raydium AMM v4',
     key: 'raydium',
-    poolTypes: [{ value: 'amm', label: 'AMM Only' }],
+    poolTypes: [{ value: 'amm', label: 'AMM v4' }],
     defaultCategory: 'raydium-amm',
   },
   {
     name: 'Raydium CLMM',
     key: 'raydium',
-    poolTypes: [{ value: 'clmm', label: 'CLMM Only' }],
+    poolTypes: [{ value: 'clmm', label: 'CLMM' }],
     defaultCategory: 'raydium-clmm',
   },
+  {
+    name: 'Raydium CPMM',
+    key: 'raydium-cpmm',
+    poolTypes: [{ value: 'cpmm', label: 'CPMM' }],
+    defaultCategory: 'raydium-cpmm',
+  },
+  // Orca
   {
     name: 'Orca Whirlpool',
     key: 'orca',
     poolTypes: [{ value: 'clmm', label: 'Whirlpool' }],
     defaultCategory: 'orca-whirlpool',
   },
+  // Meteora variants
   {
     name: 'Meteora DLMM',
     key: 'meteora',
     poolTypes: [{ value: 'clmm', label: 'DLMM' }],
     defaultCategory: 'meteora-dlmm',
+  },
+  {
+    name: 'Meteora DAMM v1',
+    key: 'meteora-damm-v1',
+    poolTypes: [{ value: 'amm', label: 'Dynamic AMM v1' }],
+    defaultCategory: 'meteora-damm-v1',
+  },
+  {
+    name: 'Meteora DAMM v2',
+    key: 'meteora-damm-v2',
+    poolTypes: [{ value: 'amm', label: 'CP-AMM v2' }],
+    defaultCategory: 'meteora-damm-v2',
+  },
+  // Pumpswap
+  {
+    name: 'Pumpswap',
+    key: 'pumpswap',
+    poolTypes: [{ value: 'amm', label: 'AMM' }],
+    defaultCategory: 'pumpswap',
   },
 ];
 
@@ -98,8 +126,12 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
     poolCounts: {
       'raydium-amm': 50,
       'raydium-clmm': 50,
+      'raydium-cpmm': 50,
       'orca-whirlpool': 50,
       'meteora-dlmm': 50,
+      'meteora-damm-v1': 50,
+      'meteora-damm-v2': 50,
+      'pumpswap': 50,
     },
   });
   

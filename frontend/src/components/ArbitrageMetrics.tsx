@@ -7,7 +7,7 @@ type FetcherState = 'idle' | 'fetching' | 'enriching' | 'subscribing' | 'ready' 
 
 // ALT category types
 type AltCategory = 'common' | 'flashloan' | 'userPdas';
-type DexAltType = 'raydium' | 'orca' | 'meteora';
+type DexAltType = 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap';
 
 interface AltDetailedInfo {
   address: string;
@@ -27,6 +27,7 @@ interface AltManagementSectionProps {
   onRefresh: () => void;
   altActionLoading: string | null;
   setAltActionLoading: (v: string | null) => void;
+  onOpenFullModal?: () => void;
 }
 
 const getAuthHeaders = (): Record<string, string> => {
@@ -49,14 +50,20 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
   onRefresh,
   altActionLoading,
   setAltActionLoading,
+  onOpenFullModal,
 }) => {
   const [expanded, setExpanded] = React.useState(false);
   const [altConfig, setAltConfig] = React.useState<any>(null);
   const [altInfos, setAltInfos] = React.useState<Record<string, AltDetailedInfo>>({});
   const [dexPoolCounts, setDexPoolCounts] = React.useState<Record<DexAltType, number>>({
     raydium: 50,
+    'raydium-amm': 50,
+    'raydium-cpmm': 50,
     orca: 50,
     meteora: 50,
+    'meteora-damm-v1': 50,
+    'meteora-damm-v2': 50,
+    pumpswap: 50,
   });
   const [actionResult, setActionResult] = React.useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [coverageStats, setCoverageStats] = React.useState<any>(null);
@@ -526,9 +533,14 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
   };
 
   const dexLabels: Record<DexAltType, { label: string; color: string }> = {
-    raydium: { label: 'Raydium', color: 'text-red-300' },
+    raydium: { label: 'Raydium CLMM', color: 'text-red-300' },
+    'raydium-amm': { label: 'Raydium AMM', color: 'text-red-400' },
+    'raydium-cpmm': { label: 'Raydium CPMM', color: 'text-red-200' },
     orca: { label: 'Orca', color: 'text-blue-300' },
-    meteora: { label: 'Meteora', color: 'text-green-300' },
+    meteora: { label: 'Meteora DLMM', color: 'text-green-300' },
+    'meteora-damm-v1': { label: 'Meteora DAMM v1', color: 'text-green-400' },
+    'meteora-damm-v2': { label: 'Meteora DAMM v2', color: 'text-green-200' },
+    pumpswap: { label: 'Pumpswap', color: 'text-purple-300' },
   };
 
   if (!altStatus) return null;
@@ -575,6 +587,15 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
           >
             {altActionLoading === 'refresh-cache' ? '⏳' : '🔄'} Refresh
           </button>
+          {onOpenFullModal && (
+            <button
+              onClick={onOpenFullModal}
+              className="px-2 py-1 text-xs border rounded bg-blue-700 hover:bg-blue-600 border-blue-600"
+              title="Open full ALT management modal"
+            >
+              ⚙️ Manage
+            </button>
+          )}
         </div>
       </div>
 
@@ -1053,8 +1074,8 @@ type WsStats = { attached?: number; events?: number };
 type WsTargetsState = Partial<Record<DexKey, number>>;
 type WsDetailsState = Partial<Record<DexKey, WsStats>>;
 
-export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; socket?: any }> = (
-  { apiBase, paused, socket }: { apiBase: string; paused?: boolean; socket?: any }
+export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; socket?: any; onOpenAltModal?: () => void }> = (
+  { apiBase, paused, socket, onOpenAltModal }: { apiBase: string; paused?: boolean; socket?: any; onOpenAltModal?: () => void }
 ) => {
   const { socket: ctxSocket } = useSocket();
   const effectiveSocket = socket ?? ctxSocket;
@@ -2386,6 +2407,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             onRefresh={fetchMetrics}
             altActionLoading={altActionLoading}
             setAltActionLoading={setAltActionLoading}
+            onOpenFullModal={onOpenAltModal}
           />
         </div>
       )}

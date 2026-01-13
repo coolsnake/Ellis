@@ -397,8 +397,10 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Get pools by DEX with liquidity data (for preview)
   api.get('/arb/alts/pools-by-dex', async (req, res) => {
     try {
-      const dex = String(req.query.dex || 'raydium') as 'raydium' | 'orca' | 'meteora' | 'meteora-balanced';
-      const poolType = String(req.query.poolType || 'both') as 'amm' | 'clmm' | 'both';
+      const dex = String(req.query.dex || 'raydium') as 
+        'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 
+        'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap';
+      const poolType = String(req.query.poolType || 'both') as 'amm' | 'clmm' | 'cpmm' | 'both';
       const maxPools = Math.min(100, Math.max(1, Number(req.query.maxPools) || 30));
 
       // Import graph to get pool data
@@ -409,17 +411,44 @@ export function createArbRouter(io: SocketIOServer): Router {
         return res.status(503).json({ error: 'Graph snapshot not available' });
       }
 
+      // Map frontend DEX keys to graph edge dex values
+      const dexMatchFn = (edgeDex: string, edgePoolKind: string): boolean => {
+        const normalizedEdgeDex = edgeDex.toLowerCase();
+        
+        switch (dex) {
+          case 'raydium':
+            // Match raydium AMM and CLMM, but not CPMM
+            return normalizedEdgeDex === 'raydium' && edgePoolKind !== 'cpmm';
+          case 'raydium-cpmm':
+            // Match only raydium CPMM pools
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'cpmm';
+          case 'orca':
+            return normalizedEdgeDex === 'orca';
+          case 'meteora':
+            // Match meteora DLMM only (clmm type)
+            return normalizedEdgeDex === 'meteora' && edgePoolKind === 'clmm';
+          case 'meteora-balanced':
+            return normalizedEdgeDex === 'meteora_balanced' || normalizedEdgeDex === 'meteora-balanced';
+          case 'meteora-damm-v1':
+            return normalizedEdgeDex === 'meteora_damm_v1' || normalizedEdgeDex === 'meteora-damm-v1';
+          case 'meteora-damm-v2':
+            return normalizedEdgeDex === 'meteora_damm_v2' || normalizedEdgeDex === 'meteora-damm-v2';
+          case 'pumpswap':
+            return normalizedEdgeDex === 'pumpswap';
+          default:
+            return normalizedEdgeDex === dex.toLowerCase();
+        }
+      };
+
       // Filter edges by DEX and pool type
       let filtered = snapshot.edges.filter(edge => {
         const edgeDex = String(edge.dex || '').toLowerCase();
-        const dexMatch = edgeDex === dex.toLowerCase() || 
-                        (dex === 'meteora' && edgeDex === 'meteora') ||
-                        (dex === 'orca' && edgeDex === 'orca');
+        const edgePoolKind = String(edge.pool_kind || '');
         
-        if (!dexMatch) return false;
+        if (!dexMatchFn(edgeDex, edgePoolKind)) return false;
         
         if (poolType === 'both') return true;
-        return edge.pool_kind === poolType;
+        return edgePoolKind === poolType;
       });
 
       // Filter out reverse edges to avoid showing duplicates in preview
@@ -482,8 +511,10 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.post('/arb/alts/create-dex-alt', async (req, res) => {
     try {
       const body = req.body || {};
-      const dex = String(body.dex || 'raydium') as 'raydium' | 'orca' | 'meteora' | 'meteora-balanced';
-      const poolType = String(body.poolType || 'both') as 'amm' | 'clmm' | 'both';
+      const dex = String(body.dex || 'raydium') as 
+        'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' |
+        'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap';
+      const poolType = String(body.poolType || 'both') as 'amm' | 'clmm' | 'cpmm' | 'both';
       const maxPools = Math.min(100, Math.max(1, Number(body.maxPools) || 50));
       const category = String(body.category || `${dex}-${poolType === 'both' ? 'all' : poolType}`);
 

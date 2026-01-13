@@ -54,6 +54,8 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         system: CONFIG.system,
         fees: CONFIG.fees,
         raydium: CONFIG.raydium,
+        raydiumCpmm: (CONFIG as any).raydiumCpmm,
+        raydiumClmm: (CONFIG as any).raydiumClmm,
         orca: CONFIG.orca,
         meteora: (CONFIG as any).meteora,
         meteoraBalanced: (CONFIG as any).meteoraBalanced,
@@ -78,15 +80,17 @@ export function createSystemRouter(_io: SocketIOServer): Router {
 
   api.post('/system/config', async (req, res) => {
     try {
-      const { rpcUrl, system, fees, raydium, orca, meteora, meteoraBalanced, pumpswap, sanity, pools, validation } = req.body as {
+      const { rpcUrl, system, fees, raydium, raydiumCpmm, raydiumClmm, orca, meteora, meteoraBalanced, pumpswap, sanity, pools, validation } = req.body as {
         rpcUrl?: string;
         system?: any;
         fees?: any;
-        raydium?: { enableOnChain?: boolean; ammV4Program?: string; clmmProgram?: string; cacheTtlMs?: number; concurrency?: number; pageSize?: number; maxPages?: number; maxHttpRetries?: number; httpBackoffMs?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
-        orca?: { apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
-        meteora?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minClmmLiquidity?: number; universePrefilter?: boolean };
+        raydium?: { enableOnChain?: boolean; ammV4Program?: string; clmmProgram?: string; cacheTtlMs?: number; concurrency?: number; pageSize?: number; maxPages?: number; maxHttpRetries?: number; httpBackoffMs?: number; minAmmLiqBase?: number; minClmmLiquidity?: number; graphqlMaxPages?: number; pageDelayMs?: number; mintBatchSize?: number; detailBatchSize?: number };
+        raydiumCpmm?: { enabled?: boolean; pageDelayMs?: number; mintBatchSize?: number; graphqlMaxPages?: number; detailBatchSize?: number; pageSize?: number; maxPages?: number };
+        raydiumClmm?: { pageDelayMs?: number; mintBatchSize?: number; graphqlMaxPages?: number; detailBatchSize?: number; pageSize?: number; maxPages?: number };
+        orca?: { apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number; graphqlMaxPages?: number; pageDelayMs?: number; mintBatchSize?: number; detailBatchSize?: number };
+        meteora?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minClmmLiquidity?: number; universePrefilter?: boolean; graphqlMaxPages?: number; pageDelayMs?: number; mintBatchSize?: number; detailBatchSize?: number };
         meteoraBalanced?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number };
-        pumpswap?: { shyftApiKey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; defaultFeeBps?: number; minLiqBase?: number; pageSize?: number; maxPages?: number; pageDelayMs?: number; enableRpcEnrichment?: boolean; rpcBatchSize?: number; validatePrices?: boolean; validationSamples?: number };
+        pumpswap?: { shyftApiKey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; defaultFeeBps?: number; minLiqBase?: number; pageSize?: number; maxPages?: number; pageDelayMs?: number; enableRpcEnrichment?: boolean; rpcBatchSize?: number; validatePrices?: boolean; validationSamples?: number; graphqlMaxPages?: number; mintBatchSize?: number };
         sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number; sanity_applyRaydiumAmm?: boolean; sanity_applyOrcaClmm?: boolean };
         pools?: { activationMode?: 'immediate' | 'lazy' };
         validation?: { poolDataValidationEnabled?: boolean };
@@ -118,6 +122,8 @@ export function createSystemRouter(_io: SocketIOServer): Router {
       }
       if (fees) CONFIG.fees = { ...CONFIG.fees, ...fees };
       if (raydium) CONFIG.raydium = { ...CONFIG.raydium, ...raydium } as any;
+      if (raydiumCpmm) (CONFIG as any).raydiumCpmm = { ...(CONFIG as any).raydiumCpmm, ...raydiumCpmm };
+      if (raydiumClmm) (CONFIG as any).raydiumClmm = { ...(CONFIG as any).raydiumClmm, ...raydiumClmm };
       if (orca) CONFIG.orca = { ...CONFIG.orca, ...orca } as any;
       if (meteora) (CONFIG as any).meteora = { ...(CONFIG as any).meteora, ...meteora } as any;
       if (meteoraBalanced) (CONFIG as any).meteoraBalanced = { ...(CONFIG as any).meteoraBalanced, ...meteoraBalanced } as any;

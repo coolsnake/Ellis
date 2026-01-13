@@ -32,8 +32,13 @@ export type AltConfig = {
   // DEX-specific ALTs (multiple per DEX)
   dexAlts?: {
     raydium?: DexAltSet;
+    'raydium-amm'?: DexAltSet;
+    'raydium-cpmm'?: DexAltSet;
     orca?: DexAltSet;
     meteora?: DexAltSet;
+    'meteora-damm-v1'?: DexAltSet;
+    'meteora-damm-v2'?: DexAltSet;
+    pumpswap?: DexAltSet;
   };
 
   // Reverse lookup: poolId -> ALT address (O(1) lookup)
@@ -141,7 +146,7 @@ export function getAltForPool(poolId: string): string | undefined {
  * Update DEX ALT set configuration
  */
 export async function updateDexAltSet(
-  dex: 'raydium' | 'orca' | 'meteora',
+  dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap',
   altSet: DexAltSet
 ): Promise<void> {
   const config = await loadAltConfig();
@@ -155,6 +160,6 @@ export async function updateDexAltSet(
 /**
  * Get DEX ALT set
  */
-export function getDexAltSet(dex: 'raydium' | 'orca' | 'meteora'): DexAltSet | undefined {
+export function getDexAltSet(dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap'): DexAltSet | undefined {
   return current?.dexAlts?.[dex];
 }

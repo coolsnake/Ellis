@@ -2194,7 +2194,7 @@ export const App: React.FC = () => {
             </>
           )}
         >
-          <ArbitrageSection apiBase={apiBase} showGraph={showGraph} onToggleGraph={()=>setShowGraph(v=>!v)} paused={showArbConfig || showSystemConfig || showFeeConfig} />
+          <ArbitrageSection apiBase={apiBase} showGraph={showGraph} onToggleGraph={()=>setShowGraph(v=>!v)} paused={showArbConfig || showSystemConfig || showFeeConfig} onOpenAltModal={() => setShowAltModal(true)} />
           
           {/* UI Preferences Export/Import Panel */}
           {showModalConfigManager && (
