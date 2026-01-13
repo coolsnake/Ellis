@@ -71,7 +71,7 @@ function logTimingMetrics(
     };
 
     if (success) {
-      logger.info('tx.build.timing', {
+      logger.debug('tx.build.timing', {
         cat: 'tx',
         code: LogCode.TX_BUILD_OK,
         ctx: summary as any,
@@ -182,6 +182,8 @@ export interface BuildTxOptions {
   routerExecutionMode?: 'direct' | 'flash_loan' | 'auto' | 'sdk_quote';
   /** Mode override */
   __modeOverride?: 'direct' | 'simulate';
+  /** Enable verbose on-chain logging (for simulation/debugging, default true) */
+  verbose?: boolean;
 }
 
 export async function buildDirectArbTx(
@@ -220,10 +222,12 @@ export async function buildDirectArbTx(
           mode = ExecutionMode.FlashLoan;
         }
 
-        const result = await buildRouterTransaction(plan, wallet, { mode });
+        // Default to verbose=true for simulations (can be overridden for execution)
+        const verbose = options?.verbose !== false;
+        const result = await buildRouterTransaction(plan, wallet, { mode, verbose });
         
         if (result.usedRouter && result.instructions.length > 0) {
-          logger.info('tx.build.router_mode', {
+          logger.debug('tx.build.router_mode', {
             cat: 'tx',
             code: LogCode.TX_BUILD_OK,
             ctx: {
@@ -387,7 +391,7 @@ export async function buildDirectArbTx(
   const isArbCycle = plan.path.length >= 3 && plan.path[0] === plan.path[plan.path.length - 1];
   if (isArbCycle) {
     try {
-      logger.info('tx.build.arb_cycle_detected', {
+      logger.debug('tx.build.arb_cycle_detected', {
         cat: 'tx',
         code: LogCode.TX_BUILD_HOP,
         ctx: {
@@ -429,7 +433,7 @@ export async function buildDirectArbTx(
       
       try { logger.debug('tx.build.hop', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
       try {
-        logger.info('tx.build.hop.start', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), userSourceAta: hop.userSourceAta ? 'set' : 'missing', userDestAta: hop.userDestAta ? 'set' : 'missing' } as any });
+        logger.debug('tx.build.hop.start', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), userSourceAta: hop.userSourceAta ? 'set' : 'missing', userDestAta: hop.userDestAta ? 'set' : 'missing' } as any });
       } catch (e) { logCatchError('builder.tx', e); }
       try {
         // --- Pre-hop account prep: ATAs and optional SOL wrapping ---
@@ -445,7 +449,7 @@ export async function buildDirectArbTx(
                 prevHopOutputTokenProgram === hop.inputTokenProgram) {
               hop.userSourceAta = prevHopDestAta;
               try {
-                logger.info('tx.build.hop.chain', { cat: 'tx', ctx: { traceId, hopIndex: i, chainedAta: hop.userSourceAta, mint: hop.inputMint } as any });
+                logger.debug('tx.build.hop.chain', { cat: 'tx', ctx: { traceId, hopIndex: i, chainedAta: hop.userSourceAta, mint: hop.inputMint } as any });
               } catch (e) { logCatchError('builder.tx', e); }
             }
           }
@@ -525,7 +529,7 @@ export async function buildDirectArbTx(
             
             // Log current state before propagation
             try {
-              logger.info('tx.build.amount_propagation.before', {
+              logger.debug('tx.build.amount_propagation.before', {
                 cat: 'tx',
                 code: LogCode.TX_BUILD_HOP,
                 ctx: {
@@ -548,7 +552,7 @@ export async function buildDirectArbTx(
               const exactAmount = prevHop.quotedOutputRaw;
               if (hop.amountInRaw !== exactAmount) {
                 try {
-                  logger.info('tx.build.amount_propagation.exact', {
+                  logger.debug('tx.build.amount_propagation.exact', {
                     cat: 'tx',
                     code: LogCode.TX_BUILD_HOP,
                     ctx: {
@@ -668,23 +672,23 @@ export async function buildDirectArbTx(
         if (hop.dex === 'raydium' && hop.variant === 'amm') {
           ixs = await buildRaydiumAmmSwapIxReal(hop);
         } else if (hop.dex === 'raydium' && hop.variant === 'cpmm') {
-          try { logger.info('tx.build.hop.raydium.cpmm.start', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
+          try { logger.debug('tx.build.hop.raydium.cpmm.start', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildRaydiumCpmmSwapIxReal(hop);
-          try { logger.info('tx.build.hop.raydium.cpmm.complete', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, instructionCount: ixs.length } as any }); } catch (e) { logCatchError('builder.tx', e); }
+          try { logger.debug('tx.build.hop.raydium.cpmm.complete', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, instructionCount: ixs.length } as any }); } catch (e) { logCatchError('builder.tx', e); }
         } else if (hop.dex === 'raydium' && hop.variant === 'clmm') {
           ixs = await buildRaydiumClmmSwapIxReal(hop);
         } else if (hop.dex === 'orca') {
-          try { logger.info('tx.build.hop.orca.start', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, variant: hop.variant, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: hop.amountInRaw?.toString() } as any }); } catch (e) { logCatchError('builder.tx', e); }
+          try { logger.debug('tx.build.hop.orca.start', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, variant: hop.variant, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: hop.amountInRaw?.toString() } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildOrcaSwapIx(hop) as any[];
-          try { logger.info('tx.build.hop.orca.complete', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, instructionCount: ixs.length } as any }); } catch (e) { logCatchError('builder.tx', e); }
+          try { logger.debug('tx.build.hop.orca.complete', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, instructionCount: ixs.length } as any }); } catch (e) { logCatchError('builder.tx', e); }
         } else if (hop.dex === 'pumpswap') {
-          try { logger.info('tx.build.hop.pumpswap.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
+          try { logger.debug('tx.build.hop.pumpswap.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildPumpswapSwapIxReal(hop);
         } else if (hop.dex === 'meteora_balanced') {
-          try { logger.info('tx.build.hop.meteora.damm.real', { cat: 'tx', ctx: { poolId: hop.poolId, variant: hop.variant } as any }); } catch (e) { logCatchError('builder.tx', e); }
+          try { logger.debug('tx.build.hop.meteora.damm.real', { cat: 'tx', ctx: { poolId: hop.poolId, variant: hop.variant } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildMeteoraDammSwapIxReal(hop);
         } else if (hop.dex === 'meteora') {
-          try { logger.info('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
+          try { logger.debug('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
           ixs = await buildMeteoraDlmmSwapIxReal(hop);
         }
         hopMetrics.instructionBuilding = Date.now() - instructionStart;
@@ -705,7 +709,7 @@ export async function buildDirectArbTx(
         hopMetrics.total = Date.now() - hopStart;
         metrics.hops.push(hopMetrics);
         
-        try { logger.info('tx.build.hop.ok', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
+        try { logger.debug('tx.build.hop.ok', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch (e) { logCatchError('builder.tx', e); }
       } catch (e) {
         hopMetrics.total = Date.now() - hopStart;
         metrics.hops.push(hopMetrics);
@@ -757,7 +761,7 @@ export async function buildDirectArbTx(
         dynamicPriorityFee = Math.floor(calculatedFees.priorityFee * 1000);
         
         try {
-          logger.info('tx.build.priority.fee.dynamic', {
+          logger.debug('tx.build.priority.fee.dynamic', {
             cat: 'tx',
             ctx: {
               traceId,
@@ -858,7 +862,7 @@ export async function buildDirectArbTx(
         }
         
         try {
-          logger.info('tx.build.compute.measured', {
+          logger.debug('tx.build.compute.measured', {
             cat: 'tx',
             ctx: {
               traceId,
@@ -918,7 +922,7 @@ export async function buildDirectArbTx(
         const key = String(pid || 'unknown');
         programCounts[key] = (programCounts[key] || 0) + 1;
       }
-      logger.info('tx.build.detail', { cat: 'tx', ctx: { traceId, ixCount: all.length, programs: programCounts } as any });
+      logger.debug('tx.build.detail', { cat: 'tx', ctx: { traceId, ixCount: all.length, programs: programCounts } as any });
     } catch (e) { logCatchError('builder.tx', e); }
     
     // Log success with timing metrics
@@ -927,7 +931,7 @@ export async function buildDirectArbTx(
       sizeBytes,
     });
     
-    try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { traceId, ms: Date.now() - t0, ixCount: all.length, sizeBytes, computeUnits: finalComputeBudget.computeUnitLimit } as any }); } catch (e) { logCatchError('builder.tx', e); }
+    try { logger.debug('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { traceId, ms: Date.now() - t0, ixCount: all.length, sizeBytes, computeUnits: finalComputeBudget.computeUnitLimit } as any }); } catch (e) { logCatchError('builder.tx', e); }
     
     // Collect ALT addresses for the transaction
     const allAccounts: (PublicKey | string)[] = [];
@@ -984,7 +988,7 @@ export async function buildDirectArbTx(
       
       // Log ALT coverage for monitoring
       try {
-        logger.info('tx.build.alts.loaded', {
+        logger.debug('tx.build.alts.loaded', {
           cat: 'tx',
           ctx: {
             traceId,
@@ -1043,7 +1047,7 @@ export async function buildDirectArbTx(
         }
         
         try {
-          logger.info('tx.build.accounts.scheduled.close', {
+          logger.debug('tx.build.accounts.scheduled.close', {
             cat: 'tx',
             ctx: {
               traceId,

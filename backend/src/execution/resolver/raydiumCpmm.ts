@@ -166,7 +166,7 @@ export async function resolveRaydiumCpmm(hop: DirectHop): Promise<DirectHop> {
   }
   
   try {
-    logger.info('raydium.cpmm.resolve', {
+    logger.debug('raydium.cpmm.resolve', {
       cat: 'tx',
       ctx: {
         pool: hop.poolId,

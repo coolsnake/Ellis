@@ -144,6 +144,11 @@ pub struct ExecuteParams {
     /// subtract the corresponding initial_balance to get only the swap output.
     /// If empty or shorter than steps, missing entries default to 0.
     pub initial_balances: Vec<u64>,
+    
+    /// Enable verbose logging (for simulation/debugging only).
+    /// When true, logs detailed input/output amounts for each hop.
+    /// Set to false for production to avoid revealing trade details in public logs.
+    pub verbose: bool,
 }
 
 /// Parameters for a single swap

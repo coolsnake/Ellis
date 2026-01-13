@@ -139,6 +139,12 @@ export interface ExecuteParams {
    * If empty or shorter than steps, missing entries default to 0.
    */
   initialBalances?: bigint[];
+  /**
+   * Enable verbose logging on-chain (for simulation/debugging only).
+   * When true, logs detailed input/output amounts for each hop.
+   * Set to false for production to avoid revealing trade details in public logs.
+   */
+  verbose?: boolean;
 }
 
 /**

@@ -1071,8 +1071,10 @@ export class ArbExecutor {
           
           // minProfit is now calculated automatically from plan.initialInputRaw and plan.minProfitBps
           // by buildRouterTransaction when plan.isArbCycle is true (router-level enforcement)
+          // verbose: false for actual execution to avoid revealing trade details in public logs
           const routerResult = await buildRouterTransaction(plan, kp, {
             mode: ExecutionMode.FlashLoan,
+            verbose: false,
           });
           
           if (!routerResult.usedRouter || routerResult.error) {

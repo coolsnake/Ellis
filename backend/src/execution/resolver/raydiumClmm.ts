@@ -53,7 +53,7 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
     if (hotUpper) hop.tickArrayUpper = hotUpper;
     
     try {
-      logger.info('raydium.clmm.resolver.tick_arrays_from_hot_cache', {
+      logger.debug('raydium.clmm.resolver.tick_arrays_from_hot_cache', {
         cat: 'tx',
         ctx: {
           pool: hop.poolId,
@@ -169,7 +169,7 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
     (hop as any).needsTickArrayValidation = true;
   }
   
-  try { logger.info('raydium.clmm.resolve', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper, needsValidation: isPendingValidation } as any }); } catch (e) { logCatchError('resolver.raydiumClmm', e); }
+  try { logger.debug('raydium.clmm.resolve', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper, needsValidation: isPendingValidation } as any }); } catch (e) { logCatchError('resolver.raydiumClmm', e); }
   return hop;
 }
 

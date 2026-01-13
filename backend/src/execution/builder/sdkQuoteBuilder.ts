@@ -162,12 +162,12 @@ async function initOrcaSdk(): Promise<boolean> {
   orcaSdkInitialized = true;
 
   try {
-    logger.info('sdkQuoteBuilder.orca.init.starting', { cat: 'tx', sdk: 'v4' });
+    logger.debug('sdkQuoteBuilder.orca.init.starting', { cat: 'tx', sdk: 'v4' });
     const orcaSdk = await import('@orca-so/whirlpools');
 
     // Log available exports
     const allKeys = Object.keys(orcaSdk);
-    logger.info('sdkQuoteBuilder.orca.init.module_keys', {
+    logger.debug('sdkQuoteBuilder.orca.init.module_keys', {
       cat: 'tx',
       keys: allKeys.slice(0, 20),
       totalKeys: allKeys.length,
@@ -176,7 +176,7 @@ async function initOrcaSdk(): Promise<boolean> {
     OrcaSwapInstructions = (orcaSdk as any).swapInstructions;
     OrcaSetRpc = (orcaSdk as any).setRpc;
 
-    logger.info('sdkQuoteBuilder.orca.init.components', {
+    logger.debug('sdkQuoteBuilder.orca.init.components', {
       cat: 'tx',
       hasSwapInstructions: !!OrcaSwapInstructions,
       hasSetRpc: !!OrcaSetRpc,
@@ -187,7 +187,7 @@ async function initOrcaSdk(): Promise<boolean> {
       return false;
     }
 
-    logger.info('sdkQuoteBuilder.orca.init.success', { cat: 'tx', sdk: 'v4' });
+    logger.debug('sdkQuoteBuilder.orca.init.success', { cat: 'tx', sdk: 'v4' });
     return true;
   } catch (e: any) {
     logger.error('sdkQuoteBuilder.orca.init.error', {
@@ -240,7 +240,7 @@ async function initRaydiumSdk(): Promise<boolean> {
     // Import getPdaExBitmapAccount for proper exBitmap PDA derivation
     RaydiumGetPdaExBitmapAccount = (raydiumSdk as any).getPdaExBitmapAccount;
 
-    logger.info('sdkQuoteBuilder.raydium.init.success', {
+    logger.debug('sdkQuoteBuilder.raydium.init.success', {
       cat: 'tx',
       hasLayout: !!RaydiumClmmLayout,
       hasTickQuery: !!RaydiumTickQuery,
@@ -265,12 +265,12 @@ async function initMeteoraSdk(): Promise<boolean> {
   meteoraSdkInitialized = true;
 
   try {
-    logger.info('sdkQuoteBuilder.meteora.init.starting', { cat: 'tx' });
+    logger.debug('sdkQuoteBuilder.meteora.init.starting', { cat: 'tx' });
     const meteoraModule = await import('@meteora-ag/dlmm');
 
     // Log all keys for debugging
     const allKeys = Object.keys(meteoraModule);
-    logger.info('sdkQuoteBuilder.meteora.init.module_keys', {
+    logger.debug('sdkQuoteBuilder.meteora.init.module_keys', {
       cat: 'tx',
       keys: allKeys.slice(0, 20),
       totalKeys: allKeys.length,
@@ -285,23 +285,23 @@ async function initMeteoraSdk(): Promise<boolean> {
     // Check if default export has create method
     if (defaultExport && typeof defaultExport.create === 'function') {
       MeteoraDLMM = defaultExport;
-      logger.info('sdkQuoteBuilder.meteora.init.found_default', { cat: 'tx' });
+      logger.debug('sdkQuoteBuilder.meteora.init.found_default', { cat: 'tx' });
     }
     // Check if DLMM named export has create method
     else if (dlmmNamed && typeof dlmmNamed.create === 'function') {
       MeteoraDLMM = dlmmNamed;
-      logger.info('sdkQuoteBuilder.meteora.init.found_named', { cat: 'tx' });
+      logger.debug('sdkQuoteBuilder.meteora.init.found_named', { cat: 'tx' });
     }
     // Check if default export is the class itself (callable)
     else if (defaultExport && typeof defaultExport === 'function') {
       MeteoraDLMM = defaultExport;
-      logger.info('sdkQuoteBuilder.meteora.init.found_class', { cat: 'tx' });
+      logger.debug('sdkQuoteBuilder.meteora.init.found_class', { cat: 'tx' });
     }
     // Last resort: check for createProgram
     else if ((meteoraModule as any).createProgram) {
       // Store the module for alternative approach
       MeteoraDLMM = meteoraModule;
-      logger.info('sdkQuoteBuilder.meteora.init.found_createProgram', { cat: 'tx' });
+      logger.debug('sdkQuoteBuilder.meteora.init.found_createProgram', { cat: 'tx' });
     }
 
     // Log what we ended up with
@@ -309,7 +309,7 @@ async function initMeteoraSdk(): Promise<boolean> {
       typeof MeteoraDLMM.create === 'function' ||
       typeof MeteoraDLMM.createProgram === 'function'
     );
-    logger.info('sdkQuoteBuilder.meteora.init.result', {
+    logger.debug('sdkQuoteBuilder.meteora.init.result', {
       cat: 'tx',
       hasDLMM: !!MeteoraDLMM,
       hasCreate,
@@ -322,7 +322,7 @@ async function initMeteoraSdk(): Promise<boolean> {
       return false;
     }
 
-    logger.info('sdkQuoteBuilder.meteora.init.success', { cat: 'tx' });
+    logger.debug('sdkQuoteBuilder.meteora.init.success', { cat: 'tx' });
     return true;
   } catch (e: any) {
     logger.error('sdkQuoteBuilder.meteora.init.error', {
@@ -380,7 +380,7 @@ async function initRaydiumAmmSdk(): Promise<boolean> {
         || (raydiumSdk as any).Liquidity?.LIQUIDITY_STATE_LAYOUT_V4;
     }
 
-    logger.info('sdkQuoteBuilder.raydiumAmm.init.success', {
+    logger.debug('sdkQuoteBuilder.raydiumAmm.init.success', {
       cat: 'tx',
       hasLayout: !!RaydiumAmmLayout,
       hasLiquidity: !!RaydiumLiquidity,
@@ -403,7 +403,7 @@ async function initMeteoraDammV1Sdk(): Promise<boolean> {
     const dynamicAmmModule = await import('@meteora-ag/dynamic-amm-sdk');
     MeteoraDynamicAmm = dynamicAmmModule.default || dynamicAmmModule;
     
-    logger.info('sdkQuoteBuilder.meteoraDammV1.init.success', {
+    logger.debug('sdkQuoteBuilder.meteoraDammV1.init.success', {
       cat: 'tx',
       hasCreate: typeof MeteoraDynamicAmm?.create === 'function',
     });
@@ -425,7 +425,7 @@ async function initMeteoraDammV2Sdk(): Promise<boolean> {
     const cpAmmModule = await import('@meteora-ag/cp-amm-sdk');
     MeteoraCpAmm = (cpAmmModule as any).CpAmm || cpAmmModule.default || cpAmmModule;
     
-    logger.info('sdkQuoteBuilder.meteoraDammV2.init.success', {
+    logger.debug('sdkQuoteBuilder.meteoraDammV2.init.success', {
       cat: 'tx',
       hasCpAmm: !!MeteoraCpAmm,
     });
@@ -448,7 +448,7 @@ async function initPumpswapSdk(): Promise<boolean> {
     const pumpModule = await import('@pump-fun/pump-swap-sdk');
     PumpSwapSdk = pumpModule.default || pumpModule;
     
-    logger.info('sdkQuoteBuilder.pumpswap.init.success', {
+    logger.debug('sdkQuoteBuilder.pumpswap.init.success', {
       cat: 'tx',
       hasSdk: !!PumpSwapSdk,
       keys: PumpSwapSdk ? Object.keys(PumpSwapSdk).slice(0, 10) : [],
@@ -686,7 +686,7 @@ async function getOrcaSdkQuote(
       logger.debug('sdkQuoteBuilder.orca.quote.amount_extraction_failed', { cat: 'tx', error: (e as Error).message });
     }
 
-    logger.info('sdkQuoteBuilder.orca.quote.success', {
+    logger.debug('sdkQuoteBuilder.orca.quote.success', {
       cat: 'tx',
       ctx: {
         poolId: poolId.slice(0, 8) + '...',
@@ -982,7 +982,7 @@ async function getRaydiumSdkQuote(
           }
         }
 
-        logger.info('sdkQuoteBuilder.raydium.quote.sdk_tick_arrays', {
+        logger.debug('sdkQuoteBuilder.raydium.quote.sdk_tick_arrays', {
           cat: 'tx',
           ctx: {
             poolId: poolId.slice(0, 8),
@@ -1060,7 +1060,7 @@ async function getRaydiumSdkQuote(
     // Only derive manually if SDK returned NO tick arrays at all
     // This is the "first fetch" case where we haven't discovered tick arrays yet
     if (!centerAddress && tickArrayMap.size === 0) {
-      logger.info('sdkQuoteBuilder.raydium.quote.manual_derivation', {
+      logger.debug('sdkQuoteBuilder.raydium.quote.manual_derivation', {
         cat: 'tx',
         ctx: { 
           poolId: poolId.slice(0, 8), 
@@ -1103,7 +1103,7 @@ async function getRaydiumSdkQuote(
       vaultB,
     };
 
-    logger.info('sdkQuoteBuilder.raydium.quote.success', {
+    logger.debug('sdkQuoteBuilder.raydium.quote.success', {
       cat: 'tx',
       ctx: {
         poolId: poolId.slice(0, 8) + '...',
@@ -1347,7 +1347,7 @@ async function getMeteoraSdkQuote(
       vaultB,
     };
 
-    logger.info('sdkQuoteBuilder.meteora.quote.success', {
+    logger.debug('sdkQuoteBuilder.meteora.quote.success', {
       cat: 'tx',
       ctx: {
         poolId: poolId.slice(0, 8) + '...',
@@ -1484,7 +1484,7 @@ async function getRaydiumAmmSdkQuote(
           accounts.serumPcVault = quoteVault.toBase58();
           accounts.serumVaultSigner = vaultSigner.toBase58();
           
-          logger.info('sdkQuoteBuilder.raydiumAmm.market.decoded', {
+          logger.debug('sdkQuoteBuilder.raydiumAmm.market.decoded', {
             cat: 'tx',
             poolId: poolId.slice(0, 8) + '...',
             marketId: marketId.toBase58().slice(0, 8) + '...',
@@ -1493,7 +1493,7 @@ async function getRaydiumAmmSdkQuote(
         }
       }
       
-      logger.info('sdkQuoteBuilder.raydiumAmm.quote.success', {
+      logger.debug('sdkQuoteBuilder.raydiumAmm.quote.success', {
         cat: 'tx',
         poolId: poolId.slice(0, 8) + '...',
         hasVaults: !!(accounts.vaultA && accounts.vaultB),
@@ -1587,7 +1587,7 @@ async function getMeteoraDammV1SdkQuote(
             }
             
             // Log the protocol fee values from pool state (with detailed info for debugging)
-            logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.fromPoolState', {
+            logger.debug('sdkQuoteBuilder.meteoraDammV1.protocolFee.fromPoolState', {
               cat: 'tx',
               poolId: poolId.slice(0, 8) + '...',
               protocolTokenAFee: accounts.protocolTokenAFee,
@@ -1665,7 +1665,7 @@ async function getMeteoraDammV1SdkQuote(
                   const pk = acc.pubkey || acc;
                   return typeof pk.toBase58 === 'function' ? pk.toBase58() : new PublicKey(pk as any).toBase58();
                 });
-                logger.info('sdkQuoteBuilder.meteoraDammV1.remainingAccounts', {
+                logger.debug('sdkQuoteBuilder.meteoraDammV1.remainingAccounts', {
                   cat: 'tx',
                   poolId: poolId.slice(0, 8) + '...',
                   count: accounts.remainingAccounts.length,
@@ -1691,7 +1691,7 @@ async function getMeteoraDammV1SdkQuote(
             }
           }
           
-          logger.info('sdkQuoteBuilder.meteoraDammV1.sdk.success', {
+          logger.debug('sdkQuoteBuilder.meteoraDammV1.sdk.success', {
             cat: 'tx',
             poolId: poolId.slice(0, 8) + '...',
             hasVaults: !!(accounts.aVault && accounts.bVault),
@@ -1733,7 +1733,7 @@ async function getMeteoraDammV1SdkQuote(
     if (!accounts.protocolTokenAFee || !accounts.protocolTokenBFee) {
       try {
         const poolAccountInfo = await connection.getAccountInfo(poolPk);
-        logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.fallbackAttempt', {
+        logger.debug('sdkQuoteBuilder.meteoraDammV1.protocolFee.fallbackAttempt', {
           cat: 'tx',
           poolId: poolId.slice(0, 8) + '...',
           hasAccountInfo: !!poolAccountInfo,
@@ -1758,7 +1758,7 @@ async function getMeteoraDammV1SdkQuote(
             accounts.protocolTokenBFee = protocolBFee.toBase58();
           }
           
-          logger.info('sdkQuoteBuilder.meteoraDammV1.protocolFee.parsedFromAccount', {
+          logger.debug('sdkQuoteBuilder.meteoraDammV1.protocolFee.parsedFromAccount', {
             cat: 'tx',
             poolId: poolId.slice(0, 8) + '...',
             protocolTokenAFee: accounts.protocolTokenAFee,
@@ -1837,7 +1837,7 @@ async function getMeteoraDammV1SdkQuote(
       }
     }
     
-    logger.info('sdkQuoteBuilder.meteoraDammV1.quote.success', {
+    logger.debug('sdkQuoteBuilder.meteoraDammV1.quote.success', {
       cat: 'tx',
       poolId: poolId.slice(0, 8) + '...',
       hasVaults: !!(accounts.aVault && accounts.bVault),
@@ -1887,7 +1887,7 @@ async function getMeteoraDammV2SdkQuote(
           accounts.vaultB = poolInfo.tokenBVault?.toBase58?.() || poolInfo.bVault?.toBase58?.();
           accounts.lpMint = poolInfo.lpMint?.toBase58?.();
           
-          logger.info('sdkQuoteBuilder.meteoraDammV2.sdk.success', {
+          logger.debug('sdkQuoteBuilder.meteoraDammV2.sdk.success', {
             cat: 'tx',
             poolId: poolId.slice(0, 8) + '...',
           });
@@ -1927,7 +1927,7 @@ async function getMeteoraDammV2SdkQuote(
       }
     }
     
-    logger.info('sdkQuoteBuilder.meteoraDammV2.quote.success', {
+    logger.debug('sdkQuoteBuilder.meteoraDammV2.quote.success', {
       cat: 'tx',
       poolId: poolId.slice(0, 8) + '...',
       hasVaults: !!(accounts.vaultA && accounts.vaultB),
@@ -1987,7 +1987,7 @@ async function getPumpswapSdkQuote(
           }
         }
         
-        logger.info('sdkQuoteBuilder.pumpswap.sdk.success', {
+        logger.debug('sdkQuoteBuilder.pumpswap.sdk.success', {
           cat: 'tx',
           poolId: poolId.slice(0, 8) + '...',
           hasGlobalConfig: !!accounts.globalConfig,
@@ -2081,7 +2081,7 @@ async function getPumpswapSdkQuote(
     
     accounts.bondingCurve = poolPk.toBase58();
     
-    logger.info('sdkQuoteBuilder.pumpswap.quote.success', {
+    logger.debug('sdkQuoteBuilder.pumpswap.quote.success', {
       cat: 'tx',
       poolId: poolId.slice(0, 8) + '...',
       hasGlobalConfig: !!accounts.globalConfig,

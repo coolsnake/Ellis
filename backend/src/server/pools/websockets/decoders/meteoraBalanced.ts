@@ -251,17 +251,58 @@ export function decodeMeteoraBalancedPool(
   try {
     if (!existingPool) return null;
 
-    const mintA = existingPool.native_mint_a || existingPool.mint_a;
-    const mintB = existingPool.native_mint_b || existingPool.mint_b;
+    // CRITICAL: Use native mints/decimals consistently
+    // If native fields are missing, derive them from canonical fields + was_swapped flag
+    const wasSwapped = (existingPool as any).was_swapped === true;
+    
+    // Get mints - prefer native, derive from canonical if needed
+    let mintA: string | undefined;
+    let mintB: string | undefined;
+    
+    if (existingPool.native_mint_a && existingPool.native_mint_a.length > 10) {
+      mintA = existingPool.native_mint_a;
+      mintB = existingPool.native_mint_b;
+    } else if (existingPool.mint_a && existingPool.mint_a.length > 10) {
+      // Derive native mints from canonical + was_swapped
+      if (wasSwapped) {
+        mintA = existingPool.mint_b;
+        mintB = existingPool.mint_a;
+      } else {
+        mintA = existingPool.mint_a;
+        mintB = existingPool.mint_b;
+      }
+    }
     
     if (!mintA || !mintB) {
       logger.debug('meteora_balanced.decode.missing_mints', { poolId: existingPool.id, cat: 'pools' });
       return null;
     }
 
-    // Get decimals with fallback logging
-    let decA = existingPool.native_decimals_a ?? existingPool.decimals_a;
-    let decB = existingPool.native_decimals_b ?? existingPool.decimals_b;
+    // Get decimals - prefer native, derive from canonical if needed
+    let decA: number | undefined;
+    let decB: number | undefined;
+    
+    if (Number.isFinite(existingPool.native_decimals_a)) {
+      decA = existingPool.native_decimals_a;
+      decB = existingPool.native_decimals_b;
+    } else if (Number.isFinite(existingPool.decimals_a)) {
+      // Derive native decimals from canonical + was_swapped
+      if (wasSwapped) {
+        decA = existingPool.decimals_b;
+        decB = existingPool.decimals_a;
+      } else {
+        decA = existingPool.decimals_a;
+        decB = existingPool.decimals_b;
+      }
+      
+      logger.debug('meteora_balanced.decoder.derived_native_decimals', {
+        poolId: existingPool.id?.slice(0, 8) + '…',
+        wasSwapped,
+        decA,
+        decB,
+        cat: 'pools'
+      });
+    }
 
     if (!Number.isFinite(decA)) {
       logger.warn('meteora_balanced.decoder.decimals_fallback', {
@@ -291,11 +332,30 @@ export function decodeMeteoraBalancedPool(
     let reserveB = vaultBBalance;
 
     // Fall back to cached raw reserves if vault balances not available
-    if (reserveA === null && existingPool.native_reserve_a_raw) {
-      reserveA = anyToBigInt(existingPool.native_reserve_a_raw);
+    // CRITICAL: Use native reserves, derive from canonical if needed
+    if (reserveA === null) {
+      if (existingPool.native_reserve_a_raw) {
+        reserveA = anyToBigInt(existingPool.native_reserve_a_raw);
+      } else if (existingPool.reserve_a_raw) {
+        // Derive native reserves from canonical + was_swapped
+        if (wasSwapped) {
+          reserveA = anyToBigInt(existingPool.reserve_b_raw);
+        } else {
+          reserveA = anyToBigInt(existingPool.reserve_a_raw);
+        }
+      }
     }
-    if (reserveB === null && existingPool.native_reserve_b_raw) {
-      reserveB = anyToBigInt(existingPool.native_reserve_b_raw);
+    if (reserveB === null) {
+      if (existingPool.native_reserve_b_raw) {
+        reserveB = anyToBigInt(existingPool.native_reserve_b_raw);
+      } else if (existingPool.reserve_b_raw) {
+        // Derive native reserves from canonical + was_swapped
+        if (wasSwapped) {
+          reserveB = anyToBigInt(existingPool.reserve_a_raw);
+        } else {
+          reserveB = anyToBigInt(existingPool.reserve_b_raw);
+        }
+      }
     }
 
     if (reserveA === null || reserveB === null) {
@@ -382,8 +442,36 @@ export async function handleMeteoraBalancedVaultUpdate(
     const existingPool = poolData.pool as AmmPool;
     
     // Get vault addresses from the pool
-    const vaultA = existingPool.native_account_a || existingPool.account_a;
-    const vaultB = existingPool.native_account_b || existingPool.account_b;
+    // CRITICAL: Must use native vault addresses consistently with native mints/decimals
+    // If native_account_a is missing, derive it from canonical account_a + was_swapped flag
+    const wasSwapped = (existingPool as any).was_swapped === true;
+    
+    let vaultA: string | undefined;
+    let vaultB: string | undefined;
+    
+    // Prefer native vault addresses if available (non-empty)
+    if (existingPool.native_account_a && existingPool.native_account_a.length > 10) {
+      vaultA = existingPool.native_account_a;
+      vaultB = existingPool.native_account_b;
+    } else if (existingPool.account_a && existingPool.account_a.length > 10) {
+      // Canonical vaults available - derive native order from was_swapped
+      if (wasSwapped) {
+        // If swapped: canonical A = native B, canonical B = native A
+        vaultA = existingPool.account_b;
+        vaultB = existingPool.account_a;
+      } else {
+        vaultA = existingPool.account_a;
+        vaultB = existingPool.account_b;
+      }
+      
+      logger.debug('meteora_balanced.vault.derived_native_order', {
+        pool: poolId.slice(0, 8) + '…',
+        wasSwapped,
+        vaultA: vaultA?.slice(0, 8) + '…',
+        vaultB: vaultB?.slice(0, 8) + '…',
+        cat: 'pools'
+      });
+    }
     
     if (!vaultA || !vaultB) {
       logger.debug('meteora_balanced.vault.pool.missing_vaults', { 

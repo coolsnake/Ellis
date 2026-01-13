@@ -165,6 +165,8 @@ export interface RouterTxConfig {
   vaultOwner?: PublicKey;
   /** Minimum profit required (in base units) */
   minProfit?: bigint;
+  /** Enable verbose logging on-chain (for simulation/debugging only) */
+  verbose?: boolean;
 }
 
 export interface RouterTxResult {
@@ -221,7 +223,7 @@ export async function buildRouterTransaction(
     let minProfit = config?.minProfit ?? 0n;
     if (minProfit === 0n && plan.isArbCycle && plan.initialInputRaw && plan.minProfitBps !== undefined) {
       minProfit = (plan.initialInputRaw * BigInt(Math.max(0, plan.minProfitBps))) / 10_000n;
-      logger.info('routerTx.minProfit.calculated', {
+      logger.debug('routerTx.minProfit.calculated', {
         cat: 'tx',
         ctx: {
           isArbCycle: plan.isArbCycle,
@@ -233,18 +235,21 @@ export async function buildRouterTransaction(
       });
     }
 
+    // Extract verbose flag (for simulation logging)
+    const verbose = config?.verbose ?? false;
+
     // SDK Quote mode: use DEX SDKs to get accurate tick/bin arrays
     if (mode === ExecutionMode.SdkQuote) {
-      return buildSdkQuoteRouterTx(plan, wallet, programId, minProfit);
+      return buildSdkQuoteRouterTx(plan, wallet, programId, minProfit, verbose);
     }
 
     // Determine if we should use flash loan
     const shouldUseFlashLoan = await shouldUseFlashLoanMode(mode, plan, routerConfig);
 
     if (shouldUseFlashLoan) {
-      return buildFlashLoanArbTx(plan, wallet, programId, routerConfig.vaultOwner!, minProfit);
+      return buildFlashLoanArbTx(plan, wallet, programId, routerConfig.vaultOwner!, minProfit, verbose);
     } else {
-      return buildDirectRouterTx(plan, wallet, programId, minProfit);
+      return buildDirectRouterTx(plan, wallet, programId, minProfit, verbose);
     }
   } catch (err: any) {
     logCatchError('routerTx.build', err);
@@ -333,7 +338,8 @@ async function buildFlashLoanArbTx(
   wallet: { publicKey: PublicKey },
   programId: PublicKey,
   vaultOwnerStr: string,
-  minProfit: bigint
+  minProfit: bigint,
+  verbose: boolean
 ): Promise<RouterTxResult> {
   const instructions: TransactionInstruction[] = [];
   
@@ -362,7 +368,7 @@ async function buildFlashLoanArbTx(
       }
       
       if (Object.keys(validation.derivedAccounts).length > 0) {
-        logger.info('routerTx.flashLoan.accounts.derived', {
+        logger.debug('routerTx.flashLoan.accounts.derived', {
           cat: 'tx',
           hopIndex: i,
           pool: hop.poolId,
@@ -469,7 +475,7 @@ async function buildFlashLoanArbTx(
     }
     
     if (atasCreated > 0) {
-      logger.info('routerTx.flashLoan.atas.created', {
+      logger.debug('routerTx.flashLoan.atas.created', {
         cat: 'tx',
         atasCreated,
         totalChecked: atasToCreate.length,
@@ -492,7 +498,7 @@ async function buildFlashLoanArbTx(
     const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteSteps(plan.hops, wallet.publicKey);
     
     // DIAGNOSTIC: Log the exact values being passed to buildExecuteIx
-    logger.info('routerTx.flashLoan.execute.params', {
+    logger.debug('routerTx.flashLoan.execute.params', {
       cat: 'tx',
       ctx: {
         user: wallet.publicKey.toBase58(),
@@ -505,13 +511,13 @@ async function buildFlashLoanArbTx(
     const executeIx = buildExecuteIx(
       wallet.publicKey,
       userTokenAccount,
-      { steps, accountsPerStep, minProfit, initialBalances },
+      { steps, accountsPerStep, minProfit, initialBalances, verbose },
       dexAccounts,
       programId
     );
     
     // DIAGNOSTIC: Verify the instruction keys are in correct order
-    logger.info('routerTx.flashLoan.execute.keys', {
+    logger.debug('routerTx.flashLoan.execute.keys', {
       cat: 'tx',
       ctx: {
         keyCount: executeIx.keys.length,
@@ -537,7 +543,7 @@ async function buildFlashLoanArbTx(
       )
     );
 
-    logger.info('routerTx.flashLoan.built', {
+    logger.debug('routerTx.flashLoan.built', {
       cat: 'tx',
       code: LogCode.TX_BUILD_OK,
       ctx: {
@@ -572,7 +578,8 @@ async function buildDirectRouterTx(
   plan: ExecutionPlan,
   wallet: { publicKey: PublicKey },
   programId: PublicKey,
-  minProfit: bigint
+  minProfit: bigint,
+  verbose: boolean
 ): Promise<RouterTxResult> {
   const instructions: TransactionInstruction[] = [];
 
@@ -601,7 +608,7 @@ async function buildDirectRouterTx(
       }
       
       if (Object.keys(validation.derivedAccounts).length > 0) {
-        logger.info('routerTx.direct.accounts.derived', {
+        logger.debug('routerTx.direct.accounts.derived', {
           cat: 'tx',
           hopIndex: i,
           pool: hop.poolId,
@@ -616,7 +623,7 @@ async function buildDirectRouterTx(
     let userTokenAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey, false, inputTokenProgram);
     
     // DIAGNOSTIC: Log wallet and userTokenAccount at initialization
-    logger.info('routerTx.direct.init', {
+    logger.debug('routerTx.direct.init', {
       cat: 'tx',
       ctx: {
         walletPublicKey: wallet.publicKey.toBase58(),
@@ -645,7 +652,7 @@ async function buildDirectRouterTx(
         plan.hops[0].userSourceAta = wrapResult.wsolAta.toBase58();
         
         try {
-          logger.info('routerTx.direct.wrapSol', {
+          logger.debug('routerTx.direct.wrapSol', {
             cat: 'tx',
             ctx: { amount: amountToWrap, wsolAta: wrapResult.wsolAta.toBase58() },
           });
@@ -763,7 +770,7 @@ async function buildDirectRouterTx(
     }
     
     if (atasCreated > 0) {
-      logger.info('routerTx.direct.atas.created', {
+      logger.debug('routerTx.direct.atas.created', {
         cat: 'tx',
         atasCreated,
         totalChecked: atasToCreate.length,
@@ -825,7 +832,7 @@ async function buildDirectRouterTx(
         const meteoraBinArrayCount = dexType === DexType.Meteora 
           ? Math.max(0, dexAccounts.length - 15)  // swap: 15 fixed, swap2: 16 fixed
           : undefined;
-        logger.info('routerTx.direct.route_swap.prepared', {
+        logger.debug('routerTx.direct.route_swap.prepared', {
           cat: 'tx',
           ctx: {
             dexType,
@@ -855,7 +862,7 @@ async function buildDirectRouterTx(
       const userTokenPubkey = userTokenAccount.toBase58();
       const areSwapped = walletPubkey === userTokenPubkey;
       
-      logger.info('routerTx.direct.execute.params', {
+      logger.debug('routerTx.direct.execute.params', {
         cat: 'tx',
         ctx: {
           user: walletPubkey,
@@ -879,7 +886,7 @@ async function buildDirectRouterTx(
       const executeIx = buildExecuteIx(
         wallet.publicKey,
         userTokenAccount,
-        { steps, accountsPerStep, minProfit, initialBalances },
+        { steps, accountsPerStep, minProfit, initialBalances, verbose },
         dexAccounts,
         programId
       );
@@ -889,7 +896,7 @@ async function buildDirectRouterTx(
       const key0MatchesWallet = executeIx.keys[0]?.pubkey?.toBase58?.() === walletPubkey;
       const key1MatchesToken = executeIx.keys[1]?.pubkey?.toBase58?.() === userTokenPubkey;
       
-      logger.info('routerTx.direct.execute.keys', {
+      logger.debug('routerTx.direct.execute.keys', {
         cat: 'tx',
         ctx: {
           keyCount: executeIx.keys.length,
@@ -930,14 +937,14 @@ async function buildDirectRouterTx(
       instructions.push(closeIx);
       
       try {
-        logger.info('routerTx.direct.unwrapSol', {
+        logger.debug('routerTx.direct.unwrapSol', {
           cat: 'tx',
           ctx: { wsolAta: wsolAta.toBase58() },
         });
       } catch {}
     }
 
-    logger.info('routerTx.direct.built', {
+    logger.debug('routerTx.direct.built', {
       cat: 'tx',
       code: LogCode.TX_BUILD_OK,
       ctx: {
@@ -974,12 +981,13 @@ async function buildSdkQuoteRouterTx(
   plan: ExecutionPlan,
   wallet: { publicKey: PublicKey },
   programId: PublicKey,
-  minProfit: bigint
+  minProfit: bigint,
+  verbose: boolean
 ): Promise<RouterTxResult> {
   const instructions: TransactionInstruction[] = [];
 
   try {
-    logger.info('routerTx.sdkQuote.start', {
+    logger.debug('routerTx.sdkQuote.start', {
       cat: 'tx',
       ctx: {
         hops: plan.hops.length,
@@ -1102,7 +1110,7 @@ async function buildSdkQuoteRouterTx(
     }
 
     if (atasCreated > 0) {
-      logger.info('routerTx.sdkQuote.atas.created', {
+      logger.debug('routerTx.sdkQuote.atas.created', {
         cat: 'tx',
         atasCreated,
         totalChecked: atasToCreate.length,
@@ -1120,7 +1128,7 @@ async function buildSdkQuoteRouterTx(
     const executeIx = buildExecuteIx(
       wallet.publicKey,
       userTokenAccount,
-      { steps, accountsPerStep, minProfit, initialBalances },
+      { steps, accountsPerStep, minProfit, initialBalances, verbose },
       dexAccounts,
       programId
     );
@@ -1133,7 +1141,7 @@ async function buildSdkQuoteRouterTx(
       instructions.push(closeIx);
     }
 
-    logger.info('routerTx.sdkQuote.built', {
+    logger.debug('routerTx.sdkQuote.built', {
       cat: 'tx',
       code: LogCode.TX_BUILD_OK,
       ctx: {
@@ -1762,7 +1770,7 @@ async function extractDexAccounts(
           : (nativeAccountB || hop.vaultB || poolAccountB || hop.poolId);
         
         // Log the accounts being used for debugging
-        logger.info('routerTx.raydium.accounts', {
+        logger.debug('routerTx.raydium.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
           // Swap variant selection
@@ -1945,7 +1953,7 @@ async function extractDexAccounts(
           }
           
           // Debug logging to verify account positions
-          logger.info('routerTx.raydium.finalAccounts', {
+          logger.debug('routerTx.raydium.finalAccounts', {
             cat: 'tx',
             poolId: hop.poolId,
             totalAccounts: accounts.length,
@@ -2123,7 +2131,7 @@ async function extractDexAccounts(
               directionalBinArrays.push(validatedArrays[directionalBinArrays.length % validatedArrays.length]);
             }
 
-            logger.info('routerTx.meteora.binArrays.fromSdk', {
+            logger.debug('routerTx.meteora.binArrays.fromSdk', {
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId.slice(0, 8) + '...',
@@ -2281,7 +2289,7 @@ async function extractDexAccounts(
         } // End of: if (directionalBinArrays.length === 0)
 
         // Log the accounts being used for debugging with verification
-        logger.info('routerTx.meteora.accounts', {
+        logger.debug('routerTx.meteora.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
           // Instruction variant
@@ -2523,7 +2531,7 @@ async function extractDexAccounts(
         const orcaMintB = nativeMintB ? new PublicKey(nativeMintB) : outputMint;
         
         // Log the accounts being used for debugging with native mint verification
-        logger.info('routerTx.orca.accounts', {
+        logger.debug('routerTx.orca.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
           // Instruction variant
@@ -2710,7 +2718,7 @@ async function extractDexAccounts(
             pumpProtocolFeeRecipient = globalConfigData.protocolFeeRecipients[
               Math.floor(Math.random() * globalConfigData.protocolFeeRecipients.length)
             ];
-            logger.info('routerTx.pumpswap.protocolFeeRecipient.fetched', {
+            logger.debug('routerTx.pumpswap.protocolFeeRecipient.fetched', {
               cat: 'tx',
               recipient: pumpProtocolFeeRecipient.toBase58(),
               totalRecipients: globalConfigData.protocolFeeRecipients.length,
@@ -2765,7 +2773,7 @@ async function extractDexAccounts(
             if (poolData && poolData.coinCreator) {
               pumpCoinCreator = poolData.coinCreator.toBase58();
               
-              logger.info('routerTx.pumpswap.coinCreator.fetched', {
+              logger.debug('routerTx.pumpswap.coinCreator.fetched', {
                 cat: 'tx',
                 poolId: hop.poolId,
                 coinCreator: pumpCoinCreator,
@@ -2788,7 +2796,7 @@ async function extractDexAccounts(
           : SystemProgram.programId;
         
         if (coinCreatorPubkey.equals(SystemProgram.programId)) {
-          logger.info('routerTx.pumpswap.coinCreator.systemProgram', {
+          logger.debug('routerTx.pumpswap.coinCreator.systemProgram', {
             cat: 'tx',
             poolId: hop.poolId,
             msg: 'Pool has no coinCreator set (System Program), deriving PDAs from System Program seed',
@@ -2807,7 +2815,7 @@ async function extractDexAccounts(
         const pumpUserVolumeAccumulator = derivePumpswapUserVolumeAccumulator(wallet);
         
         // Log accounts for debugging
-        logger.info('routerTx.pumpswap.accounts.v3', {
+        logger.debug('routerTx.pumpswap.accounts.v3', {
           cat: 'tx',
           poolId: hop.poolId,
           baseMint: pumpBaseMint,
@@ -2875,7 +2883,7 @@ async function extractDexAccounts(
         const serumPcVault = (hop as any).serumPcVault || stat?.serum_pc_vault;
         const serumVaultSigner = (hop as any).serumVaultSigner || stat?.serum_vault_signer;
         
-        logger.info('routerTx.raydiumAmm.accounts', {
+        logger.debug('routerTx.raydiumAmm.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
           authority: raydiumAmmAuthority,
@@ -2925,7 +2933,7 @@ async function extractDexAccounts(
           const dammV2VaultB = hop.vaultB || poolAccountB;
           const lpMint = (hop as any).lpMint || stat?.mint_lp || hop.poolId.replace(/[#-]rev$/, '');
           
-          logger.info('routerTx.meteoraDamm.v2.accounts', {
+          logger.debug('routerTx.meteoraDamm.v2.accounts', {
             cat: 'tx',
             poolId: hop.poolId,
             variant: 'damm_v2',
@@ -3004,7 +3012,7 @@ async function extractDexAccounts(
           // Get remaining accounts for depeg/stable pools
           const remainingAccounts = (hop as any).remainingAccounts as string[] | undefined;
           
-          logger.info('routerTx.meteoraDamm.v1.accounts', {
+          logger.debug('routerTx.meteoraDamm.v1.accounts', {
             cat: 'tx',
             poolId: hop.poolId,
             variant: 'damm_v1',
@@ -3058,7 +3066,7 @@ async function extractDexAccounts(
             for (const acc of remainingAccounts) {
               accounts.push(new PublicKey(acc));
             }
-            logger.info('routerTx.meteoraDamm.v1.remainingAccounts.added', {
+            logger.debug('routerTx.meteoraDamm.v1.remainingAccounts.added', {
               cat: 'tx',
               poolId: hop.poolId.slice(0, 8) + '...',
               count: remainingAccounts.length,
@@ -3091,7 +3099,7 @@ async function extractDexAccounts(
           ? TOKEN_2022_PROGRAM_ID
           : TOKEN_PROGRAM_ID;
         
-        logger.info('routerTx.raydiumCpmm.accounts', {
+        logger.debug('routerTx.raydiumCpmm.accounts', {
           cat: 'tx',
           poolId: hop.poolId,
           ammConfig: cpmmAmmConfig,

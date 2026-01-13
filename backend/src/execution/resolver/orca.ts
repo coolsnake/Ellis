@@ -58,7 +58,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
     if (hotUpper) hop.tickArrayUpper = hotUpper;
     
     try {
-      logger.info('orca.resolver.tick_arrays_from_cache', {
+      logger.debug('orca.resolver.tick_arrays_from_cache', {
         cat: 'tx',
         traceId,
         ctx: {
@@ -197,7 +197,7 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
       hop.oracle = deriveOrcaOracle(new PublicKey(poolIdBase));
       
       try {
-        logger.info('orca.resolver.oracle_derived', {
+        logger.debug('orca.resolver.oracle_derived', {
           cat: 'tx',
           traceId,
           ctx: {

@@ -53,7 +53,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
             return acc;
           }, {}) : null;
           
-          logger.info('raydium.clmm.quote.attempt', {
+          logger.debug('raydium.clmm.quote.attempt', {
             cat: 'tx',
             ctx: {
               poolId: hop.poolId,
@@ -74,7 +74,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         
         try {
           const { logger } = await import('../../utils/logger.js');
-          logger.info('raydium.clmm.quote.result', {
+          logger.debug('raydium.clmm.quote.result', {
             cat: 'tx',
             ctx: {
               poolId: hop.poolId,
@@ -301,7 +301,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
             return acc;
           }, {}) : null;
           
-          logger.info('meteora.dlmm.quote.attempt', {
+          logger.debug('meteora.dlmm.quote.attempt', {
             cat: 'tx',
             ctx: {
               poolId: hop.poolId,
@@ -384,7 +384,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 px = wholeB / wholeA;
                 try {
                   const { logger } = await import('../../utils/logger.js');
-                  logger.info('meteora.dlmm.quote.price_from_reserves', {
+                  logger.debug('meteora.dlmm.quote.price_from_reserves', {
                     cat: 'tx',
                     ctx: {
                       poolId: hop.poolId,
@@ -405,7 +405,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           
           try {
             const { logger } = await import('../../utils/logger.js');
-            logger.info('meteora.dlmm.quote.pool_data', {
+            logger.debug('meteora.dlmm.quote.pool_data', {
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId,
@@ -438,7 +438,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 
                 try {
                   const { logger } = await import('../../utils/logger.js');
-                  logger.info('meteora.dlmm.quote.calculation', {
+                  logger.debug('meteora.dlmm.quote.calculation', {
                     cat: 'tx',
                     ctx: {
                       poolId: hop.poolId,
@@ -772,7 +772,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
                   
                   try {
                     const { logger } = await import('../../utils/logger.js');
-                    logger.info('orca.quote.local.tickarrays.cached', {
+                    logger.debug('orca.quote.local.tickarrays.cached', {
                       cat: 'tx',
                       ctx: {
                         pool: poolId,
@@ -919,7 +919,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
         
         try {
           import('../../utils/logger.js').then(({ logger }) => {
-            logger.info('raydium.clmm.quote.price_from_reserves', {
+            logger.debug('raydium.clmm.quote.price_from_reserves', {
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId,
@@ -976,7 +976,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           
   try {
     import('../../utils/logger.js').then(({ logger }) => {
-      logger.info('raydium.clmm.quote.direction', {
+      logger.debug('raydium.clmm.quote.direction', {
         cat: 'tx',
         ctx: {
           poolId: hop.poolId,
@@ -1094,7 +1094,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
                 
                 try {
                   const { logger } = await import('../../utils/logger.js');
-                  logger.info('raydium.clmm.quote.tickarrays.cached', {
+                  logger.debug('raydium.clmm.quote.tickarrays.cached', {
                     cat: 'tx',
                     ctx: {
                       poolId: hop.poolId,
@@ -1128,7 +1128,7 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
   
   try {
     import('../../utils/logger.js').then(({ logger }) => {
-      logger.info('raydium.clmm.quote.calculated', {
+      logger.debug('raydium.clmm.quote.calculated', {
         cat: 'tx',
         ctx: {
           poolId: hop.poolId,

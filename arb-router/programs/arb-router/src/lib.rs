@@ -333,6 +333,15 @@ pub mod arb_router {
             
             require!(actual_amount_in > 0, ArbRouterError::InsufficientFunds);
             
+            // Verbose: capture output token balance BEFORE swap
+            let output_balance_before = if params.verbose {
+                let output_token_idx = get_user_token_out_index(&step.dex_type, step.a_to_b, accounts_needed);
+                let output_token_account = &step_accounts[output_token_idx];
+                read_token_account_balance(output_token_account).unwrap_or(0)
+            } else {
+                0
+            };
+            
             match step.dex_type {
                 DexType::Raydium => {
                     dex::raydium::swap(step_accounts, actual_amount_in, step.min_amount_out, step.a_to_b)?;
@@ -362,6 +371,15 @@ pub mod arb_router {
                 }
             }
             
+            // Verbose: capture output balance AFTER swap and log delta
+            if params.verbose {
+                let output_token_idx = get_user_token_out_index(&step.dex_type, step.a_to_b, accounts_needed);
+                let output_token_account = &step_accounts[output_token_idx];
+                let output_balance_after = read_token_account_balance(output_token_account).unwrap_or(0);
+                let amount_out = output_balance_after.saturating_sub(output_balance_before);
+                msg!("VERBOSE hop[{}]: in={} out={} dex={:?}", i, actual_amount_in, amount_out, step.dex_type);
+            }
+            
             account_offset += accounts_needed;
         }
 
@@ -373,6 +391,13 @@ pub mod arb_router {
         // Use signed arithmetic to handle losses
         let profit: i64 = (final_balance as i64).checked_sub(initial_balance as i64)
             .ok_or(ArbRouterError::MathOverflow)?;
+        
+        // Verbose: log detailed profit check info before the require
+        if params.verbose {
+            msg!("VERBOSE profit_check: initial={} final={} profit={} min_required={}", 
+                initial_balance, final_balance, profit, params.min_profit);
+        }
+        
         require!(profit >= params.min_profit, ArbRouterError::NoProfitFromRoute);
 
         msg!("Route executed successfully. Profit: {}", profit);
@@ -722,6 +747,35 @@ fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool, accounts_count: usi
         DexType::MeteoraDAMM => 1,
         // Raydium CPMM: position 4 (User Input Token Account)
         DexType::RaydiumCpmm => 4,
+    }
+}
+
+/// Get the index of the user's output token account within the DEX accounts array
+/// This is the complement to get_user_token_in_index - returns where output tokens land
+fn get_user_token_out_index(dex_type: &DexType, a_to_b: bool, accounts_count: usize) -> usize {
+    match dex_type {
+        // Raydium CLMM: position 4 (Output Token Account)
+        DexType::Raydium => 4,
+        // Meteora DLMM: Position 5 = User Token Out (OUTPUT)
+        DexType::Meteora => 5,
+        // Orca Whirlpool: accounts are in A/B order
+        // - swap (12 accounts): Token Owner Account B is at position 5
+        // - swap_v2 (16 accounts): Token Owner Account B is at position 9
+        // A→B: output is B, B→A: output is A
+        DexType::Orca => {
+            let base_idx = if accounts_count >= dex::orca::SWAP_V2_ACCOUNTS_NEEDED { 7 } else { 3 };
+            if a_to_b { base_idx + 2 } else { base_idx }
+        },
+        // PumpSwap: user token accounts are at positions 5 (base) and 6 (quote)
+        // Buy (a_to_b=true): output is base (token) at index 5
+        // Sell (a_to_b=false): output is quote (SOL) at index 6
+        DexType::PumpSwap => if a_to_b { 5 } else { 6 },
+        // Raydium AMM v4: position 16 (User Dest Token Account)
+        DexType::RaydiumAmm => 16,
+        // Meteora DAMM: position 2 (User Dest Token Account)
+        DexType::MeteoraDAMM => 2,
+        // Raydium CPMM: position 5 (User Output Token Account)
+        DexType::RaydiumCpmm => 5,
     }
 }
 

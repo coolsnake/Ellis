@@ -1068,6 +1068,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
             steps,
             minProfit: -1000000000n, // Allow large loss for testing (fees will cause loss in round-trip swaps)
             initialBalances,
+            verbose: true, // Enable detailed logging for test transactions
           },
           allDexAccounts,
           routerProgram

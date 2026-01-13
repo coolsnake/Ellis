@@ -431,13 +431,17 @@ export function buildExecuteIx(
     ...initialBalancesData,
   ]);
 
-  // Match Rust ExecuteParams field order: steps, accounts_per_step, min_profit, initial_balances
+  // Serialize verbose as bool (1 byte)
+  const verboseBuffer = Buffer.from([params.verbose ? 1 : 0]);
+
+  // Match Rust ExecuteParams field order: steps, accounts_per_step, min_profit, initial_balances, verbose
   const data = Buffer.concat([
     DISCRIMINATORS.execute,
     stepsVec,
     accountsPerStepVec,
     minProfitBuffer,
     initialBalancesVec,
+    verboseBuffer,
   ]);
 
   // DIAGNOSTIC: Log the parameters received
