@@ -130,9 +130,11 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     raydium_shyftApiKey: '',
     raydium_pageDelayMs: 200,
     raydium_mintBatchSize: 10,
+    raydium_graphqlPageSize: 1000,
     raydium_graphqlMaxPages: 50,
     raydium_detailBatchSize: 50,
     // Raydium CLMM GraphQL (separate from AMM)
+    raydiumClmm_graphqlPageSize: 1000,
     raydiumClmm_graphqlMaxPages: 50,
     raydiumClmm_pageDelayMs: 200,
     raydiumClmm_mintBatchSize: 10,
@@ -141,6 +143,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     raydiumCpmm_enabled: false,
     raydiumCpmm_pageDelayMs: 200,
     raydiumCpmm_mintBatchSize: 10,
+    raydiumCpmm_graphqlPageSize: 1000,
     raydiumCpmm_graphqlMaxPages: 50,
     raydiumCpmm_detailBatchSize: 50,
     // Orca GraphQL
@@ -148,6 +151,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     orca_shyftApiKey: '',
     orca_pageDelayMs: 200,
     orca_mintBatchSize: 10,
+    orca_graphqlPageSize: 1000,
     orca_graphqlMaxPages: 50,
     orca_detailBatchSize: 20,
     // Meteora GraphQL
@@ -155,10 +159,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     meteora_shyftApiKey: '',
     meteora_pageDelayMs: 200,
     meteora_mintBatchSize: 10,
+    meteora_graphqlPageSize: 1000,
     meteora_graphqlMaxPages: 50,
     meteora_detailBatchSize: 10,
     // Pumpswap GraphQL batch settings
     pumpswap_mintBatchSize: 10,
+    pumpswap_graphqlPageSize: 1000,
     pumpswap_graphqlMaxPages: 50,
     // Jupiter
     jupiterApiUrl: '',
@@ -294,9 +300,11 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             raydium_shyftApiKey: j?.raydium?.shyftApiKey || prev.raydium_shyftApiKey || '',
             raydium_pageDelayMs: Number(j?.raydium?.pageDelayMs ?? prev.raydium_pageDelayMs ?? 200),
             raydium_mintBatchSize: Number(j?.raydium?.mintBatchSize ?? prev.raydium_mintBatchSize ?? 10),
+            raydium_graphqlPageSize: Number(j?.raydium?.graphqlPageSize ?? prev.raydium_graphqlPageSize ?? 1000),
             raydium_graphqlMaxPages: Number(j?.raydium?.graphqlMaxPages ?? prev.raydium_graphqlMaxPages ?? 50),
             raydium_detailBatchSize: Number(j?.raydium?.detailBatchSize ?? prev.raydium_detailBatchSize ?? 50),
             // Raydium CLMM GraphQL
+            raydiumClmm_graphqlPageSize: Number(j?.raydiumClmm?.graphqlPageSize ?? prev.raydiumClmm_graphqlPageSize ?? 1000),
             raydiumClmm_graphqlMaxPages: Number(j?.raydiumClmm?.graphqlMaxPages ?? prev.raydiumClmm_graphqlMaxPages ?? 50),
             raydiumClmm_pageDelayMs: Number(j?.raydiumClmm?.pageDelayMs ?? prev.raydiumClmm_pageDelayMs ?? 200),
             raydiumClmm_mintBatchSize: Number(j?.raydiumClmm?.mintBatchSize ?? prev.raydiumClmm_mintBatchSize ?? 10),
@@ -305,6 +313,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             raydiumCpmm_enabled: !!j?.raydiumCpmm?.enabled,
             raydiumCpmm_pageDelayMs: Number(j?.raydiumCpmm?.pageDelayMs ?? prev.raydiumCpmm_pageDelayMs ?? 200),
             raydiumCpmm_mintBatchSize: Number(j?.raydiumCpmm?.mintBatchSize ?? prev.raydiumCpmm_mintBatchSize ?? 10),
+            raydiumCpmm_graphqlPageSize: Number(j?.raydiumCpmm?.graphqlPageSize ?? prev.raydiumCpmm_graphqlPageSize ?? 1000),
             raydiumCpmm_graphqlMaxPages: Number(j?.raydiumCpmm?.graphqlMaxPages ?? prev.raydiumCpmm_graphqlMaxPages ?? 50),
             raydiumCpmm_detailBatchSize: Number(j?.raydiumCpmm?.detailBatchSize ?? prev.raydiumCpmm_detailBatchSize ?? 50),
             // Orca GraphQL
@@ -312,6 +321,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             orca_shyftApiKey: j?.orca?.shyftApiKey || prev.orca_shyftApiKey || '',
             orca_pageDelayMs: Number(j?.orca?.pageDelayMs ?? prev.orca_pageDelayMs ?? 200),
             orca_mintBatchSize: Number(j?.orca?.mintBatchSize ?? prev.orca_mintBatchSize ?? 10),
+            orca_graphqlPageSize: Number(j?.orca?.graphqlPageSize ?? prev.orca_graphqlPageSize ?? 1000),
             orca_graphqlMaxPages: Number(j?.orca?.graphqlMaxPages ?? prev.orca_graphqlMaxPages ?? 50),
             orca_detailBatchSize: Number(j?.orca?.detailBatchSize ?? prev.orca_detailBatchSize ?? 20),
             // Meteora GraphQL
@@ -319,10 +329,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             meteora_shyftApiKey: j?.meteora?.shyftApiKey || prev.meteora_shyftApiKey || '',
             meteora_pageDelayMs: Number(j?.meteora?.pageDelayMs ?? prev.meteora_pageDelayMs ?? 200),
             meteora_mintBatchSize: Number(j?.meteora?.mintBatchSize ?? prev.meteora_mintBatchSize ?? 10),
+            meteora_graphqlPageSize: Number(j?.meteora?.graphqlPageSize ?? prev.meteora_graphqlPageSize ?? 1000),
             meteora_graphqlMaxPages: Number(j?.meteora?.graphqlMaxPages ?? prev.meteora_graphqlMaxPages ?? 50),
             meteora_detailBatchSize: Number(j?.meteora?.detailBatchSize ?? prev.meteora_detailBatchSize ?? 10),
             // Pumpswap GraphQL batch settings
             pumpswap_mintBatchSize: Number(j?.pumpswap?.mintBatchSize ?? prev.pumpswap_mintBatchSize ?? 10),
+            pumpswap_graphqlPageSize: Number(j?.pumpswap?.graphqlPageSize ?? prev.pumpswap_graphqlPageSize ?? 1000),
             pumpswap_graphqlMaxPages: Number(j?.pumpswap?.graphqlMaxPages ?? prev.pumpswap_graphqlMaxPages ?? 50),
             // Sanity
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
@@ -449,10 +461,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
       shyftApiKey: String(cfg.raydium_shyftApiKey || ''),
       pageDelayMs: Number(cfg.raydium_pageDelayMs || 200),
       mintBatchSize: Number(cfg.raydium_mintBatchSize || 10),
+      graphqlPageSize: Number(cfg.raydium_graphqlPageSize || 1000),
       graphqlMaxPages: Number(cfg.raydium_graphqlMaxPages || 50),
       detailBatchSize: Number(cfg.raydium_detailBatchSize || 50),
 		},
       raydiumClmm: {
+        graphqlPageSize: Number(cfg.raydiumClmm_graphqlPageSize || 1000),
         graphqlMaxPages: Number(cfg.raydiumClmm_graphqlMaxPages || 50),
         pageDelayMs: Number(cfg.raydiumClmm_pageDelayMs || 200),
         mintBatchSize: Number(cfg.raydiumClmm_mintBatchSize || 10),
@@ -462,6 +476,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         enabled: !!cfg.raydiumCpmm_enabled,
         pageDelayMs: Number(cfg.raydiumCpmm_pageDelayMs || 200),
         mintBatchSize: Number(cfg.raydiumCpmm_mintBatchSize || 10),
+        graphqlPageSize: Number(cfg.raydiumCpmm_graphqlPageSize || 1000),
         graphqlMaxPages: Number(cfg.raydiumCpmm_graphqlMaxPages || 50),
         detailBatchSize: Number(cfg.raydiumCpmm_detailBatchSize || 50),
       },
@@ -477,6 +492,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         shyftApiKey: String(cfg.orca_shyftApiKey || ''),
         pageDelayMs: Number(cfg.orca_pageDelayMs || 200),
         mintBatchSize: Number(cfg.orca_mintBatchSize || 10),
+        graphqlPageSize: Number(cfg.orca_graphqlPageSize || 1000),
         graphqlMaxPages: Number(cfg.orca_graphqlMaxPages || 50),
         detailBatchSize: Number(cfg.orca_detailBatchSize || 20),
       },
@@ -493,6 +509,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         shyftApiKey: String(cfg.meteora_shyftApiKey || ''),
         pageDelayMs: Number(cfg.meteora_pageDelayMs || 200),
         mintBatchSize: Number(cfg.meteora_mintBatchSize || 10),
+        graphqlPageSize: Number(cfg.meteora_graphqlPageSize || 1000),
         graphqlMaxPages: Number(cfg.meteora_graphqlMaxPages || 50),
         detailBatchSize: Number(cfg.meteora_detailBatchSize || 10),
       },
@@ -527,6 +544,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         validatePrices: !!cfg.pumpswap_validatePrices,
         validationSamples: Number(cfg.pumpswap_validationSamples || 10),
         mintBatchSize: Number(cfg.pumpswap_mintBatchSize || 10),
+        graphqlPageSize: Number(cfg.pumpswap_graphqlPageSize || 1000),
         graphqlMaxPages: Number(cfg.pumpswap_graphqlMaxPages || 50),
       },
       shyft: {
@@ -1009,7 +1027,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       disabled={!cfg.raydium_useGraphQL}
                     />
                   </div>
-                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-gray-600">
+                  <div className="grid grid-cols-4 gap-1 pt-1 border-t border-gray-600">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Mint Batch</label>
                       <input 
@@ -1022,6 +1040,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                     <div>
+                      <label className="block text-xs text-gray-400 mb-1">Page Size</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                        value={cfg.raydium_graphqlPageSize} 
+                        onChange={(e)=>set('raydium_graphqlPageSize', Number(e.target.value)||1000)}
+                        disabled={!cfg.raydium_useGraphQL}
+                        min={100} max={1000}
+                      />
+                    </div>
+                    <div>
                       <label className="block text-xs text-gray-400 mb-1">Max Pages</label>
                       <input 
                         type="number" 
@@ -1031,7 +1060,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                         disabled={!cfg.raydium_useGraphQL}
                         min={1} max={200}
                       />
-                      <p className="text-xs text-gray-500 mt-1">50 pages × 1000 = 50k pools</p>
                     </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Detail Batch</label>
@@ -1045,6 +1073,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                   </div>
+                  <p className="text-xs text-gray-500 mt-1">Total pools = Page Size × Max Pages (e.g., 1000 × 50 = 50k pools)</p>
                 </div>
               </div>
 
@@ -1064,7 +1093,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       disabled={!cfg.raydium_useGraphQL}
                     />
                   </div>
-                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-gray-600">
+                  <div className="grid grid-cols-4 gap-1 pt-1 border-t border-gray-600">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Mint Batch</label>
                       <input 
@@ -1077,6 +1106,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                     <div>
+                      <label className="block text-xs text-gray-400 mb-1">Page Size</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                        value={cfg.raydiumClmm_graphqlPageSize} 
+                        onChange={(e)=>set('raydiumClmm_graphqlPageSize', Number(e.target.value)||1000)}
+                        disabled={!cfg.raydium_useGraphQL}
+                        min={100} max={1000}
+                      />
+                    </div>
+                    <div>
                       <label className="block text-xs text-gray-400 mb-1">Max Pages</label>
                       <input 
                         type="number" 
@@ -1086,7 +1126,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                         disabled={!cfg.raydium_useGraphQL}
                         min={1} max={200}
                       />
-                      <p className="text-xs text-gray-500 mt-1">50 pages × 1000 = 50k pools</p>
                     </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Detail Batch</label>
@@ -1100,6 +1139,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                   </div>
+                  <p className="text-xs text-gray-500 mt-1">Total pools = Page Size × Max Pages</p>
                 </div>
               </div>
 
@@ -1119,7 +1159,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       disabled={!cfg.raydiumCpmm_enabled}
                     />
                   </div>
-                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-gray-600">
+                  <div className="grid grid-cols-4 gap-1 pt-1 border-t border-gray-600">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Mint Batch</label>
                       <input 
@@ -1132,6 +1172,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                     <div>
+                      <label className="block text-xs text-gray-400 mb-1">Page Size</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                        value={cfg.raydiumCpmm_graphqlPageSize} 
+                        onChange={(e)=>set('raydiumCpmm_graphqlPageSize', Number(e.target.value)||1000)}
+                        disabled={!cfg.raydiumCpmm_enabled}
+                        min={100} max={1000}
+                      />
+                    </div>
+                    <div>
                       <label className="block text-xs text-gray-400 mb-1">Max Pages</label>
                       <input 
                         type="number" 
@@ -1141,7 +1192,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                         disabled={!cfg.raydiumCpmm_enabled}
                         min={1} max={200}
                       />
-                      <p className="text-xs text-gray-500 mt-1">50 pages × 1000 = 50k pools</p>
                     </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Detail Batch</label>
@@ -1155,6 +1205,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                   </div>
+                  <p className="text-xs text-gray-500 mt-1">Total pools = Page Size × Max Pages</p>
                 </div>
               </div>
 
@@ -1185,7 +1236,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       disabled={!cfg.orca_useGraphQL}
                     />
                   </div>
-                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-gray-600">
+                  <div className="grid grid-cols-4 gap-1 pt-1 border-t border-gray-600">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Mint Batch</label>
                       <input 
@@ -1198,6 +1249,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                     <div>
+                      <label className="block text-xs text-gray-400 mb-1">Page Size</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                        value={cfg.orca_graphqlPageSize} 
+                        onChange={(e)=>set('orca_graphqlPageSize', Number(e.target.value)||1000)}
+                        disabled={!cfg.orca_useGraphQL}
+                        min={100} max={1000}
+                      />
+                    </div>
+                    <div>
                       <label className="block text-xs text-gray-400 mb-1">Max Pages</label>
                       <input 
                         type="number" 
@@ -1207,7 +1269,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                         disabled={!cfg.orca_useGraphQL}
                         min={1} max={200}
                       />
-                      <p className="text-xs text-gray-500 mt-1">50 pages × 1000 = 50k pools</p>
                     </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Detail Batch</label>
@@ -1221,6 +1282,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                   </div>
+                  <p className="text-xs text-gray-500 mt-1">Total pools = Page Size × Max Pages</p>
                 </div>
               </div>
 
@@ -1251,7 +1313,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       disabled={!cfg.meteora_useGraphQL}
                     />
                   </div>
-                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-gray-600">
+                  <div className="grid grid-cols-4 gap-1 pt-1 border-t border-gray-600">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Mint Batch</label>
                       <input 
@@ -1264,6 +1326,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                     <div>
+                      <label className="block text-xs text-gray-400 mb-1">Page Size</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                        value={cfg.meteora_graphqlPageSize} 
+                        onChange={(e)=>set('meteora_graphqlPageSize', Number(e.target.value)||1000)}
+                        disabled={!cfg.meteora_useGraphQL}
+                        min={100} max={1000}
+                      />
+                    </div>
+                    <div>
                       <label className="block text-xs text-gray-400 mb-1">Max Pages</label>
                       <input 
                         type="number" 
@@ -1273,7 +1346,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                         disabled={!cfg.meteora_useGraphQL}
                         min={1} max={200}
                       />
-                      <p className="text-xs text-gray-500 mt-1">50 pages × 1000 = 50k pools</p>
                     </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Detail Batch</label>
@@ -1287,6 +1359,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                       />
                     </div>
                   </div>
+                  <p className="text-xs text-gray-500 mt-1">Total pools = Page Size × Max Pages</p>
                 </div>
               </div>
             </div>
@@ -1294,7 +1367,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             {/* Pumpswap GraphQL Batch Settings */}
             <div className="mt-4 p-3 bg-gray-800/50 rounded border border-amber-600">
               <h4 className="text-sm font-semibold mb-2 text-amber-400">📦 Pumpswap GraphQL Batch Settings</h4>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Mint Batch Size</label>
                   <input 
@@ -1304,10 +1377,19 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                     onChange={(e)=>set('pumpswap_mintBatchSize', Number(e.target.value)||10)}
                     min={1} max={50}
                   />
-                  <p className="text-xs text-gray-500 mt-1">Mints per _in query (default: 10)</p>
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1">Max Pages per Batch</label>
+                  <label className="block text-xs text-gray-400 mb-1">Page Size</label>
+                  <input 
+                    type="number" 
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                    value={cfg.pumpswap_graphqlPageSize} 
+                    onChange={(e)=>set('pumpswap_graphqlPageSize', Number(e.target.value)||1000)}
+                    min={100} max={1000}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Max Pages</label>
                   <input 
                     type="number" 
                     className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
@@ -1315,15 +1397,16 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                     onChange={(e)=>set('pumpswap_graphqlMaxPages', Number(e.target.value)||50)}
                     min={1} max={200}
                   />
-                  <p className="text-xs text-gray-500 mt-1">50 pages × 1000 = 50k pools</p>
                 </div>
               </div>
+              <p className="text-xs text-gray-500 mt-1">Total pools = Page Size × Max Pages</p>
             </div>
 
             <div className="mt-3 text-xs text-gray-300 bg-gray-600 rounded p-2">
               <strong>💡 Batch Settings:</strong><br/>
               • <strong>Mint Batch:</strong> How many token mints to include in each _in clause query. Lower = more queries but smaller responses.<br/>
-              • <strong>Max Pages:</strong> Maximum pagination pages per mint batch. Higher = more pools but longer fetch times.<br/>
+              • <strong>Page Size:</strong> Pools per page returned by GraphQL (default: 1000). Max allowed by Shyft is typically 1000.<br/>
+              • <strong>Max Pages:</strong> Maximum pagination pages per mint batch. Total pools = Page Size × Max Pages.<br/>
               • <strong>Detail Batch:</strong> Pools per detail query (fetches full pool data). Lower = safer for large pool sets.
             </div>
           </div>
