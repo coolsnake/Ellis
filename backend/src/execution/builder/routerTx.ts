@@ -2918,12 +2918,13 @@ async function extractDexAccounts(
 
       case DexType.MeteoraDAMM:
         // Meteora DAMM v1 uses Mercurial Vaults ("vault of vaults" architecture)
-        // v1: 16 accounts total, v2: 14 accounts (swap2 layout from SDK)
+        // v1: 16 accounts total, v2: 13 accounts (swap2 layout from SDK, no referral)
         // CRITICAL: Mints and Vaults must be in POOL CANONICAL ORDER (A/B), not swap direction!
         const isV2 = hop.variant === 'damm_v2';
         
         if (isV2) {
-          // v2 (CP-AMM) swap2 account layout (14 accounts) - matches @meteora-ag/cp-amm-sdk
+          // v2 (CP-AMM) swap2 account layout (13 accounts) - matches @meteora-ag/cp-amm-sdk
+          // NOTE: Referral account is optional and omitted when not used
           // Fixed pool authority from SDK IDL
           const METEORA_CPAMM_POOL_AUTHORITY = new PublicKey('HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC');
           const dammV2MintA = poolMintA ? new PublicKey(poolMintA) : inputMint;
@@ -2968,9 +2969,8 @@ async function extractDexAccounts(
             wallet,                                                            // 8: Payer (signer)
             tokenProgramA,                                                     // 9: Token A Program
             tokenProgramB,                                                     // 10: Token B Program
-            programIdKey,                                                      // 11: Referral Token Account (placeholder = program ID)
-            eventAuthority,                                                    // 12: Event Authority (PDA)
-            programIdKey,                                                      // 13: Program (for CPI)
+            eventAuthority,                                                    // 11: Event Authority (PDA)
+            programIdKey,                                                      // 12: Program (for CPI)
           );
         } else {
           // v1 (Dynamic AMM) account layout - 16 accounts with Mercurial Vault architecture
@@ -3178,7 +3178,7 @@ async function extractDexAccounts(
   }
 
   // CRITICAL: For MeteoraDAMM, don't pad - the on-chain router detects v1 vs v2 by account count
-  // v1 = 16 accounts (Mercurial Vaults), v2 = 14 accounts (CP-AMM swap2)
+  // v1 = 16 accounts (Mercurial Vaults), v2 = 13 accounts (CP-AMM swap2, no referral)
   if (dexType === DexType.MeteoraDAMM) {
     return accounts;
   }
