@@ -210,6 +210,7 @@ export interface MeteoraBalancedPoolApiResponse {
   pool_address: string;
   address?: string;
   id?: string;
+  pubkey?: string;
   // Token mints
   token_a_mint: string;
   token_b_mint: string;
