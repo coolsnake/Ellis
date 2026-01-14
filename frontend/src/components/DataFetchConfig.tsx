@@ -91,7 +91,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     // Meteora Balanced (mAMM)
     meteoraBalanced_apiUrl: 'https://damm-api.meteora.ag/pools',
     meteoraBalanced_apiUrlV2: 'https://dammv2-api.meteora.ag/pools',
-    meteoraBalanced_hideLowTvl: false,
+    meteoraBalanced_hideLowTvl: true,
     meteoraBalanced_hideLowApr: false,
     meteoraBalanced_tokensVerified: false,
     meteoraBalanced_minLiqBase: 50,

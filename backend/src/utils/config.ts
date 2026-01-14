@@ -830,7 +830,7 @@ export const CONFIG = {
     apiUrl: process.env.METEORA_BALANCED_API_URL || 'https://damm-api.meteora.ag/pools',
     apiUrlV2: process.env.METEORA_BALANCED_API_URL_V2 || 'https://dammv2-api.meteora.ag/pools',
     // API-level filtering parameters (applied during fetch)
-    hideLowTvl: process.env.METEORA_BALANCED_HIDE_LOW_TVL === 'true' || process.env.METEORA_BALANCED_HIDE_LOW_TVL === '1' || false, // Default: false for backward compatibility
+    hideLowTvl: process.env.METEORA_BALANCED_HIDE_LOW_TVL !== 'false' && process.env.METEORA_BALANCED_HIDE_LOW_TVL !== '0', // Default: true (filters low TVL pools from V2 API)
     hideLowApr: process.env.METEORA_BALANCED_HIDE_LOW_APR === 'true' || process.env.METEORA_BALANCED_HIDE_LOW_APR === '1' || false, // Default: false
     tokensVerified: process.env.METEORA_BALANCED_TOKENS_VERIFIED === 'true' || process.env.METEORA_BALANCED_TOKENS_VERIFIED === '1' || false, // Default: false for backward compatibility
     // Optional: minimum liquidity threshold (USD) for filtering pools (applies after normalization)
