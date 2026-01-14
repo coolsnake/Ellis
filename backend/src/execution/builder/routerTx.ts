@@ -2918,13 +2918,14 @@ async function extractDexAccounts(
 
       case DexType.MeteoraDAMM:
         // Meteora DAMM v1 uses Mercurial Vaults ("vault of vaults" architecture)
-        // v1: 16 accounts total, v2: 11 accounts (different layout)
+        // v1: 16 accounts total, v2: 14 accounts (swap2 layout from SDK)
         // CRITICAL: Mints and Vaults must be in POOL CANONICAL ORDER (A/B), not swap direction!
         const isV2 = hop.variant === 'damm_v2';
         
         if (isV2) {
-          // v2 (CP-AMM) account layout (11 accounts) - matches @meteora-ag/cp-amm-sdk swap2
-          // Layout: Pool, UserSource, UserDest, VaultA, VaultB, MintA, MintB, User, TokenProgA, TokenProgB, Program
+          // v2 (CP-AMM) swap2 account layout (14 accounts) - matches @meteora-ag/cp-amm-sdk
+          // Fixed pool authority from SDK IDL
+          const METEORA_CPAMM_POOL_AUTHORITY = new PublicKey('HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC');
           const dammV2MintA = poolMintA ? new PublicKey(poolMintA) : inputMint;
           const dammV2MintB = poolMintB ? new PublicKey(poolMintB) : outputMint;
           const dammV2VaultA = hop.vaultA || poolAccountA;
@@ -2938,6 +2939,12 @@ async function extractDexAccounts(
             ? new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
             : TOKEN_PROGRAM_ID;
           
+          // Derive Event Authority PDA: seeds = ["__event_authority"]
+          const [eventAuthority] = PublicKey.findProgramAddressSync(
+            [Buffer.from('__event_authority')],
+            programIdKey
+          );
+          
           logger.debug('routerTx.meteoraDamm.v2.accounts', {
             cat: 'tx',
             poolId: hop.poolId,
@@ -2946,20 +2953,24 @@ async function extractDexAccounts(
             poolMintB: poolMintB || 'missing',
             vaultA: dammV2VaultA || 'missing',
             vaultB: dammV2VaultB || 'missing',
+            eventAuthority: eventAuthority.toBase58(),
           });
           
           accounts.push(
-            poolId,                                                            // 0: Pool
-            userSourceAta,                                                     // 1: User Source
-            userDestAta,                                                       // 2: User Dest
-            new PublicKey(dammV2VaultA),                                      // 3: Vault A (canonical)
-            new PublicKey(dammV2VaultB),                                      // 4: Vault B (canonical)
-            dammV2MintA,                                                       // 5: Token A Mint (canonical)
-            dammV2MintB,                                                       // 6: Token B Mint (canonical)
-            wallet,                                                            // 7: User (signer)
-            tokenProgramA,                                                     // 8: Token A Program
-            tokenProgramB,                                                     // 9: Token B Program
-            programIdKey,                                                      // 10: Program
+            METEORA_CPAMM_POOL_AUTHORITY,                                     // 0: Pool Authority (fixed global)
+            poolId,                                                            // 1: Pool
+            userSourceAta,                                                     // 2: Input Token Account
+            userDestAta,                                                       // 3: Output Token Account
+            new PublicKey(dammV2VaultA),                                      // 4: Token A Vault (canonical)
+            new PublicKey(dammV2VaultB),                                      // 5: Token B Vault (canonical)
+            dammV2MintA,                                                       // 6: Token A Mint (canonical)
+            dammV2MintB,                                                       // 7: Token B Mint (canonical)
+            wallet,                                                            // 8: Payer (signer)
+            tokenProgramA,                                                     // 9: Token A Program
+            tokenProgramB,                                                     // 10: Token B Program
+            programIdKey,                                                      // 11: Referral Token Account (placeholder = program ID)
+            eventAuthority,                                                    // 12: Event Authority (PDA)
+            programIdKey,                                                      // 13: Program (for CPI)
           );
         } else {
           // v1 (Dynamic AMM) account layout - 16 accounts with Mercurial Vault architecture
@@ -3167,7 +3178,7 @@ async function extractDexAccounts(
   }
 
   // CRITICAL: For MeteoraDAMM, don't pad - the on-chain router detects v1 vs v2 by account count
-  // v1 = 16 accounts (Mercurial Vaults), v2 = 11 accounts (CP-AMM)
+  // v1 = 16 accounts (Mercurial Vaults), v2 = 14 accounts (CP-AMM swap2)
   if (dexType === DexType.MeteoraDAMM) {
     return accounts;
   }

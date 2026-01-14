@@ -574,7 +574,7 @@ export function getAccountsNeededForDex(dexType: DexType): number {
     case DexType.RaydiumAmm:
       return 19; // Raydium AMM v4: 18 accounts + program
     case DexType.MeteoraDAMM:
-      // Meteora DAMM v1: 16 accounts (with Mercurial Vaults), v2: 11 accounts
+      // Meteora DAMM v1: 16 accounts (with Mercurial Vaults), v2: 14 accounts (swap2)
       // Return max (v1). Builder determines actual count based on variant.
       return 16;
     case DexType.RaydiumCpmm:

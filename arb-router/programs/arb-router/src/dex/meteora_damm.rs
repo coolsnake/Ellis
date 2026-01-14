@@ -28,9 +28,9 @@ use crate::error::ArbRouterError;
 pub const ACCOUNTS_NEEDED_V1: usize = 16;
 
 /// Number of accounts needed for Meteora DAMM v2 swap  
-/// v2 is simpler CP-AMM: 10 accounts + 1 program ID = 11 total
+/// v2 CP-AMM swap2: 13 accounts + 1 program ID = 14 total
 /// Account layout matches @meteora-ag/cp-amm-sdk swap2 instruction
-pub const ACCOUNTS_NEEDED_V2: usize = 11;
+pub const ACCOUNTS_NEEDED_V2: usize = 14;
 
 /// Default accounts needed (v1 - the more complex one)
 pub const ACCOUNTS_NEEDED: usize = ACCOUNTS_NEEDED_V1;
@@ -43,9 +43,10 @@ pub const ACCOUNTS_NEEDED: usize = ACCOUNTS_NEEDED_V1;
 /// Anchor: sha256("global:swap")[0..8]
 const SWAP_V1_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
 
-/// Meteora DAMM v2 `swap` instruction discriminator
-/// May differ from v1 - needs verification with v2 IDL
-const SWAP_V2_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
+/// Meteora DAMM v2 `swap2` instruction discriminator
+/// Anchor: sha256("global:swap2")[0..8]
+/// CP-AMM uses swap2 instruction, not swap
+const SWAP_V2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
 // =============================================================================
 // Swap Parameters
@@ -174,23 +175,26 @@ pub fn swap_v1(
     Ok(())
 }
 
-/// Execute a swap on Meteora DAMM v2 (CP-AMM)
+/// Execute a swap on Meteora DAMM v2 (CP-AMM) using swap2 instruction
 ///
-/// ## Account Layout (11 accounts total):
+/// ## Account Layout (14 accounts total):
 ///
 /// Matches @meteora-ag/cp-amm-sdk swap2 instruction layout:
 ///
-/// 0. `[writable]` Pool
-/// 1. `[writable]` User Source Token Account
-/// 2. `[writable]` User Destination Token Account
-/// 3. `[writable]` Pool Token A Vault
-/// 4. `[writable]` Pool Token B Vault
-/// 5. `[]` Token A Mint
-/// 6. `[]` Token B Mint
-/// 7. `[signer]` User
-/// 8. `[]` Token A Program
-/// 9. `[]` Token B Program
-/// 10. `[]` Meteora DAMM v2 Program (for CPI)
+/// 0. `[]` Pool Authority (fixed: HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC)
+/// 1. `[writable]` Pool
+/// 2. `[writable]` Input Token Account (user's source ATA)
+/// 3. `[writable]` Output Token Account (user's dest ATA)
+/// 4. `[writable]` Token A Vault
+/// 5. `[writable]` Token B Vault
+/// 6. `[]` Token A Mint
+/// 7. `[]` Token B Mint
+/// 8. `[signer]` Payer (user)
+/// 9. `[]` Token A Program
+/// 10. `[]` Token B Program
+/// 11. `[writable]` Referral Token Account (optional, can be program ID as placeholder)
+/// 12. `[]` Event Authority (PDA)
+/// 13. `[]` Meteora DAMM v2 Program (for CPI)
 ///
 /// # Arguments
 /// * `accounts` - DEX-specific accounts in the order above
@@ -217,19 +221,20 @@ pub fn swap_v2(
     data.extend_from_slice(&SWAP_V2_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
-    let program_idx = ACCOUNTS_NEEDED_V2 - 1; // 10 (last account is program ID)
+    let program_idx = ACCOUNTS_NEEDED_V2 - 1; // 13 (last account is program ID)
     let dex_program_id = *accounts[program_idx].key;
 
-    // Build account metas for v2 CP-AMM swap
-    // Writable: Pool(0), UserSource(1), UserDest(2), VaultA(3), VaultB(4)
-    // Read-only: MintA(5), MintB(6), TokenAProgram(8), TokenBProgram(9)
-    // Signer: User(7)
+    // Build account metas for v2 CP-AMM swap2 instruction
+    // Fixed layout from @meteora-ag/cp-amm-sdk IDL:
+    // Writable: Pool(1), InputToken(2), OutputToken(3), VaultA(4), VaultB(5), ReferralToken(11)
+    // Signer: Payer(8)
+    // Read-only: PoolAuthority(0), MintA(6), MintB(7), TokenProgA(9), TokenProgB(10), EventAuth(12)
     let account_metas: Vec<AccountMeta> = accounts[..program_idx]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
-            let is_signer = i == 7;  // User at index 7
-            let is_writable = matches!(i, 0 | 1 | 2 | 3 | 4);  // Pool and vaults
+            let is_signer = i == 8;  // Payer at index 8
+            let is_writable = matches!(i, 1 | 2 | 3 | 4 | 5 | 11);  // Pool, user tokens, vaults, referral
             
             if is_signer {
                 AccountMeta::new(*acc.key, true)
@@ -263,7 +268,7 @@ pub fn swap_v2(
 ///
 /// # Version Detection
 /// v1 (Dynamic AMM with Mercurial Vaults) requires 16 accounts
-/// v2 (CP-AMM) requires 11 accounts
+/// v2 (CP-AMM swap2) requires 14 accounts
 /// We detect the version by account count rather than a flag.
 pub fn swap(
     accounts: &[AccountInfo],
@@ -271,7 +276,7 @@ pub fn swap(
     min_amount_out: u64,
     _a_to_b: bool,
 ) -> Result<()> {
-    // Detect version by account count: v1=16 (Mercurial Vaults), v2=11 (CP-AMM)
+    // Detect version by account count: v1=16 (Mercurial Vaults), v2=14 (CP-AMM swap2)
     if accounts.len() >= ACCOUNTS_NEEDED_V1 {
         swap_v1(accounts, amount_in, min_amount_out)
     } else if accounts.len() >= ACCOUNTS_NEEDED_V2 {
