@@ -52,13 +52,25 @@ const SWAP_V2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 // Swap Parameters
 // =============================================================================
 
-/// Meteora DAMM swap parameters
+/// Meteora DAMM v1 swap parameters
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct SwapParams {
     /// Amount to swap (in or out depending on swap type)
     pub amount_in: u64,
     /// Minimum output amount (slippage protection)
     pub minimum_amount_out: u64,
+}
+
+/// Meteora DAMM v2 (CP-AMM) swap2 parameters
+/// Matches swapParameters2 from @meteora-ag/cp-amm-sdk IDL
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct SwapParams2 {
+    /// Amount in (for ExactIn/PartialFill) or amount out (for ExactOut)
+    pub amount0: u64,
+    /// Minimum amount out (for ExactIn/PartialFill) or maximum amount in (for ExactOut)
+    pub amount1: u64,
+    /// Swap mode: 0=ExactIn, 1=PartialFill, 2=ExactOut
+    pub swap_mode: u8,
 }
 
 // =============================================================================
@@ -210,13 +222,15 @@ pub fn swap_v2(
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
-    let params = SwapParams {
-        amount_in,
-        minimum_amount_out: min_amount_out,
+    // Use SwapParams2 for v2 swap2 instruction (includes swap_mode)
+    let params = SwapParams2 {
+        amount0: amount_in,
+        amount1: min_amount_out,
+        swap_mode: 0, // ExactIn mode
     };
 
-    // Build instruction data
-    let mut data = Vec::with_capacity(24);
+    // Build instruction data: 8 (discriminator) + 8 + 8 + 1 = 25 bytes
+    let mut data = Vec::with_capacity(25);
     data.extend_from_slice(&SWAP_V2_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
@@ -327,9 +341,31 @@ mod tests {
     }
 
     #[test]
+    fn test_swap_params2_serialize() {
+        let params = SwapParams2 {
+            amount0: 1_000_000,
+            amount1: 990_000,
+            swap_mode: 0, // ExactIn
+        };
+        
+        let mut data = Vec::new();
+        params.serialize(&mut data).unwrap();
+        
+        // Should be 8 + 8 + 1 = 17 bytes
+        assert_eq!(data.len(), 17);
+    }
+
+    #[test]
     fn test_v1_discriminator() {
-        // Verify discriminator matches expected Anchor pattern
+        // Verify discriminator matches expected Anchor pattern for "global:swap"
         let expected: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
         assert_eq!(SWAP_V1_DISCRIMINATOR, expected);
+    }
+
+    #[test]
+    fn test_v2_discriminator() {
+        // Verify discriminator matches expected Anchor pattern for "global:swap2"
+        let expected: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
+        assert_eq!(SWAP_V2_DISCRIMINATOR, expected);
     }
 }
