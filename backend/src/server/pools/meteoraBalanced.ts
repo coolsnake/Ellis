@@ -1160,10 +1160,22 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   }
   
   try {
+    // Debug: show sample pool IDs and their matching status
+    const sampleIds = poolAddresses.slice(0, 3);
+    const sampleMatches = sampleIds.map(id => ({
+      id: id?.slice(0, 8) + '...',
+      matched: poolVersionMap.has(id),
+      version: poolVersionMap.get(id),
+    }));
+    
     logger.info('meteora.balanced.rpc.owner_check.done', { 
       v1Count, 
       v2Count, 
       unchanged: pools.length - v1Count - v2Count,
+      totalPoolIds: poolAddresses.length,
+      emptyPoolIds: poolAddresses.filter(id => !id || id.trim() === '').length,
+      matchedIds: poolVersionMap.size,
+      sampleMatches,
       cat: 'meteora' 
     });
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }
@@ -1608,10 +1620,19 @@ export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
   ammCanon.forEach(p => (p as any)._pipelineProcessed = true);
   
   try {
+    // Count pools by dex field for debugging
+    const v1DexCount = ammCanon.filter(p => (p as any).dex === 'MeteoraBalanced_v1').length;
+    const v2DexCount = ammCanon.filter(p => (p as any).dex === 'MeteoraBalanced_v2').length;
+    const v1ProgCount = ammCanon.filter(p => (p as any).programId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB').length;
+    const v2ProgCount = ammCanon.filter(p => (p as any).programId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG').length;
+    
     logger.info('meteora.balanced.all.normalized', {
       v1NormCount: normV1.amm.length,
       v2NormCount: normV2.amm.length,
       combinedCount: ammCanon.length,
+      // Post-canonicalization dex distribution
+      dexDistribution: { v1: v1DexCount, v2: v2DexCount },
+      programIdDistribution: { v1: v1ProgCount, v2: v2ProgCount },
       cat: 'meteora'
     });
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }

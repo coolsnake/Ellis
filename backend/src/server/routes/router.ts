@@ -1142,6 +1142,26 @@ export function createRouterRouter(io: SocketIOServer): Router {
           meteoraBalancedV2: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v2').length,
           pumpswap: pumpswap.amm.length,
         },
+        // Debug info for DAMM pool version detection
+        dammDebug: {
+          totalAmm: meteoraBalanced.amm?.length || 0,
+          byDexField: {
+            v1: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v1').length,
+            v2: (meteoraBalanced.amm || []).filter((p: any) => p.dex === 'MeteoraBalanced_v2').length,
+            other: (meteoraBalanced.amm || []).filter((p: any) => p.dex !== 'MeteoraBalanced_v1' && p.dex !== 'MeteoraBalanced_v2').length,
+          },
+          byProgramId: {
+            v1: (meteoraBalanced.amm || []).filter((p: any) => p.programId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB').length,
+            v2: (meteoraBalanced.amm || []).filter((p: any) => p.programId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG').length,
+            other: (meteoraBalanced.amm || []).filter((p: any) => p.programId !== 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB' && p.programId !== 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG').length,
+          },
+          // Sample first 3 pools to show their dex and programId values
+          samplePools: (meteoraBalanced.amm || []).slice(0, 3).map((p: any) => ({
+            id: p.id?.slice(0, 8) + '...',
+            dex: p.dex,
+            programId: p.programId?.slice(0, 8) + '...',
+          })),
+        },
       });
     } catch (err: any) {
       logger.error('router.pools.list.error', { cat: 'router', error: err.message });
