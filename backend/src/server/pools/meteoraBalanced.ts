@@ -553,10 +553,8 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       const mint_b = String(mints?.[1] || '');
       if (!id || !mint_a || !mint_b) continue;
       
-      // Extract pool version - V1 API provides this field
-      // This is CRITICAL: v1 and v2 use different on-chain programs
-      const poolVersion = Number(it?.pool_version ?? 1); // Default to v1 for V1 API
-      const dex = poolVersion === 1 ? 'MeteoraBalanced_v1' : 'MeteoraBalanced_v2';
+      // V1 normalizer always produces V1 pools (programId is hardcoded to V1 below)
+      const dex = 'MeteoraBalanced_v1';
       
       // Get decimals from centralized resolver
       const decimalsA = decimalsMap.get(mint_a) ?? 6;
