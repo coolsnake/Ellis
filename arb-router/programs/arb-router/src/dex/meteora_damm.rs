@@ -192,7 +192,7 @@ pub fn swap_v1(
 /// 8. `[signer]` Payer (user)
 /// 9. `[]` Token A Program
 /// 10. `[]` Token B Program
-/// 11. `[writable]` Referral Token Account (optional, can be program ID as placeholder)
+/// 11. `[]` Referral Token Account (optional, using program ID as read-only placeholder)
 /// 12. `[]` Event Authority (PDA)
 /// 13. `[]` Meteora DAMM v2 Program (for CPI)
 ///
@@ -226,15 +226,16 @@ pub fn swap_v2(
 
     // Build account metas for v2 CP-AMM swap2 instruction
     // Fixed layout from @meteora-ag/cp-amm-sdk IDL:
-    // Writable: Pool(1), InputToken(2), OutputToken(3), VaultA(4), VaultB(5), ReferralToken(11)
+    // Writable: Pool(1), InputToken(2), OutputToken(3), VaultA(4), VaultB(5)
+    // Note: ReferralToken(11) is writable in IDL but we use program ID as placeholder (read-only)
     // Signer: Payer(8)
-    // Read-only: PoolAuthority(0), MintA(6), MintB(7), TokenProgA(9), TokenProgB(10), EventAuth(12)
+    // Read-only: PoolAuthority(0), MintA(6), MintB(7), TokenProgA(9), TokenProgB(10), Referral(11), EventAuth(12)
     let account_metas: Vec<AccountMeta> = accounts[..program_idx]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 8;  // Payer at index 8
-            let is_writable = matches!(i, 1 | 2 | 3 | 4 | 5 | 11);  // Pool, user tokens, vaults, referral
+            let is_writable = matches!(i, 1 | 2 | 3 | 4 | 5);  // Pool, user tokens, vaults (NOT referral - using placeholder)
             
             if is_signer {
                 AccountMeta::new(*acc.key, true)
