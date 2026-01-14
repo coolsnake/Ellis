@@ -33,14 +33,53 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   const hops: DirectHop[] = await Promise.all(path.slice(0, -1).map(async (_mint, i) => {
     const dexv = String(dexes[i] || '').toLowerCase();
     // Map graph DEX names to execution DEX types
-    const dex = (
+    let dex = (
       dexv.includes('raydium') ? 'raydium' : 
       dexv.includes('orca') ? 'orca' : 
       dexv.includes('pumpswap') ? 'pumpswap' :
       (dexv.includes('meteora') && dexv.includes('balanced')) ? 'meteora_balanced' :  // MeteoraBalanced_v1 or MeteoraBalanced_v2
-      'meteora'  // Default to Meteora DLMM
+      'meteora'  // Default - will be auto-detected below if needed
     ) as DirectHop['dex'];
     const poolId = String(hopPoolIds[i]);
+    const strippedPoolId = poolId.replace(/[#-]rev$/, '');
+    
+    // AUTO-DETECT: If dex is 'meteora', determine if it's DLMM or DAMM by checking programId
+    // Priority: 1) Execution cache programId (fastest), 2) Pool cache lookup
+    let autoDetectedVariant: 'damm_v1' | 'damm_v2' | null = null;
+    
+    if (dex === 'meteora') {
+      // FAST PATH: Check execution cache for programId first (in-memory, no async)
+      const cachedStatic = executionCache.getStatic(strippedPoolId);
+      const cachedProgramId = cachedStatic?.programId;
+      
+      if (cachedProgramId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG') {
+        // DAMM v2 - fast path
+        dex = 'meteora_balanced';
+        autoDetectedVariant = 'damm_v2';
+      } else if (cachedProgramId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') {
+        // DAMM v1 - fast path
+        dex = 'meteora_balanced';
+        autoDetectedVariant = 'damm_v1';
+      } else if (cachedProgramId === 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') {
+        // DLMM - fast path, keep dex as 'meteora'
+      } else {
+        // No cached programId - check DAMM pool cache
+        try {
+          const { peekMeteoraBalancedPools } = await import('../../server/pools.js');
+          const damm = peekMeteoraBalancedPools();
+          const dammPool = (damm?.amm || []).find((x: any) => String(x?.id || '') === strippedPoolId);
+          if (dammPool) {
+            dex = 'meteora_balanced';
+            const poolProgram = String((dammPool as any)?.programId || '');
+            autoDetectedVariant = poolProgram === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG' 
+              ? 'damm_v2' 
+              : 'damm_v1';
+          }
+          // If not in DAMM, it stays as 'meteora' (DLMM)
+        } catch { /* continue with default */ }
+      }
+    }
+    
     let variant: DirectHop['variant'];
     if (dex === 'raydium') {
       if (dexv.includes('cpmm')) {
@@ -79,13 +118,27 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     } else if (dex === 'pumpswap') {
       variant = 'amm';
     } else if (dex === 'meteora_balanced') {
-      // Detect DAMM v1 vs v2 from DEX name
-      if (dexv.includes('_v1')) {
+      // Detect DAMM v1 vs v2: use pre-computed variant from auto-detection, or from DEX name
+      if (autoDetectedVariant) {
+        // Fast path: already determined during auto-detection
+        variant = autoDetectedVariant;
+      } else if (dexv.includes('_v1')) {
         variant = 'damm_v1';
       } else if (dexv.includes('_v2')) {
         variant = 'damm_v2';
       } else {
-        variant = 'damm_v1';  // Default to v1 if unclear
+        // Explicit meteora_balanced without variant hint - check pool cache
+        try {
+          const { peekMeteoraBalancedPools } = await import('../../server/pools.js');
+          const damm = peekMeteoraBalancedPools();
+          const dammPool = (damm?.amm || []).find((x: any) => String(x?.id || '') === strippedPoolId);
+          const poolProgram = String((dammPool as any)?.programId || '');
+          variant = poolProgram === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG' 
+            ? 'damm_v2' 
+            : 'damm_v1';
+        } catch {
+          variant = 'damm_v1';  // Default to v1 if lookup fails
+        }
       }
     } else {
       variant = 'dlmm';  // Meteora DLMM
