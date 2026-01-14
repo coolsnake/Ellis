@@ -207,7 +207,7 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
   };
   for (const it of arr) {
     try {
-      const id = String(it?.pool_address || it?.address || it?.id || '');
+      const id = String(it?.pool_address || it?.address || it?.id || it?.pubkey || '');
       const aRaw = it?.tokenA || it?.mintA || it?.base || {};
       const bRaw = it?.tokenB || it?.mintB || it?.quote || {};
       // Type-safe extraction: if it's a string, use it directly; otherwise extract object
@@ -1109,7 +1109,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   // This is the authoritative source - API pool_version may be incorrect
   const DAMM_V1_PROGRAM = 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB';
   const DAMM_V2_PROGRAM = 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG';
-  const poolAddresses: string[] = pools.map(p => String(p?.pool_address || p?.address || p?.id || '')).filter(Boolean);
+  const poolAddresses: string[] = pools.map(p => String(p?.pool_address || p?.address || p?.id || p?.pubkey || '')).filter(Boolean);
   const poolVersionMap: Map<string, number> = new Map();
   
   try {
@@ -1150,7 +1150,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   let v1Count = 0;
   let v2Count = 0;
   for (const pool of pools) {
-    const poolId = String(pool?.pool_address || pool?.address || pool?.id || '');
+    const poolId = String(pool?.pool_address || pool?.address || pool?.id || pool?.pubkey || '');
     const version = poolVersionMap.get(poolId);
     if (version !== undefined) {
       pool.pool_version = version;
