@@ -32,7 +32,7 @@ const ACCOUNTS_PER_HOP: Record<number, number> = {
   [DexType.Orca]: 12,        // Orca Whirlpool
   [DexType.PumpSwap]: 12,    // PumpSwap
   [DexType.RaydiumAmm]: 19,  // Raydium AMM v4
-  [DexType.MeteoraDAMM]: 12, // Meteora DAMM v1/v2
+  [DexType.MeteoraDAMM]: 16, // Meteora DAMM v1=16, v2=11 (use max)
   [DexType.RaydiumCpmm]: 14, // Raydium CPMM
 };
 

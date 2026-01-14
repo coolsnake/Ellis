@@ -2918,20 +2918,25 @@ async function extractDexAccounts(
 
       case DexType.MeteoraDAMM:
         // Meteora DAMM v1 uses Mercurial Vaults ("vault of vaults" architecture)
-        // v1: 16 accounts total, v2: 12 accounts (different layout)
+        // v1: 16 accounts total, v2: 11 accounts (different layout)
         // CRITICAL: Mints and Vaults must be in POOL CANONICAL ORDER (A/B), not swap direction!
         const isV2 = hop.variant === 'damm_v2';
         
         if (isV2) {
-          // v2 (CP-AMM) account layout (12 accounts) - simpler, no Mercurial vaults
-          const dammV2Authority = (hop as any).poolAuthority 
-            ? new PublicKey((hop as any).poolAuthority)
-            : deriveMeteoraDAMMPoolAuthority(poolId, programIdKey, true);
+          // v2 (CP-AMM) account layout (11 accounts) - matches @meteora-ag/cp-amm-sdk swap2
+          // Layout: Pool, UserSource, UserDest, VaultA, VaultB, MintA, MintB, User, TokenProgA, TokenProgB, Program
           const dammV2MintA = poolMintA ? new PublicKey(poolMintA) : inputMint;
           const dammV2MintB = poolMintB ? new PublicKey(poolMintB) : outputMint;
           const dammV2VaultA = hop.vaultA || poolAccountA;
           const dammV2VaultB = hop.vaultB || poolAccountB;
-          const lpMint = (hop as any).lpMint || stat?.mint_lp || hop.poolId.replace(/[#-]rev$/, '');
+          
+          // Determine token programs for each token (support Token-2022)
+          const tokenProgramA = (hop as any).tokenProgramA === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+            ? new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
+            : TOKEN_PROGRAM_ID;
+          const tokenProgramB = (hop as any).tokenProgramB === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+            ? new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
+            : TOKEN_PROGRAM_ID;
           
           logger.debug('routerTx.meteoraDamm.v2.accounts', {
             cat: 'tx',
@@ -2941,7 +2946,6 @@ async function extractDexAccounts(
             poolMintB: poolMintB || 'missing',
             vaultA: dammV2VaultA || 'missing',
             vaultB: dammV2VaultB || 'missing',
-            authority: dammV2Authority.toBase58(),
           });
           
           accounts.push(
@@ -2952,11 +2956,10 @@ async function extractDexAccounts(
             new PublicKey(dammV2VaultB),                                      // 4: Vault B (canonical)
             dammV2MintA,                                                       // 5: Token A Mint (canonical)
             dammV2MintB,                                                       // 6: Token B Mint (canonical)
-            new PublicKey(lpMint),                                            // 7: LP Mint
-            dammV2Authority,                                                   // 8: Pool Authority
-            wallet,                                                            // 9: User (signer)
-            TOKEN_PROGRAM_ID,                                                  // 10: Token Program
-            programIdKey,                                                      // 11: Program
+            wallet,                                                            // 7: User (signer)
+            tokenProgramA,                                                     // 8: Token A Program
+            tokenProgramB,                                                     // 9: Token B Program
+            programIdKey,                                                      // 10: Program
           );
         } else {
           // v1 (Dynamic AMM) account layout - 16 accounts with Mercurial Vault architecture
@@ -3164,7 +3167,7 @@ async function extractDexAccounts(
   }
 
   // CRITICAL: For MeteoraDAMM, don't pad - the on-chain router detects v1 vs v2 by account count
-  // v1 = 11 accounts, v2 = 12 accounts
+  // v1 = 16 accounts (Mercurial Vaults), v2 = 11 accounts (CP-AMM)
   if (dexType === DexType.MeteoraDAMM) {
     return accounts;
   }
