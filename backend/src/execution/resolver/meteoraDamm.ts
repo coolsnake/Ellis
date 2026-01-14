@@ -110,8 +110,10 @@ export async function resolveMeteoraDamm(hop: DirectHop): Promise<DirectHop> {
       }
       
       // Store LP mint for potential future use
-      if ((p as any)?.mint_lp) {
-        (hop as any).lpMint = String((p as any).mint_lp);
+      // Check both field names: lp_mint (pool storage) and mint_lp (cache alias)
+      const poolLpMint = (p as any)?.lp_mint || (p as any)?.mint_lp;
+      if (poolLpMint) {
+        (hop as any).lpMint = String(poolLpMint);
       }
       
       // Store token programs if specified

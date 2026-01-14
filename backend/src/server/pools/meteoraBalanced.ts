@@ -1512,66 +1512,180 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
   if (!base) return [];
   const retries = Number(cfg.maxHttpRetries || 2);
   const backoffMs = Number(cfg.httpBackoffMs || 500);
-  const maxPages = Number(cfg.maxPages || 3);
+  const maxPages = Number(cfg.maxPages || 10);
   const size = Number(cfg.pageSize || 200);
   
   // API-level quality filters
-  const hideLowTvl = cfg.hideLowTvl === true;
+  const hideLowTvl = cfg.hideLowTvl !== false; // Default true
   const hideLowApr = cfg.hideLowApr === true;
   const tokensVerified = cfg.tokensVerified === true;
+  const anchorTokensOnly = cfg.anchorTokensOnly !== false; // Default true
   
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
-  const out: any[] = [];
-  let page = 0;
-  for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
-    const url = (() => {
-      const sp = new URLSearchParams();
-      if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
-      sp.append('page', String(page));
-      // Add quality filters to API request
-      if (hideLowTvl) sp.append('hide_low_tvl', 'true');
-      if (hideLowApr) sp.append('hide_low_apr', 'true');
-      if (tokensVerified) sp.append('tokens_verified', 'true');
-      const qs = sp.toString();
-      return qs ? `${base}?${qs}` : base;
-    })();
-    const cid = httpLogStart({ source: 'meteora_balanced_v2', url });
-    let res: any = null; let ok = false;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      res = await fetchFn(url, { headers: { accept: 'application/json' } });
-      if (res?.status === 429) { httpLog429({ source: 'meteora_balanced_v2', url, cid }); await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
-      if (!res?.ok) {
-        const txt = await res?.text?.();
-        httpLogNonOk({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
-        if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+  
+  // Dedupe by pool_address since V2 API requires separate queries for token_a_mint and token_b_mint
+  const allPools = new Map<string, any>();
+  
+  // Anchor tokens to filter by
+  const anchorMints = anchorTokensOnly ? [
+    'So11111111111111111111111111111111111111112', // SOL
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC
+  ] : [];
+  
+  // Helper to fetch pages with a specific filter
+  const fetchWithFilter = async (filterKey: string, filterValue: string, label: string) => {
+    let offset = 0;
+    let totalFetched = 0;
+    
+    for (let i = 0; i < maxPages; i++) {
+      const url = (() => {
+        const sp = new URLSearchParams();
+        sp.append('limit', String(size));
+        sp.append('offset', String(offset));
+        sp.append(filterKey, filterValue);
+        // Add quality filters
+        if (hideLowTvl) sp.append('hide_low_tvl', 'true');
+        if (hideLowApr) sp.append('hide_low_apr', 'true');
+        if (tokensVerified) sp.append('tokens_verified', 'true');
+        sp.append('order_by', 'tvl');
+        sp.append('order', 'desc');
+        return `${base}?${sp.toString()}`;
+      })();
+      
+      const cid = httpLogStart({ source: 'meteora_balanced_v2', url });
+      let res: any = null; let ok = false;
+      
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        res = await fetchFn(url, { headers: { accept: 'application/json' } });
+        if (res?.status === 429) { 
+          httpLog429({ source: 'meteora_balanced_v2', url, cid }); 
+          await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); 
+          continue; 
+        }
+        if (!res?.ok) {
+          const txt = await res?.text?.();
+          httpLogNonOk({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+          if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+        }
+        ok = true; break;
       }
-      ok = true; break;
+      
+      if (!ok || !res?.ok) { 
+        httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, ms: 0, count: 0 }); 
+        break; 
+      }
+      
+      const json: any = await res.json().catch(() => null);
+      const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+      
+      httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res.status, ms: 0, count: data.length });
+      
+      if (data.length === 0) break;
+      
+      // Dedupe by pool_address
+      for (const pool of data) {
+        const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
+        if (poolAddr && !allPools.has(poolAddr)) {
+          allPools.set(poolAddr, pool);
+        }
+      }
+      
+      totalFetched += data.length;
+      offset += data.length;
+      
+      // If we got fewer results than limit, we've reached the end
+      if (data.length < size) break;
+      
+      // Respect rate limits
+      await new Promise(r => setTimeout(r, 110));
     }
-    if (!ok || !res?.ok) { httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, ms: 0, count: 0 }); break; }
-    const json: any = await res.json().catch(() => null);
-    const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-    out.push(...data);
-    httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res.status, ms: 0, count: data.length });
-    const hasMore = (() => {
-      if (json?.next || json?.hasNextPage) return true;
-      const pages = Number(json?.pages || 0);
-      const curr = Number(json?.current_page || (page + 1));
-      if (pages > 0 && curr < pages) return true;
-      return Array.isArray(data) && Number.isFinite(size) && size > 0 && data.length >= size;
-    })();
-    if (!hasMore) break;
-    page += 1;
-    // Respect 10 RPS: space requests ~100ms apart
-    await new Promise(r => setTimeout(r, 110));
+    
+    try {
+      logger.debug('meteora.balanced.v2.fetch.filter', {
+        filter: label,
+        fetched: totalFetched,
+        uniqueTotal: allPools.size,
+        cat: 'meteora'
+      });
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
+  };
+  
+  if (anchorTokensOnly && anchorMints.length > 0) {
+    // Fetch for each anchor as both token_a_mint AND token_b_mint
+    for (const mint of anchorMints) {
+      const mintLabel = mint.slice(0, 8);
+      await fetchWithFilter('token_a_mint', mint, `token_a=${mintLabel}`);
+      await fetchWithFilter('token_b_mint', mint, `token_b=${mintLabel}`);
+    }
+  } else {
+    // No anchor filtering - fetch all pools with pagination (legacy behavior)
+    let offset = 0;
+    for (let i = 0; i < maxPages; i++) {
+      const url = (() => {
+        const sp = new URLSearchParams();
+        sp.append('limit', String(size));
+        sp.append('offset', String(offset));
+        if (hideLowTvl) sp.append('hide_low_tvl', 'true');
+        if (hideLowApr) sp.append('hide_low_apr', 'true');
+        if (tokensVerified) sp.append('tokens_verified', 'true');
+        sp.append('order_by', 'tvl');
+        sp.append('order', 'desc');
+        return `${base}?${sp.toString()}`;
+      })();
+      
+      const cid = httpLogStart({ source: 'meteora_balanced_v2', url });
+      let res: any = null; let ok = false;
+      
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        res = await fetchFn(url, { headers: { accept: 'application/json' } });
+        if (res?.status === 429) { 
+          httpLog429({ source: 'meteora_balanced_v2', url, cid }); 
+          await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); 
+          continue; 
+        }
+        if (!res?.ok) {
+          const txt = await res?.text?.();
+          httpLogNonOk({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+          if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+        }
+        ok = true; break;
+      }
+      
+      if (!ok || !res?.ok) { 
+        httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, ms: 0, count: 0 }); 
+        break; 
+      }
+      
+      const json: any = await res.json().catch(() => null);
+      const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+      
+      httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res.status, ms: 0, count: data.length });
+      
+      if (data.length === 0) break;
+      
+      for (const pool of data) {
+        const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
+        if (poolAddr && !allPools.has(poolAddr)) {
+          allPools.set(poolAddr, pool);
+        }
+      }
+      
+      offset += data.length;
+      if (data.length < size) break;
+      await new Promise(r => setTimeout(r, 110));
+    }
   }
+  
+  const out = Array.from(allPools.values());
   
   try {
     logger.info('meteora.balanced.v2.fetch complete', {
-      count: out.length,
+      uniquePools: out.length,
       hideLowTvl,
       hideLowApr,
       tokensVerified,
+      anchorTokensOnly,
       cat: 'meteora'
     });
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }
