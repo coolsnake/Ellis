@@ -287,11 +287,26 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   // Load enabled sources from config (defaults to all enabled)
   const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+  
+  // Handle meteora_balanced v1/v2 sub-options
+  const meteoraBalancedConfig = configSources.meteora_balanced;
+  const meteoraBalancedEnabled = typeof meteoraBalancedConfig === 'object' 
+    ? (meteoraBalancedConfig.v1 || meteoraBalancedConfig.v2) 
+    : (meteoraBalancedConfig ?? true);
+  const meteoraBalancedV1 = typeof meteoraBalancedConfig === 'object' 
+    ? (meteoraBalancedConfig.v1 ?? true) 
+    : (meteoraBalancedConfig ?? true);
+  const meteoraBalancedV2 = typeof meteoraBalancedConfig === 'object' 
+    ? (meteoraBalancedConfig.v2 ?? true) 
+    : (meteoraBalancedConfig ?? true);
+  
   const shouldFetch = {
     raydium: options.sources?.raydium ?? configSources.raydium ?? true,
     orca: options.sources?.orca ?? configSources.orca ?? true,
     meteora: options.sources?.meteora ?? configSources.meteora ?? true,
-    meteora_balanced: options.sources?.meteora_balanced ?? configSources.meteora_balanced ?? true,
+    meteora_balanced: options.sources?.meteora_balanced ?? meteoraBalancedEnabled,
+    meteora_balanced_v1: meteoraBalancedV1,
+    meteora_balanced_v2: meteoraBalancedV2,
     pumpswap: options.sources?.pumpswap ?? configSources.pumpswap ?? true,
   };
   
@@ -946,7 +961,17 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   // Meteora Balanced always uses legacy path (no GraphQL)
   if (shouldFetch.meteora_balanced) {
     try {
-      mb = await getMeteoraBalancedPoolsCached(!!options.force, { skipUniverseFilter: true });
+      mb = await getMeteoraBalancedPoolsCached(!!options.force, { 
+        skipUniverseFilter: true,
+        fetchV1: shouldFetch.meteora_balanced_v1,
+        fetchV2: shouldFetch.meteora_balanced_v2,
+      });
+      logger.info('pools.refresh.phase.fetch.meteora_balanced.complete', { 
+        v1Enabled: shouldFetch.meteora_balanced_v1,
+        v2Enabled: shouldFetch.meteora_balanced_v2,
+        poolCount: mb.amm?.length || 0,
+        cat: 'pools' 
+      });
     } catch (err) {
       logger.warn('pools.refresh.phase.fetch.meteora_balanced.failed', { error: String((err as any)?.message || err), cat: 'pools' });
       mb = { amm: [], clmm: [], cpmm: [] };
@@ -1740,11 +1765,16 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
 }
 
 
-export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
+export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skipUniverseFilter?: boolean; fetchV1?: boolean; fetchV2?: boolean }): Promise<PoolsPayload> {
   const ttlMs = Number(((CONFIG as any)?.meteoraBalanced?.cacheTtlMs) || 300_000);
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
   (getMeteoraBalancedPoolsCached as any).__lastForceAt = (getMeteoraBalancedPoolsCached as any).__lastForceAt || 0;
   const now = Date.now();
+  
+  // Determine which versions to fetch (default to both)
+  const fetchV1 = opts?.fetchV1 ?? true;
+  const fetchV2 = opts?.fetchV2 ?? true;
+  
   if (!force) {
     if (metbalCache.data && now - metbalCache.ts < ttlMs) return metbalCache.data;
     return metbalCache.data || { amm: [], clmm: [], cpmm: [] };
@@ -1758,8 +1788,8 @@ export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skip
   metbalCache.inflight = (async () => {
     try {
       const t0 = Date.now();
-      // Use union of v2+v1 (prefer v2) when available
-      const union = await fetchMeteoraBalancedAllImpl().catch(async () => {
+      // Use union of v2+v1 with version filtering
+      const union = await fetchMeteoraBalancedAllImpl({ fetchV1, fetchV2 }).catch(async () => {
         const raw = await fetchMeteoraBalancedHttpImpl();
         return await normalizeMeteoraBalancedHttpImpl(raw);
       });

@@ -1579,25 +1579,36 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
   return out;
 }
 
-export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
+export async function fetchMeteoraBalancedAll(opts?: { fetchV1?: boolean; fetchV2?: boolean }): Promise<PoolsPayload> {
   const cfg: any = (CONFIG as any)?.meteoraBalanced || {};
   
-  // Fetch v2 with explicit v2 URL
-  const v2Url = cfg.apiUrlV2 || 'https://dammv2-api.meteora.ag/pools';
-  const v2 = await fetchMeteoraBalancedV2Http(v2Url);
+  // Determine which versions to fetch (default to both)
+  const fetchV1 = opts?.fetchV1 ?? true;
+  const fetchV2 = opts?.fetchV2 ?? true;
   
-  // Fetch v1 with explicit v1 URL
+  let v1: any[] = [];
+  let v2: any[] = [];
+  
+  // Fetch v2 with explicit v2 URL (if enabled)
+  if (fetchV2) {
+    const v2Url = cfg.apiUrlV2 || 'https://dammv2-api.meteora.ag/pools';
+    v2 = await fetchMeteoraBalancedV2Http(v2Url);
+  }
+  
+  // Fetch v1 with explicit v1 URL (if enabled)
   // CRITICAL: Pass explicit URL to ensure v1 fetcher uses correct endpoint
-  const v1Url = cfg.apiUrl || 'https://damm-api.meteora.ag/pools';
-  const v1 = await fetchMeteoraBalancedV1Http(v1Url);
+  if (fetchV1) {
+    const v1Url = cfg.apiUrl || 'https://damm-api.meteora.ag/pools';
+    v1 = await fetchMeteoraBalancedV1Http(v1Url);
+  }
   
   // Log fetch results for debugging
   try {
     logger.info('meteora.balanced.all.fetch', {
       v1Count: v1.length,
       v2Count: v2.length,
-      v1Url,
-      v2Url,
+      v1Enabled: fetchV1,
+      v2Enabled: fetchV2,
       cat: 'meteora'
     });
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }

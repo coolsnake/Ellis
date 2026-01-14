@@ -52,6 +52,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     enabledDexSources_orca_clmm: true,
     enabledDexSources_meteora: true,
     enabledDexSources_meteora_balanced: true,
+    enabledDexSources_meteora_balanced_v1: true,
+    enabledDexSources_meteora_balanced_v2: true,
     enabledDexSources_pumpswap: true,
 		// RPC Rate Limiter
 		rpcMaxRps: 50,
@@ -237,6 +239,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             enabledDexSources_orca_clmm: (typeof j?.system?.enabledDexSources?.orca === 'object' ? (j.system.enabledDexSources.orca.clmm ?? true) : prev.enabledDexSources_orca_clmm ?? true),
             enabledDexSources_meteora: j?.system?.enabledDexSources?.meteora ?? prev.enabledDexSources_meteora ?? true,
             enabledDexSources_meteora_balanced: j?.system?.enabledDexSources?.meteora_balanced ?? prev.enabledDexSources_meteora_balanced ?? true,
+            enabledDexSources_meteora_balanced_v1: (typeof j?.system?.enabledDexSources?.meteora_balanced === 'object' ? (j.system.enabledDexSources.meteora_balanced.v1 ?? true) : prev.enabledDexSources_meteora_balanced_v1 ?? true),
+            enabledDexSources_meteora_balanced_v2: (typeof j?.system?.enabledDexSources?.meteora_balanced === 'object' ? (j.system.enabledDexSources.meteora_balanced.v2 ?? true) : prev.enabledDexSources_meteora_balanced_v2 ?? true),
             enabledDexSources_pumpswap: j?.system?.enabledDexSources?.pumpswap ?? prev.enabledDexSources_pumpswap ?? true,
 			ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
 			ray_httpConcurrency: Number((j?.raydium?.concurrency ?? j?.raydium?.sdkConcurrency) ?? prev.ray_httpConcurrency),
@@ -444,7 +448,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             (cfg.enabledDexSources_orca_amm && cfg.enabledDexSources_orca_clmm ? true : 
               { amm: !!cfg.enabledDexSources_orca_amm, clmm: !!cfg.enabledDexSources_orca_clmm }) : false,
           meteora: !!cfg.enabledDexSources_meteora,
-          meteora_balanced: !!cfg.enabledDexSources_meteora_balanced,
+          meteora_balanced: cfg.enabledDexSources_meteora_balanced ? 
+            (cfg.enabledDexSources_meteora_balanced_v1 && cfg.enabledDexSources_meteora_balanced_v2 ? true : 
+              { v1: !!cfg.enabledDexSources_meteora_balanced_v1, v2: !!cfg.enabledDexSources_meteora_balanced_v2 }) : false,
           pumpswap: !!cfg.enabledDexSources_pumpswap,
         },
       },
@@ -829,11 +835,39 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                   <input 
                     type="checkbox" 
                     checked={!!cfg.enabledDexSources_meteora_balanced} 
-                    onChange={(e)=>set('enabledDexSources_meteora_balanced', e.target.checked)} 
+                    onChange={(e)=>{
+                      set('enabledDexSources_meteora_balanced', e.target.checked);
+                      if (!e.target.checked) {
+                        set('enabledDexSources_meteora_balanced_v1', false);
+                        set('enabledDexSources_meteora_balanced_v2', false);
+                      }
+                    }} 
                   />
                   <span className="font-semibold">Meteora Balanced</span>
                 </label>
-                <p className="text-xs text-gray-400 ml-6 mt-1">Multi-token AMM (mAMM)</p>
+                <p className="text-xs text-gray-400 ml-6 mt-1">Dynamic AMM (DAMM) - includes V1 and V2</p>
+                
+                {/* V1/V2 Sub-toggles */}
+                {cfg.enabledDexSources_meteora_balanced && (
+                  <div className="ml-6 mt-2 flex gap-4">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={!!cfg.enabledDexSources_meteora_balanced_v1} 
+                        onChange={(e)=>set('enabledDexSources_meteora_balanced_v1', e.target.checked)} 
+                      />
+                      <span>DAMM V1</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={!!cfg.enabledDexSources_meteora_balanced_v2} 
+                        onChange={(e)=>set('enabledDexSources_meteora_balanced_v2', e.target.checked)} 
+                      />
+                      <span>DAMM V2</span>
+                    </label>
+                  </div>
+                )}
               </div>
 
               {/* Pumpswap */}
