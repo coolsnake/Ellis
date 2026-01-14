@@ -315,7 +315,7 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
           try {
             const amtAraw = Number(it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? 0);
             const amtBraw = Number(it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? 0);
-            logger.info('meteora.balanced.price_extreme', {
+            logger.debug('meteora.balanced.price_extreme', {
               pool_id: id.slice(0, 12),
               mint_a: mint_a.slice(0, 8),
               mint_b: mint_b.slice(0, 8),
