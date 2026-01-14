@@ -64,7 +64,14 @@ interface PoolsByDex {
   };
   orca: { clmm: PoolSummary[]; clmmCount: number };
   meteora: { dlmm: PoolSummary[]; dlmmCount: number };
-  meteoraBalanced: { amm: PoolSummary[]; ammCount: number };
+  meteoraBalanced: { 
+    amm: PoolSummary[]; 
+    ammCount: number;
+    dammV1: PoolSummary[];
+    dammV2: PoolSummary[];
+    dammV1Count: number;
+    dammV2Count: number;
+  };
   pumpswap: { amm: PoolSummary[]; ammCount: number };
 }
 
@@ -236,8 +243,8 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
       case 'raydium-cpmm': return poolsByDex.raydium?.cpmm || [];
       case 'orca': return poolsByDex.orca?.clmm || [];
       case 'meteora': return poolsByDex.meteora?.dlmm || [];
-      case 'meteora-damm':
-      case 'meteora-damm-v2': return poolsByDex.meteoraBalanced?.amm || [];
+      case 'meteora-damm': return poolsByDex.meteoraBalanced?.dammV1 || [];
+      case 'meteora-damm-v2': return poolsByDex.meteoraBalanced?.dammV2 || [];
       case 'pumpswap': return poolsByDex.pumpswap?.amm || [];
       default: return [];
     }
@@ -357,8 +364,9 @@ export const RouterPanel: React.FC<RouterPanelProps> = ({ apiBase, onClose }) =>
       case 'meteora':
         return poolsByDex.meteora?.dlmm || [];
       case 'meteora-damm':
+        return poolsByDex.meteoraBalanced?.dammV1 || [];
       case 'meteora-damm-v2':
-        return poolsByDex.meteoraBalanced?.amm || [];
+        return poolsByDex.meteoraBalanced?.dammV2 || [];
       case 'pumpswap':
         return poolsByDex.pumpswap?.amm || [];
       default:
