@@ -35,5 +35,12 @@
       "iterativeTolerance": 1.0,
       "safetyFactor": 0.85
     }
+  },
+  "adaptiveSizing": {
+    "enabled": true,
+    "maxRetries": 3,
+    "reductionFactor": 0.5,
+    "minSizeUsd": 5,
+    "timeoutMs": 500
   }
 }

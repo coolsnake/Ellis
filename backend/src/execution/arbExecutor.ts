@@ -140,6 +140,14 @@ export interface ExecutorConfig {
   };
   // Manual pool blocklist - pools to always skip (persisted)
   manualPoolBlocklist?: string[];
+  // Adaptive sizing - retry with smaller sizes on profit check failures
+  adaptiveSizing?: {
+    enabled: boolean;
+    maxRetries: number;           // Max retry attempts (default: 3)
+    reductionFactor: number;      // Size multiplier per retry (default: 0.5 = halve each time)
+    minSizeUsd: number;           // Don't retry below this size (default: 5)
+    timeoutMs: number;            // Total timeout for all retries (default: 500ms)
+  };
 }
 
 interface ExecutionState {
@@ -1303,34 +1311,170 @@ export class ArbExecutor {
         }
         this.state.successfulExecutions++;
       } else if (mode === 'simulate_then_execute') {
-        // Simulate first, then execute only if simulation succeeds
-        const simResult = await assembleAndSimulate(built.instructions, {
-          computeUnitLimit: execCfg.computeUnitLimit,
-          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-          lookupTableAddresses: altAddresses,
-          traceId,
-        });
-
-        // Check if simulation succeeded (no error)
-        if (simResult.err) {
+        // Adaptive sizing: try progressively smaller sizes on profit check failures
+        const adaptiveCfg = this.config.adaptiveSizing;
+        const adaptiveEnabled = adaptiveCfg?.enabled ?? false;
+        const maxRetries = adaptiveEnabled ? (adaptiveCfg?.maxRetries ?? 3) : 0;
+        const reductionFactor = adaptiveCfg?.reductionFactor ?? 0.5;
+        const adaptiveMinSizeUsd = adaptiveCfg?.minSizeUsd ?? this.config.dynamicSizing?.minSizeUsd ?? 5;
+        const adaptiveTimeoutMs = adaptiveCfg?.timeoutMs ?? 500;
+        
+        let currentSizeUsd = effectiveSizeUsd;
+        let attempt = 0;
+        let lastSimResult: { logs?: string[]; err?: any; wireBase64?: string } | null = null;
+        let lastSimAnalysis: ReturnType<typeof parseSimulationLogs> | null = null;
+        let currentPlan = plan;
+        let currentBuilt = built;
+        const adaptiveStartTime = Date.now();
+        const originalSizeUsd = effectiveSizeUsd;
+        
+        // Adaptive retry loop
+        while (attempt <= maxRetries) {
+          // Check timeout (skip for first attempt)
+          if (attempt > 0 && (Date.now() - adaptiveStartTime) > adaptiveTimeoutMs) {
+            logger.warn('arb.executor.adaptive.timeout', {
+              cat: 'arb',
+              traceId,
+              path: pathStr,
+              attempts: attempt,
+              elapsedMs: Date.now() - adaptiveStartTime,
+              timeoutMs: adaptiveTimeoutMs,
+            });
+            break;
+          }
+          
+          // Rebuild plan and transaction with reduced size (skip for first attempt)
+          if (attempt > 0) {
+            logger.info('arb.executor.adaptive.retry', {
+              cat: 'arb',
+              traceId,
+              path: pathStr,
+              attempt,
+              previousSize: currentSizeUsd / reductionFactor,
+              newSize: currentSizeUsd,
+              reason: 'profit_check_failed',
+            });
+            
+            try {
+              // Re-resolve plan with reduced size
+              currentPlan = await resolveDirectPlan({
+                path: executionPath,
+                hopPoolIds: opp.hop_pool_ids || [],
+                dexes: executionDexes,
+                sizeUsd: currentSizeUsd,
+                slippageBps: this.config.slippageBps,
+                traceId,
+                minProfitBps: this.config.minProfitBps || 0,
+              }, {} as any);
+              
+              // Rebuild transaction
+              currentBuilt = await buildTransactionSummary(currentPlan, undefined, {
+                useRouter: this.config.useRouter,
+                routerExecutionMode: this.config.routerExecutionMode,
+              }, traceId);
+            } catch (rebuildErr: any) {
+              logger.warn('arb.executor.adaptive.rebuild_failed', {
+                cat: 'arb',
+                traceId,
+                path: pathStr,
+                attempt,
+                error: String(rebuildErr?.message || rebuildErr),
+              });
+              break;
+            }
+          }
+          
+          // Simulate with current size
+          const simResult = await assembleAndSimulate(currentBuilt.instructions, {
+            computeUnitLimit: execCfg.computeUnitLimit,
+            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+            lookupTableAddresses: altAddresses,
+            traceId,
+          });
+          
+          lastSimResult = simResult;
+          lastSimAnalysis = parseSimulationLogs(simResult.logs);
+          
+          // Success! Break out of retry loop
+          if (!simResult.err) {
+            if (attempt > 0) {
+              logger.info('arb.executor.adaptive.success', {
+                cat: 'arb',
+                traceId,
+                path: pathStr,
+                attempt,
+                finalSizeUsd: currentSizeUsd,
+                originalSizeUsd,
+                reductionPercent: ((1 - currentSizeUsd / originalSizeUsd) * 100).toFixed(1),
+                elapsedMs: Date.now() - adaptiveStartTime,
+              });
+            }
+            // Update plan and built to use the successful versions
+            plan = currentPlan;
+            built = currentBuilt;
+            break;
+          }
+          
+          // Check if this is a retryable error (profit check failed)
+          const isRetryable = adaptiveEnabled && lastSimAnalysis.profitCheckFailed;
+          
+          if (!isRetryable) {
+            // Not a profit check failure, don't retry
+            if (adaptiveEnabled && !lastSimAnalysis.profitCheckFailed) {
+              logger.debug('arb.executor.adaptive.not_retryable', {
+                cat: 'arb',
+                traceId,
+                path: pathStr,
+                errorCode: lastSimAnalysis.errorCode,
+                errorMessage: lastSimAnalysis.errorMessage,
+                profitCheckFailed: lastSimAnalysis.profitCheckFailed,
+              });
+            }
+            break;
+          }
+          
+          // Calculate next size
+          const nextSizeUsd = currentSizeUsd * reductionFactor;
+          
+          // Check if we'd go below minimum
+          if (nextSizeUsd < adaptiveMinSizeUsd) {
+            logger.info('arb.executor.adaptive.min_size_reached', {
+              cat: 'arb',
+              traceId,
+              path: pathStr,
+              attempt,
+              currentSizeUsd,
+              minSizeUsd: adaptiveMinSizeUsd,
+            });
+            break;
+          }
+          
+          currentSizeUsd = nextSizeUsd;
+          attempt++;
+        }
+        
+        // Check if simulation ultimately failed
+        if (lastSimResult?.err) {
           // Parse simulation logs for detailed analysis
-          const simAnalysis = parseSimulationLogs(simResult.logs);
-          const simReport = buildSimulationReport(opp, plan, simAnalysis);
+          const simReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
           const condensedReport = formatSimReportForLog(simReport);
           
           logger.error('arb.executor.simulate_then_execute.sim_failed', {
             cat: 'arb',
             traceId,
             path: pathStr,
-            error: simResult.err,
+            error: lastSimResult.err,
+            adaptiveAttempts: attempt,
+            finalSizeUsd: currentSizeUsd,
+            originalSizeUsd,
             // Include detailed simulation analysis
             simulation: {
-              swapsExecuted: simAnalysis.swapsExecuted.length,
-              totalHops: plan.hops.length,
-              profitCheckFailed: simAnalysis.profitCheckFailed,
-              errorCode: simAnalysis.errorCode,
-              errorMessage: simAnalysis.errorMessage,
-              lastSuccessfulStep: simAnalysis.lastSuccessfulStep,
+              swapsExecuted: lastSimAnalysis!.swapsExecuted.length,
+              totalHops: currentPlan.hops.length,
+              profitCheckFailed: lastSimAnalysis!.profitCheckFailed,
+              errorCode: lastSimAnalysis!.errorCode,
+              errorMessage: lastSimAnalysis!.errorMessage,
+              lastSuccessfulStep: lastSimAnalysis!.lastSuccessfulStep,
             },
             // Expected vs actual comparison
             comparison: {
@@ -1338,36 +1482,40 @@ export class ArbExecutor {
               expectedNetBps: opp.net_bps,
               expectedRateProduct: opp.rate_product,
               quotedMinProfit: simReport.quoted?.calculatedMinProfit,
-              actualProfit: simAnalysis.profitValue?.toString(),
-              isArbCycle: plan.isArbCycle,
-              initialInputRaw: plan.initialInputRaw?.toString(),
+              actualProfit: lastSimAnalysis!.profitValue?.toString(),
+              isArbCycle: currentPlan.isArbCycle,
+              initialInputRaw: currentPlan.initialInputRaw?.toString(),
             },
             // Condensed hop comparison for quick debugging
             hopComparison: condensedReport.hopComparison,
             // Last 10 logs for context
-            logs: simResult.logs?.slice(-10),
+            logs: lastSimResult.logs?.slice(-10),
           });
 
           emit('arb:execution:failed', {
             path: pathStr,
-            error: `Simulation failed: ${simResult.err}`,
+            error: `Simulation failed after ${attempt} attempts: ${lastSimResult.err}`,
             timestamp: Date.now(),
             analysis: {
-              swapsExecuted: simAnalysis.swapsExecuted.length,
-              totalHops: plan.hops.length,
-              profitCheckFailed: simAnalysis.profitCheckFailed,
+              swapsExecuted: lastSimAnalysis!.swapsExecuted.length,
+              totalHops: currentPlan.hops.length,
+              profitCheckFailed: lastSimAnalysis!.profitCheckFailed,
               failedAt: simReport.analysis?.failedAtHop,
+              adaptiveAttempts: attempt,
             },
           });
 
-          throw new Error(`Simulation failed before execute: ${simResult.err}`);
+          throw new Error(`Simulation failed after ${attempt} attempt(s): ${lastSimResult.err}`);
         }
 
         logger.info('arb.executor.simulate_then_execute.sim_ok', {
           cat: 'arb',
           traceId,
           path: pathStr,
-          logs: simResult.logs?.slice(-3),
+          adaptiveAttempts: attempt,
+          finalSizeUsd: currentSizeUsd,
+          originalSizeUsd,
+          logs: lastSimResult?.logs?.slice(-3),
         });
 
         // Simulation passed - proceed with actual execution
@@ -2408,6 +2556,10 @@ export class ArbExecutor {
       quarantineSettings: updates.quarantineSettings !== undefined
         ? { ...this.config.quarantineSettings, ...updates.quarantineSettings }
         : this.config.quarantineSettings,
+      // Deep merge adaptiveSizing
+      adaptiveSizing: updates.adaptiveSizing !== undefined
+        ? { ...this.config.adaptiveSizing, ...updates.adaptiveSizing }
+        : this.config.adaptiveSizing,
     };
     logger.info('arb.executor.config_updated', { cat: 'arb', config: this.config });
     
