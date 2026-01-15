@@ -779,6 +779,9 @@ export class ArbExecutor {
       let useFlashloan = false;
       let flashloanAmountUsd = 0;
       
+      // Track effective size for adaptive retries (scoped outside try block)
+      let effectiveSizeUsd = 0;
+      
       try {
         // Calculate dynamic size based on opportunity characteristics
         const sizeUsd = await this.calculateDynamicSize(opp);
@@ -807,7 +810,7 @@ export class ArbExecutor {
         
         // FINAL SAFETY: Cap size to wallet balance unless using flashloan
         // This is the definitive check that ensures we never try to spend more than we have
-        let effectiveSizeUsd = sizeUsd;
+        effectiveSizeUsd = sizeUsd;
         
         if (!useFlashloan) {
           // Get wallet balance for the start token (cached, refreshed after each execution)
