@@ -207,7 +207,7 @@ pub fn swap_v1(
 /// 10. `[]` Token B Program
 /// 11. `[]` Referral Token Account (optional - pass program ID as "None" sentinel)
 /// 12. `[]` Event Authority (PDA)
-/// 13. `[]` Meteora DAMM v2 Program (for CPI)
+/// 13. `[]` Program (Meteora DAMM v2 - required in accounts list per Anchor IDL)
 ///
 /// # Arguments
 /// * `accounts` - DEX-specific accounts in the order above
@@ -236,21 +236,22 @@ pub fn swap_v2(
     data.extend_from_slice(&SWAP_V2_DISCRIMINATOR);
     params.serialize(&mut data)?;
 
-    let program_idx = ACCOUNTS_NEEDED_V2 - 1; // 13 (last account is program ID)
+    let program_idx = ACCOUNTS_NEEDED_V2 - 1; // 13 (index of program account)
     let dex_program_id = *accounts[program_idx].key;
 
     // Build account metas for v2 CP-AMM swap2 instruction
     // Fixed layout from @meteora-ag/cp-amm-sdk IDL:
     // Writable: Pool(1), InputToken(2), OutputToken(3), VaultA(4), VaultB(5)
     // Signer: Payer(8)
-    // Read-only: PoolAuthority(0), MintA(6), MintB(7), TokenProgA(9), TokenProgB(10), Referral(11), EventAuth(12)
+    // Read-only: PoolAuthority(0), MintA(6), MintB(7), TokenProgA(9), TokenProgB(10), Referral(11), EventAuth(12), Program(13)
     // Note: Referral(11) uses program ID as "None" sentinel for optional accounts
-    let account_metas: Vec<AccountMeta> = accounts[..program_idx]
+    // Note: Program(13) is required in the accounts list per the Anchor IDL
+    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED_V2]  // Include all 14 accounts (0-13)
         .iter()
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 8;  // Payer at index 8
-            let is_writable = matches!(i, 1 | 2 | 3 | 4 | 5);  // Pool, user tokens, vaults (NOT referral - using placeholder)
+            let is_writable = matches!(i, 1 | 2 | 3 | 4 | 5);  // Pool, user tokens, vaults
             
             if is_signer {
                 AccountMeta::new(*acc.key, true)
