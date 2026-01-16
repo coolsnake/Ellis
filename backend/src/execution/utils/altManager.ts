@@ -7,6 +7,11 @@ import { logger } from '../../utils/logger.js';
 import { accountCache } from './accountCache.js';
 import { loadAltConfig, saveAltConfig, type AltConfig, type DexAltSet } from './altConfig.js';
 
+// Batch size for ALT loading - conservative to avoid rate limits
+const ALT_BATCH_SIZE = 10;
+// Delay between batches in milliseconds
+const ALT_BATCH_DELAY_MS = 200;
+
 /**
  * Manages Address Lookup Tables (ALTs) for DEX transactions
  * Pre-creates and caches ALTs with frequently used accounts
@@ -24,7 +29,115 @@ export class DexAltManager {
   } | null = null;
 
   /**
+   * Batch load multiple ALTs using getMultipleAccountsInfo to minimize RPC calls.
+   * This is much more efficient than loading each ALT individually.
+   * 
+   * @param addresses Array of ALT addresses to load
+   * @returns Map of address -> AddressLookupTableAccount for valid ALTs
+   */
+  private async batchLoadAlts(
+    addresses: string[]
+  ): Promise<Map<string, AddressLookupTableAccount>> {
+    const result = new Map<string, AddressLookupTableAccount>();
+    if (addresses.length === 0) return result;
+
+    const connection = getConnection();
+    const uniqueAddresses = [...new Set(addresses)]; // Dedupe
+    
+    // Process in batches to respect rate limits
+    for (let i = 0; i < uniqueAddresses.length; i += ALT_BATCH_SIZE) {
+      const batch = uniqueAddresses.slice(i, i + ALT_BATCH_SIZE);
+      const pubkeys = batch.map(addr => {
+        try {
+          return new PublicKey(addr);
+        } catch {
+          return null;
+        }
+      }).filter((pk): pk is PublicKey => pk !== null);
+
+      if (pubkeys.length === 0) continue;
+
+      try {
+        // Use higher weight for batch calls (3 = roughly 3 individual calls)
+        const accountInfos = await withRpcLimit(
+          () => connection.getMultipleAccountsInfo(pubkeys),
+          3,
+          { module: 'alt', method: 'batchLoadAlts' }
+        );
+
+        // Process results
+        for (let j = 0; j < pubkeys.length; j++) {
+          const pubkey = pubkeys[j];
+          const accountInfo = accountInfos[j];
+          const address = batch[j];
+
+          if (accountInfo && accountInfo.data) {
+            try {
+              // Deserialize the ALT account data
+              const altAccount = new AddressLookupTableAccount({
+                key: pubkey,
+                state: AddressLookupTableAccount.deserialize(accountInfo.data),
+              });
+              result.set(address, altAccount);
+            } catch (deserializeError) {
+              // Failed to deserialize - might not be a valid ALT
+              try {
+                logger.debug('alt.manager.batchLoad.deserialize.failed', {
+                  cat: 'tx',
+                  ctx: { address, error: String((deserializeError as any)?.message || deserializeError) },
+                });
+              } catch {}
+            }
+          }
+        }
+
+        try {
+          logger.debug('alt.manager.batchLoad.batch.complete', {
+            cat: 'tx',
+            ctx: {
+              batchIndex: Math.floor(i / ALT_BATCH_SIZE),
+              batchSize: batch.length,
+              loaded: accountInfos.filter(a => a !== null).length,
+              totalProgress: `${Math.min(i + ALT_BATCH_SIZE, uniqueAddresses.length)}/${uniqueAddresses.length}`,
+            },
+          });
+        } catch {}
+      } catch (error) {
+        // Log but continue - some ALTs might be missing
+        try {
+          logger.warn('alt.manager.batchLoad.batch.error', {
+            cat: 'tx',
+            ctx: {
+              batchIndex: Math.floor(i / ALT_BATCH_SIZE),
+              error: String((error as any)?.message || error),
+            },
+          });
+        } catch {}
+      }
+
+      // Add delay between batches to respect rate limits
+      if (i + ALT_BATCH_SIZE < uniqueAddresses.length) {
+        await new Promise(resolve => setTimeout(resolve, ALT_BATCH_DELAY_MS));
+      }
+    }
+
+    try {
+      logger.info('alt.manager.batchLoad.complete', {
+        cat: 'tx',
+        ctx: {
+          requested: uniqueAddresses.length,
+          loaded: result.size,
+          batches: Math.ceil(uniqueAddresses.length / ALT_BATCH_SIZE),
+        },
+      });
+    } catch {}
+
+    return result;
+  }
+
+  /**
    * Initialize ALTs with frequently used accounts
+   * Uses batch loading to minimize RPC calls and avoid rate limiting (429s)
    */
   async initialize(createIfMissing: boolean = false): Promise<void> {
     if (this.initialized) return;
@@ -44,142 +157,133 @@ export class DexAltManager {
           } catch {}
         }
 
-        // Load ALTs from altConfig file (same as initializeStartup does)
+        // Load ALTs from altConfig file using BATCH LOADING to avoid 429s
         try {
           this.altConfig = await loadAltConfig();
-          const connection = getConnection();
           const invalidCategories: string[] = [];
           
+          // STEP 1: Collect all ALT addresses to load
+          const addressToCategory = new Map<string, string>(); // address -> category
+          const dexAddressInfo: Array<{ address: string; dex: string; index: number }> = [];
+          
+          // Collect from config.alts
           if (this.altConfig.alts) {
             for (const [category, address] of Object.entries(this.altConfig.alts)) {
-              if (!address) continue;
-              try {
-                const pk = new PublicKey(address);
-                
-                // CRITICAL: Validate that the ALT actually exists on-chain
-                // This prevents stale references to deleted ALTs
-                const altAccount = await withRpcLimit(
-                  () => connection.getAddressLookupTable(pk),
-                  1,
-                  { module: 'alt', method: 'getAddressLookupTable' }
-                );
-                
-                if (!altAccount.value) {
-                  // ALT has been closed/deleted, mark for removal
-                  invalidCategories.push(category);
-                  try {
-                    logger.warn('alt.manager.init.alt.not.found', {
-                      cat: 'tx',
-                      ctx: {
-                        category,
-                        address,
-                        reason: 'ALT does not exist on-chain (possibly deleted)',
-                      },
-                    });
-                  } catch {}
-                  continue;
-                }
-                
-                // ALT is valid, add it to our maps
-                this.altAddresses.set(category, pk);
-                // CRITICAL: Also cache the ALT account for getCachedAltByAddress()
-                this.altAccounts.set(address, altAccount.value);
-              } catch (e) {
-                // Invalid address or RPC error, skip it
-                invalidCategories.push(category);
-                try {
-                  logger.warn('alt.manager.init.alt.error', {
-                    cat: 'tx',
-                    ctx: {
-                      category,
-                      address,
-                      error: String((e as any)?.message || e),
-                    },
-                  });
-                } catch {}
-              }
-            }
-            
-            // Clean up invalid ALTs from config file
-            if (invalidCategories.length > 0) {
-              try {
-                for (const category of invalidCategories) {
-                  delete this.altConfig.alts[category as keyof typeof this.altConfig.alts];
-                }
-                await saveAltConfig(this.altConfig);
-                try {
-                  logger.info('alt.manager.init.cleanup', {
-                    cat: 'tx',
-                    ctx: {
-                      removedCategories: invalidCategories,
-                      message: 'Removed deleted/invalid ALTs from config',
-                    },
-                  });
-                } catch {}
-              } catch (saveError) {
-                try {
-                  logger.warn('alt.manager.init.cleanup.failed', {
-                    cat: 'tx',
-                    ctx: {
-                      error: String((saveError as any)?.message || saveError),
-                    },
-                  });
-                } catch {}
+              if (address) {
+                addressToCategory.set(address, category);
               }
             }
           }
-
-          // CRITICAL: Also load DEX ALTs from dexAlts config
-          // These are multi-ALT sets for DEX pools that may not be in config.alts
+          
+          // Collect from dexAlts
           if (this.altConfig.dexAlts) {
-            let dexAltCount = 0;
             for (const [dex, dexAltSet] of Object.entries(this.altConfig.dexAlts)) {
               if (!dexAltSet?.addresses) continue;
-              
               for (let i = 0; i < dexAltSet.addresses.length; i++) {
                 const address = dexAltSet.addresses[i];
-                if (!address) continue;
-                
-                // Skip if already loaded
-                if (this.altAccounts.has(address)) {
-                  dexAltCount++;
-                  continue;
-                }
-                
-                try {
-                  const pk = new PublicKey(address);
-                  const altAccount = await withRpcLimit(
-                    () => connection.getAddressLookupTable(pk),
-                    1,
-                    { module: 'alt', method: 'getAddressLookupTable' }
-                  );
-                  
-                  if (altAccount.value) {
-                    const category = `${dex}-pools-${i}`;
-                    this.altAddresses.set(category, pk);
-                    this.altAccounts.set(address, altAccount.value);
-                    dexAltCount++;
-                  }
-                } catch (e) {
-                  // Log but continue - some ALTs may have been deleted
-                  try {
-                    logger.warn('alt.manager.init.dexAlt.error', {
-                      cat: 'tx',
-                      ctx: { dex, address, error: String((e as any)?.message || e) },
-                    });
-                  } catch {}
+                if (address && !addressToCategory.has(address)) {
+                  dexAddressInfo.push({ address, dex, index: i });
                 }
               }
             }
-            
-            if (dexAltCount > 0) {
+          }
+          
+          const allAddresses = [
+            ...Array.from(addressToCategory.keys()),
+            ...dexAddressInfo.map(d => d.address),
+          ];
+          
+          try {
+            logger.info('alt.manager.init.batch.start', {
+              cat: 'tx',
+              ctx: {
+                totalAlts: allAddresses.length,
+                fromConfig: addressToCategory.size,
+                fromDexAlts: dexAddressInfo.length,
+              },
+            });
+          } catch {}
+          
+          // STEP 2: Batch load all ALTs
+          const loadedAlts = await this.batchLoadAlts(allAddresses);
+          
+          // STEP 3: Process results for config.alts
+          for (const [address, category] of addressToCategory) {
+            const altAccount = loadedAlts.get(address);
+            if (altAccount) {
               try {
-                logger.info('alt.manager.init.dexAlts.loaded', {
+                this.altAddresses.set(category, new PublicKey(address));
+                this.altAccounts.set(address, altAccount);
+              } catch {}
+            } else {
+              // ALT not found - mark for removal
+              invalidCategories.push(category);
+              try {
+                logger.warn('alt.manager.init.alt.not.found', {
                   cat: 'tx',
-                  ctx: { dexAltCount, dexes: Object.keys(this.altConfig.dexAlts) },
+                  ctx: {
+                    category,
+                    address,
+                    reason: 'ALT does not exist on-chain (possibly deleted)',
+                  },
                 });
               } catch {}
             }
+          }
+          
+          // Clean up invalid ALTs from config file
+          if (invalidCategories.length > 0) {
+            try {
+              for (const category of invalidCategories) {
+                delete this.altConfig.alts[category as keyof typeof this.altConfig.alts];
+              }
+              await saveAltConfig(this.altConfig);
+              try {
+                logger.info('alt.manager.init.cleanup', {
+                  cat: 'tx',
+                  ctx: {
+                    removedCategories: invalidCategories,
+                    message: 'Removed deleted/invalid ALTs from config',
+                  },
+                });
+              } catch {}
+            } catch (saveError) {
+              try {
+                logger.warn('alt.manager.init.cleanup.failed', {
+                  cat: 'tx',
+                  ctx: {
+                    error: String((saveError as any)?.message || saveError),
+                  },
+                });
+              } catch {}
+            }
+          }
+          
+          // STEP 4: Process results for dexAlts
+          let dexAltCount = 0;
+          for (const { address, dex, index } of dexAddressInfo) {
+            // Skip if already loaded from config.alts
+            if (this.altAccounts.has(address)) {
+              dexAltCount++;
+              continue;
+            }
+            
+            const altAccount = loadedAlts.get(address);
+            if (altAccount) {
+              const category = `${dex}-pools-${index}`;
+              this.altAddresses.set(category, altAccount.key);
+              this.altAccounts.set(address, altAccount);
+              dexAltCount++;
+            }
+          }
+          
+          if (dexAltCount > 0) {
+            try {
+              logger.info('alt.manager.init.dexAlts.loaded', {
+                cat: 'tx',
+                ctx: { dexAltCount, dexes: Object.keys(this.altConfig.dexAlts || {}) },
+              });
+            } catch {}
           }
         } catch (error) {
           // If altConfig loading fails, continue without it
@@ -3529,61 +3633,110 @@ export class DexAltManager {
         errors.push(`Failed to load exec-config: ${String(e)}`);
       }
 
-      // 3. Check and validate existing ALTs from config
-      if (opts.validateExisting && this.altConfig.alts) {
-        for (const [category, address] of Object.entries(this.altConfig.alts)) {
-          if (!address) continue;
-          
-          try {
-            const exists = await this.validateAltExists(address);
-            if (exists.valid) {
+      // 3. Check and validate existing ALTs using BATCH LOADING to avoid 429s
+      if (opts.validateExisting) {
+        // Collect all ALT addresses for batch loading
+        const addressToCategory = new Map<string, string>();
+        const dexAddressInfo: Array<{ address: string; dex: string; index: number }> = [];
+        
+        // Collect from config.alts
+        if (this.altConfig.alts) {
+          for (const [category, address] of Object.entries(this.altConfig.alts)) {
+            if (address) {
+              addressToCategory.set(address, category);
+            }
+          }
+        }
+        
+        // Collect from dexAlts
+        if (this.altConfig.dexAlts) {
+          for (const [dex, dexAltSet] of Object.entries(this.altConfig.dexAlts)) {
+            if (!dexAltSet?.addresses) continue;
+            for (let i = 0; i < dexAltSet.addresses.length; i++) {
+              const address = dexAltSet.addresses[i];
+              if (address && !addressToCategory.has(address)) {
+                dexAddressInfo.push({ address, dex, index: i });
+              }
+            }
+          }
+        }
+        
+        const allAddresses = [
+          ...Array.from(addressToCategory.keys()),
+          ...dexAddressInfo.map(d => d.address),
+        ];
+        
+        try {
+          logger.info('alt.startup.batch.validation.start', {
+            cat: 'tx',
+            ctx: {
+              totalAlts: allAddresses.length,
+              fromConfig: addressToCategory.size,
+              fromDexAlts: dexAddressInfo.length,
+            },
+          });
+        } catch {}
+        
+        // Batch load all ALTs
+        const loadedAlts = await this.batchLoadAlts(allAddresses);
+        
+        // Process results for config.alts
+        const invalidCategories: string[] = [];
+        for (const [address, category] of addressToCategory) {
+          const altAccount = loadedAlts.get(address);
+          if (altAccount) {
+            const accountCount = altAccount.state?.addresses?.length || 0;
+            if (accountCount > 0) {
               this.altAddresses.set(category, new PublicKey(address));
+              this.altAccounts.set(address, altAccount);
               results[category] = address;
               try {
                 logger.info('alt.startup.validated', {
                   cat: 'tx',
-                  ctx: { category, address, accountCount: exists.accountCount },
+                  ctx: { category, address, accountCount },
                 });
               } catch {}
             } else {
-              errors.push(`ALT ${category} (${address}) is invalid: ${exists.reason}`);
-              // Remove invalid ALT from config
-              if (this.altConfig.alts) {
-                delete this.altConfig.alts[category as keyof typeof this.altConfig.alts];
-              }
-              // Save updated config to remove invalid ALT
-              await saveAltConfig(this.altConfig);
+              errors.push(`ALT ${category} (${address}) is empty`);
+              invalidCategories.push(category);
             }
-          } catch (e) {
-            errors.push(`Failed to validate ALT ${category}: ${String(e)}`);
+          } else {
+            errors.push(`ALT ${category} (${address}) not found on-chain`);
+            invalidCategories.push(category);
           }
         }
-      }
-
-      // 3b. CRITICAL: Also load and validate DEX ALTs from dexAlts config
-      // These are multi-ALT sets created for DEX pools
-      if (opts.validateExisting && this.altConfig.dexAlts) {
+        
+        // Clean up invalid ALTs from config
+        if (invalidCategories.length > 0 && this.altConfig.alts) {
+          for (const category of invalidCategories) {
+            delete this.altConfig.alts[category as keyof typeof this.altConfig.alts];
+          }
+          await saveAltConfig(this.altConfig);
+        }
+        
+        // Process results for dexAlts
         let dexAltCount = 0;
-        for (const [dex, dexAltSet] of Object.entries(this.altConfig.dexAlts)) {
-          if (!dexAltSet?.addresses) continue;
+        for (const { address, dex, index } of dexAddressInfo) {
+          // Skip if already in config.alts
+          if (this.altAccounts.has(address)) {
+            dexAltCount++;
+            continue;
+          }
           
-          for (let i = 0; i < dexAltSet.addresses.length; i++) {
-            const address = dexAltSet.addresses[i];
-            if (!address) continue;
-            
-            try {
-              const exists = await this.validateAltExists(address);
-              if (exists.valid) {
-                const category = `${dex}-pools-${i}`;
-                this.altAddresses.set(category, new PublicKey(address));
-                results[category] = address;
-                dexAltCount++;
-              } else {
-                errors.push(`DEX ALT ${dex}[${i}] (${address}) is invalid: ${exists.reason}`);
-              }
-            } catch (e) {
-              errors.push(`Failed to validate DEX ALT ${dex}[${i}]: ${String(e)}`);
+          const altAccount = loadedAlts.get(address);
+          if (altAccount) {
+            const accountCount = altAccount.state?.addresses?.length || 0;
+            if (accountCount > 0) {
+              const category = `${dex}-pools-${index}`;
+              this.altAddresses.set(category, altAccount.key);
+              this.altAccounts.set(address, altAccount);
+              results[category] = address;
+              dexAltCount++;
+            } else {
+              errors.push(`DEX ALT ${dex}[${index}] (${address}) is empty`);
             }
+          } else {
+            errors.push(`DEX ALT ${dex}[${index}] (${address}) not found on-chain`);
           }
         }
         
@@ -3591,7 +3744,7 @@ export class DexAltManager {
           try {
             logger.info('alt.startup.dexAlts.validated', {
               cat: 'tx',
-              ctx: { dexAltCount, dexes: Object.keys(this.altConfig.dexAlts) },
+              ctx: { dexAltCount, dexes: Object.keys(this.altConfig.dexAlts || {}) },
             });
           } catch {}
         }
