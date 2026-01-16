@@ -1352,17 +1352,57 @@ export class DexAltManager {
         return accounts;
       }
 
+      // Map frontend DEX keys to graph edge dex values
+      // This matches the logic in arb.ts pools-by-dex route
+      const dexMatchFn = (edgeDex: string, edgePoolKind: string): boolean => {
+        const normalizedEdgeDex = edgeDex.toLowerCase();
+        
+        switch (dex) {
+          case 'raydium':
+            // Match raydium CLMM only (for backward compat, excludes AMM and CPMM)
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'clmm';
+          case 'raydium-amm':
+            // Match only raydium AMM v4 pools
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'amm';
+          case 'raydium-cpmm':
+            // Match only raydium CPMM pools
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'cpmm';
+          case 'orca':
+            return normalizedEdgeDex === 'orca';
+          case 'meteora':
+            // Match meteora DLMM only (clmm type)
+            return normalizedEdgeDex === 'meteora' && edgePoolKind === 'clmm';
+          case 'meteora-balanced':
+            return normalizedEdgeDex === 'meteora_balanced' || normalizedEdgeDex === 'meteorabalanced';
+          case 'meteora-damm-v1':
+            // Match Meteora Dynamic AMM v1 pools
+            return normalizedEdgeDex === 'meteora_damm_v1' || normalizedEdgeDex === 'meteora-damm-v1' ||
+                   normalizedEdgeDex === 'meteorabalanced_v1' || normalizedEdgeDex === 'meteora_balanced_v1';
+          case 'meteora-damm-v2':
+            // Match Meteora CP-AMM v2 pools
+            return normalizedEdgeDex === 'meteora_damm_v2' || normalizedEdgeDex === 'meteora-damm-v2' ||
+                   normalizedEdgeDex === 'meteorabalanced_v2' || normalizedEdgeDex === 'meteora_balanced_v2';
+          case 'pumpswap':
+            return normalizedEdgeDex === 'pumpswap';
+          default:
+            return false;
+        }
+      };
+
       // Filter edges by DEX and pool type
       let filtered = snapshot.edges.filter(edge => {
         const edgeDex = String(edge.dex || '').toLowerCase();
-        const dexMatch = edgeDex === dex.toLowerCase() || 
-                        (dex === 'meteora' && edgeDex === 'meteora') ||
-                        (dex === 'orca' && edgeDex === 'orca');
+        const edgePoolKind = String(edge.pool_kind || '');
         
-        if (!dexMatch) return false;
+        if (!dexMatchFn(edgeDex, edgePoolKind)) return false;
         
+        // For specific pool types, further filter (except for DEXes where we already filtered by kind)
         if (poolType === 'both') return true;
-        return edge.pool_kind === poolType;
+        if (dex === 'raydium-cpmm' || dex === 'raydium-amm' || dex === 'raydium') return true; // Already filtered by kind
+        if (dex.startsWith('meteora-damm')) return true; // Already filtered by dex variant
+        if (dex === 'pumpswap') return true; // Only has AMM type
+        
+        return edgePoolKind === poolType;
       });
 
       // CRITICAL: Filter out reverse edges to avoid counting the same pool twice

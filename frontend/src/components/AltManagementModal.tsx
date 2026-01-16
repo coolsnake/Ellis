@@ -56,7 +56,7 @@ const DEX_CONFIGS: DexConfig[] = [
   // Raydium variants
   {
     name: 'Raydium AMM v4',
-    key: 'raydium',
+    key: 'raydium-amm',
     poolTypes: [{ value: 'amm', label: 'AMM v4' }],
     defaultCategory: 'raydium-amm',
   },

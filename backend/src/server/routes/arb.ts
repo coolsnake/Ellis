@@ -398,7 +398,7 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.get('/arb/alts/pools-by-dex', async (req, res) => {
     try {
       const dex = String(req.query.dex || 'raydium') as 
-        'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 
+        'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 
         'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap';
       const poolType = String(req.query.poolType || 'both') as 'amm' | 'clmm' | 'cpmm' | 'both';
       const maxPools = Math.min(100, Math.max(1, Number(req.query.maxPools) || 30));
@@ -417,8 +417,11 @@ export function createArbRouter(io: SocketIOServer): Router {
         
         switch (dex) {
           case 'raydium':
-            // Match raydium AMM and CLMM, but not CPMM
-            return normalizedEdgeDex === 'raydium' && edgePoolKind !== 'cpmm';
+            // Match raydium CLMM only
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'clmm';
+          case 'raydium-amm':
+            // Match only raydium AMM v4 pools
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'amm';
           case 'raydium-cpmm':
             // Match only raydium CPMM pools
             return normalizedEdgeDex === 'raydium' && edgePoolKind === 'cpmm';
@@ -430,11 +433,17 @@ export function createArbRouter(io: SocketIOServer): Router {
           case 'meteora-balanced':
             return normalizedEdgeDex === 'meteora_balanced' || normalizedEdgeDex === 'meteora-balanced';
           case 'meteora-damm-v1':
-            return normalizedEdgeDex === 'meteora_damm_v1' || normalizedEdgeDex === 'meteora-damm-v1';
+            // Match Meteora Dynamic AMM v1 pools
+            return normalizedEdgeDex === 'meteora_damm_v1' || normalizedEdgeDex === 'meteora-damm-v1' ||
+                   normalizedEdgeDex === 'meteorabalanced_v1' || normalizedEdgeDex === 'meteora_balanced_v1';
           case 'meteora-damm-v2':
-            return normalizedEdgeDex === 'meteora_damm_v2' || normalizedEdgeDex === 'meteora-damm-v2';
+            // Match Meteora CP-AMM v2 pools
+            return normalizedEdgeDex === 'meteora_damm_v2' || normalizedEdgeDex === 'meteora-damm-v2' ||
+                   normalizedEdgeDex === 'meteorabalanced_v2' || normalizedEdgeDex === 'meteora_balanced_v2';
           case 'pumpswap':
             return normalizedEdgeDex === 'pumpswap';
+          default:
+            return false;
         }
       };
 
@@ -510,7 +519,7 @@ export function createArbRouter(io: SocketIOServer): Router {
     try {
       const body = req.body || {};
       const dex = String(body.dex || 'raydium') as 
-        'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' |
+        'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' |
         'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap';
       const poolType = String(body.poolType || 'both') as 'amm' | 'clmm' | 'cpmm' | 'both';
       const maxPools = Math.min(100, Math.max(1, Number(body.maxPools) || 50));
