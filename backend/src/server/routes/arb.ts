@@ -2945,12 +2945,13 @@ export function createArbRouter(io: SocketIOServer): Router {
       
       await dexAltManager.initialize();
       
-      const dex = req.query.dex as 'raydium' | 'orca' | 'meteora' || req.body.dex;
+      const validDexes = ['raydium', 'raydium-amm', 'raydium-cpmm', 'orca', 'meteora', 'meteora-balanced', 'meteora-damm-v1', 'meteora-damm-v2', 'pumpswap'];
+      const dex = (req.query.dex || req.body.dex) as typeof validDexes[number];
       const maxPools = Number(req.query.maxPools || req.body.maxPools || 50);
       
-      if (!dex || !['raydium', 'orca', 'meteora'].includes(dex)) {
+      if (!dex || !validDexes.includes(dex)) {
         return res.status(400).json({ 
-          error: 'Invalid dex parameter. Must be one of: raydium, orca, meteora',
+          error: `Invalid dex parameter. Must be one of: ${validDexes.join(', ')}`,
         });
       }
       
@@ -3259,16 +3260,17 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.post('/arb/alts/extend/:dex', async (req: Request, res: Response) => {
     try {
       const { dex } = req.params;
+      const validDexes = ['raydium', 'raydium-amm', 'raydium-cpmm', 'orca', 'meteora', 'meteora-balanced', 'meteora-damm-v1', 'meteora-damm-v2', 'pumpswap'];
       
-      if (!['raydium', 'orca', 'meteora'].includes(dex)) {
-        return res.status(400).json({ error: 'Invalid DEX. Must be raydium, orca, or meteora.' });
+      if (!validDexes.includes(dex)) {
+        return res.status(400).json({ error: `Invalid DEX. Must be one of: ${validDexes.join(', ')}` });
       }
       
       logger.info('arb.alt.api.extend.start', { cat: 'tx', dex });
       
       const { dexAltManager } = await import('../../execution/utils/altManager.js');
       
-      const result = await dexAltManager.createAllDexPoolAlts(dex as 'raydium' | 'orca' | 'meteora');
+      const result = await dexAltManager.createAllDexPoolAlts(dex as 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap');
       
       logger.info('arb.alt.api.extend.complete', { 
         cat: 'tx', 
