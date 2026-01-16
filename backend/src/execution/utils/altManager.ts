@@ -1905,7 +1905,7 @@ export class DexAltManager {
    * @returns DexAltSet with all created ALT info
    */
   async createDexPoolAlts(
-    dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap',
+    dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap',
     maxPoolsTotal: number = 100
   ): Promise<DexAltSet> {
     const { ensureWallet } = await import('../../wallet/wallet.js');
@@ -4833,7 +4833,7 @@ export class DexAltManager {
    * @returns DexAltSet with all created ALT info
    */
   async createAllDexPoolAlts(
-    dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap'
+    dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap'
   ): Promise<DexAltSet> {
     const { ensureWallet } = await import('../../wallet/wallet.js');
     const wallet = await ensureWallet(CONFIG.walletPath);
