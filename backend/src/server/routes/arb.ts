@@ -2945,16 +2945,18 @@ export function createArbRouter(io: SocketIOServer): Router {
       
       await dexAltManager.initialize();
       
-      const validDexes = ['raydium', 'raydium-amm', 'raydium-cpmm', 'orca', 'meteora', 'meteora-balanced', 'meteora-damm-v1', 'meteora-damm-v2', 'pumpswap'];
-      const dex = (req.query.dex || req.body.dex) as typeof validDexes[number];
+      type ValidDex = 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap';
+      const validDexes: ValidDex[] = ['raydium', 'raydium-amm', 'raydium-cpmm', 'orca', 'meteora', 'meteora-balanced', 'meteora-damm-v1', 'meteora-damm-v2', 'pumpswap'];
+      const dexParam = (req.query.dex || req.body.dex) as string;
       const maxPools = Number(req.query.maxPools || req.body.maxPools || 50);
       
-      if (!dex || !validDexes.includes(dex)) {
+      if (!dexParam || !validDexes.includes(dexParam as ValidDex)) {
         return res.status(400).json({ 
           error: `Invalid dex parameter. Must be one of: ${validDexes.join(', ')}`,
         });
       }
       
+      const dex = dexParam as ValidDex;
       logger.info('arb.alt.api.dex_pools_start', { cat: 'tx', dex, maxPools });
       
       const result = await dexAltManager.createDexPoolAlts(dex, maxPools);
