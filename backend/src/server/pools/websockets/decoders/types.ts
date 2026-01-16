@@ -42,6 +42,8 @@ export interface DecodedPool {
   liquidity?: number;
   liquidity_raw?: string;
   tick_spacing?: number;
+  tick_current_index?: number;
+  native_tick_current_index?: number;
   
   // AMM-specific fields
   reserve_a_raw?: string;
