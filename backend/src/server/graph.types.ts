@@ -26,7 +26,7 @@ export type GraphEdge = {
   weight?: number;       // layout weight (derived from liquidity / fee)
   price_a_per_b?: number; // A per 1 B
   tvl_usd?: number;       // approximate TVL in USD for layout/inspection
-  pool_kind?: 'amm' | 'clmm'; // explicit pool kind
+  pool_kind?: 'amm' | 'clmm' | 'cpmm'; // explicit pool kind
   direction?: 'canonical'; // edges are stored in canonical orientation only
   pool_liquidity_raw?: number; // raw pool liquidity metric when provided by the source (e.g., CLMM liquidity)
   was_swapped?: boolean; // Track if pool was swapped during canonicalization
