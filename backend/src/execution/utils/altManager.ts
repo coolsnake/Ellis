@@ -3471,8 +3471,10 @@ export class DexAltManager {
 
     // Get the account count
     const connection = getConnection();
-    const result = await withRpcLimit(() => 
-      connection.getAddressLookupTable(address)
+    const result = await withRpcLimit(
+      () => connection.getAddressLookupTable(address),
+      1,
+      { module: 'alt-create', method: 'getAddressLookupTable' }
     ).catch(() => ({ value: null }));
 
     const accountCount = result.value?.state?.addresses?.length || 0;
@@ -3960,8 +3962,10 @@ export class DexAltManager {
     try {
       const connection = getConnection();
       const pk = new PublicKey(address);
-      const result = await withRpcLimit(() =>
-        connection.getAddressLookupTable(pk)
+      const result = await withRpcLimit(
+        () => connection.getAddressLookupTable(pk),
+        1,
+        { module: 'alt-validate', method: 'getAddressLookupTable' }
       );
 
       if (!result || !result.value) {
@@ -4084,8 +4088,8 @@ export class DexAltManager {
     const AUTHORITY_OFFSET = 22;
 
     // Get all ALTs where our wallet is the authority
-    const accounts = await withRpcLimit(() =>
-      connection.getProgramAccounts(ALT_PROGRAM_ID, {
+    const accounts = await withRpcLimit(
+      () => connection.getProgramAccounts(ALT_PROGRAM_ID, {
         filters: [
           {
             memcmp: {
@@ -4095,8 +4099,8 @@ export class DexAltManager {
           },
         ],
       }),
-      1,
-      { module: 'alt', method: 'discoverWalletAlts' }
+      5, // Higher weight for heavy getProgramAccounts call
+      { module: 'alt-discovery', method: 'getProgramAccounts' }
     );
 
     try {
@@ -4127,7 +4131,11 @@ export class DexAltManager {
       }
     }
 
-    const currentSlot = await withRpcLimit(() => connection.getSlot());
+    const currentSlot = await withRpcLimit(
+      () => connection.getSlot(),
+      1,
+      { module: 'alt-discovery', method: 'getSlot' }
+    );
     const MAX_U64 = BigInt('18446744073709551615');
 
     const results: {
@@ -4150,8 +4158,10 @@ export class DexAltManager {
       let canClose = false;
 
       try {
-        const altAccount = await withRpcLimit(() =>
-          connection.getAddressLookupTable(pubkey)
+        const altAccount = await withRpcLimit(
+          () => connection.getAddressLookupTable(pubkey),
+          1,
+          { module: 'alt-discovery', method: 'getAddressLookupTable' }
         );
         
         if (altAccount.value) {
@@ -4235,13 +4245,25 @@ export class DexAltManager {
     });
 
     const tx = new Transaction().add(deactivateIx);
-    const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash());
+    const { blockhash } = await withRpcLimit(
+      () => connection.getLatestBlockhash(),
+      1,
+      { module: 'alt-deactivate', method: 'getLatestBlockhash' }
+    );
     tx.recentBlockhash = blockhash;
     tx.feePayer = wallet.publicKey;
     tx.sign(wallet);
 
-    const signature = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize()));
-    await withRpcLimit(() => connection.confirmTransaction(signature, 'confirmed'));
+    const signature = await withRpcLimit(
+      () => connection.sendRawTransaction(tx.serialize()),
+      2,
+      { module: 'alt-deactivate', method: 'sendRawTransaction' }
+    );
+    await withRpcLimit(
+      () => connection.confirmTransaction(signature, 'confirmed'),
+      2,
+      { module: 'alt-deactivate', method: 'confirmTransaction' }
+    );
 
     try {
       logger.info('alt.manager.deactivateByAddress.ok', {
@@ -4264,7 +4286,11 @@ export class DexAltManager {
     const altPk = new PublicKey(altAddress);
 
     // Verify ALT is closeable
-    const altAccount = await withRpcLimit(() => connection.getAddressLookupTable(altPk));
+    const altAccount = await withRpcLimit(
+      () => connection.getAddressLookupTable(altPk),
+      1,
+      { module: 'alt-close', method: 'getAddressLookupTable' }
+    );
     if (!altAccount.value) {
       throw new Error(`ALT not found: ${altAddress}`);
     }
@@ -4279,7 +4305,11 @@ export class DexAltManager {
       throw new Error(`ALT is not deactivated. Deactivate first and wait ~5 minutes.`);
     }
 
-    const currentSlot = await withRpcLimit(() => connection.getSlot());
+    const currentSlot = await withRpcLimit(
+      () => connection.getSlot(),
+      1,
+      { module: 'alt-close', method: 'getSlot' }
+    );
     const slotsSinceDeactivation = currentSlot - Number(deactivationSlotBigInt);
     if (slotsSinceDeactivation < 513) {
       const minutesLeft = Math.ceil((513 - slotsSinceDeactivation) * 0.4 / 60);
@@ -4287,7 +4317,11 @@ export class DexAltManager {
     }
 
     // Get rent amount before closing
-    const accountInfo = await withRpcLimit(() => connection.getAccountInfo(altPk));
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(altPk),
+      1,
+      { module: 'alt-close', method: 'getAccountInfo' }
+    );
     const rentRecovered = accountInfo?.lamports || 0;
 
     try {
@@ -4304,13 +4338,25 @@ export class DexAltManager {
     });
 
     const tx = new Transaction().add(closeIx);
-    const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash());
+    const { blockhash } = await withRpcLimit(
+      () => connection.getLatestBlockhash(),
+      1,
+      { module: 'alt-close', method: 'getLatestBlockhash' }
+    );
     tx.recentBlockhash = blockhash;
     tx.feePayer = wallet.publicKey;
     tx.sign(wallet);
 
-    const signature = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize()));
-    await withRpcLimit(() => connection.confirmTransaction(signature, 'confirmed'));
+    const signature = await withRpcLimit(
+      () => connection.sendRawTransaction(tx.serialize()),
+      2,
+      { module: 'alt-close', method: 'sendRawTransaction' }
+    );
+    await withRpcLimit(
+      () => connection.confirmTransaction(signature, 'confirmed'),
+      2,
+      { module: 'alt-close', method: 'confirmTransaction' }
+    );
 
     try {
       logger.info('alt.manager.closeByAddress.ok', {
@@ -4392,16 +4438,20 @@ export class DexAltManager {
     }
 
     const connection = getConnection();
-    const altAccount = await withRpcLimit(() => 
-      connection.getAddressLookupTable(altPk)
+    const altAccount = await withRpcLimit(
+      () => connection.getAddressLookupTable(altPk),
+      1,
+      { module: 'alt-status', method: 'getAddressLookupTable' }
     );
 
     if (!altAccount.value) {
       throw new Error(`ALT not found on-chain: ${altPk.toBase58()}`);
     }
 
-    const accountInfo = await withRpcLimit(() => 
-      connection.getAccountInfo(altPk)
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(altPk),
+      1,
+      { module: 'alt-status', method: 'getAccountInfo' }
     );
 
     // Check if deactivated: Solana uses BigInt(2^64 - 1) for active ALTs
@@ -4422,7 +4472,11 @@ export class DexAltManager {
     let minutesUntilCloseable: number | undefined;
 
     if (isDeactivated && deactivationSlot !== undefined) {
-      const currentSlot = await withRpcLimit(() => connection.getSlot());
+      const currentSlot = await withRpcLimit(
+        () => connection.getSlot(),
+        1,
+        { module: 'alt-status', method: 'getSlot' }
+      );
       const slotsSinceDeactivation = currentSlot - deactivationSlot;
       canClose = slotsSinceDeactivation >= 513;
       
@@ -4483,20 +4537,26 @@ export class DexAltManager {
 
     // Create and send transaction
     const tx = new Transaction().add(deactivateIx);
-    const { blockhash } = await withRpcLimit(() => 
-      connection.getLatestBlockhash()
+    const { blockhash } = await withRpcLimit(
+      () => connection.getLatestBlockhash(),
+      1,
+      { module: 'alt-deactivate', method: 'getLatestBlockhash' }
     );
     tx.recentBlockhash = blockhash;
     tx.feePayer = wallet.publicKey;
     tx.sign(wallet);
 
-    const signature = await withRpcLimit(() => 
-      connection.sendRawTransaction(tx.serialize())
+    const signature = await withRpcLimit(
+      () => connection.sendRawTransaction(tx.serialize()),
+      2,
+      { module: 'alt-deactivate', method: 'sendRawTransaction' }
     );
 
     // Wait for confirmation
-    await withRpcLimit(() => 
-      connection.confirmTransaction(signature, 'confirmed')
+    await withRpcLimit(
+      () => connection.confirmTransaction(signature, 'confirmed'),
+      2,
+      { module: 'alt-deactivate', method: 'confirmTransaction' }
     );
 
     try {
@@ -4545,8 +4605,10 @@ export class DexAltManager {
     } catch {}
 
     // Check ALT state
-    const altAccount = await withRpcLimit(() => 
-      connection.getAddressLookupTable(altPk)
+    const altAccount = await withRpcLimit(
+      () => connection.getAddressLookupTable(altPk),
+      1,
+      { module: 'alt-close', method: 'getAddressLookupTable' }
     );
     
     if (!altAccount.value) {
@@ -4558,7 +4620,11 @@ export class DexAltManager {
     }
 
     // Get current slot to verify enough time has passed
-    const currentSlot = await withRpcLimit(() => connection.getSlot());
+    const currentSlot = await withRpcLimit(
+      () => connection.getSlot(),
+      1,
+      { module: 'alt-close', method: 'getSlot' }
+    );
     const slotsSinceDeactivation = currentSlot - Number(altAccount.value.state.deactivationSlot);
     
     if (slotsSinceDeactivation < 513) {
@@ -4570,8 +4636,10 @@ export class DexAltManager {
     }
 
     // Get account info to calculate rent recovered
-    const accountInfo = await withRpcLimit(() => 
-      connection.getAccountInfo(altPk)
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(altPk),
+      1,
+      { module: 'alt-close', method: 'getAccountInfo' }
     );
     const rentRecovered = accountInfo?.lamports || 0;
 
@@ -4584,20 +4652,26 @@ export class DexAltManager {
 
     // Create and send transaction
     const tx = new Transaction().add(closeIx);
-    const { blockhash } = await withRpcLimit(() => 
-      connection.getLatestBlockhash()
+    const { blockhash } = await withRpcLimit(
+      () => connection.getLatestBlockhash(),
+      1,
+      { module: 'alt-close', method: 'getLatestBlockhash' }
     );
     tx.recentBlockhash = blockhash;
     tx.feePayer = wallet.publicKey;
     tx.sign(wallet);
 
-    const signature = await withRpcLimit(() => 
-      connection.sendRawTransaction(tx.serialize())
+    const signature = await withRpcLimit(
+      () => connection.sendRawTransaction(tx.serialize()),
+      2,
+      { module: 'alt-close', method: 'sendRawTransaction' }
     );
 
     // Wait for confirmation
-    await withRpcLimit(() => 
-      connection.confirmTransaction(signature, 'confirmed')
+    await withRpcLimit(
+      () => connection.confirmTransaction(signature, 'confirmed'),
+      2,
+      { module: 'alt-close', method: 'confirmTransaction' }
     );
 
     // Remove from our tracking
