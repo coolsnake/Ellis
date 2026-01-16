@@ -800,8 +800,9 @@ export async function normalizeRaydiumPools(raw: RaydiumApiListResponse | { data
           tvl_usd: pool.tvl,
           decimals_a: processed.decimalsA,
           decimals_b: processed.decimalsB,
-          reserve_a_raw: reserveA?.toString(),
-          reserve_b_raw: reserveB?.toString(),
+          // FIX: Swap reserves to match canonical mint order
+          reserve_a_raw: wasSwapped ? reserveB?.toString() : reserveA?.toString(),
+          reserve_b_raw: wasSwapped ? reserveA?.toString() : reserveB?.toString(),
           was_swapped: wasSwapped,
           native_mint_a: mintA,
           native_mint_b: mintB,

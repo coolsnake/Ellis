@@ -1310,8 +1310,9 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
         price_a_per_b,
         liquidity_base,
         updated_ms: now,
-        account_a: pool.pool_base_token_account,
-        account_b: pool.pool_quote_token_account,
+        // FIX: Swap accounts to match canonical mint order
+        account_a: wasSwapped ? pool.pool_quote_token_account : pool.pool_base_token_account,
+        account_b: wasSwapped ? pool.pool_base_token_account : pool.pool_quote_token_account,
         pool_kind: 'amm',
         lp_mint: pool.lp_mint,
         lp_supply: pool.lp_supply || undefined, // Store LP supply for reference
@@ -1322,9 +1323,9 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
         amount_a_whole: finalBaseReserve,
         amount_b_whole: finalQuoteReserve,
         amounts_are_whole: true,
-        // Raw reserves in smallest units (for exact calculations)
-        reserve_a_raw: pool.base_reserve || undefined,
-        reserve_b_raw: pool.quote_reserve || undefined,
+        // FIX: Swap reserves to match canonical mint order
+        reserve_a_raw: wasSwapped ? pool.quote_reserve : pool.base_reserve,
+        reserve_b_raw: wasSwapped ? pool.base_reserve : pool.quote_reserve,
         was_swapped: wasSwapped,
         native_mint_a: mint_a,
         native_mint_b: mint_b,
@@ -1350,17 +1351,16 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
         creator: pool.onchain_creator || pool.creator, // On-chain pool creator (extracted from pool account data during enrichment)
         metadata_creator: (pool as any).metadata_creator || undefined, // Metaplex metadata update authority (for deriving creator vaults)
         protocol_fee_recipient: pool.protocol_fee_recipient || undefined, // On-chain protocol fee recipient (offset 243)
+        _pipelineProcessed: true, // Mark as processed by pipeline
       } as any);
     } catch (e: any) {
       try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch (e) { logCatchError('pools.pumpswap', e); }
     }
   }
   
-  // Apply canonicalization like other DEXes
-  const ammCanon = canonicalizePools(amm);
-  
-  // FIX: Mark as processed to satisfy graph builder and silence warnings
-  ammCanon.forEach(p => (p as any)._pipelineProcessed = true);
+  // Pools are already canonicalized by the price pipeline - no second pass needed
+  // The pipeline sets was_swapped, swaps mints/decimals, and inverts price correctly
+  const ammCanon = amm;
 
   // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
   try {

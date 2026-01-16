@@ -213,7 +213,12 @@ export function canonicalizePools<T extends { mint_a: string; mint_b: string }>(
   return pools.map(pool => {
     const orientation = canonicalOrientation(pool.mint_a, pool.mint_b);
     if (orientation === 'keep') {
-      // Explicitly mark as not swapped for clarity
+      // Preserve existing was_swapped if already set by pipeline
+      // Only default to false if not previously set
+      const existingWasSwapped = (pool as any).was_swapped;
+      if (existingWasSwapped === true || existingWasSwapped === false) {
+        return pool; // Already processed, don't modify
+      }
       return { ...pool, was_swapped: false } as T;
     }
     
@@ -231,7 +236,7 @@ export function canonicalizePools<T extends { mint_a: string; mint_b: string }>(
       // Log if deviation is significant or if price magnitude is suspiciously large
       if (priceDeviation > 0.01 || newPrice > 100000 || origPrice > 100000) {
         try {
-          logger.info('canonical.swap.price_check', {
+          logger.debug('canonical.swap.price_check', {
             dex: (pool as any).dex,
             pool_id: ((pool as any).id || '').slice(0, 12),
             orig_mint_a: (pool as any).mint_a?.slice(0, 8),

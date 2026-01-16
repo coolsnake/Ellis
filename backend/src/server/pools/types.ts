@@ -84,6 +84,10 @@ export type ClmmPool = {
   was_swapped?: boolean;
   active_id?: number;
   bin_step?: number;
+  // Tick index for CLMM pools (canonical orientation - negated when swapped)
+  tick_current_index?: number;
+  // Native tick index (on-chain value, not negated)
+  native_tick_current_index?: number;
   // Optional token vault accounts for CLMM pool
   account_a?: string;
   account_b?: string;

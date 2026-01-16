@@ -600,12 +600,11 @@ export async function handleMeteoraUpdate(
       native_decimals_b: decB,
       native_account_a: accountA,
       native_account_b: accountB,
+      // FIX: Include Meteora-specific fields directly for accurate price calculations
+      active_id: Number.isFinite(activeId) ? Number(activeId) : undefined,
+      bin_step: Number.isFinite(binStep) ? Number(binStep) : undefined,
       _pipelineProcessed: true,
     } as ClmmPool;
-
-    // Add Meteora-specific fields
-    if (Number.isFinite(activeId)) (item as any).active_id = Number(activeId);
-    if (tickSpacing) (item as any).bin_step = tickSpacing;
     // Store all 5 bin arrays around the active bin for directional swaps
     // - bin_array_active: activeIndex (contains active bin)
     // - bin_array_lower: activeIndex - 1

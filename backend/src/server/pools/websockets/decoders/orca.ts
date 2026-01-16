@@ -718,6 +718,7 @@ export async function handleOrcaUpdate(
     }
 
     // Build the pool item with pipeline-processed prices
+    const nativeTickCurrentIndex = Number(parsed.tickCurrentIndex);
     const clmmItem: ClmmPool = {
       id: poolId,
       dex: 'Orca',
@@ -738,6 +739,11 @@ export async function handleOrcaUpdate(
       was_swapped: processedPrice.wasSwapped,
       native_mint_a: mintA,
       native_mint_b: mintB,
+      // FIX: Add tick_current_index with proper negation when swapped
+      tick_current_index: processedPrice.wasSwapped ? -nativeTickCurrentIndex : nativeTickCurrentIndex,
+      native_tick_current_index: nativeTickCurrentIndex,
+      native_decimals_a: decA,
+      native_decimals_b: decB,
       _pipelineProcessed: true,
     } as ClmmPool;
 

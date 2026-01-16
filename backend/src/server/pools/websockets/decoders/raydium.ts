@@ -121,6 +121,8 @@ export async function decodeRaydiumClmmPool(
     const liqRaw = anyToBigInt(state.liquidity ?? 0);
     const liq = Number(state.liquidity ?? 0);
     const tick = Number(state.tickSpacing ?? state.tick_spacing ?? 0);
+    // Extract current tick index for accurate calculations
+    const tickCurrentIndex = Number(state.tickCurrent ?? state.tick_current ?? state.tickCurrentIndex ?? 0);
     
     // CRITICAL: Raydium CLMM pools store fee in ammConfig account, not pool state.
     // The SDK-decoded state.tradeFeeRate is often 0/undefined.
@@ -188,6 +190,8 @@ export async function decodeRaydiumClmmPool(
       liquidity: Number.isFinite(liq) ? liq : 0,
       liquidity_raw: liqRaw?.toString(),
       tick_spacing: tick,
+      // Add native tick current index for accurate calculations
+      native_tick_current_index: tickCurrentIndex,
       updated_ms: Date.now(),
       pool_kind: 'clmm',
       liquidity_display: liq,
@@ -440,6 +444,7 @@ async function handleClmmUpdate(
   }
 
   // Build the pool item with pipeline-processed prices
+  const nativeTickCurrentIndex = (decoded as any).native_tick_current_index || 0;
   const item: ClmmPool = {
     id: poolId,
     dex: 'Raydium',
@@ -460,6 +465,11 @@ async function handleClmmUpdate(
     was_swapped: processedPrice.wasSwapped,
     native_mint_a: mintA,
     native_mint_b: mintB,
+    native_decimals_a: decA,
+    native_decimals_b: decB,
+    // FIX: Add tick_current_index with proper negation when swapped
+    tick_current_index: processedPrice.wasSwapped ? -nativeTickCurrentIndex : nativeTickCurrentIndex,
+    native_tick_current_index: nativeTickCurrentIndex,
     _pipelineProcessed: true,
   } as ClmmPool;
 
