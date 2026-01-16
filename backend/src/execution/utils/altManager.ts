@@ -992,37 +992,64 @@ export class DexAltManager {
       addAccount('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');  // ATA Program
       addAccount('ComputeBudget111111111111111111111111111111');    // Compute Budget Program
       addAccount('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');    // Memo Program
+      
+      // ============================================
+      // 1b. SYSVARS (frequently used in DeFi transactions)
+      // ============================================
       addAccount('Sysvar1nstructions1111111111111111111111111');    // Instructions Sysvar
       addAccount('SysvarRent111111111111111111111111111111111');    // Rent Sysvar
       addAccount('SysvarC1ock11111111111111111111111111111111');    // Clock Sysvar
+      addAccount('SysvarRecentB1teleHashes11111111111111111111');  // Recent Blockhashes Sysvar
+      addAccount('SysvarS1otHashes111111111111111111111111111');   // Slot Hashes Sysvar
+      addAccount('SysvarEpochScheworkahead1111111111111111111');   // Epoch Schedule Sysvar
+      addAccount('SysvarFees111111111111111111111111111111111');    // Fees Sysvar
+      addAccount('SysvarS1otHistory11111111111111111111111111');   // Slot History Sysvar
 
       // ============================================
       // 2. DEX PROGRAM IDs (appear in every DEX swap)
       // ============================================
       // Raydium programs
-      addAccount((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
-      addAccount((CONFIG as any)?.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
+      addAccount((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');  // Raydium CLMM
+      addAccount((CONFIG as any)?.raydium?.ammV4Program || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8'); // Raydium AMM v4
+      addAccount('CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C');  // Raydium CPMM
+      addAccount('routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS');   // Raydium Routing Program
       
       // Orca Whirlpool
       addAccount((CONFIG as any)?.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
       
-      // Meteora DLMM
-      addAccount((CONFIG as any)?.meteora?.programId || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+      // Meteora programs
+      addAccount((CONFIG as any)?.meteora?.programId || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');  // DLMM
+      addAccount('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');  // Meteora Dynamic AMM (DAMM v1)
+      addAccount('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');   // Meteora CP-AMM (DAMM v2)
+      addAccount('24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi');  // Meteora Pools Program
       
       // PumpSwap (post-graduation AMM)
-      addAccount('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
+      addAccount('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');   // PumpSwap AMM
+      addAccount('BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW');  // PumpSwap Router
+      
+      // OpenBook DEX (used by Raydium AMM)
+      addAccount('srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX');   // OpenBook DEX v1
+      addAccount('opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EohpZb');   // OpenBook DEX v2
+      
+      // Jupiter aggregator (optional, for Jupiter routes)
+      addAccount('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4');   // Jupiter v6
 
       // ============================================
-      // 3. DEX-SPECIFIC SHARED ACCOUNTS
+      // 3. DEX-SPECIFIC SHARED ACCOUNTS & AUTHORITIES
       // ============================================
+      // Raydium AMM Authority PDA (required for all AMM v4 swaps)
+      addAccount('5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1');  // Raydium AMM Authority
+      
       // Meteora Event Authority PDA (every Meteora swap)
       addAccount('D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6');
       
-      // Common Raydium AMM configs
+      // Common Raydium CLMM/CPMM configs (fee tiers)
       const raydiumConfigs = [
-        'HVSwB6sML94MBWaHNrfmLMo3ZstLYvbnqRtMRdupCrXJ',
-        'GjLEiquek1Nc2YjcBhufUGFRkaqW1JhaGjsdFd8mys38',
-        'D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2', // 0.01% fee tier
+        'HVSwB6sML94MBWaHNrfmLMo3ZstLYvbnqRtMRdupCrXJ',  // CLMM config
+        'GjLEiquek1Nc2YjcBhufUGFRkaqW1JhaGjsdFd8mys38',  // CLMM config
+        'D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2',  // 0.01% fee tier
+        'GVSwm4smQBYcgAJU7qjFHLQBHTc4mL3yq7MfKGfKr95K',  // CPMM config 1
+        'BMS3X4bVvMXqX8NjZqVVLfx9BSXJ3z1JqPBXMV7YMXHL',  // CPMM config 2
       ];
       for (const config of raydiumConfigs) {
         addAccount(config);
@@ -1030,6 +1057,7 @@ export class DexAltManager {
 
       // Orca whirlpools config
       addAccount('2LecshUwdy9xi7meFgHtFJQNSKk4KdTrcpvaB56dP2NQ');
+      addAccount('FcrweFY1G9HJAHG5inkGB6pKg1HZ6x9UC2WioAfWrGkR');  // Orca Whirlpools Config Extension
 
       // ============================================
       // 4. ANCHOR MINT ADDRESSES
@@ -2373,126 +2401,13 @@ export class DexAltManager {
       // unnecessary. The SDK includes the correct bitmap extension PDA when building swap
       // instructions, and it doesn't need to be in the ALT for the transaction to work.
 
-      // Add bin arrays around the active bin
-      // Bin arrays are PDAs that follow a deterministic pattern
-      if (activeId !== null && binStep !== null) {
-        try {
-          const binIdToBinArrayIndex = DLMM?.binIdToBinArrayIndex;
-          const deriveBinArray = DLMM?.deriveBinArray;
-          
-          if (binIdToBinArrayIndex && deriveBinArray) {
-            // Calculate the bin array index for the active bin
-            const activeBinArrayIndex = binIdToBinArrayIndex(new BN(activeId));
-            const index = activeBinArrayIndex instanceof BN ? activeBinArrayIndex.toNumber() : Number(activeBinArrayIndex);
-            
-            // Add bin arrays in a range around the active bin (e.g., -5 to +5)
-            // Reduced range to avoid too many RPC calls
-            const binArrayRange = 5;
-            const binArraysToCheck: Array<{ index: number; pk: PublicKey }> = [];
-            
-            // First, derive all bin arrays we want to check
-            for (let i = index - binArrayRange; i <= index + binArrayRange; i++) {
-              try {
-                const binArrayPda = deriveBinArray(poolPk, new BN(i), programId);
-                let binArrayPk: PublicKey;
-                
-                if (binArrayPda instanceof PublicKey) {
-                  binArrayPk = binArrayPda;
-                } else if (Array.isArray(binArrayPda)) {
-                  binArrayPk = binArrayPda[0];
-                } else {
-                  binArrayPk = new PublicKey(binArrayPda);
-                }
-                
-                binArraysToCheck.push({ index: i, pk: binArrayPk });
-              } catch {}
-            }
-            
-            // Batch check existence (getMultipleAccountsInfo is more efficient)
-            if (binArraysToCheck.length > 0) {
-              const connection = getConnection();
-              try {
-                const accountInfos = await withRpcLimit(
-                  () => connection.getMultipleAccountsInfo(binArraysToCheck.map(b => b.pk)),
-                  1.0,
-                  { module: 'alt', method: 'getMultipleAccountsInfo' }
-                ).catch(() => null);
-                
-                if (accountInfos) {
-                  const binArraysAdded: string[] = [];
-                  accountInfos.forEach((info, idx) => {
-                    if (info) {
-                      const binArray = binArraysToCheck[idx];
-                      accounts.push(binArray.pk);
-                      binArraysAdded.push(`${binArray.index}:${binArray.pk.toBase58().substring(0, 8)}`);
-                    }
-                  });
-                  
-                  try {
-                    logger.debug('alt.manager.meteora.dlmm.bin_arrays.added', {
-                      cat: 'tx',
-                      ctx: {
-                        pool: poolPk.toBase58(),
-                        activeId,
-                        activeBinArrayIndex: index,
-                        binArraysAdded: binArraysAdded.length,
-                        binArraysChecked: binArraysToCheck.length,
-                        range: `${index - binArrayRange} to ${index + binArrayRange}`,
-                        sample: binArraysAdded.slice(0, 5),
-                      },
-                    });
-                  } catch {}
-                }
-              } catch (batchError) {
-                // Fallback to individual checks if batch fails
-                try {
-                  logger.debug('alt.manager.meteora.dlmm.bin_arrays.batch_failed_fallback', {
-                    cat: 'tx',
-                    ctx: { pool: poolPk.toBase58(), error: String((batchError as any)?.message || batchError) },
-                  });
-                } catch {}
-                
-                const binArraysAdded: string[] = [];
-                for (const binArray of binArraysToCheck) {
-                  try {
-                    const binArrayInfo = await withRpcLimit(
-                      () => connection.getAccountInfo(binArray.pk),
-                      0.3,
-                      { module: 'alt', method: 'getAccountInfo' }
-                    ).catch(() => null);
-                    
-                    if (binArrayInfo) {
-                      accounts.push(binArray.pk);
-                      binArraysAdded.push(`${binArray.index}:${binArray.pk.toBase58().substring(0, 8)}`);
-                    }
-                  } catch {}
-                }
-                
-                try {
-                  logger.debug('alt.manager.meteora.dlmm.bin_arrays.added', {
-                    cat: 'tx',
-                    ctx: {
-                      pool: poolPk.toBase58(),
-                      activeId,
-                      activeBinArrayIndex: index,
-                      binArraysAdded: binArraysAdded.length,
-                      range: `${index - binArrayRange} to ${index + binArrayRange}`,
-                      fallback: true,
-                    },
-                  });
-                } catch {}
-              }
-            }
-          }
-        } catch (error) {
-          try {
-            logger.debug('alt.manager.meteora.dlmm.bin_arrays.failed', {
-              cat: 'tx',
-              ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
-            });
-          } catch {}
-        }
-      }
+      // NOTE: Bin arrays are NOT added to ALT - they are position-dependent and change frequently
+      // as the active bin moves. Including them would:
+      // 1. Blow up ALT size (11 bin arrays per pool × many pools = hundreds of entries)
+      // 2. Become stale quickly as prices move and active bins shift
+      // 3. Require constant ALT updates/extensions
+      // The transaction builder will include the necessary bin arrays dynamically based on
+      // the current active bin at swap time.
 
       try {
         logger.debug('alt.manager.meteora.dlmm.parsed', {

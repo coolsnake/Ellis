@@ -553,8 +553,11 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       const mint_b = String(mints?.[1] || '');
       if (!id || !mint_a || !mint_b) continue;
       
-      // V1 normalizer always produces V1 pools (programId is hardcoded to V1 below)
-      const dex = 'MeteoraBalanced_v1';
+      // CRITICAL: Use on-chain verified pool_version if available from RPC enrichment
+      // The on-chain owner is authoritative - API pool_version may be incorrect
+      // Default to v1 only if not enriched (this normalizer was originally for V1 API)
+      const poolVersion = Number(it?.pool_version ?? 1);
+      const dex = poolVersion === 2 ? 'MeteoraBalanced_v2' : 'MeteoraBalanced_v1';
       
       // Get decimals from centralized resolver
       const decimalsA = decimalsMap.get(mint_a) ?? 6;
@@ -651,9 +654,11 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       
       amm.push({
         id,
-        dex,  // 'MeteoraBalanced_v1' or 'MeteoraBalanced_v2' based on pool_version
-        // CRITICAL: V1 API - always use v1 program
-        programId: 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  // DAMM v1
+        dex,  // 'MeteoraBalanced_v1' or 'MeteoraBalanced_v2' based on verified pool_version
+        // CRITICAL: Use programId based on verified pool_version from on-chain owner check
+        programId: poolVersion === 2
+          ? 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG'   // DAMM v2
+          : 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  // DAMM v1
         mint_a,
         mint_b,
         fee_bps,
@@ -1727,16 +1732,62 @@ export async function fetchMeteoraBalancedAll(opts?: { fetchV1?: boolean; fetchV
     });
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
-  // Enrich v2 pools with RPC data (vault balances)
-  const enrichResult = await enrichMeteoraBalancedWithRpc(v2);
-  const enrichedV2 = enrichResult.pools;
+  // CRITICAL: Enrich BOTH v1 and v2 pools with RPC data (vault balances + owner verification)
+  // The on-chain owner is the authoritative source for pool version - API may be incorrect
+  const enrichResultV2 = await enrichMeteoraBalancedWithRpc(v2);
+  const enrichedV2 = enrichResultV2.pools;
+  
+  const enrichResultV1 = await enrichMeteoraBalancedWithRpc(v1);
+  const enrichedV1 = enrichResultV1.pools;
   
   const normV2 = await normalizeMeteoraBalancedHttp(enrichedV2);
-  const normV1 = await normalizeMeteoraBalancedV1(v1);
+  const normV1 = await normalizeMeteoraBalancedV1(enrichedV1);
   
-  // IMPORTANT: Do NOT merge - v1 and v2 are different pool types (different programs)
-  // Keep them separate since they have distinct DEX labels and require different swap logic
-  const combinedAmm = [...normV2.amm, ...normV1.amm];
+  // CRITICAL: Deduplicate pools by ID - prefer the version with correct on-chain ownership
+  // Pools may appear in both V1 and V2 APIs with different (possibly incorrect) version info
+  const poolById = new Map<string, AmmPool>();
+  
+  // Add V2 pools first
+  for (const pool of normV2.amm) {
+    poolById.set(pool.id, pool);
+  }
+  
+  // Add V1 pools, but only if not already present (V2 enrichment is more recent)
+  // Or if the V1 pool has a programId that matches its dex (consistent identification)
+  for (const pool of normV1.amm) {
+    const existing = poolById.get(pool.id);
+    if (!existing) {
+      poolById.set(pool.id, pool);
+    } else {
+      // Pool exists in both - keep the one with consistent programId/dex
+      const existingProgramId = (existing as any).programId;
+      const existingDex = (existing as any).dex;
+      const newProgramId = (pool as any).programId;
+      const newDex = (pool as any).dex;
+      
+      // Check if programId matches dex expectation
+      const existingConsistent = (existingDex === 'MeteoraBalanced_v1' && existingProgramId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') ||
+                                 (existingDex === 'MeteoraBalanced_v2' && existingProgramId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
+      const newConsistent = (newDex === 'MeteoraBalanced_v1' && newProgramId === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') ||
+                            (newDex === 'MeteoraBalanced_v2' && newProgramId === 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
+      
+      // If new pool is consistent but existing isn't, use new pool
+      if (newConsistent && !existingConsistent) {
+        poolById.set(pool.id, pool);
+        try {
+          logger.info('meteora.balanced.dedup.replaced', {
+            poolId: pool.id.slice(0, 8) + '...',
+            oldDex: existingDex,
+            newDex: newDex,
+            reason: 'programId_consistency',
+            cat: 'meteora'
+          });
+        } catch (e) { logCatchError('pools.meteoraBalanced', e); }
+      }
+    }
+  }
+  
+  const combinedAmm = Array.from(poolById.values());
   const ammCanon = canonicalizePools(combinedAmm);
   
   // FIX: Mark as processed to satisfy graph builder and silence warnings
