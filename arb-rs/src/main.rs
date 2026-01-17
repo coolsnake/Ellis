@@ -4139,32 +4139,31 @@ async fn arb_graph_update(
     // Increment live_graph_version
     s.live_graph_version.fetch_add(1, Ordering::Release);
     
-    // Track pending version for ACK coordination (existing pattern)
+    // IMMEDIATE VERSION COMMIT: Commit version right away since graph data is already applied.
+    // This fixes desync issues where ACKs would timeout during long detection cycles because
+    // pending_graph_version was only committed at the start of the next detection iteration.
+    // Now that updates are applied directly to live_graph, the version should also be committed
+    // immediately - matching the behavior of /arb/graph/snapshot.
     if let Some(v) = req.version {
-        let old_pending = s.pending_graph_version.load(Ordering::Acquire);
-        if old_pending == u64::MAX {
-            s.pending_graph_version.store(v, Ordering::Release);
-            tracing::info!(version = v, "arb.graph.diff: version buffered (new)");
+        let current = s.last_graph_version.load(Ordering::Acquire);
+        if v > current {
+            s.last_graph_version.store(v, Ordering::Release);
+            s.version_changed.notify_waiters();
+            tracing::info!(
+                old_version = current,
+                new_version = v,
+                "arb.graph.diff: version committed immediately"
+            );
         } else {
-            let next = old_pending.max(v);
-            if next != old_pending {
-                s.pending_graph_version.store(next, Ordering::Release);
-                tracing::info!(
-                    old_version = old_pending,
-                    new_version = next,
-                    "arb.graph.diff: version buffered (raised)"
-                );
-            } else {
-                tracing::info!(
-                    received_version = v,
-                    pending_version = old_pending,
-                    "arb.graph.diff: version kept (max)"
-                );
-            }
+            tracing::debug!(
+                received_version = v,
+                current_version = current,
+                "arb.graph.diff: version skipped (not newer)"
+            );
         }
     }
     if let Some(ts) = req.timestamp {
-        s.pending_graph_ts.store(ts, Ordering::Release);
+        s.last_graph_ts.store(ts, Ordering::Release);
     }
     
     // Update metrics

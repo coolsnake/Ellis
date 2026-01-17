@@ -1289,6 +1289,17 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     }
   } catch {}
   
+  // Sync authoritative orientations for WebSocket consistency checking
+  try {
+    const { syncOrientationsFromPayload } = await import('./orientationValidation.js');
+    syncOrientationsFromPayload({ clmm });
+  } catch (syncErr) {
+    logger.debug('meteora.orientation_sync.failed', {
+      error: String((syncErr as any)?.message || syncErr),
+      cat: 'meteora'
+    });
+  }
+  
   return { amm: [], clmm: clmm, cpmm: [] };
 }
 

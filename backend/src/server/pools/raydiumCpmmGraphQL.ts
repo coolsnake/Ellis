@@ -776,5 +776,16 @@ export async function normalizeRaydiumCpmmGraphQL(raw: RaydiumCpmmPoolApiRespons
     });
   }
   
+  // Sync authoritative orientations for WebSocket consistency checking
+  try {
+    const { syncOrientationsFromPayload } = await import('./orientationValidation.js');
+    syncOrientationsFromPayload({ cpmm });
+  } catch (syncErr) {
+    logger.debug('raydium.cpmm.orientation_sync.failed', {
+      error: String((syncErr as any)?.message || syncErr),
+      cat: 'raydium-cpmm'
+    });
+  }
+  
   return { cpmm };
 }

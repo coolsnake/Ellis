@@ -17,6 +17,7 @@ import { cpmmCache } from '../../../pools.cache.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
+import { ensureOrientationConsistency } from '../../orientationValidation.js';
 import { tryActivatePool } from '../../../pools.activation.js';
 import type { 
   DecodedPool, 
@@ -252,11 +253,40 @@ async function handleCpmmUpdate(
     } catch {}
   }
 
+  // Use guaranteed decimal resolution for any still-missing decimals
+  // This will do RPC fetch if needed, avoiding dangerous fallback defaults
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
-      const { resolveDecimals } = await import('../../decimals.js');
-      if (!Number.isFinite(decA) && mintA) decA = await resolveDecimals(mintA);
-      if (!Number.isFinite(decB) && mintB) decB = await resolveDecimals(mintB);
+      const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
+      
+      if (!Number.isFinite(decA) && mintA) {
+        const resultA = await resolveDecimalsGuaranteed(mintA, poolId, 'Raydium');
+        decA = resultA.decimals;
+        if (resultA.source === 'default' && !resultA.validated) {
+          logger.warn('raydium.decoder.cpmm.decimals_guaranteed_fallback', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: mintA?.slice(0, 8) + '…',
+            side: 'A',
+            decimals: decA,
+            source: resultA.source,
+            cat: 'pools'
+          });
+        }
+      }
+      if (!Number.isFinite(decB) && mintB) {
+        const resultB = await resolveDecimalsGuaranteed(mintB, poolId, 'Raydium');
+        decB = resultB.decimals;
+        if (resultB.source === 'default' && !resultB.validated) {
+          logger.warn('raydium.decoder.cpmm.decimals_guaranteed_fallback', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: mintB?.slice(0, 8) + '…',
+            side: 'B',
+            decimals: decB,
+            source: resultB.source,
+            cat: 'pools'
+          });
+        }
+      }
     } catch (resolveErr) {
       logger.warn('raydium.decoder.cpmm.decimals_resolve_error', {
         poolId: poolId.slice(0, 8) + '…',
@@ -265,29 +295,10 @@ async function handleCpmmUpdate(
         error: String((resolveErr as Error)?.message || resolveErr),
         cat: 'pools'
       });
+      // Final fallback only if guaranteed resolution also fails
+      if (!Number.isFinite(decA)) decA = 9;
+      if (!Number.isFinite(decB)) decB = 6;
     }
-  }
-
-  // Fallback to defaults
-  if (!Number.isFinite(decA)) {
-    logger.warn('raydium.decoder.cpmm.decimals_fallback', {
-      poolId: poolId.slice(0, 8) + '…',
-      mint: mintA?.slice(0, 8) + '…',
-      side: 'A',
-      fallbackValue: 9,
-      cat: 'pools'
-    });
-    decA = 9;
-  }
-  if (!Number.isFinite(decB)) {
-    logger.warn('raydium.decoder.cpmm.decimals_fallback', {
-      poolId: poolId.slice(0, 8) + '…',
-      mint: mintB?.slice(0, 8) + '…',
-      side: 'B',
-      fallbackValue: 6,
-      cat: 'pools'
-    });
-    decB = 6;
   }
 
   // For CPMM, we need vault balances to calculate price
@@ -378,19 +389,29 @@ async function handleCpmmUpdate(
     return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
   }
 
+  // Ensure orientation consistency with authoritative HTTP data
+  const { pool: orientedItem, wasCorrected } = ensureOrientationConsistency(poolId, item);
+  const finalItem = orientedItem as CpmmPool;
+  if (wasCorrected) {
+    logger.debug('raydium.cpmm.ws.orientation_corrected', {
+      poolId: poolId.slice(0, 8) + '…',
+      cat: 'pools'
+    });
+  }
+
   // Update cache
   const prev = cpmmCache.data || { cpmm: [] };
   const next = { cpmm: prev.cpmm.slice() };
-  const idx = next.cpmm.findIndex(p => p.id === item.id);
+  const idx = next.cpmm.findIndex(p => p.id === finalItem.id);
 
   // Validate price delta against previous value
   if (idx >= 0) {
-    validatePriceDelta('raydium-cpmm' as any, poolId, item.price_a_per_b, next.cpmm[idx].price_a_per_b);
+    validatePriceDelta('raydium-cpmm' as any, poolId, finalItem.price_a_per_b, next.cpmm[idx].price_a_per_b);
   }
 
   if (idx >= 0) {
     const prevPool = next.cpmm[idx];
-    const orientationChanged = prevPool.mint_a !== item.mint_a || prevPool.mint_b !== item.mint_b;
+    const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
     if (orientationChanged) {
       logger.warn('ws.update.orientation_changed', {
         poolId: poolId.slice(0, 8) + '…',
@@ -398,8 +419,8 @@ async function handleCpmmUpdate(
         poolType: 'cpmm',
         prevMintA: prevPool.mint_a?.slice(0, 8),
         prevMintB: prevPool.mint_b?.slice(0, 8),
-        newMintA: item.mint_a?.slice(0, 8),
-        newMintB: item.mint_b?.slice(0, 8),
+        newMintA: finalItem.mint_a?.slice(0, 8),
+        newMintB: finalItem.mint_b?.slice(0, 8),
         cat: 'pools'
       });
       const orientationIndependentFields = {
@@ -407,12 +428,12 @@ async function handleCpmmUpdate(
         liquidity_display: prevPool.liquidity_display,
         pool_liquidity_raw: prevPool.pool_liquidity_raw,
       };
-      next.cpmm[idx] = { ...item, ...orientationIndependentFields };
+      next.cpmm[idx] = { ...finalItem, ...orientationIndependentFields };
     } else {
-      next.cpmm[idx] = { ...next.cpmm[idx], ...item };
+      next.cpmm[idx] = { ...next.cpmm[idx], ...finalItem };
     }
   } else {
-    next.cpmm.push(item);
+    next.cpmm.push(finalItem);
   }
 
   // Update execution cache
@@ -427,20 +448,20 @@ async function handleCpmmUpdate(
       programId: RAYDIUM_CPMM_PROGRAM,
       dex: 'Raydium',
       pool_kind: 'cpmm',
-      mint_a: item.mint_a,
-      mint_b: item.mint_b,
-      decimals_a: item.decimals_a,
-      decimals_b: item.decimals_b,
-      native_mint_a: item.native_mint_a,
-      native_mint_b: item.native_mint_b,
-      native_decimals_a: item.native_decimals_a,
-      native_decimals_b: item.native_decimals_b,
-      vault_a: item.account_a,
-      vault_b: item.account_b,
-      native_account_a: item.native_account_a,
-      native_account_b: item.native_account_b,
-      amm_config: item.amm_config,
-      observation_key: item.observation_key,
+      mint_a: finalItem.mint_a,
+      mint_b: finalItem.mint_b,
+      decimals_a: finalItem.decimals_a,
+      decimals_b: finalItem.decimals_b,
+      native_mint_a: finalItem.native_mint_a,
+      native_mint_b: finalItem.native_mint_b,
+      native_decimals_a: finalItem.native_decimals_a,
+      native_decimals_b: finalItem.native_decimals_b,
+      vault_a: finalItem.account_a,
+      vault_b: finalItem.account_b,
+      native_account_a: finalItem.native_account_a,
+      native_account_b: finalItem.native_account_b,
+      amm_config: finalItem.amm_config,
+      observation_key: finalItem.observation_key,
       lp_mint: item.lp_mint,
       token_program_a: item.token_program_a,
       token_program_b: item.token_program_b,

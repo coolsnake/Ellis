@@ -13,6 +13,45 @@ const ANCHOR_DECIMALS = new Map<string, number>([
   ['USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', 6],  // USD1
 ]);
 
+// RPC decimal resolution metrics
+interface DecimalResolutionMetrics {
+  rpcCalls: number;
+  rpcSuccesses: number;
+  rpcFailures: number;
+  cacheHits: number;
+  anchorHits: number;
+  jupiterHits: number;
+  fallbacksUsed: number;
+  lastRpcCallMs: number;
+}
+
+const resolutionMetrics: DecimalResolutionMetrics = {
+  rpcCalls: 0,
+  rpcSuccesses: 0,
+  rpcFailures: 0,
+  cacheHits: 0,
+  anchorHits: 0,
+  jupiterHits: 0,
+  fallbacksUsed: 0,
+  lastRpcCallMs: 0,
+};
+
+// Pending RPC resolution promises to deduplicate concurrent requests
+const pendingRpcResolutions = new Map<string, Promise<number | undefined>>();
+
+// Connection singleton for decimal resolution (avoids creating new connections)
+let decimalsConnection: Connection | null = null;
+
+function getDecimalsConnection(): Connection {
+  if (!decimalsConnection) {
+    decimalsConnection = new Connection(CONFIG.rpcUrl, { 
+      commitment: 'confirmed', 
+      disableRetryOnRateLimit: true 
+    } as any);
+  }
+  return decimalsConnection;
+}
+
 /**
  * Known decimals for common tokens - used for validation
  * These are tokens where we KNOW the correct decimals and can detect misresolution
@@ -477,3 +516,473 @@ export function getDecimalValidationStats(): { mismatches: number; knownTokens: 
   };
 }
 
+/**
+ * Get decimal resolution metrics
+ */
+export function getDecimalResolutionMetrics(): DecimalResolutionMetrics {
+  return { ...resolutionMetrics };
+}
+
+/**
+ * Reset decimal resolution metrics (useful for monitoring windows)
+ */
+export function resetDecimalResolutionMetrics(): void {
+  resolutionMetrics.rpcCalls = 0;
+  resolutionMetrics.rpcSuccesses = 0;
+  resolutionMetrics.rpcFailures = 0;
+  resolutionMetrics.cacheHits = 0;
+  resolutionMetrics.anchorHits = 0;
+  resolutionMetrics.jupiterHits = 0;
+  resolutionMetrics.fallbacksUsed = 0;
+}
+
+/**
+ * Resolve decimals directly from RPC (bypasses cache, always fetches fresh)
+ * 
+ * This is the authoritative source of truth for decimals.
+ * Use this when you need guaranteed accurate decimals and can tolerate RPC latency.
+ * 
+ * @param mint Token mint address
+ * @returns Decimals value or undefined if resolution fails
+ */
+export async function resolveDecimalsFromRpc(mint: string): Promise<number | undefined> {
+  if (!mint || mint.length < 32) return undefined;
+  
+  // Check anchors first (these are hardcoded and authoritative)
+  if (ANCHOR_DECIMALS.has(mint)) {
+    resolutionMetrics.anchorHits++;
+    return ANCHOR_DECIMALS.get(mint);
+  }
+  
+  // Check if there's already a pending RPC request for this mint
+  const pending = pendingRpcResolutions.get(mint);
+  if (pending) {
+    return pending;
+  }
+  
+  // Create the RPC resolution promise
+  const resolutionPromise = (async (): Promise<number | undefined> => {
+    resolutionMetrics.rpcCalls++;
+    resolutionMetrics.lastRpcCallMs = Date.now();
+    
+    try {
+      const conn = getDecimalsConnection();
+      const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+      const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+      
+      const mintPk = new PublicKey(mint);
+      const accountInfo = await conn.getAccountInfo(mintPk, 'confirmed');
+      
+      if (!accountInfo) {
+        resolutionMetrics.rpcFailures++;
+        logger.warn('decimals.rpc.account_not_found', {
+          mint: mint.slice(0, 12) + '…',
+          cat: 'decimals'
+        });
+        return undefined;
+      }
+      
+      const owner = accountInfo.owner.toBase58();
+      const isTokenProgram = owner === TOKEN_PROGRAM_ID_STR || owner === TOKEN_2022_PROGRAM_ID_STR;
+      
+      if (!isTokenProgram) {
+        resolutionMetrics.rpcFailures++;
+        logger.warn('decimals.rpc.not_token_account', {
+          mint: mint.slice(0, 12) + '…',
+          owner: owner.slice(0, 12) + '…',
+          cat: 'decimals'
+        });
+        return undefined;
+      }
+      
+      if (accountInfo.data.length < 45) {
+        resolutionMetrics.rpcFailures++;
+        logger.warn('decimals.rpc.invalid_data_length', {
+          mint: mint.slice(0, 12) + '…',
+          dataLength: accountInfo.data.length,
+          cat: 'decimals'
+        });
+        return undefined;
+      }
+      
+      // Decimals is u8 at offset 44 in the mint account structure
+      const decimals = accountInfo.data[44];
+      
+      if (decimals > 18) {
+        resolutionMetrics.rpcFailures++;
+        logger.warn('decimals.rpc.invalid_decimals', {
+          mint: mint.slice(0, 12) + '…',
+          decimals,
+          cat: 'decimals'
+        });
+        return undefined;
+      }
+      
+      // Success - cache the result
+      resolveCache.set(mint, decimals);
+      resolutionMetrics.rpcSuccesses++;
+      
+      logger.debug('decimals.rpc.resolved', {
+        mint: mint.slice(0, 12) + '…',
+        decimals,
+        cat: 'decimals'
+      });
+      
+      return decimals;
+    } catch (e: any) {
+      resolutionMetrics.rpcFailures++;
+      logger.warn('decimals.rpc.error', {
+        mint: mint.slice(0, 12) + '…',
+        error: String(e?.message || e),
+        cat: 'decimals'
+      });
+      return undefined;
+    }
+  })();
+  
+  // Store the pending promise
+  pendingRpcResolutions.set(mint, resolutionPromise);
+  
+  try {
+    const result = await resolutionPromise;
+    return result;
+  } finally {
+    // Clean up pending promise after resolution
+    pendingRpcResolutions.delete(mint);
+  }
+}
+
+/**
+ * Batch resolve decimals from RPC for multiple mints
+ * 
+ * Uses getMultipleAccountsInfo for efficiency.
+ * This is the authoritative batch resolution method.
+ * 
+ * @param mints Array of mint addresses
+ * @param options Optional configuration
+ * @returns Map of mint -> decimals for successfully resolved mints
+ */
+export async function resolveDecimalsFromRpcBatch(
+  mints: string[],
+  options?: {
+    batchSize?: number;
+    tokenPrograms?: Map<string, 'spl-token' | 'token-2022'>;
+  }
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (!mints.length) return result;
+  
+  const batchSize = options?.batchSize ?? 100;
+  const tokenPrograms = options?.tokenPrograms;
+  
+  const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+  
+  // First pass: check anchors
+  const needsRpc: string[] = [];
+  for (const mint of mints) {
+    if (!mint || mint.length < 32) continue;
+    
+    if (ANCHOR_DECIMALS.has(mint)) {
+      result.set(mint, ANCHOR_DECIMALS.get(mint)!);
+      resolutionMetrics.anchorHits++;
+    } else {
+      needsRpc.push(mint);
+    }
+  }
+  
+  if (needsRpc.length === 0) return result;
+  
+  const conn = getDecimalsConnection();
+  let rpcSuccessCount = 0;
+  let rpcFailCount = 0;
+  
+  logger.info('decimals.rpc_batch.start', {
+    total: mints.length,
+    needsRpc: needsRpc.length,
+    batchSize,
+    cat: 'decimals'
+  });
+  
+  for (let i = 0; i < needsRpc.length; i += batchSize) {
+    const batch = needsRpc.slice(i, i + batchSize);
+    const pubkeys: PublicKey[] = [];
+    const validMints: string[] = [];
+    
+    for (const mint of batch) {
+      try {
+        pubkeys.push(new PublicKey(mint));
+        validMints.push(mint);
+      } catch {
+        // Invalid pubkey, skip
+      }
+    }
+    
+    if (pubkeys.length === 0) continue;
+    
+    resolutionMetrics.rpcCalls++;
+    resolutionMetrics.lastRpcCallMs = Date.now();
+    
+    try {
+      const accountInfos = await conn.getMultipleAccountsInfo(pubkeys, 'confirmed');
+      
+      for (let j = 0; j < accountInfos.length; j++) {
+        const accountInfo = accountInfos[j];
+        const mint = validMints[j];
+        
+        if (!accountInfo || accountInfo.data.length < 45) {
+          rpcFailCount++;
+          continue;
+        }
+        
+        const owner = accountInfo.owner.toBase58();
+        const isTokenProgram = owner === TOKEN_PROGRAM_ID_STR || owner === TOKEN_2022_PROGRAM_ID_STR;
+        
+        if (!isTokenProgram) {
+          rpcFailCount++;
+          continue;
+        }
+        
+        const decimals = accountInfo.data[44];
+        if (decimals > 18) {
+          rpcFailCount++;
+          continue;
+        }
+        
+        result.set(mint, decimals);
+        resolveCache.set(mint, decimals);
+        rpcSuccessCount++;
+        
+        if (tokenPrograms) {
+          const program = owner === TOKEN_2022_PROGRAM_ID_STR ? 'token-2022' : 'spl-token';
+          tokenPrograms.set(mint, program);
+        }
+      }
+    } catch (e: any) {
+      rpcFailCount += batch.length;
+      logger.warn('decimals.rpc_batch.error', {
+        batchIndex: Math.floor(i / batchSize),
+        batchSize: batch.length,
+        error: String(e?.message || e),
+        cat: 'decimals'
+      });
+    }
+  }
+  
+  resolutionMetrics.rpcSuccesses += rpcSuccessCount;
+  resolutionMetrics.rpcFailures += rpcFailCount;
+  
+  logger.info('decimals.rpc_batch.complete', {
+    total: mints.length,
+    resolved: result.size,
+    rpcSuccess: rpcSuccessCount,
+    rpcFail: rpcFailCount,
+    cat: 'decimals'
+  });
+  
+  return result;
+}
+
+/**
+ * Guaranteed decimal resolution for WebSocket decoders
+ * 
+ * This function ALWAYS returns a decimals value, using this priority:
+ * 1. Anchor decimals (hardcoded for SOL, USDC, etc.)
+ * 2. In-memory cache (previously resolved)
+ * 3. Direct RPC fetch (authoritative)
+ * 4. Jupiter token map (fallback)
+ * 5. Default based on mint characteristics (last resort)
+ * 
+ * This function should be used by WebSocket decoders to avoid
+ * falling back to arbitrary defaults that cause 1000x price errors.
+ * 
+ * @param mint Token mint address
+ * @param poolId Pool ID for logging context
+ * @param dex DEX name for logging context
+ * @returns Always returns a decimals value (never undefined)
+ */
+export async function resolveDecimalsGuaranteed(
+  mint: string,
+  poolId?: string,
+  dex?: string
+): Promise<{ decimals: number; source: 'anchor' | 'cache' | 'rpc' | 'jupiter' | 'default'; validated: boolean }> {
+  if (!mint || mint.length < 32) {
+    return { decimals: 9, source: 'default', validated: false };
+  }
+  
+  // 1. Anchor decimals (highest priority, always correct)
+  if (ANCHOR_DECIMALS.has(mint)) {
+    resolutionMetrics.anchorHits++;
+    return { decimals: ANCHOR_DECIMALS.get(mint)!, source: 'anchor', validated: true };
+  }
+  
+  // 2. In-memory cache (previously validated)
+  if (resolveCache.has(mint)) {
+    resolutionMetrics.cacheHits++;
+    const cached = resolveCache.get(mint)!;
+    // Validate cached value against known tokens
+    const known = KNOWN_TOKEN_DECIMALS[mint];
+    if (known && known.decimals !== cached) {
+      // Cache is wrong for a known token - clear and re-resolve
+      resolveCache.delete(mint);
+      logger.warn('decimals.cache.mismatch_cleared', {
+        mint: mint.slice(0, 12) + '…',
+        cached,
+        expected: known.decimals,
+        tokenName: known.name,
+        cat: 'decimals'
+      });
+    } else {
+      return { decimals: cached, source: 'cache', validated: true };
+    }
+  }
+  
+  // 3. Direct RPC fetch (authoritative source of truth)
+  const rpcDecimals = await resolveDecimalsFromRpc(mint);
+  if (rpcDecimals !== undefined) {
+    // Validate against known tokens
+    const valid = validateDecimalsForMint(mint, rpcDecimals, poolId, dex);
+    return { decimals: rpcDecimals, source: 'rpc', validated: valid };
+  }
+  
+  // 4. Jupiter token map (fallback for tokens not found on-chain)
+  try {
+    const jupMap = await getJupiterMap();
+    const jupDecimals = jupMap[mint]?.decimals;
+    if (jupDecimals != null && Number.isFinite(jupDecimals) && jupDecimals >= 0 && jupDecimals <= 18) {
+      resolveCache.set(mint, jupDecimals);
+      resolutionMetrics.jupiterHits++;
+      const valid = validateDecimalsForMint(mint, jupDecimals, poolId, dex);
+      return { decimals: jupDecimals, source: 'jupiter', validated: valid };
+    }
+  } catch (e) {
+    logCatchError('decimals.jupiter_fallback', e);
+  }
+  
+  // 5. Last resort: smart default based on known token patterns
+  // This is better than arbitrary 9/6 defaults
+  resolutionMetrics.fallbacksUsed++;
+  
+  // Check if this is a known token that we should have resolved
+  const known = KNOWN_TOKEN_DECIMALS[mint];
+  if (known) {
+    logger.error('decimals.guaranteed.known_token_fallback', {
+      mint: mint.slice(0, 12) + '…',
+      tokenName: known.name,
+      expectedDecimals: known.decimals,
+      poolId: poolId?.slice(0, 8) + '…',
+      dex,
+      warning: 'Using known decimals after all resolution failed - investigate RPC connectivity',
+      cat: 'decimals'
+    });
+    return { decimals: known.decimals, source: 'default', validated: true };
+  }
+  
+  // Truly unknown token - use 9 as default (most common for Solana tokens)
+  logger.warn('decimals.guaranteed.unknown_fallback', {
+    mint: mint.slice(0, 12) + '…',
+    poolId: poolId?.slice(0, 8) + '…',
+    dex,
+    defaultDecimals: 9,
+    warning: 'All decimal resolution methods failed - using default 9',
+    cat: 'decimals'
+  });
+  
+  return { decimals: 9, source: 'default', validated: false };
+}
+
+/**
+ * Batch guaranteed decimal resolution
+ * 
+ * Efficiently resolves decimals for multiple mints with guaranteed results.
+ * Uses batch RPC calls for efficiency.
+ * 
+ * @param mints Array of mint addresses
+ * @param context Optional context for logging
+ * @returns Map of mint -> resolution result
+ */
+export async function resolveDecimalsGuaranteedBatch(
+  mints: string[],
+  context?: { poolIds?: Map<string, string>; dex?: string }
+): Promise<Map<string, { decimals: number; source: 'anchor' | 'cache' | 'rpc' | 'jupiter' | 'default'; validated: boolean }>> {
+  const result = new Map<string, { decimals: number; source: 'anchor' | 'cache' | 'rpc' | 'jupiter' | 'default'; validated: boolean }>();
+  
+  if (!mints.length) return result;
+  
+  const needsRpc: string[] = [];
+  
+  // Pass 1: Check anchors and cache
+  for (const mint of mints) {
+    if (!mint || mint.length < 32) {
+      result.set(mint, { decimals: 9, source: 'default', validated: false });
+      continue;
+    }
+    
+    if (ANCHOR_DECIMALS.has(mint)) {
+      resolutionMetrics.anchorHits++;
+      result.set(mint, { decimals: ANCHOR_DECIMALS.get(mint)!, source: 'anchor', validated: true });
+      continue;
+    }
+    
+    if (resolveCache.has(mint)) {
+      resolutionMetrics.cacheHits++;
+      const cached = resolveCache.get(mint)!;
+      result.set(mint, { decimals: cached, source: 'cache', validated: true });
+      continue;
+    }
+    
+    needsRpc.push(mint);
+  }
+  
+  if (needsRpc.length === 0) return result;
+  
+  // Pass 2: Batch RPC resolution
+  const rpcResults = await resolveDecimalsFromRpcBatch(needsRpc);
+  
+  for (const mint of needsRpc) {
+    if (rpcResults.has(mint)) {
+      const decimals = rpcResults.get(mint)!;
+      const poolId = context?.poolIds?.get(mint);
+      const valid = validateDecimalsForMint(mint, decimals, poolId, context?.dex);
+      result.set(mint, { decimals, source: 'rpc', validated: valid });
+    }
+  }
+  
+  // Pass 3: Jupiter fallback for remaining
+  const needsJupiter = needsRpc.filter(m => !rpcResults.has(m));
+  
+  if (needsJupiter.length > 0) {
+    try {
+      const jupMap = await getJupiterMap();
+      for (const mint of needsJupiter) {
+        const jupDecimals = jupMap[mint]?.decimals;
+        if (jupDecimals != null && Number.isFinite(jupDecimals) && jupDecimals >= 0 && jupDecimals <= 18) {
+          resolveCache.set(mint, jupDecimals);
+          resolutionMetrics.jupiterHits++;
+          const poolId = context?.poolIds?.get(mint);
+          const valid = validateDecimalsForMint(mint, jupDecimals, poolId, context?.dex);
+          result.set(mint, { decimals: jupDecimals, source: 'jupiter', validated: valid });
+        }
+      }
+    } catch (e) {
+      logCatchError('decimals.batch.jupiter_fallback', e);
+    }
+  }
+  
+  // Pass 4: Defaults for truly unresolved
+  for (const mint of mints) {
+    if (!result.has(mint)) {
+      resolutionMetrics.fallbacksUsed++;
+      
+      // Check known tokens
+      const known = KNOWN_TOKEN_DECIMALS[mint];
+      if (known) {
+        result.set(mint, { decimals: known.decimals, source: 'default', validated: true });
+      } else {
+        result.set(mint, { decimals: 9, source: 'default', validated: false });
+      }
+    }
+  }
+  
+  return result;
+}

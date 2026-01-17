@@ -2196,5 +2196,16 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     });
   }
   
+  // Sync authoritative orientations for WebSocket consistency checking
+  try {
+    const { syncOrientationsFromPayload } = await import('./orientationValidation.js');
+    syncOrientationsFromPayload({ amm, clmm });
+  } catch (syncErr) {
+    logger.debug('raydium.orientation_sync.failed', {
+      error: String((syncErr as any)?.message || syncErr),
+      cat: 'raydium'
+    });
+  }
+  
   return { amm: amm, clmm: clmm, cpmm: [] };
 }

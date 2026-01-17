@@ -16,6 +16,7 @@ import { deriveMeteoraBinArrayAddresses } from '../../../pools.derivation.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
+import { ensureOrientationConsistency } from '../../orientationValidation.js';
 import { CONFIG } from '../../../../utils/config.js';
 // Import bitmap eligibility tracking for reactive pool filtering
 import { onMeteorActiveIdUpdate } from '../../../pools.websockets.js';
@@ -402,12 +403,40 @@ export async function handleMeteoraUpdate(
       } catch {}
     }
 
-    // Fallback to resolver
+    // Use guaranteed decimal resolution for any still-missing decimals
+    // This will do RPC fetch if needed, avoiding dangerous fallback defaults
     if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
       try {
-        const { resolveDecimals } = await import('../../decimals.js');
-        if (!Number.isFinite(decA)) decA = await resolveDecimals(tokenX);
-        if (!Number.isFinite(decB)) decB = await resolveDecimals(tokenY);
+        const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
+        
+        if (!Number.isFinite(decA) && tokenX) {
+          const resultA = await resolveDecimalsGuaranteed(tokenX, poolId, 'Meteora');
+          decA = resultA.decimals;
+          if (resultA.source === 'default' && !resultA.validated) {
+            logger.warn('meteora.decoder.decimals_guaranteed_fallback', {
+              poolId: poolId.slice(0, 8) + '…',
+              mint: tokenX?.slice(0, 8) + '…',
+              side: 'A',
+              decimals: decA,
+              source: resultA.source,
+              cat: 'pools'
+            });
+          }
+        }
+        if (!Number.isFinite(decB) && tokenY) {
+          const resultB = await resolveDecimalsGuaranteed(tokenY, poolId, 'Meteora');
+          decB = resultB.decimals;
+          if (resultB.source === 'default' && !resultB.validated) {
+            logger.warn('meteora.decoder.decimals_guaranteed_fallback', {
+              poolId: poolId.slice(0, 8) + '…',
+              mint: tokenY?.slice(0, 8) + '…',
+              side: 'B',
+              decimals: decB,
+              source: resultB.source,
+              cat: 'pools'
+            });
+          }
+        }
       } catch (resolveErr) {
         logger.warn('meteora.decoder.decimals_resolve_error', {
           poolId: poolId.slice(0, 8) + '…',
@@ -416,35 +445,15 @@ export async function handleMeteoraUpdate(
           error: String((resolveErr as Error)?.message || resolveErr),
           cat: 'pools'
         });
+        // Final fallback only if guaranteed resolution also fails
+        if (!Number.isFinite(decA)) decA = 9;
+        if (!Number.isFinite(decB)) decB = 6;
       }
     }
 
-    // Ensure valid numbers and apply fallbacks with logging
+    // Ensure valid numbers
     if (Number.isFinite(decA)) decA = Number(decA);
     if (Number.isFinite(decB)) decB = Number(decB);
-
-    if (!Number.isFinite(decA)) {
-      logger.warn('meteora.decoder.decimals_fallback', {
-        poolId: poolId.slice(0, 8) + '…',
-        mint: tokenX?.slice(0, 8) + '…',
-        side: 'A',
-        fallbackValue: 9,
-        reason: 'all_resolution_sources_failed',
-        cat: 'pools'
-      });
-      decA = 9;
-    }
-    if (!Number.isFinite(decB)) {
-      logger.warn('meteora.decoder.decimals_fallback', {
-        poolId: poolId.slice(0, 8) + '…',
-        mint: tokenY?.slice(0, 8) + '…',
-        side: 'B',
-        fallbackValue: 6,
-        reason: 'all_resolution_sources_failed',
-        cat: 'pools'
-      });
-      decB = 6;
-    }
 
     // Validate decimals against known tokens
     try {
@@ -707,34 +716,44 @@ export async function handleMeteoraUpdate(
       return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
     }
 
+    // Ensure orientation consistency with authoritative HTTP data
+    const { pool: orientedItem, wasCorrected } = ensureOrientationConsistency(poolId, item);
+    const finalItem = orientedItem as ClmmPool;
+    if (wasCorrected) {
+      logger.debug('meteora_dlmm.ws.orientation_corrected', {
+        poolId: poolId.slice(0, 8) + '…',
+        cat: 'pools'
+      });
+    }
+
     // Update cache
     const prev = meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
-    const idx = next.clmm.findIndex(p => p.id === item.id);
+    const idx = next.clmm.findIndex(p => p.id === finalItem.id);
 
     // Validate price delta against previous value
     // CRITICAL: Check was_swapped to handle orientation differences between HTTP and WS updates
     if (idx >= 0) {
       const prevPool = next.clmm[idx];
       const prevWasSwapped = (prevPool as any).was_swapped ?? false;
-      const newWasSwapped = processedPrice?.wasSwapped ?? false;
+      const newWasSwapped = (finalItem as any).was_swapped ?? false;
       
       // Only validate price delta if orientations match
       if (prevWasSwapped === newWasSwapped) {
-        validatePriceDelta('meteora_dlmm', poolId, item.price_a_per_b, prevPool.price_a_per_b);
+        validatePriceDelta('meteora_dlmm', poolId, finalItem.price_a_per_b, prevPool.price_a_per_b);
       } else {
         // Orientation changed - compare with inverted previous price to avoid false alarms
         const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
           ? 1 / prevPool.price_a_per_b 
           : undefined;
-        validatePriceDelta('meteora_dlmm', poolId, item.price_a_per_b, adjustedPrevPrice);
+        validatePriceDelta('meteora_dlmm', poolId, finalItem.price_a_per_b, adjustedPrevPrice);
         
         logger.debug('meteora_dlmm.ws.orientation_flip', {
           poolId: poolId.slice(0, 8) + '…',
           prevWasSwapped,
           newWasSwapped,
           prevPrice: prevPool.price_a_per_b,
-          newPrice: item.price_a_per_b,
+          newPrice: finalItem.price_a_per_b,
           adjustedPrevPrice,
           cat: 'pools'
         });
@@ -743,15 +762,15 @@ export async function handleMeteoraUpdate(
 
     if (idx >= 0) {
       const prevPool = next.clmm[idx];
-      const orientationChanged = prevPool.mint_a !== item.mint_a || prevPool.mint_b !== item.mint_b;
+      const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
       if (orientationChanged) {
         logger.warn('ws.update.orientation_changed', {
           poolId: poolId.slice(0, 8) + '…',
           dex: 'Meteora',
           prevMintA: prevPool.mint_a?.slice(0, 8),
           prevMintB: prevPool.mint_b?.slice(0, 8),
-          newMintA: item.mint_a?.slice(0, 8),
-          newMintB: item.mint_b?.slice(0, 8),
+          newMintA: finalItem.mint_a?.slice(0, 8),
+          newMintB: finalItem.mint_b?.slice(0, 8),
           cat: 'pools'
         });
         
@@ -760,12 +779,12 @@ export async function handleMeteoraUpdate(
           liquidity_display: prevPool.liquidity_display,
           pool_liquidity_raw: prevPool.pool_liquidity_raw,
         };
-        next.clmm[idx] = { ...item, ...orientationIndependentFields };
+        next.clmm[idx] = { ...finalItem, ...orientationIndependentFields };
       } else {
-        next.clmm[idx] = { ...next.clmm[idx], ...item };
+        next.clmm[idx] = { ...next.clmm[idx], ...finalItem };
       }
     } else {
-      next.clmm.push(item);
+      next.clmm.push(finalItem);
     }
 
     // Update stats and cache

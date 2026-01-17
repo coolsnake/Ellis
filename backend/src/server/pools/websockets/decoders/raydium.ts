@@ -19,6 +19,7 @@ import { deriveRaydiumClmmCacheFields } from '../../../pools.derivation.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
+import { ensureOrientationConsistency } from '../../orientationValidation.js';
 // Import pool eligibility tracking for reactive pool filtering
 import { onPoolTickUpdate } from '../../../pools.websockets.js';
 // Import pool activation tracking for lazy activation mode
@@ -358,14 +359,14 @@ async function handleClmmUpdate(
   const mintB = decoded.native_mint_b || decoded.mint_b;
   const sqrtRaw = anyToBigInt(decoded.sqrt_price_x64_raw ?? decoded.sqrt_price_x64);
 
-  // Get decimals from cache
+  // Get decimals from cache first (fastest path)
   const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
   const existing = cachedPools.clmm.find(p => p.id === poolId);
   
   let decA = existing?.native_decimals_a ?? existing?.decimals_a;
   let decB = existing?.native_decimals_b ?? existing?.decimals_b;
 
-  // Fallback to execution cache or resolver
+  // Fallback to execution cache
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
       const { executionCache } = await import('../../../../execution/cache.js');
@@ -375,11 +376,40 @@ async function handleClmmUpdate(
     } catch {}
   }
 
+  // Use guaranteed decimal resolution for any still-missing decimals
+  // This will do RPC fetch if needed, avoiding dangerous fallback defaults
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
-      const { resolveDecimals } = await import('../../decimals.js');
-      if (!Number.isFinite(decA) && mintA) decA = await resolveDecimals(mintA);
-      if (!Number.isFinite(decB) && mintB) decB = await resolveDecimals(mintB);
+      const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
+      
+      if (!Number.isFinite(decA) && mintA) {
+        const resultA = await resolveDecimalsGuaranteed(mintA, poolId, 'Raydium');
+        decA = resultA.decimals;
+        if (resultA.source === 'default' && !resultA.validated) {
+          logger.warn('raydium.decoder.clmm.decimals_guaranteed_fallback', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: mintA?.slice(0, 8) + '…',
+            side: 'A',
+            decimals: decA,
+            source: resultA.source,
+            cat: 'pools'
+          });
+        }
+      }
+      if (!Number.isFinite(decB) && mintB) {
+        const resultB = await resolveDecimalsGuaranteed(mintB, poolId, 'Raydium');
+        decB = resultB.decimals;
+        if (resultB.source === 'default' && !resultB.validated) {
+          logger.warn('raydium.decoder.clmm.decimals_guaranteed_fallback', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: mintB?.slice(0, 8) + '…',
+            side: 'B',
+            decimals: decB,
+            source: resultB.source,
+            cat: 'pools'
+          });
+        }
+      }
     } catch (resolveErr) {
       logger.warn('raydium.decoder.clmm.decimals_resolve_error', {
         poolId: poolId.slice(0, 8) + '…',
@@ -388,39 +418,11 @@ async function handleClmmUpdate(
         error: String((resolveErr as Error)?.message || resolveErr),
         cat: 'pools'
       });
+      // Final fallback only if guaranteed resolution also fails
+      if (!Number.isFinite(decA)) decA = 9;
+      if (!Number.isFinite(decB)) decB = 6;
     }
   }
-
-  // Fallback to defaults if decimals still not resolved - log this as it may cause price errors
-  if (!Number.isFinite(decA)) {
-    logger.warn('raydium.decoder.clmm.decimals_fallback', {
-      poolId: poolId.slice(0, 8) + '…',
-      mint: mintA?.slice(0, 8) + '…',
-      side: 'A',
-      fallbackValue: 9,
-      reason: 'all_resolution_sources_failed',
-      cat: 'pools'
-    });
-    decA = 9;
-  }
-  if (!Number.isFinite(decB)) {
-    logger.warn('raydium.decoder.clmm.decimals_fallback', {
-      poolId: poolId.slice(0, 8) + '…',
-      mint: mintB?.slice(0, 8) + '…',
-      side: 'B',
-      fallbackValue: 6,
-      reason: 'all_resolution_sources_failed',
-      cat: 'pools'
-    });
-    decB = 6;
-  }
-
-  // Validate decimals against known tokens
-  try {
-    const { validateDecimalsForMint } = await import('../../decimals.js');
-    if (Number.isFinite(decA)) validateDecimalsForMint(mintA, decA!, poolId, 'Raydium');
-    if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Raydium');
-  } catch {}
 
   // Process through price pipeline
   let processedPrice: ProcessedPriceResult | null = null;
@@ -481,37 +483,47 @@ async function handleClmmUpdate(
     return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
   }
 
+  // Ensure orientation consistency with authoritative HTTP data
+  const { pool: orientedItem, wasCorrected } = ensureOrientationConsistency(poolId, item);
+  const finalItem = orientedItem as ClmmPool;
+  if (wasCorrected) {
+    logger.debug('raydium.clmm.ws.orientation_corrected', {
+      poolId: poolId.slice(0, 8) + '…',
+      cat: 'pools'
+    });
+  }
+
   // Track CLMM attempt
   wsDecodeStats.raydium_clmm.attempts += 1;
 
   // Update cache
   const prev = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
-  const idx = next.clmm.findIndex(p => p.id === item.id);
+  const idx = next.clmm.findIndex(p => p.id === finalItem.id);
 
   // Validate price delta against previous value
   // CRITICAL: Check was_swapped to handle orientation differences between HTTP and WS updates
   if (idx >= 0) {
     const prevPool = next.clmm[idx];
     const prevWasSwapped = (prevPool as any).was_swapped ?? false;
-    const newWasSwapped = processedPrice?.wasSwapped ?? false;
+    const newWasSwapped = (finalItem as any).was_swapped ?? false;
     
     // Only validate price delta if orientations match
     if (prevWasSwapped === newWasSwapped) {
-      validatePriceDelta('raydium', poolId, item.price_a_per_b, prevPool.price_a_per_b);
+      validatePriceDelta('raydium', poolId, finalItem.price_a_per_b, prevPool.price_a_per_b);
     } else {
       // Orientation changed - compare with inverted previous price to avoid false alarms
       const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
         ? 1 / prevPool.price_a_per_b 
         : undefined;
-      validatePriceDelta('raydium', poolId, item.price_a_per_b, adjustedPrevPrice);
+      validatePriceDelta('raydium', poolId, finalItem.price_a_per_b, adjustedPrevPrice);
       
       logger.debug('raydium.clmm.ws.orientation_flip', {
         poolId: poolId.slice(0, 8) + '…',
         prevWasSwapped,
         newWasSwapped,
         prevPrice: prevPool.price_a_per_b,
-        newPrice: item.price_a_per_b,
+        newPrice: finalItem.price_a_per_b,
         adjustedPrevPrice,
         cat: 'pools'
       });
@@ -520,7 +532,7 @@ async function handleClmmUpdate(
 
   if (idx >= 0) {
     const prevPool = next.clmm[idx];
-    const orientationChanged = prevPool.mint_a !== item.mint_a || prevPool.mint_b !== item.mint_b;
+    const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
     if (orientationChanged) {
       logger.warn('ws.update.orientation_changed', {
         poolId: poolId.slice(0, 8) + '…',
@@ -528,8 +540,8 @@ async function handleClmmUpdate(
         poolType: 'clmm',
         prevMintA: prevPool.mint_a?.slice(0, 8),
         prevMintB: prevPool.mint_b?.slice(0, 8),
-        newMintA: item.mint_a?.slice(0, 8),
-        newMintB: item.mint_b?.slice(0, 8),
+        newMintA: finalItem.mint_a?.slice(0, 8),
+        newMintB: finalItem.mint_b?.slice(0, 8),
         cat: 'pools'
       });
       
@@ -538,12 +550,12 @@ async function handleClmmUpdate(
         liquidity_display: prevPool.liquidity_display,
         pool_liquidity_raw: prevPool.pool_liquidity_raw,
       };
-      next.clmm[idx] = { ...item, ...orientationIndependentFields };
+      next.clmm[idx] = { ...finalItem, ...orientationIndependentFields };
     } else {
-      next.clmm[idx] = { ...next.clmm[idx], ...item };
+      next.clmm[idx] = { ...next.clmm[idx], ...finalItem };
     }
   } else {
-    next.clmm.push(item);
+    next.clmm.push(finalItem);
   }
 
   // Update execution cache with raw account data
@@ -556,10 +568,11 @@ async function handleClmmUpdate(
       ...existingStatic,
       rawAccountData: data,
       rawAccountDataUpdatedMs: Date.now(),
-      mint_a: processedPrice.mintA,
-      mint_b: processedPrice.mintB,
-      decimals_a: processedPrice.decimalsA,
-      decimals_b: processedPrice.decimalsB,
+      // Use finalItem (orientation-corrected) for canonical fields
+      mint_a: finalItem.mint_a,
+      mint_b: finalItem.mint_b,
+      decimals_a: finalItem.decimals_a,
+      decimals_b: finalItem.decimals_b,
       // CRITICAL: Store native (on-chain) mint orientation for SDK compatibility
       // native_mint_a/b are the actual on-chain values BEFORE canonicalization
       // The Raydium SDK expects native ordering for swap instructions
@@ -575,8 +588,10 @@ async function handleClmmUpdate(
       if (derived.observationState) nextStatic.observation_state = derived.observationState;
       if (derived.ammConfig) nextStatic.amm_config = derived.ammConfig;
       
+      // Use finalItem.was_swapped for canonical vault ordering
+      const wasSwapped = (finalItem as any).was_swapped ?? false;
       if (derived.vaultA && derived.vaultB) {
-        if (processedPrice.wasSwapped) {
+        if (wasSwapped) {
           nextStatic.account_a = derived.vaultB;
           nextStatic.account_b = derived.vaultA;
         } else {
@@ -727,14 +742,14 @@ async function handleAmmUpdate(
   const rA = Number(decoded.reserve_a_raw || 0);
   const rB = Number(decoded.reserve_b_raw || 0);
 
-  // Get decimals from cache
+  // Get decimals from cache first (fastest path)
   const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
   const existing = cachedPools.amm.find(p => p.id === poolId);
   
   let decA = existing?.native_decimals_a ?? existing?.decimals_a;
   let decB = existing?.native_decimals_b ?? existing?.decimals_b;
 
-  // Fallback to execution cache or resolver
+  // Fallback to execution cache
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
       const { executionCache } = await import('../../../../execution/cache.js');
@@ -744,11 +759,40 @@ async function handleAmmUpdate(
     } catch {}
   }
 
+  // Use guaranteed decimal resolution for any still-missing decimals
+  // This will do RPC fetch if needed, avoiding dangerous fallback defaults
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
-      const { resolveDecimals } = await import('../../decimals.js');
-      if (!Number.isFinite(decA) && mintA) decA = await resolveDecimals(mintA);
-      if (!Number.isFinite(decB) && mintB) decB = await resolveDecimals(mintB);
+      const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
+      
+      if (!Number.isFinite(decA) && mintA) {
+        const resultA = await resolveDecimalsGuaranteed(mintA, poolId, 'Raydium');
+        decA = resultA.decimals;
+        if (resultA.source === 'default' && !resultA.validated) {
+          logger.warn('raydium.decoder.amm.decimals_guaranteed_fallback', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: mintA?.slice(0, 8) + '…',
+            side: 'A',
+            decimals: decA,
+            source: resultA.source,
+            cat: 'pools'
+          });
+        }
+      }
+      if (!Number.isFinite(decB) && mintB) {
+        const resultB = await resolveDecimalsGuaranteed(mintB, poolId, 'Raydium');
+        decB = resultB.decimals;
+        if (resultB.source === 'default' && !resultB.validated) {
+          logger.warn('raydium.decoder.amm.decimals_guaranteed_fallback', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: mintB?.slice(0, 8) + '…',
+            side: 'B',
+            decimals: decB,
+            source: resultB.source,
+            cat: 'pools'
+          });
+        }
+      }
     } catch (resolveErr) {
       logger.warn('raydium.decoder.amm.decimals_resolve_error', {
         poolId: poolId.slice(0, 8) + '…',
@@ -757,39 +801,11 @@ async function handleAmmUpdate(
         error: String((resolveErr as Error)?.message || resolveErr),
         cat: 'pools'
       });
+      // Final fallback only if guaranteed resolution also fails
+      if (!Number.isFinite(decA)) decA = 9;
+      if (!Number.isFinite(decB)) decB = 6;
     }
   }
-
-  // Fallback to defaults if decimals still not resolved - log this as it may cause price errors
-  if (!Number.isFinite(decA)) {
-    logger.warn('raydium.decoder.amm.decimals_fallback', {
-      poolId: poolId.slice(0, 8) + '…',
-      mint: mintA?.slice(0, 8) + '…',
-      side: 'A',
-      fallbackValue: 9,
-      reason: 'all_resolution_sources_failed',
-      cat: 'pools'
-    });
-    decA = 9;
-  }
-  if (!Number.isFinite(decB)) {
-    logger.warn('raydium.decoder.amm.decimals_fallback', {
-      poolId: poolId.slice(0, 8) + '…',
-      mint: mintB?.slice(0, 8) + '…',
-      side: 'B',
-      fallbackValue: 6,
-      reason: 'all_resolution_sources_failed',
-      cat: 'pools'
-    });
-    decB = 6;
-  }
-
-  // Validate decimals against known tokens
-  try {
-    const { validateDecimalsForMint } = await import('../../decimals.js');
-    if (Number.isFinite(decA)) validateDecimalsForMint(mintA, decA!, poolId, 'Raydium');
-    if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Raydium');
-  } catch {}
 
   // Calculate price using correct AMM formula: price_a_per_b = reserveB / reserveA
   // This means: for 1 unit of A, you get (reserveB / reserveA) units of B
@@ -829,7 +845,17 @@ async function handleAmmUpdate(
 
   // Canonicalize pool
   const [canonicalItem] = canonicalizePools([{ ...item }]);
-  const finalItem = canonicalItem || item;
+  let finalItem = canonicalItem || item;
+
+  // Ensure orientation consistency with authoritative HTTP data
+  const { pool: orientedItem, wasCorrected } = ensureOrientationConsistency(poolId, finalItem);
+  finalItem = orientedItem as AmmPool;
+  if (wasCorrected) {
+    logger.debug('raydium.amm.ws.orientation_corrected', {
+      poolId: poolId.slice(0, 8) + '…',
+      cat: 'pools'
+    });
+  }
 
   // Update cache
   const prev = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
@@ -842,7 +868,7 @@ async function handleAmmUpdate(
   if (idx >= 0) {
     const prevPool = next.amm[idx];
     // Detect if canonicalization changed the orientation
-    const wasSwappedByCanon = item.mint_a !== finalItem.mint_a;
+    const wasSwappedByCanon = (finalItem as any).was_swapped ?? false;
     const prevWasSwapped = (prevPool as any).was_swapped ?? false;
     
     // Only validate price delta if orientations match

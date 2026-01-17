@@ -313,13 +313,44 @@ export const CONFIG = {
         'strategy.grid': 'debug',
         drift: 'debug',
         jupiter: 'debug',
-        graph: 'info',
-        pools: 'info',
-        arb: 'info',
         system: 'debug',
         wallet: 'debug',
         opportunity: 'info',
-        tx: 'info',
+        // Keep arb executor visible for execution monitoring
+        arb: 'info',
+        'arb.executor': 'info',
+        // Suppress verbose arb push/orchestration logs
+        'arb.push': 'warn',
+        // Suppress verbose tx build/send/resolve logs
+        tx: 'warn',
+        'tx.blockhash': 'warn',
+        'tx.lookup_table': 'warn',
+        'tx.alt': 'warn',
+        'tx.build': 'warn',
+        'tx.send': 'warn',
+        'tx.resolve': 'warn',
+        'tx.serialize': 'warn',
+        'tx.preflight': 'warn',
+        'tx.ix': 'warn',
+        // Suppress router transaction builder details
+        routerTx: 'warn',
+        // Suppress DEX-specific instruction builder logs
+        meteora: 'warn',
+        'meteora.dlmm': 'warn',
+        'meteora.damm': 'warn',
+        orca: 'warn',
+        'orca.local': 'warn',
+        'orca.whirlpool': 'warn',
+        pumpswap: 'warn',
+        raydium: 'warn',
+        // Suppress graph incremental apply and orchestration logs
+        graph: 'warn',
+        'graph.incremental': 'warn',
+        'graph.push': 'warn',
+        'graph.rebuild': 'warn',
+        'graph.edge': 'warn',
+        'graph.snapshot': 'warn',
+        pools: 'warn',
       } as Record<string, 'error' | 'warn' | 'info' | 'debug'>,
       // Force-include or exclude specific codes (supports * globs)
       enableCodes: [] as string[],
@@ -333,14 +364,25 @@ export const CONFIG = {
         'GRAPH.PUSH_SNAPSHOT': { perSec: 1 },
         'PRETRADE.SIM.START': { perSec: 1 },
         'PRETRADE.SIM.END': { perSec: 1 },
+        // Rate limit any remaining tx/graph logs that get through
+        'TX.BLOCKHASH.SHARED_HIT': { perSec: 0.5 },
+        'TX.BLOCKHASH.CACHE_HIT': { perSec: 0.5 },
+        'GRAPH.INCREMENTAL.APPLY': { perSec: 1 },
+        'GRAPH.INCREMENTAL.COMPUTE': { perSec: 1 },
+        'ARB.PUSH': { perSec: 1 },
       } as Record<string, { perSec?: number; minIntervalMs?: number }>,
       // Named presets the UI can apply (optional)
       presets: {
         dev: {
           categories: { api: 'debug', 'pretrade.sim': 'info', strategy: 'info', drift: 'warn', jupiter: 'warn' }
         },
+        // Verbose ops preset - restores detailed tx/graph logging for debugging
+        verbose: {
+          categories: { api: 'warn', pretrade: 'warn', 'strategy.grid': 'info', graph: 'info', pools: 'info', arb: 'info', opportunity: 'info', tx: 'info', drift: 'info', strategy: 'info', routerTx: 'debug', meteora: 'debug', orca: 'debug', pumpswap: 'debug', raydium: 'debug' }
+        },
+        // Quiet ops preset - minimal logging, only errors/warnings and key execution events
         ops: {
-          categories: { api: 'warn', pretrade: 'warn', 'strategy.grid': 'info', graph: 'info', pools: 'info', arb: 'info', opportunity: 'info', tx: 'info', drift: 'info', strategy: 'info',  }
+          categories: { api: 'warn', pretrade: 'warn', 'strategy.grid': 'warn', graph: 'warn', pools: 'warn', arb: 'info', 'arb.executor': 'info', 'arb.push': 'warn', opportunity: 'info', tx: 'warn', drift: 'warn', strategy: 'warn', routerTx: 'warn', meteora: 'warn', orca: 'warn', pumpswap: 'warn', raydium: 'warn', 'graph.incremental': 'warn', 'graph.push': 'warn' }
         },
         research: {
           categories: { arb: 'debug', graph: 'debug', pools: 'info', api: 'debug', 'drift.dlob': 'info' }

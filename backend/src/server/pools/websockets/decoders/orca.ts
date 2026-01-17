@@ -27,6 +27,7 @@ import { deriveOrcaClmmCacheFields } from '../../../pools.derivation.js';
 import { emit } from '../../../realtime.js';
 import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
+import { ensureOrientationConsistency } from '../../orientationValidation.js';
 import { CONFIG } from '../../../../utils/config.js';
 // Import pool eligibility tracking for reactive pool filtering
 import { onPoolTickUpdate } from '../../../pools.websockets.js';
@@ -592,49 +593,53 @@ export async function handleOrcaUpdate(
       cat: 'pools'
     });
 
-    // Get decimals for the NATIVE mint order
+    // Get decimals for the NATIVE mint order using guaranteed resolution
+    // This will do RPC fetch if needed, avoiding dangerous fallback defaults
     let decA: number | undefined;
     let decB: number | undefined;
     
     try {
-      const { resolveDecimals, validateDecimalsForMint } = await import('../../decimals.js');
-      if (mintA) decA = await resolveDecimals(mintA);
-      if (mintB) decB = await resolveDecimals(mintB);
+      const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
       
-      // Validate decimals against known tokens
-      if (Number.isFinite(decA)) validateDecimalsForMint(mintA, decA!, poolId, 'Orca');
-      if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Orca');
+      if (mintA) {
+        const resultA = await resolveDecimalsGuaranteed(mintA, poolId, 'Orca');
+        decA = resultA.decimals;
+        if (resultA.source === 'default' && !resultA.validated) {
+          logger.warn('orca.decoder.decimals_guaranteed_fallback', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: mintA?.slice(0, 8) + '…',
+            side: 'A',
+            decimals: decA,
+            source: resultA.source,
+            cat: 'pools'
+          });
+        }
+      }
+      if (mintB) {
+        const resultB = await resolveDecimalsGuaranteed(mintB, poolId, 'Orca');
+        decB = resultB.decimals;
+        if (resultB.source === 'default' && !resultB.validated) {
+          logger.warn('orca.decoder.decimals_guaranteed_fallback', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: mintB?.slice(0, 8) + '…',
+            side: 'B',
+            decimals: decB,
+            source: resultB.source,
+            cat: 'pools'
+          });
+        }
+      }
     } catch (decErr) {
-      logger.debug('orca.decoder.decimals_error', {
+      logger.warn('orca.decoder.decimals_resolve_error', {
         poolId: poolId.slice(0, 8) + '…',
+        mintA: mintA?.slice(0, 8) + '…',
+        mintB: mintB?.slice(0, 8) + '…',
         error: String((decErr as Error)?.message || decErr),
         cat: 'pools'
       });
-    }
-
-    // Fallback to defaults if decimals not resolved - log as WARN to track potential price errors
-    // This ensures we use fallbacks even when resolveDecimals returns undefined (not an error)
-    if (!Number.isFinite(decA)) {
-      logger.warn('orca.decoder.decimals_fallback', {
-        poolId: poolId.slice(0, 8) + '…',
-        mint: mintA?.slice(0, 8) + '…',
-        side: 'A',
-        fallbackValue: 9,
-        reason: 'all_resolution_sources_failed',
-        cat: 'pools'
-      });
-      decA = 9;
-    }
-    if (!Number.isFinite(decB)) {
-      logger.warn('orca.decoder.decimals_fallback', {
-        poolId: poolId.slice(0, 8) + '…',
-        mint: mintB?.slice(0, 8) + '…',
-        side: 'B',
-        fallbackValue: 6,
-        reason: 'all_resolution_sources_failed',
-        cat: 'pools'
-      });
-      decB = 6;
+      // Final fallback only if guaranteed resolution throws
+      if (!Number.isFinite(decA)) decA = 9;
+      if (!Number.isFinite(decB)) decB = 6;
     }
 
     logger.debug('orca.decoder.decimals_resolved', {
@@ -917,6 +922,16 @@ export async function handleOrcaUpdate(
       return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
     }
 
+    // Ensure orientation consistency with authoritative HTTP data
+    const { pool: orientedItem, wasCorrected } = ensureOrientationConsistency(poolId, clmmItem);
+    const finalItem = orientedItem as ClmmPool;
+    if (wasCorrected) {
+      logger.debug('orca.ws.orientation_corrected', {
+        poolId: poolId.slice(0, 8) + '…',
+        cat: 'pools'
+      });
+    }
+
     // Update cache
     const prev = orcaCache.data || { amm: [], clmm: [], cpmm: [] };
     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice(), cpmm: prev.cpmm?.slice() || [] };
@@ -927,24 +942,24 @@ export async function handleOrcaUpdate(
     if (idx >= 0) {
       const prevPool = next.clmm[idx];
       const prevWasSwapped = (prevPool as any).was_swapped ?? false;
-      const newWasSwapped = processedPrice.wasSwapped ?? false;
+      const newWasSwapped = (finalItem as any).was_swapped ?? false;
       
       // Only validate price delta if orientations match
       if (prevWasSwapped === newWasSwapped) {
-        validatePriceDelta('orca', poolId, clmmItem.price_a_per_b, prevPool.price_a_per_b);
+        validatePriceDelta('orca', poolId, finalItem.price_a_per_b, prevPool.price_a_per_b);
       } else {
         // Orientation changed - compare with inverted previous price to avoid false alarms
         const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
           ? 1 / prevPool.price_a_per_b 
           : undefined;
-        validatePriceDelta('orca', poolId, clmmItem.price_a_per_b, adjustedPrevPrice);
+        validatePriceDelta('orca', poolId, finalItem.price_a_per_b, adjustedPrevPrice);
         
         logger.debug('orca.ws.orientation_flip', {
           poolId: poolId.slice(0, 8) + '…',
           prevWasSwapped,
           newWasSwapped,
           prevPrice: prevPool.price_a_per_b,
-          newPrice: clmmItem.price_a_per_b,
+          newPrice: finalItem.price_a_per_b,
           adjustedPrevPrice,
           cat: 'pools'
         });
@@ -953,7 +968,7 @@ export async function handleOrcaUpdate(
     
     if (idx >= 0) {
       const prevPool = next.clmm[idx];
-      const orientationChanged = prevPool.mint_a !== clmmItem.mint_a || prevPool.mint_b !== clmmItem.mint_b;
+      const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
       
       if (orientationChanged) {
         logger.warn('ws.update.orientation_changed', {
@@ -961,8 +976,8 @@ export async function handleOrcaUpdate(
           dex: 'Orca',
           prevMintA: prevPool.mint_a?.slice(0, 8),
           prevMintB: prevPool.mint_b?.slice(0, 8),
-          newMintA: clmmItem.mint_a?.slice(0, 8),
-          newMintB: clmmItem.mint_b?.slice(0, 8),
+          newMintA: finalItem.mint_a?.slice(0, 8),
+          newMintB: finalItem.mint_b?.slice(0, 8),
           cat: 'pools'
         });
         
@@ -972,12 +987,12 @@ export async function handleOrcaUpdate(
           liquidity_display: prevPool.liquidity_display,
           pool_liquidity_raw: prevPool.pool_liquidity_raw,
         };
-        next.clmm[idx] = { ...clmmItem, ...orientationIndependentFields };
+        next.clmm[idx] = { ...finalItem, ...orientationIndependentFields };
       } else {
-        next.clmm[idx] = { ...next.clmm[idx], ...clmmItem };
+        next.clmm[idx] = { ...next.clmm[idx], ...finalItem };
       }
     } else {
-      next.clmm.push(clmmItem);
+      next.clmm.push(finalItem);
     }
 
     // Update stats and cache

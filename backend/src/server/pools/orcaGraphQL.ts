@@ -1062,6 +1062,17 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
   
   logger.info('orca.graphql.normalized', { clmm: clmm.length, cat: 'orca' });
   
+  // Sync authoritative orientations for WebSocket consistency checking
+  try {
+    const { syncOrientationsFromPayload } = await import('./orientationValidation.js');
+    syncOrientationsFromPayload({ clmm });
+  } catch (syncErr) {
+    logger.debug('orca.orientation_sync.failed', {
+      error: String((syncErr as any)?.message || syncErr),
+      cat: 'orca'
+    });
+  }
+  
   return { amm: [], clmm: clmm, cpmm: [] };
 }
 
