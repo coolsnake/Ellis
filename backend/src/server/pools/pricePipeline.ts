@@ -131,7 +131,8 @@ export function processPriceThroughPipeline(
     } else if (input.poolType === 'clmm' && input.sqrtPriceX64) {
       input.rawPrice = calculateClmmPrice(input.sqrtPriceX64, input.decimalsA, input.decimalsB, input.mintA, input.mintB);
     } else if ((input.poolType === 'amm' || input.poolType === 'cpmm') && input.reserveA != null && input.reserveB != null) {
-      // AMM and CPMM both use constant product formula: Price A-per-B = reserveA / reserveB
+      // AMM and CPMM both use constant product formula: Price A-per-B = reserveB / reserveA
+      // This is the correct marginal price: how many B you get for 1 A
       input.rawPrice = calculateAmmPrice(input.reserveA, input.reserveB, input.decimalsA, input.decimalsB);
     }
   }

@@ -307,8 +307,9 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
       })();
 
       let price_a_per_b = 0;
-      if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
-        price_a_per_b = (wholeA as number) / (wholeB as number);
+      // AMM price formula: price_a_per_b = reserveB / reserveA (how many B you get for 1 A)
+      if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeA as number) > 0) {
+        price_a_per_b = (wholeB as number) / (wholeA as number);
         
         // DIAGNOSTIC: Log price calculation details for problematic prices
         if (price_a_per_b > 100000 || price_a_per_b < 0.00001) {
@@ -568,12 +569,14 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       const usdA = toNum(usdAmounts?.[0]);
       const usdB = toNum(usdAmounts?.[1]);
       
-      // Calculate price
+      // Calculate price using correct AMM formula: price_a_per_b = reserveB / reserveA
+      // This means: for 1 unit of A, you get (reserveB / reserveA) units of B
       let price_a_per_b = 0;
-      if (wholeB > 0 && wholeA > 0) {
-        price_a_per_b = wholeA / wholeB;
+      if (wholeA > 0 && wholeB > 0) {
+        price_a_per_b = wholeB / wholeA;
       } else if (usdA > 0 && usdB > 0) {
-        price_a_per_b = usdA / usdB;
+        // For USD amounts, same logic applies
+        price_a_per_b = usdB / usdA;
       }
       
       // Parse TVL and apply scaling if needed

@@ -15,14 +15,16 @@ import { logger } from '../../utils/logger.js';
  * AMM Constant Product Formula
  * 
  * For constant product pools (x * y = k):
- * Price A-per-B = reserveA / reserveB (in whole token units)
+ * The marginal price of A in terms of B = dy/dx = reserveB / reserveA
+ * 
+ * This means: for 1 unit of A, you receive (reserveB / reserveA) units of B
  * 
  * @param reserveA Reserve of token A (in atomic units or whole, specify via isAtomic)
  * @param reserveB Reserve of token B (in atomic units or whole, specify via isAtomic)
  * @param decimalsA Decimals for token A
  * @param decimalsB Decimals for token B
  * @param isAtomic If true, reserves are in atomic units and need conversion
- * @returns Price A-per-B in whole token units
+ * @returns Price A-per-B in whole token units (how many B you get for 1 A)
  */
 export function calculateAmmPrice(
   reserveA: number | bigint,
@@ -35,7 +37,7 @@ export function calculateAmmPrice(
     const resA = Number(reserveA);
     const resB = Number(reserveB);
     
-    if (!Number.isFinite(resA) || !Number.isFinite(resB) || resB === 0) {
+    if (!Number.isFinite(resA) || !Number.isFinite(resB) || resA === 0) {
       return undefined;
     }
 
@@ -43,15 +45,16 @@ export function calculateAmmPrice(
       // Reserves are in atomic units, convert to whole units first
       // wholeA = atomicA / 10^decimalsA
       // wholeB = atomicB / 10^decimalsB
-      // price = wholeA / wholeB = (atomicA / 10^decimalsA) / (atomicB / 10^decimalsB)
-      //       = (atomicA / atomicB) * (10^decimalsB / 10^decimalsA)
-      //       = (atomicA / atomicB) * 10^(decimalsB - decimalsA)
-      const atomicRatio = resA / resB;
-      const decimalAdjustment = Math.pow(10, decimalsB - decimalsA);
+      // price_a_per_b = wholeB / wholeA = (atomicB / 10^decimalsB) / (atomicA / 10^decimalsA)
+      //               = (atomicB / atomicA) * (10^decimalsA / 10^decimalsB)
+      //               = (atomicB / atomicA) * 10^(decimalsA - decimalsB)
+      const atomicRatio = resB / resA;
+      const decimalAdjustment = Math.pow(10, decimalsA - decimalsB);
       return atomicRatio * decimalAdjustment;
     } else {
       // Reserves already in whole units
-      return resA / resB;
+      // price_a_per_b = reserveB / reserveA
+      return resB / resA;
     }
   } catch (error) {
     try {
@@ -268,6 +271,8 @@ export function calculateMeteoraPrice(
  * 
  * Helper that handles both BigInt and number reserves,
  * and automatically detects if conversion is needed.
+ * 
+ * Returns price_a_per_b = reserveB / reserveA (how many B you get for 1 A)
  */
 export function priceFromReserves(
   reserveA: bigint | number | string,
@@ -296,24 +301,25 @@ export function priceFromReserves(
       resB = BigInt(Math.floor(reserveB));
     }
     
-    if (resB === 0n) {
+    if (resA === 0n) {
       return undefined;
     }
 
     // Calculate in high precision using BigInt
-    // price = (resA / resB) * 10^(decimalsB - decimalsA)
-    const decimalDiff = decimalsB - decimalsA;
+    // price_a_per_b = (resB / resA) * 10^(decimalsA - decimalsB)
+    // This is the correct AMM formula: how many B you get for 1 A
+    const decimalDiff = decimalsA - decimalsB;
     const scale = BigInt(Math.pow(10, Math.abs(decimalDiff)));
     
     let price: number;
     if (decimalDiff >= 0) {
-      // Multiply: price = (resA * scale) / resB
-      const numerator = resA * scale;
-      price = Number(numerator) / Number(resB);
+      // Multiply: price = (resB * scale) / resA
+      const numerator = resB * scale;
+      price = Number(numerator) / Number(resA);
     } else {
-      // Divide: price = resA / (resB * scale)
-      const denominator = resB * scale;
-      price = Number(resA) / Number(denominator);
+      // Divide: price = resB / (resA * scale)
+      const denominator = resA * scale;
+      price = Number(resB) / Number(denominator);
     }
     
     if (!Number.isFinite(price) || price <= 0) {

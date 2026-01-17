@@ -1236,12 +1236,12 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
           }
           
           // Calculate high-precision price for exact calculations with proper decimal adjustment
-          // price_a_per_b = (baseRaw / 10^decA) / (quoteRaw / 10^decB)
-          //               = (baseRaw * 10^decB) / (quoteRaw * 10^decA)
-          if (quoteReserveRaw > 0n) {
+          // Correct AMM formula: price_a_per_b = reserveB / reserveA = (quoteRaw / 10^decB) / (baseRaw / 10^decA)
+          //                    = (quoteRaw * 10^decA) / (baseRaw * 10^decB)
+          if (baseReserveRaw > 0n) {
             try {
-              const numerator = baseReserveRaw * BigInt(Math.pow(10, decB));
-              const denominator = quoteReserveRaw * BigInt(Math.pow(10, decA));
+              const numerator = quoteReserveRaw * BigInt(Math.pow(10, decA));
+              const denominator = baseReserveRaw * BigInt(Math.pow(10, decB));
               const priceExactBigInt = numerator / denominator;
               price_a_per_b_exact = priceExactBigInt.toString();
             } catch (e) { logCatchError('pools.pumpswap', e); }

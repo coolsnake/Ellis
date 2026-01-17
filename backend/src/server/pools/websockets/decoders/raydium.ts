@@ -791,11 +791,12 @@ async function handleAmmUpdate(
     if (Number.isFinite(decB)) validateDecimalsForMint(mintB, decB!, poolId, 'Raydium');
   } catch {}
 
-  // Calculate price using correct AMM formula with decimal adjustment
+  // Calculate price using correct AMM formula: price_a_per_b = reserveB / reserveA
+  // This means: for 1 unit of A, you get (reserveB / reserveA) units of B
   let price_a_per_b: number | undefined;
   if (rA > 0 && rB > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-    const atomicRatio = rA / rB;
-    const decimalAdjustment = Math.pow(10, decB! - decA!);
+    const atomicRatio = rB / rA;
+    const decimalAdjustment = Math.pow(10, decA! - decB!);
     price_a_per_b = atomicRatio * decimalAdjustment;
   }
 

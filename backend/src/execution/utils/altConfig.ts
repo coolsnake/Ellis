@@ -36,6 +36,7 @@ export type AltConfig = {
     'raydium-cpmm'?: DexAltSet;
     orca?: DexAltSet;
     meteora?: DexAltSet;
+    'meteora-balanced'?: DexAltSet;
     'meteora-damm-v1'?: DexAltSet;
     'meteora-damm-v2'?: DexAltSet;
     pumpswap?: DexAltSet;
@@ -146,7 +147,7 @@ export function getAltForPool(poolId: string): string | undefined {
  * Update DEX ALT set configuration
  */
 export async function updateDexAltSet(
-  dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap',
+  dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap',
   altSet: DexAltSet
 ): Promise<void> {
   const config = await loadAltConfig();
@@ -160,6 +161,6 @@ export async function updateDexAltSet(
 /**
  * Get DEX ALT set
  */
-export function getDexAltSet(dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap'): DexAltSet | undefined {
+export function getDexAltSet(dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap'): DexAltSet | undefined {
   return current?.dexAlts?.[dex];
 }

@@ -86,20 +86,25 @@ export function selectAltsForRoute(
   const hasLowCoverage = poolIds.length > 0 && poolsCovered < poolIds.length;
   
   if (hasLowCoverage || altAddresses.size <= staticAltCount) {
-    // Include all DEX ALTs as fallback
-    if (config.dexAlts?.raydium?.addresses) {
-      for (const addr of config.dexAlts.raydium.addresses) {
-        altAddresses.add(addr);
-      }
-    }
-    if (config.dexAlts?.orca?.addresses) {
-      for (const addr of config.dexAlts.orca.addresses) {
-        altAddresses.add(addr);
-      }
-    }
-    if (config.dexAlts?.meteora?.addresses) {
-      for (const addr of config.dexAlts.meteora.addresses) {
-        altAddresses.add(addr);
+    // Include all DEX ALTs as fallback - covers all DEX variants
+    const dexKeys: (keyof NonNullable<AltConfig['dexAlts']>)[] = [
+      'raydium',
+      'raydium-amm',
+      'raydium-cpmm',
+      'orca',
+      'meteora',
+      'meteora-balanced',
+      'meteora-damm-v1',
+      'meteora-damm-v2',
+      'pumpswap',
+    ];
+    
+    for (const dexKey of dexKeys) {
+      const dexAltSet = config.dexAlts?.[dexKey];
+      if (dexAltSet?.addresses) {
+        for (const addr of dexAltSet.addresses) {
+          altAddresses.add(addr);
+        }
       }
     }
   }
