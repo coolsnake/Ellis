@@ -229,27 +229,33 @@ async function handleCpmmUpdate(
 
   const mintA = decoded.native_mint_a || decoded.mint_a;
   const mintB = decoded.native_mint_b || decoded.mint_b;
-  
+
   // Get decimals from decoded data or cache
-  let decA = decoded.decimals_a ?? decoded.native_decimals_a;
-  let decB = decoded.decimals_b ?? decoded.native_decimals_b;
-  
+  // Prefer native_decimals since mintA/mintB are in native order from chain
+  let decA = decoded.native_decimals_a ?? decoded.decimals_a;
+  let decB = decoded.native_decimals_b ?? decoded.decimals_b;
+
   // Fallback to cache or resolver
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     const cachedPools = cpmmCache.data?.cpmm || [];
     const existing = cachedPools.find((p: any) => p.id === poolId);
     if (existing) {
-      if (!Number.isFinite(decA)) decA = existing.native_decimals_a ?? existing.decimals_a;
-      if (!Number.isFinite(decB)) decB = existing.native_decimals_b ?? existing.decimals_b;
+      // CRITICAL: If native decimals missing, derive from canonical + was_swapped
+      // When swapped: canonical A = native B, so native A decimals = canonical B decimals
+      const wasSwapped = (existing as any)?.was_swapped === true;
+      if (!Number.isFinite(decA)) decA = existing.native_decimals_a ?? (wasSwapped ? existing.decimals_b : existing.decimals_a);
+      if (!Number.isFinite(decB)) decB = existing.native_decimals_b ?? (wasSwapped ? existing.decimals_a : existing.decimals_b);
     }
   }
-  
+
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
       const { executionCache } = await import('../../../../execution/cache.js');
       const cached = executionCache.getStatic(poolId);
-      if (!Number.isFinite(decA)) decA = cached?.native_decimals_a ?? cached?.decimals_a;
-      if (!Number.isFinite(decB)) decB = cached?.native_decimals_b ?? cached?.decimals_b;
+      // Apply same swap logic for safety
+      const cachedWasSwapped = (cached as any)?.was_swapped === true;
+      if (!Number.isFinite(decA)) decA = cached?.native_decimals_a ?? (cachedWasSwapped ? cached?.decimals_b : cached?.decimals_a);
+      if (!Number.isFinite(decB)) decB = cached?.native_decimals_b ?? (cachedWasSwapped ? cached?.decimals_a : cached?.decimals_b);
     } catch {}
   }
 
@@ -554,8 +560,10 @@ export async function handleCpmmVaultUpdate(
         
         if (balanceA !== undefined && balanceB !== undefined && balanceA > 0n && balanceB > 0n) {
           // We have both balances - recalculate price
-          const decA = poolData.native_decimals_a ?? poolData.decimals_a ?? 9;
-          const decB = poolData.native_decimals_b ?? poolData.decimals_b ?? 6;
+          // CRITICAL: If native decimals missing, derive from canonical + was_swapped
+          const wasSwapped = (poolData as any)?.was_swapped === true;
+          const decA = poolData.native_decimals_a ?? (wasSwapped ? poolData.decimals_b : poolData.decimals_a) ?? 9;
+          const decB = poolData.native_decimals_b ?? (wasSwapped ? poolData.decimals_a : poolData.decimals_b) ?? 6;
           const mintA = poolData.native_mint_a ?? poolData.mint_a;
           const mintB = poolData.native_mint_b ?? poolData.mint_b;
           

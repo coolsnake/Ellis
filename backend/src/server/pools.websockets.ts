@@ -1731,27 +1731,30 @@ function runWebsocketRefreshLoop(): void {
                   const canonicalBalanceB = wasSwapped ? nativeBalanceA : nativeBalanceB;
                   
                   // Use canonical decimals (decimals_a/b are in canonical order)
-                  const decA = ammPool.decimals_a ?? ammPool.native_decimals_a ?? 9;
-                  const decB = ammPool.decimals_b ?? ammPool.native_decimals_b ?? 6;
+                  // CRITICAL: If decimals_a/b are missing, fallback to native_decimals
+                  // but RESPECT was_swapped flag - if swapped, canonical A = native B
+                  const decA = ammPool.decimals_a ?? (wasSwapped ? ammPool.native_decimals_b : ammPool.native_decimals_a) ?? 9;
+                  const decB = ammPool.decimals_b ?? (wasSwapped ? ammPool.native_decimals_a : ammPool.native_decimals_b) ?? 6;
                   
-                  // Calculate price: (reserveA / reserveB) * (10^decB / 10^decA)
+                  // Calculate price: price_a_per_b = "how many B for 1 A" = B/A
+                  // Formula: (reserveB / reserveA) * 10^(decA - decB)
                   const reserveANum = Number(canonicalBalanceA);
                   const reserveBNum = Number(canonicalBalanceB);
-                  
+
                   if (reserveANum <= 0 || reserveBNum <= 0) {
-                    logger.debug('pools.ws vault.amm.zero_reserve', { 
-                      vault: pk58.slice(0,8)+'…', 
+                    logger.debug('pools.ws vault.amm.zero_reserve', {
+                      vault: pk58.slice(0,8)+'…',
                       pool: derivedMeta.poolId.slice(0,8)+'…',
                       reserveA: reserveANum,
                       reserveB: reserveBNum,
                       wasSwapped,
-                      cat: 'pools' 
+                      cat: 'pools'
                     });
                     return;
                   }
-                  
-                  const atomicRatio = reserveANum / reserveBNum;
-                  const decimalAdjustment = Math.pow(10, decB - decA);
+
+                  const atomicRatio = reserveBNum / reserveANum;  // B/A ratio
+                  const decimalAdjustment = Math.pow(10, decA - decB);
                   const price_a_per_b = atomicRatio * decimalAdjustment;
                   
                   if (!Number.isFinite(price_a_per_b) || price_a_per_b <= 0) {
@@ -2067,8 +2070,11 @@ function runWebsocketRefreshLoop(): void {
                         try {
                           const cachedRayPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
                           const existing = cachedRayPools.clmm.find(p => p.id === pk58);
-                          decA = existing?.native_decimals_a ?? existing?.decimals_a;
-                          decB = existing?.native_decimals_b ?? existing?.decimals_b;
+                          // If native decimals are missing, derive from canonical + was_swapped
+                          // When swapped: canonical A = native B, so native A decimals = canonical B decimals
+                          const wasSwapped = existing?.was_swapped === true;
+                          decA = existing?.native_decimals_a ?? (wasSwapped ? existing?.decimals_b : existing?.decimals_a);
+                          decB = existing?.native_decimals_b ?? (wasSwapped ? existing?.decimals_a : existing?.decimals_b);
                           
                           // Fallback to execution cache if not in pool cache
                           if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
@@ -2445,8 +2451,11 @@ function runWebsocketRefreshLoop(): void {
                           // The cache stores canonical (potentially swapped) decimals, but we need native decimals
                           // When a pool is swapped during canonicalization, decimals_a/b refer to the canonical mints,
                           // but mintA/mintB from chain state (baseMint/quoteMint) are always in native order
-                          decA = existing?.native_decimals_a ?? existing?.decimals_a;
-                          decB = existing?.native_decimals_b ?? existing?.decimals_b;
+                          // If native decimals are missing, derive from canonical + was_swapped
+                          // When swapped: canonical A = native B, so native A decimals = canonical B decimals
+                          const wasSwapped = existing?.was_swapped === true;
+                          decA = existing?.native_decimals_a ?? (wasSwapped ? existing?.decimals_b : existing?.decimals_a);
+                          decB = existing?.native_decimals_b ?? (wasSwapped ? existing?.decimals_a : existing?.decimals_b);
                           
                           // Fallback to execution cache if not in pool cache
                           if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
@@ -2483,11 +2492,12 @@ function runWebsocketRefreshLoop(): void {
                           if (!Number.isFinite(decB)) decB = undefined;
                           
                           // CRITICAL FIX: Use correct AMM price formula with decimal adjustment
-                          // Price = (reserveA / reserveB) * 10^(decimalsB - decimalsA)
+                          // price_a_per_b = "how many B for 1 A" = B/A
+                          // Price = (reserveB / reserveA) * 10^(decimalsA - decimalsB)
                           // This accounts for different decimal places between tokens
                           if (rA > 0 && rB > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-                            const atomicRatio = rA / rB;
-                            const decimalAdjustment = Math.pow(10, (decB as number) - (decA as number));
+                            const atomicRatio = rB / rA;  // B/A ratio
+                            const decimalAdjustment = Math.pow(10, (decA as number) - (decB as number));
                             price_a_per_b = atomicRatio * decimalAdjustment;
                           }
                         } catch {}

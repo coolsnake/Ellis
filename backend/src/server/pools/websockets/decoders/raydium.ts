@@ -362,17 +362,22 @@ async function handleClmmUpdate(
   // Get decimals from cache first (fastest path)
   const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
   const existing = cachedPools.clmm.find(p => p.id === poolId);
-  
-  let decA = existing?.native_decimals_a ?? existing?.decimals_a;
-  let decB = existing?.native_decimals_b ?? existing?.decimals_b;
+
+  // CRITICAL: If native decimals missing, derive from canonical + was_swapped
+  // When swapped: canonical A = native B, so native A decimals = canonical B decimals
+  const wasSwapped = (existing as any)?.was_swapped === true;
+  let decA = existing?.native_decimals_a ?? (wasSwapped ? existing?.decimals_b : existing?.decimals_a);
+  let decB = existing?.native_decimals_b ?? (wasSwapped ? existing?.decimals_a : existing?.decimals_b);
 
   // Fallback to execution cache
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
       const { executionCache } = await import('../../../../execution/cache.js');
       const cached = executionCache.getStatic(poolId);
-      if (!Number.isFinite(decA)) decA = cached?.native_decimals_a ?? cached?.decimals_a;
-      if (!Number.isFinite(decB)) decB = cached?.native_decimals_b ?? cached?.decimals_b;
+      // Apply same swap logic for safety
+      const cachedWasSwapped = (cached as any)?.was_swapped === true;
+      if (!Number.isFinite(decA)) decA = cached?.native_decimals_a ?? (cachedWasSwapped ? cached?.decimals_b : cached?.decimals_a);
+      if (!Number.isFinite(decB)) decB = cached?.native_decimals_b ?? (cachedWasSwapped ? cached?.decimals_a : cached?.decimals_b);
     } catch {}
   }
 
@@ -381,7 +386,7 @@ async function handleClmmUpdate(
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
       const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
-      
+
       if (!Number.isFinite(decA) && mintA) {
         const resultA = await resolveDecimalsGuaranteed(mintA, poolId, 'Raydium');
         decA = resultA.decimals;
@@ -745,17 +750,22 @@ async function handleAmmUpdate(
   // Get decimals from cache first (fastest path)
   const cachedPools = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
   const existing = cachedPools.amm.find(p => p.id === poolId);
-  
-  let decA = existing?.native_decimals_a ?? existing?.decimals_a;
-  let decB = existing?.native_decimals_b ?? existing?.decimals_b;
+
+  // CRITICAL: If native decimals missing, derive from canonical + was_swapped
+  // When swapped: canonical A = native B, so native A decimals = canonical B decimals
+  const wasSwapped = (existing as any)?.was_swapped === true;
+  let decA = existing?.native_decimals_a ?? (wasSwapped ? existing?.decimals_b : existing?.decimals_a);
+  let decB = existing?.native_decimals_b ?? (wasSwapped ? existing?.decimals_a : existing?.decimals_b);
 
   // Fallback to execution cache
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
       const { executionCache } = await import('../../../../execution/cache.js');
       const cached = executionCache.getStatic(poolId);
-      if (!Number.isFinite(decA)) decA = cached?.native_decimals_a ?? cached?.decimals_a;
-      if (!Number.isFinite(decB)) decB = cached?.native_decimals_b ?? cached?.decimals_b;
+      // Note: execution cache stores native decimals, but apply same swap logic for safety
+      const cachedWasSwapped = (cached as any)?.was_swapped === true;
+      if (!Number.isFinite(decA)) decA = cached?.native_decimals_a ?? (cachedWasSwapped ? cached?.decimals_b : cached?.decimals_a);
+      if (!Number.isFinite(decB)) decB = cached?.native_decimals_b ?? (cachedWasSwapped ? cached?.decimals_a : cached?.decimals_b);
     } catch {}
   }
 

@@ -136,23 +136,25 @@ export function calculateClmmPrice(
 
 /**
  * Meteora DLMM Bin-Based Formula
- * 
+ *
  * For Meteora's Dynamic Liquidity Market Maker:
  * - Price is determined by active bin ID and bin step
  * - Formula: priceYperX = (1 + binStep/10000)^activeId
  * - tokenX and tokenY are Meteora's internal designations
- * 
- * This function handles the X/Y to A/B mapping and returns A-per-B.
- * 
+ *
+ * This function handles the X/Y to A/B mapping and returns price_a_per_b.
+ *
+ * IMPORTANT: price_a_per_b means "how many B tokens for 1 A token" = B/A
+ *
  * @param activeId Active bin ID (can be negative)
  * @param binStep Bin step in basis points
  * @param tokenXMint Meteora's token X mint address
  * @param tokenYMint Meteora's token Y mint address
- * @param mintA Our token A (the mint we want as numerator)
- * @param mintB Our token B (the mint we want as denominator)
+ * @param mintA Our token A (the base token)
+ * @param mintB Our token B (the quote token)
  * @param decimalsA Decimals for token A
  * @param decimalsB Decimals for token B
- * @returns Price A-per-B in whole token units
+ * @returns Price A-per-B in whole token units (how many B for 1 A)
  */
 export function calculateMeteoraPrice(
   activeId: number,
@@ -177,33 +179,34 @@ export function calculateMeteoraPrice(
     const clampedActiveId = Math.max(-100000, Math.min(100000, activeId));
     const BASIS_POINT_MAX = 10000;
     const basePrice = 1 + (binStep / BASIS_POINT_MAX);
-    
+
     // Use log-space to prevent overflow
     const logPrice = clampedActiveId * Math.log(basePrice);
-    
+
     if (Math.abs(logPrice) >= 700) {
       // e^700 ≈ 1e304, unsafe to compute
       return undefined;
     }
-    
+
     // This gives us Y per X in NATIVE (atomic) units
+    // priceYperX = tokenY_atomic / tokenX_atomic
     const priceYperX_native = Math.exp(logPrice);
-    
-    // Now map X/Y to our A/B orientation
+
+    // Map X/Y to our A/B orientation
+    // We want price_a_per_b = B/A (how many B for 1 A) in atomic units
     let priceAperB_native: number | undefined;
     let orientationBranch: string = 'unknown';
-    
+
     if (tokenXMint === mintA && tokenYMint === mintB) {
       // X = A, Y = B
-      // priceYperX = B/A (native)
-      // We want A/B (native) = 1 / (B/A) = 1 / priceYperX
-      priceAperB_native = priceYperX_native > 0 ? (1 / priceYperX_native) : undefined;
+      // priceYperX = Y/X = B/A = price_a_per_b (exactly what we want!)
+      priceAperB_native = priceYperX_native;
       orientationBranch = 'X=A,Y=B';
     } else if (tokenXMint === mintB && tokenYMint === mintA) {
       // X = B, Y = A
-      // priceYperX = A/B (native)
-      // We want A/B (native) = priceYperX
-      priceAperB_native = priceYperX_native;
+      // priceYperX = Y/X = A/B = price_b_per_a (need to invert)
+      // price_a_per_b = 1 / price_b_per_a = 1 / priceYperX
+      priceAperB_native = priceYperX_native > 0 ? (1 / priceYperX_native) : undefined;
       orientationBranch = 'X=B,Y=A';
     } else {
       // Mints don't match - this shouldn't happen
@@ -218,16 +221,16 @@ export function calculateMeteoraPrice(
       } catch (e) { logCatchError('pools.priceFormulas', e); }
       return undefined;
     }
-    
+
     if (!priceAperB_native || priceAperB_native <= 0 || !Number.isFinite(priceAperB_native)) {
       return undefined;
     }
-    
+
     // Convert from native (atomic) units to whole token units
-    // priceAperB_whole = priceAperB_native * 10^(decimalsB - decimalsA)
-    const decimalScale = Math.pow(10, decimalsB - decimalsA);
+    // price_a_per_b_whole = price_a_per_b_atomic * 10^(decimalsA - decimalsB)
+    const decimalScale = Math.pow(10, decimalsA - decimalsB);
     const priceAperB_whole = priceAperB_native * decimalScale;
-    
+
     if (!Number.isFinite(priceAperB_whole) || priceAperB_whole <= 0) {
       return undefined;
     }

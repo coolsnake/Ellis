@@ -68,6 +68,17 @@ export type PriceRatio = {
   float?: number;
 };
 
+/**
+ * Convert sqrtPriceX64 to price_a_per_b (how many B tokens for 1 A token)
+ *
+ * For Raydium/Orca CLMMs:
+ * - sqrtPriceX64 = sqrt(tokenB_atomic / tokenA_atomic) * 2^64
+ * - sqrtPrice^2 / 2^128 = tokenB_atomic / tokenA_atomic = price_a_per_b_atomic
+ *
+ * To convert to whole units:
+ * - price_a_per_b_whole = price_a_per_b_atomic * 10^(decimalsA - decimalsB)
+ * - price_a_per_b_whole = (sqrtPrice^2 / 2^128) * 10^(decA - decB)
+ */
 export function sqrtPriceX64ToPriceRatio(
   sqrtPrice: bigint,
   decimalsA?: number,
@@ -75,10 +86,16 @@ export function sqrtPriceX64ToPriceRatio(
 ): PriceRatio | null {
   if (!(sqrtPrice > 0n)) return null;
   if (!Number.isFinite(decimalsA) || !Number.isFinite(decimalsB)) return null;
-  const diff = Math.trunc((decimalsB as number) - (decimalsA as number));
+
+  // Correct formula: price_a_per_b = (sqrtPrice^2 / 2^128) * 10^(decA - decB)
+  const diff = Math.trunc((decimalsA as number) - (decimalsB as number));
   const { numerator: scaleNum, denominator: scaleDen } = pow10Fraction(diff);
-  const priceNum = scaleNum * TWO_POW_128;
-  const priceDen = scaleDen * (sqrtPrice * sqrtPrice);
+
+  // priceNum / priceDen = (sqrtPrice^2 * scaleNum) / (2^128 * scaleDen)
+  const sqrtSquared = sqrtPrice * sqrtPrice;
+  const priceNum = sqrtSquared * scaleNum;
+  const priceDen = TWO_POW_128 * scaleDen;
+
   if (!(priceDen > 0n)) return null;
   let float: number | undefined;
   try {
