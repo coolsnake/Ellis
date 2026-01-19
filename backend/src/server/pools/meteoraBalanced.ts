@@ -1557,7 +1557,11 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string, providedMints
   const retries = Number(cfg.maxHttpRetries || 2);
   const backoffMs = Number(cfg.httpBackoffMs || 500);
   const maxPages = Number(cfg.maxPages || 10);
-  const size = Number(cfg.pageSize || 200);
+  // V2 API has a server-side limit of 100 results per request
+  // Cap pageSize to avoid premature pagination termination
+  const V2_API_MAX_LIMIT = 100;
+  const requestedSize = Number(cfg.pageSize || 200);
+  const size = Math.min(requestedSize, V2_API_MAX_LIMIT);
   const pageDelayMs = Number(cfg.pageDelayMs || 110);
   const mintBatchSize = Number(cfg.mintBatchSize || 10);
   
@@ -1619,6 +1623,8 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string, providedMints
     anchorMints: anchorMints.length,
     regularMints: regularMints.length,
     pageSize: size,
+    requestedPageSize: requestedSize,
+    apiMaxLimit: V2_API_MAX_LIMIT,
     maxPages,
     mintBatchSize,
     cat: 'meteora',
