@@ -316,24 +316,66 @@ export const CONFIG = {
         system: 'debug',
         wallet: 'debug',
         opportunity: 'info',
-        // Keep arb executor visible for execution monitoring
+        
+        // === ARB EXECUTOR ===
+        // Keep arb executor at info for execution monitoring summaries
         arb: 'info',
         'arb.executor': 'info',
-        // Suppress verbose arb push/orchestration logs
+        // Suppress verbose arb push/orchestration details
         'arb.push': 'warn',
-        // Suppress verbose tx build/send/resolve logs
-        tx: 'warn',
+        
+        // === TRANSACTION BUILDING ===
+        // Keep tx at info for key summaries (tx.resolve.ok, tx.send.rpc_call_success)
+        tx: 'info',
+        // Suppress verbose tx subcategory details
         'tx.blockhash': 'warn',
         'tx.lookup_table': 'warn',
         'tx.alt': 'warn',
         'tx.build': 'warn',
+        'tx.build.hop': 'warn',
+        'tx.build.amount_propagation': 'warn',
         'tx.send': 'warn',
         'tx.resolve': 'warn',
         'tx.serialize': 'warn',
         'tx.preflight': 'warn',
         'tx.ix': 'warn',
-        // Suppress router transaction builder details
-        routerTx: 'warn',
+        'tx.jito': 'warn',
+        'tx.resend': 'warn',
+        'tx.sim': 'info',  // Keep simulation diagnostics visible
+        
+        // === ROUTER TX BUILDER ===
+        // Keep routerTx at info for build summaries (.built logs)
+        routerTx: 'info',
+        // Suppress verbose router subcategory details
+        'routerTx.flashLoan': 'warn',
+        'routerTx.direct': 'warn',
+        'routerTx.sdkQuote': 'warn',
+        'routerTx.buildStep': 'warn',
+        'routerTx.buildRouteSteps': 'warn',
+        'routerTx.raydium': 'warn',
+        'routerTx.meteora': 'warn',
+        'routerTx.orca': 'warn',
+        'routerTx.pumpswap': 'warn',
+        'routerTx.raydiumAmm': 'warn',
+        'routerTx.raydiumCpmm': 'warn',
+        'routerTx.meteoraDamm': 'warn',
+        'routerTx.minProfit': 'warn',
+        'routerTx.validateBase58': 'warn',
+        
+        // === SDK QUOTE BUILDER ===
+        // Keep sdkQuoteBuilder at info for warmup/completion summaries
+        sdkQuoteBuilder: 'info',
+        // Suppress verbose SDK quote details
+        'sdkQuoteBuilder.orca': 'warn',
+        'sdkQuoteBuilder.raydium': 'warn',
+        'sdkQuoteBuilder.meteora': 'warn',
+        'sdkQuoteBuilder.pumpswap': 'warn',
+        'sdkQuoteBuilder.meteoraDammV1': 'warn',
+        'sdkQuoteBuilder.meteoraDammV2': 'warn',
+        'sdkQuoteBuilder.raydiumAmm': 'warn',
+        'sdkQuoteBuilder.routing': 'warn',
+        
+        // === INSTRUCTION BUILDER (ix.ts) ===
         // Suppress DEX-specific instruction builder logs
         meteora: 'warn',
         'meteora.dlmm': 'warn',
@@ -341,16 +383,61 @@ export const CONFIG = {
         orca: 'warn',
         'orca.local': 'warn',
         'orca.whirlpool': 'warn',
+        'orca.oracle': 'warn',
+        'orca.tick_array': 'warn',
+        'orca.sdk': 'warn',
         pumpswap: 'warn',
         raydium: 'warn',
-        // Suppress graph incremental apply and orchestration logs
-        graph: 'warn',
+        'ix.build': 'warn',
+        
+        // === RESOLVER ===
+        // Keep resolver at info for summary, suppress details
+        resolver: 'info',
+        'resolver.jupiter': 'warn',
+        'resolver.executor_config': 'warn',
+        'resolver.fallback': 'warn',
+        'resolver.price': 'warn',
+        'resolver.sizeUsd': 'warn',
+        
+        // === CACHE VALIDATOR ===
+        // Keep cache at info for batch summaries
+        cache: 'info',
+        cacheValidator: 'info',
+        // Suppress verbose cache details
+        'cache.validation': 'warn',
+        'cache.derivation': 'warn',
+        'cache.refresh': 'warn',
+        'cache.ammConfig': 'warn',
+        'cache.observation': 'warn',
+        'cache.bitmap_ext': 'warn',
+        'cache.raydium_exbitmap': 'warn',
+        'cache.decimals': 'warn',
+        'cacheValidator.reactive': 'warn',
+        
+        // === GRAPH & POOLS ===
+        // Keep graph at info for rebuild summaries
+        graph: 'info',
+        // Suppress verbose graph details
         'graph.incremental': 'warn',
         'graph.push': 'warn',
         'graph.rebuild': 'warn',
         'graph.edge': 'warn',
         'graph.snapshot': 'warn',
+        'graph.labels': 'warn',
+        'graph.pools': 'warn',
+        'graph.edges': 'warn',
+        'graph.diagnostic': 'warn',
+        'graph.sanity': 'warn',
+        'graph.cleanup': 'warn',
+        'graph.consistency': 'warn',
+        'graph.tvl': 'warn',
+        'graph.decimals': 'warn',
+        'graph.version': 'warn',
+        'graph.worker': 'warn',
         pools: 'warn',
+        
+        // === VALIDATION ===
+        validation: 'warn',
       } as Record<string, 'error' | 'warn' | 'info' | 'debug'>,
       // Force-include or exclude specific codes (supports * globs)
       enableCodes: [] as string[],
@@ -373,19 +460,25 @@ export const CONFIG = {
       } as Record<string, { perSec?: number; minIntervalMs?: number }>,
       // Named presets the UI can apply (optional)
       presets: {
+        // Development - full debug logging
         dev: {
-          categories: { api: 'debug', 'pretrade.sim': 'info', strategy: 'info', drift: 'warn', jupiter: 'warn' }
+          categories: { api: 'debug', pretrade: 'debug', strategy: 'debug', drift: 'debug', jupiter: 'debug', tx: 'debug', routerTx: 'debug', sdkQuoteBuilder: 'debug', cache: 'debug', graph: 'debug', arb: 'debug', meteora: 'debug', orca: 'debug', pumpswap: 'debug', raydium: 'debug' }
         },
-        // Verbose ops preset - restores detailed tx/graph logging for debugging
+        // Verbose - restores detailed tx/router/graph logging for debugging specific issues
         verbose: {
-          categories: { api: 'warn', pretrade: 'warn', 'strategy.grid': 'info', graph: 'info', pools: 'info', arb: 'info', opportunity: 'info', tx: 'info', drift: 'info', strategy: 'info', routerTx: 'debug', meteora: 'debug', orca: 'debug', pumpswap: 'debug', raydium: 'debug' }
+          categories: { api: 'warn', pretrade: 'warn', strategy: 'info', drift: 'info', graph: 'debug', pools: 'debug', arb: 'debug', opportunity: 'info', tx: 'debug', routerTx: 'debug', sdkQuoteBuilder: 'debug', cache: 'debug', meteora: 'debug', orca: 'debug', pumpswap: 'debug', raydium: 'debug', 'ix.build': 'debug', resolver: 'debug' }
         },
-        // Quiet ops preset - minimal logging, only errors/warnings and key execution events
+        // Ops - quiet mode with summaries only (default config)
         ops: {
-          categories: { api: 'warn', pretrade: 'warn', 'strategy.grid': 'warn', graph: 'warn', pools: 'warn', arb: 'info', 'arb.executor': 'info', 'arb.push': 'warn', opportunity: 'info', tx: 'warn', drift: 'warn', strategy: 'warn', routerTx: 'warn', meteora: 'warn', orca: 'warn', pumpswap: 'warn', raydium: 'warn', 'graph.incremental': 'warn', 'graph.push': 'warn' }
+          categories: { api: 'warn', pretrade: 'warn', strategy: 'warn', drift: 'warn', graph: 'info', pools: 'warn', arb: 'info', 'arb.executor': 'info', 'arb.push': 'warn', opportunity: 'info', tx: 'info', routerTx: 'info', sdkQuoteBuilder: 'info', cache: 'info', cacheValidator: 'info', resolver: 'info', meteora: 'warn', orca: 'warn', pumpswap: 'warn', raydium: 'warn' }
         },
+        // Silent - errors and warnings only, no info logs
+        silent: {
+          categories: { api: 'warn', pretrade: 'warn', strategy: 'warn', drift: 'warn', jupiter: 'warn', graph: 'warn', pools: 'warn', arb: 'warn', opportunity: 'warn', tx: 'warn', routerTx: 'warn', sdkQuoteBuilder: 'warn', cache: 'warn', cacheValidator: 'warn', resolver: 'warn', meteora: 'warn', orca: 'warn', pumpswap: 'warn', raydium: 'warn', 'ix.build': 'warn', validation: 'warn' }
+        },
+        // Research - focus on arb/graph analysis
         research: {
-          categories: { arb: 'debug', graph: 'debug', pools: 'info', api: 'debug', 'drift.dlob': 'info' }
+          categories: { arb: 'debug', 'arb.executor': 'debug', graph: 'debug', pools: 'info', api: 'warn', tx: 'info', routerTx: 'info', cache: 'info', 'drift.dlob': 'info' }
         }
       } as Record<string, any>,
     },

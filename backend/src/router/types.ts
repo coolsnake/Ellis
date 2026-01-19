@@ -207,7 +207,7 @@ export interface RouterConfig {
 export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
   programId: null,
   deployedAt: null,
-  cluster: 'devnet',
+  cluster: 'mainnet-beta',
   executionMode: ExecutionMode.Auto,
   vaultOwner: null,
   flashLoanFeeBps: 9,
