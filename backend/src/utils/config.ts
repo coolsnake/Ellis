@@ -375,20 +375,50 @@ export const CONFIG = {
         'sdkQuoteBuilder.raydiumAmm': 'warn',
         'sdkQuoteBuilder.routing': 'warn',
         
-        // === INSTRUCTION BUILDER (ix.ts) ===
-        // Suppress DEX-specific instruction builder logs
-        meteora: 'warn',
-        'meteora.dlmm': 'warn',
-        'meteora.damm': 'warn',
-        orca: 'warn',
-        'orca.local': 'warn',
-        'orca.whirlpool': 'warn',
-        'orca.oracle': 'warn',
-        'orca.tick_array': 'warn',
-        'orca.sdk': 'warn',
-        pumpswap: 'warn',
-        raydium: 'warn',
-        'ix.build': 'warn',
+        // === DEX CATEGORIES ===
+        // Keep DEX categories at info for pool fetch/refresh logs
+        // Only suppress specific tx-building subcategories
+        meteora: 'info',
+        'meteora.dlmm': 'warn',  // ix.ts instruction builder details
+        'meteora.damm': 'warn',  // ix.ts instruction builder details
+        'meteora.graphql': 'info',  // Keep pool fetch summaries
+        'meteora.balanced': 'info',  // Keep pool normalization logs
+        orca: 'info',
+        'orca.local': 'warn',  // ix.ts local quote builder details
+        'orca.whirlpool': 'warn',  // ix.ts SDK quote details
+        'orca.oracle': 'warn',  // ix.ts oracle derivation
+        'orca.tick_array': 'warn',  // ix.ts tick array details
+        'orca.sdk': 'warn',  // ix.ts SDK fallback logs
+        'orca.graphql': 'info',  // Keep pool fetch summaries
+        'orca.decoder': 'warn',  // Suppress websocket decoder details
+        'orca.ws': 'warn',  // Suppress websocket update details
+        pumpswap: 'info',
+        'pumpswap.graphql': 'info',  // Keep pool fetch summaries
+        'pumpswap.rpc': 'info',  // Keep RPC enrichment summaries
+        'pumpswap.decode': 'warn',  // Suppress decoder details
+        'pumpswap.vault': 'warn',  // Suppress vault parsing details
+        'pumpswap.pool_update': 'warn',  // Suppress per-pool update details
+        'pumpswap.swap': 'warn',  // Suppress swap direction details
+        'pumpswap.accounts': 'warn',  // Suppress account details
+        'pumpswap.protocol': 'warn',  // Suppress protocol recipient details
+        'pumpswap.creator': 'warn',  // Suppress creator vault details
+        'pumpswap.metadata': 'warn',  // Suppress metadata details
+        'pumpswap.fallback': 'warn',  // Suppress fallback derivation details
+        'pumpswap.stablecoin': 'warn',  // Suppress stablecoin detection details
+        'pumpswap.mints': 'warn',  // Suppress mint validation details
+        'pumpswap.amm': 'warn',  // Suppress swap build details
+        'pumpswap.convert': 'warn',  // Suppress conversion details
+        'pumpswap.vaults': 'warn',  // Suppress vault details
+        'pumpswap.identify': 'warn',  // Suppress token identification details
+        'pumpswap.fetching': 'warn',  // Suppress fetching details
+        raydium: 'info',
+        'raydium.http': 'info',  // Keep HTTP fetch logs
+        'raydium.pools': 'info',  // Keep pool normalization logs
+        'raydium.amm': 'info',  // Keep AMM fetch/attach summaries
+        'raydium.clmm': 'info',  // Keep CLMM fetch/attach summaries
+        'raydium.cpmm': 'info',  // Keep CPMM fetch/attach summaries
+        'raydium.ws': 'warn',  // Suppress websocket decode details
+        'ix.build': 'warn',  // Suppress instruction builder details
         
         // === RESOLVER ===
         // Keep resolver at info for summary, suppress details
@@ -414,15 +444,22 @@ export const CONFIG = {
         'cache.decimals': 'warn',
         'cacheValidator.reactive': 'warn',
         
-        // === GRAPH & POOLS ===
+        // === POOLS ===
+        // Keep pools at info for refresh summaries
+        pools: 'info',
+        'pools.refresh': 'info',  // Keep refresh phase summaries
+        'pools.ws': 'warn',  // Suppress websocket handler details
+        'pools.subscriptions': 'info',  // Keep subscription state changes
+        
+        // === GRAPH ===
         // Keep graph at info for rebuild summaries
         graph: 'info',
+        'graph.rebuild': 'info',  // Keep rebuild summaries
+        'graph.snapshot': 'info',  // Keep snapshot summaries
         // Suppress verbose graph details
         'graph.incremental': 'warn',
         'graph.push': 'warn',
-        'graph.rebuild': 'warn',
         'graph.edge': 'warn',
-        'graph.snapshot': 'warn',
         'graph.labels': 'warn',
         'graph.pools': 'warn',
         'graph.edges': 'warn',
@@ -434,7 +471,16 @@ export const CONFIG = {
         'graph.decimals': 'warn',
         'graph.version': 'warn',
         'graph.worker': 'warn',
-        pools: 'warn',
+        
+        // === METEORA BALANCED (websocket decoder) ===
+        'meteora_balanced': 'info',
+        'meteora_balanced.decode': 'warn',
+        'meteora_balanced.vault': 'warn',
+        'meteora_balanced.update': 'warn',
+        
+        // === METEORA DLMM (websocket decoder) ===
+        'meteora_dlmm': 'info',
+        'meteora_dlmm.ws': 'warn',
         
         // === VALIDATION ===
         validation: 'warn',
@@ -460,17 +506,17 @@ export const CONFIG = {
       } as Record<string, { perSec?: number; minIntervalMs?: number }>,
       // Named presets the UI can apply (optional)
       presets: {
-        // Development - full debug logging
+        // Development - full debug logging for everything
         dev: {
-          categories: { api: 'debug', pretrade: 'debug', strategy: 'debug', drift: 'debug', jupiter: 'debug', tx: 'debug', routerTx: 'debug', sdkQuoteBuilder: 'debug', cache: 'debug', graph: 'debug', arb: 'debug', meteora: 'debug', orca: 'debug', pumpswap: 'debug', raydium: 'debug' }
+          categories: { api: 'debug', pretrade: 'debug', strategy: 'debug', drift: 'debug', jupiter: 'debug', tx: 'debug', routerTx: 'debug', sdkQuoteBuilder: 'debug', cache: 'debug', graph: 'debug', pools: 'debug', arb: 'debug', meteora: 'debug', orca: 'debug', pumpswap: 'debug', raydium: 'debug', 'ix.build': 'debug', resolver: 'debug' }
         },
-        // Verbose - restores detailed tx/router/graph logging for debugging specific issues
+        // Verbose - restores detailed tx/router logging for debugging tx issues
         verbose: {
-          categories: { api: 'warn', pretrade: 'warn', strategy: 'info', drift: 'info', graph: 'debug', pools: 'debug', arb: 'debug', opportunity: 'info', tx: 'debug', routerTx: 'debug', sdkQuoteBuilder: 'debug', cache: 'debug', meteora: 'debug', orca: 'debug', pumpswap: 'debug', raydium: 'debug', 'ix.build': 'debug', resolver: 'debug' }
+          categories: { api: 'warn', pretrade: 'warn', strategy: 'info', drift: 'info', graph: 'info', pools: 'info', arb: 'debug', opportunity: 'info', tx: 'debug', routerTx: 'debug', sdkQuoteBuilder: 'debug', cache: 'debug', meteora: 'debug', orca: 'debug', pumpswap: 'debug', raydium: 'debug', 'ix.build': 'debug', resolver: 'debug', 'meteora.dlmm': 'debug', 'orca.whirlpool': 'debug' }
         },
-        // Ops - quiet mode with summaries only (default config)
+        // Ops - quiet mode with summaries only (matches default config)
         ops: {
-          categories: { api: 'warn', pretrade: 'warn', strategy: 'warn', drift: 'warn', graph: 'info', pools: 'warn', arb: 'info', 'arb.executor': 'info', 'arb.push': 'warn', opportunity: 'info', tx: 'info', routerTx: 'info', sdkQuoteBuilder: 'info', cache: 'info', cacheValidator: 'info', resolver: 'info', meteora: 'warn', orca: 'warn', pumpswap: 'warn', raydium: 'warn' }
+          categories: { api: 'warn', pretrade: 'warn', strategy: 'warn', drift: 'warn', graph: 'info', pools: 'info', arb: 'info', 'arb.executor': 'info', 'arb.push': 'warn', opportunity: 'info', tx: 'info', routerTx: 'info', sdkQuoteBuilder: 'info', cache: 'info', cacheValidator: 'info', resolver: 'info', meteora: 'info', orca: 'info', pumpswap: 'info', raydium: 'info', 'tx.build': 'warn', 'tx.resolve': 'warn', 'meteora.dlmm': 'warn', 'orca.whirlpool': 'warn', 'pools.ws': 'warn' }
         },
         // Silent - errors and warnings only, no info logs
         silent: {
@@ -478,7 +524,7 @@ export const CONFIG = {
         },
         // Research - focus on arb/graph analysis
         research: {
-          categories: { arb: 'debug', 'arb.executor': 'debug', graph: 'debug', pools: 'info', api: 'warn', tx: 'info', routerTx: 'info', cache: 'info', 'drift.dlob': 'info' }
+          categories: { arb: 'debug', 'arb.executor': 'debug', graph: 'debug', pools: 'info', api: 'warn', tx: 'info', routerTx: 'info', cache: 'info', meteora: 'info', orca: 'info', raydium: 'info', 'drift.dlob': 'info' }
         }
       } as Record<string, any>,
     },
