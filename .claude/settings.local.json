@@ -6,7 +6,8 @@
       "Bash(git -C \"D:\\\\lawprojects\\\\lockstone-dev\" log --oneline -5)",
       "Bash(git -C \"D:\\\\lawprojects\\\\lockstone-dev\" add CLAUDE.md)",
       "Bash(git -C \"D:\\\\lawprojects\\\\lockstone-dev\" commit -m \"$\\(cat <<''EOF''\nAdd CLAUDE.md with project guidance for Claude Code\n\nDocuments the codebase architecture, common commands, and key configuration\nfor future Claude Code sessions working in this repository.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(git -C \"D:\\\\lawprojects\\\\lockstone-dev\" diff HEAD backend/src/server/pools.websockets.ts backend/src/server/pools/websockets/validation.ts)"
     ]
   }
 }

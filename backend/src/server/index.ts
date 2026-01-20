@@ -609,6 +609,14 @@ server.listen(CONFIG.port, () => {
       // Load persisted pool snapshot for fast startup (if persistence enabled)
       // This hydrates pool caches and builds the graph without fetching from APIs
       try {
+        // Initialize RPC limiter from persisted config
+        try {
+          const { initializeRpcLimiterFromConfig } = await import('../utils/rpcLimiter.js');
+          await initializeRpcLimiterFromConfig();
+        } catch (err: any) {
+          logger.warn('server: failed to initialize RPC limiter from config', { error: String(err?.message || err), cat: 'server' });
+        }
+        
         const { initializeFromSnapshot, isPersistenceEnabled } = await import('./pools.persistence.js');
         if (isPersistenceEnabled()) {
           const loaded = await initializeFromSnapshot();
