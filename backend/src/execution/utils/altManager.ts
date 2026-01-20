@@ -4365,7 +4365,105 @@ export class DexAltManager {
       });
     } catch {}
 
+    // Clean up in-memory state and config after successful close
+    await this.removeAltFromStateAndConfig(altAddress);
+
     return { signature, rentRecovered };
+  }
+
+  /**
+   * Remove an ALT from in-memory state and config file.
+   * Called after successfully closing an ALT on-chain.
+   */
+  private async removeAltFromStateAndConfig(altAddress: string): Promise<void> {
+    let removedCategory: string | null = null;
+
+    // 1. Remove from altAddresses map (find category by address)
+    for (const [category, pk] of this.altAddresses.entries()) {
+      if (pk.toBase58() === altAddress) {
+        this.altAddresses.delete(category);
+        removedCategory = category;
+        break;
+      }
+    }
+
+    // 2. Remove from altAccounts cache
+    this.altAccounts.delete(altAddress);
+
+    // 3. Remove from config file
+    if (this.altConfig) {
+      let configChanged = false;
+
+      // Check config.alts (common, flashloan, userPdas, etc.)
+      if (this.altConfig.alts) {
+        for (const [key, addr] of Object.entries(this.altConfig.alts)) {
+          if (addr === altAddress) {
+            delete this.altConfig.alts[key as keyof typeof this.altConfig.alts];
+            configChanged = true;
+            if (!removedCategory) removedCategory = key;
+          }
+        }
+      }
+
+      // Check dexAlts (raydium, orca, etc.)
+      if (this.altConfig.dexAlts) {
+        for (const [dex, dexAltSet] of Object.entries(this.altConfig.dexAlts)) {
+          if (dexAltSet?.addresses) {
+            const idx = dexAltSet.addresses.indexOf(altAddress);
+            if (idx !== -1) {
+              dexAltSet.addresses.splice(idx, 1);
+              // Also clean up altContents if it references this address
+              if (dexAltSet.altContents && dexAltSet.altContents[altAddress]) {
+                delete dexAltSet.altContents[altAddress];
+              }
+              configChanged = true;
+              if (!removedCategory) removedCategory = `${dex}-pools`;
+            }
+          }
+        }
+      }
+
+      // Clean up poolToAlt reverse mappings
+      if (this.altConfig.poolToAlt) {
+        const poolsToRemove: string[] = [];
+        for (const [poolId, addr] of Object.entries(this.altConfig.poolToAlt)) {
+          if (addr === altAddress) {
+            poolsToRemove.push(poolId);
+          }
+        }
+        for (const poolId of poolsToRemove) {
+          delete this.altConfig.poolToAlt[poolId];
+        }
+        if (poolsToRemove.length > 0) configChanged = true;
+      }
+
+      // Save updated config
+      if (configChanged) {
+        try {
+          await saveAltConfig(this.altConfig);
+          try {
+            logger.info('alt.manager.closeByAddress.config.cleaned', {
+              cat: 'tx',
+              ctx: { altAddress, removedCategory },
+            });
+          } catch {}
+        } catch (saveError) {
+          try {
+            logger.warn('alt.manager.closeByAddress.config.save.failed', {
+              cat: 'tx',
+              ctx: { altAddress, error: String((saveError as any)?.message || saveError) },
+            });
+          } catch {}
+        }
+      }
+    }
+
+    try {
+      logger.debug('alt.manager.closeByAddress.state.cleaned', {
+        cat: 'tx',
+        ctx: { altAddress, removedCategory, remainingAlts: this.altAddresses.size },
+      });
+    } catch {}
   }
 
   /**
