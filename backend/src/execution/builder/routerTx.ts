@@ -1688,7 +1688,7 @@ async function extractDexAccounts(
     } else {
       // FALLBACK: Use canonical ordering - but this may be WRONG if pool was_swapped
       // When was_swapped=true, canonical mint_a != native mint_a, so direction would be inverted
-      const wasSwapped = stat?.was_swapped === true;
+      const wasSwapped = (stat as any)?.was_swapped === true;
       const canonicalIsAtoB = hop.inputMint === poolMintA;
 
       // If pool was swapped during canonicalization, invert the direction
@@ -2689,7 +2689,6 @@ async function extractDexAccounts(
           userTokenB: userTokenB.toBase58(),
           isAtoB: isAtoBOrca,
           isAtoBSource: isAtoBDeterminedBy,
-          wasSwapped: stat?.was_swapped ?? 'unknown',
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
         });
