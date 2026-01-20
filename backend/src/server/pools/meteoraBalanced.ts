@@ -516,6 +516,46 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   
   try { logger.info('meteora.balanced normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch (e) { logCatchError('pools.meteoraBalanced', e); }
+  
+  // Populate execution cache for Meteora Balanced pools (enables correct direction calculation)
+  try {
+    const { executionCache } = await import('../../execution/cache.js');
+    let cached = 0;
+    
+    for (const pool of ammCanon) {
+      try {
+        const existing = executionCache.getStatic(pool.id) || {};
+        executionCache.setStatic(pool.id, {
+          ...existing,
+          programId: (pool as any).programId || existing.programId,
+          dex: 'meteora_balanced',
+          pool_kind: 'amm',
+          mint_a: pool.mint_a,
+          mint_b: pool.mint_b,
+          decimals_a: pool.decimals_a,
+          decimals_b: pool.decimals_b,
+          vault_a: (pool as any).account_a,
+          vault_b: (pool as any).account_b,
+          // CRITICAL: native_mint_a/b and was_swapped are needed for direction calculation
+          native_mint_a: (pool as any).native_mint_a,
+          native_mint_b: (pool as any).native_mint_b,
+          native_account_a: (pool as any).native_account_a,
+          native_account_b: (pool as any).native_account_b,
+          was_swapped: (pool as any).was_swapped,
+        });
+        cached++;
+      } catch (e) { logCatchError('pools.meteoraBalanced.cache', e); }
+    }
+    
+    if (cached > 0) {
+      logger.debug('meteora.balanced.cache_populated', {
+        total: ammCanon.length,
+        cached,
+        cat: 'meteora'
+      });
+    }
+  } catch (e) { logCatchError('pools.meteoraBalanced.cache', e); }
+  
   return { amm: ammCanon, clmm: [], cpmm: [] };
 }
 

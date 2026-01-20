@@ -138,6 +138,11 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
   const [poolCounts, setPoolCounts] = useState<{ [key: string]: number }>(uiPrefs.poolCounts);
   const [processingAddress, setProcessingAddress] = useState<string | null>(null);
   
+  // Manual account extension
+  const [manualAccounts, setManualAccounts] = useState('');
+  const [manualExtendCategory, setManualExtendCategory] = useState('common');
+  const [manualExtending, setManualExtending] = useState(false);
+  
   // Persist pool counts when they change
   useEffect(() => {
     updateUiPrefs({ poolCounts });
@@ -491,6 +496,63 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
     }
   };
 
+  // Validate Solana public key format (base58, 32-44 chars)
+  const isValidPublicKey = (key: string): boolean => {
+    const trimmed = key.trim();
+    if (trimmed.length < 32 || trimmed.length > 44) return false;
+    // Base58 character set
+    const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
+    return base58Regex.test(trimmed);
+  };
+
+  const handleManualExtend = async () => {
+    setManualExtending(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      // Parse accounts from textarea (supports newlines, commas, spaces)
+      const accountList = manualAccounts
+        .split(/[\n,\s]+/)
+        .map(a => a.trim())
+        .filter(a => a.length > 0);
+
+      if (accountList.length === 0) {
+        throw new Error('No accounts provided. Enter public keys separated by newlines or commas.');
+      }
+
+      // Validate all accounts
+      const invalidAccounts = accountList.filter(a => !isValidPublicKey(a));
+      if (invalidAccounts.length > 0) {
+        throw new Error(`Invalid public key(s): ${invalidAccounts.slice(0, 3).join(', ')}${invalidAccounts.length > 3 ? '...' : ''}`);
+      }
+
+      // Remove duplicates
+      const uniqueAccounts = [...new Set(accountList)];
+
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.extendCategory}/${manualExtendCategory}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts: uniqueAccounts }),
+      });
+
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to extend ALT');
+      }
+
+      const data = await resp.json();
+      setSuccess(`Extended ${manualExtendCategory} ALT with ${uniqueAccounts.length} account(s). New total: ${data.accountCount}`);
+      setManualAccounts(''); // Clear input on success
+      await loadAltStatus();
+      await discoverAllAlts();
+    } catch (err: any) {
+      setError(err.message || 'Failed to extend ALT');
+    } finally {
+      setManualExtending(false);
+    }
+  };
+
   const truncateAddress = (addr: string) => {
     return addr.length > 16 ? `${addr.slice(0, 8)}...${addr.slice(-8)}` : addr;
   };
@@ -785,6 +847,64 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
         {/* Create DEX ALTs Tab */}
         {activeTab === 'create' && (
           <div className="space-y-4">
+            {/* Manual Account Extension Section */}
+            <div className="bg-gradient-to-r from-purple-900/30 to-blue-900/30 border border-purple-700/50 rounded-lg p-4">
+              <h4 className="text-white font-semibold mb-3 flex items-center gap-2">
+                ✏️ Manually Add Accounts to ALT
+              </h4>
+              <p className="text-gray-400 text-sm mb-3">
+                Add custom public keys to an existing ALT. Useful for adding program IDs, PDAs, or other frequently-used accounts.
+              </p>
+              
+              <div className="flex gap-3 mb-3">
+                <div className="flex-1">
+                  <label className="text-sm text-gray-400 block mb-1">Target ALT Category</label>
+                  <select
+                    value={manualExtendCategory}
+                    onChange={(e) => setManualExtendCategory(e.target.value)}
+                    className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-700 focus:border-purple-500 focus:outline-none"
+                  >
+                    <option value="common">Common (Programs & System)</option>
+                    <option value="flashloan">Flashloan (Vaults & PDAs)</option>
+                    <option value="user-pdas">User PDAs</option>
+                    {altStatus?.categories
+                      .filter(c => !['common', 'flashloan', 'user-pdas'].includes(c))
+                      .map(category => (
+                        <option key={category} value={category}>{category}</option>
+                      ))
+                    }
+                  </select>
+                </div>
+              </div>
+              
+              <div className="mb-3">
+                <label className="text-sm text-gray-400 block mb-1">
+                  Public Keys (one per line or comma-separated)
+                </label>
+                <textarea
+                  value={manualAccounts}
+                  onChange={(e) => setManualAccounts(e.target.value)}
+                  placeholder="Enter Solana public keys...&#10;TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA&#10;11111111111111111111111111111111"
+                  className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-gray-700 focus:border-purple-500 focus:outline-none font-mono text-sm h-28 resize-y"
+                />
+                <div className="text-xs text-gray-500 mt-1">
+                  {manualAccounts.split(/[\n,\s]+/).filter(a => a.trim().length > 0).length} account(s) entered
+                </div>
+              </div>
+              
+              <button
+                onClick={handleManualExtend}
+                disabled={manualExtending || manualAccounts.trim().length === 0}
+                className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm font-medium"
+              >
+                {manualExtending ? '⏳ Adding...' : `➕ Add to ${manualExtendCategory} ALT`}
+              </button>
+            </div>
+
+            <div className="border-t border-gray-700 pt-4">
+              <h4 className="text-gray-400 text-sm font-medium mb-3">DEX Pool ALTs</h4>
+            </div>
+
             {DEX_CONFIGS.map((config) => {
               const exists = altStatus?.categories.includes(config.defaultCategory);
               return (

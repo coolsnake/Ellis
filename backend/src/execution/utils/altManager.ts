@@ -6,6 +6,7 @@ import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { logger } from '../../utils/logger.js';
 import { accountCache } from './accountCache.js';
 import { loadAltConfig, saveAltConfig, type AltConfig, type DexAltSet } from './altConfig.js';
+import { ARB_ROUTER_PROGRAM_ID } from '../../router/types.js';
 
 // Batch size for ALT loading - conservative to avoid rate limits
 const ALT_BATCH_SIZE = 5;
@@ -1227,11 +1228,11 @@ export class DexAltManager {
       }
 
       // ============================================
-      // 7. ROUTER PROGRAM (if configured)
+      // 7. ARB-ROUTER PROGRAM (always include)
       // ============================================
-      if ((CONFIG as any)?.router?.programId) {
-        addAccount((CONFIG as any).router.programId);
-      }
+      // Use configured program ID or fall back to default ARB_ROUTER_PROGRAM_ID
+      const routerProgramId = (CONFIG as any)?.router?.programId || ARB_ROUTER_PROGRAM_ID.toBase58();
+      addAccount(routerProgramId);
 
       try {
         logger.info('alt.manager.collect.common.complete', {

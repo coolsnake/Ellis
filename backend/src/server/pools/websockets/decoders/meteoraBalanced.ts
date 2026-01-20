@@ -667,6 +667,29 @@ export async function handleMeteoraBalancedVaultUpdate(
     const delta = diffNormalizedPools(prev, next);
     metbalCache.data = next;
     metbalCache.ts = Date.now();
+    
+    // CRITICAL: Update execution cache with native mints and was_swapped for direction calculation
+    try {
+      const { executionCache } = await import('../../../../execution/cache.js');
+      const existingStatic = executionCache.getStatic(poolId) || {} as any;
+      executionCache.setStatic(poolId, {
+        ...existingStatic,
+        programId: (existingPool as any)?.programId || existingStatic.programId,
+        dex: 'meteora_balanced',
+        pool_kind: 'amm',
+        mint_a: item.mint_a,
+        mint_b: item.mint_b,
+        decimals_a: item.decimals_a,
+        decimals_b: item.decimals_b,
+        vault_a: (item as any).account_a || vaultA,
+        vault_b: (item as any).account_b || vaultB,
+        native_mint_a: mintA,
+        native_mint_b: mintB,
+        native_account_a: vaultA,
+        native_account_b: vaultB,
+        was_swapped: processedPrice.wasSwapped,
+      });
+    } catch (e) { logCatchError('meteora_balanced.vault.cache', e); }
 
     const hasDelta = delta.amm.length || delta.clmm.length || delta.addedAmm || delta.removedAmm || delta.addedClmm || delta.removedClmm;
     if (hasDelta) {
@@ -947,6 +970,29 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     const delta = diffNormalizedPools(prev, next);
     metbalCache.data = next;
     metbalCache.ts = Date.now();
+    
+    // CRITICAL: Update execution cache with native mints and was_swapped for direction calculation
+    try {
+      const { executionCache } = await import('../../../../execution/cache.js');
+      const existingStatic = executionCache.getStatic(poolId) || {} as any;
+      executionCache.setStatic(poolId, {
+        ...existingStatic,
+        programId: 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  // DAMM v1 program
+        dex: 'meteora_balanced',
+        pool_kind: 'amm',
+        mint_a: item.mint_a,
+        mint_b: item.mint_b,
+        decimals_a: item.decimals_a,
+        decimals_b: item.decimals_b,
+        vault_a: decoded.aVault,
+        vault_b: decoded.bVault,
+        native_mint_a: decoded.tokenAMint,
+        native_mint_b: decoded.tokenBMint,
+        native_account_a: decoded.aVault,
+        native_account_b: decoded.bVault,
+        was_swapped: processedPrice?.wasSwapped,
+      });
+    } catch (e) { logCatchError('meteora_balanced.v1.cache', e); }
     
     const hasDelta = delta.amm.length || delta.clmm.length || delta.addedAmm || delta.removedAmm || delta.addedClmm || delta.removedClmm;
     if (hasDelta) {

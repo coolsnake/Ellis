@@ -656,6 +656,8 @@ export async function handleMeteoraUpdate(
         native_decimals_b: decB,
         native_account_a: accountA,
         native_account_b: accountB,
+        // CRITICAL: was_swapped is needed for direction fallback when native_mint_a/b lookup fails
+        was_swapped: processedPrice.wasSwapped,
         rawAccountData: data,
         rawAccountDataUpdatedMs: Date.now()
       };

@@ -81,6 +81,9 @@ type PoolStatic = {
   // Meteora-specific
   bin_array_lower?: string;
   bin_array_upper?: string;
+  bin_array_active?: string;  // Active bin array (containing the current active bin)
+  bin_array_lower2?: string;  // Lower-2 bin array (for wider swaps)
+  bin_array_upper2?: string;  // Upper-2 bin array (for wider swaps)
   // Pumpswap-specific
   creator?: string;
   metadata_creator?: string;
@@ -89,6 +92,9 @@ type PoolStatic = {
   onchain_quote_mint?: string;
   onchain_base_vault?: string;
   onchain_quote_vault?: string;
+  // Canonicalization flag - CRITICAL for direction calculation when native_mint_a/b are missing
+  // When was_swapped is true, canonical mint_a/b are reversed from native tokenX/tokenY
+  was_swapped?: boolean;
 };
 
 type PoolHot = {

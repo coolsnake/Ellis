@@ -802,6 +802,8 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   decimals_b: (pool as any).decimals_b ?? existingStatic.decimals_b,
                   native_mint_a: (pool as any).native_mint_a ?? existingStatic.native_mint_a,
                   native_mint_b: (pool as any).native_mint_b ?? existingStatic.native_mint_b,
+                  // CRITICAL: was_swapped is needed for direction fallback when native_mint_a/b are missing
+                  was_swapped: (pool as any).was_swapped ?? existingStatic.was_swapped,
                   binStep: (pool as any).bin_step ?? existingStatic.binStep,
                   // Store all 5 validated bin arrays around the active bin:
                   // - bin_array_active: The bin array containing the active bin (activeIndex)
@@ -837,9 +839,50 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                 } catch (e) { logCatchError('pools.meteora', e); }
               } else {
                 failed++;
+                // FALLBACK: Even if activeId decode succeeds but bin arrays fail,
+                // still populate essential cache fields for direction calculation
+                try {
+                  const existingStatic = executionCache.getStatic(pool.id) || {} as any;
+                  if (!existingStatic.native_mint_a || !existingStatic.was_swapped) {
+                    executionCache.setStatic(pool.id, {
+                      ...existingStatic,
+                      programId: existingStatic.programId || programId.toBase58(),
+                      dex: existingStatic.dex || 'meteora',
+                      pool_kind: existingStatic.pool_kind || 'clmm',
+                      mint_a: (pool as any).mint_a ?? existingStatic.mint_a,
+                      mint_b: (pool as any).mint_b ?? existingStatic.mint_b,
+                      decimals_a: (pool as any).decimals_a ?? existingStatic.decimals_a,
+                      decimals_b: (pool as any).decimals_b ?? existingStatic.decimals_b,
+                      native_mint_a: (pool as any).native_mint_a ?? existingStatic.native_mint_a,
+                      native_mint_b: (pool as any).native_mint_b ?? existingStatic.native_mint_b,
+                      was_swapped: (pool as any).was_swapped ?? existingStatic.was_swapped,
+                      binStep: (pool as any).bin_step ?? existingStatic.binStep,
+                    });
+                  }
+                } catch (e) { logCatchError('pools.meteora.fallback_cache', e); }
               }
             } catch (decodeErr) {
               failed++;
+              // FALLBACK: Even if decode fails, populate essential cache fields
+              try {
+                const existingStatic = executionCache.getStatic(pool.id) || {} as any;
+                if (!existingStatic.native_mint_a || !existingStatic.was_swapped) {
+                  executionCache.setStatic(pool.id, {
+                    ...existingStatic,
+                    programId: existingStatic.programId || programId.toBase58(),
+                    dex: existingStatic.dex || 'meteora',
+                    pool_kind: existingStatic.pool_kind || 'clmm',
+                    mint_a: (pool as any).mint_a ?? existingStatic.mint_a,
+                    mint_b: (pool as any).mint_b ?? existingStatic.mint_b,
+                    decimals_a: (pool as any).decimals_a ?? existingStatic.decimals_a,
+                    decimals_b: (pool as any).decimals_b ?? existingStatic.decimals_b,
+                    native_mint_a: (pool as any).native_mint_a ?? existingStatic.native_mint_a,
+                    native_mint_b: (pool as any).native_mint_b ?? existingStatic.native_mint_b,
+                    was_swapped: (pool as any).was_swapped ?? existingStatic.was_swapped,
+                    binStep: (pool as any).bin_step ?? existingStatic.binStep,
+                  });
+                }
+              } catch (e) { logCatchError('pools.meteora.fallback_cache', e); }
               try {
                 logger.warn('meteora.activeId.decode_failed', {
                   cat: 'meteora',
@@ -852,6 +895,26 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
             }
           } else {
             failed++;
+            // FALLBACK: Even if account info is missing, populate essential cache fields
+            try {
+              const existingStatic = executionCache.getStatic(pool.id) || {} as any;
+              if (!existingStatic.native_mint_a || !existingStatic.was_swapped) {
+                executionCache.setStatic(pool.id, {
+                  ...existingStatic,
+                  programId: existingStatic.programId || programId.toBase58(),
+                  dex: existingStatic.dex || 'meteora',
+                  pool_kind: existingStatic.pool_kind || 'clmm',
+                  mint_a: (pool as any).mint_a ?? existingStatic.mint_a,
+                  mint_b: (pool as any).mint_b ?? existingStatic.mint_b,
+                  decimals_a: (pool as any).decimals_a ?? existingStatic.decimals_a,
+                  decimals_b: (pool as any).decimals_b ?? existingStatic.decimals_b,
+                  native_mint_a: (pool as any).native_mint_a ?? existingStatic.native_mint_a,
+                  native_mint_b: (pool as any).native_mint_b ?? existingStatic.native_mint_b,
+                  was_swapped: (pool as any).was_swapped ?? existingStatic.was_swapped,
+                  binStep: (pool as any).bin_step ?? existingStatic.binStep,
+                });
+              }
+            } catch (e) { logCatchError('pools.meteora.fallback_cache', e); }
           }
         }
       } catch (batchErr) {
