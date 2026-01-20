@@ -3093,36 +3093,26 @@ export class DexAltManager {
   /**
    * Pre-load all registered ALTs into memory cache
    * Called at startup to avoid RPC calls during transaction building
+   * Uses batchLoadAlts for proper rate limiting to avoid 429s
    */
   async preloadAllAltAccounts(): Promise<{ loaded: number; failed: number }> {
-    const connection = getConnection();
     const addresses = this.getAllAltAddresses();
-    let loaded = 0;
-    let failed = 0;
 
     if (addresses.length === 0) {
       return { loaded: 0, failed: 0 };
     }
 
-    // Load all ALTs in parallel for faster startup
-    const results = await Promise.allSettled(
-      addresses.map(async (addr) => {
-        try {
-          const pk = new PublicKey(addr);
-          const result = await connection.getAddressLookupTable(pk);
-          if (result.value) {
-            this.altAccounts.set(addr, result.value);
-            return { addr, success: true, accountCount: result.value.state.addresses.length };
-          }
-          return { addr, success: false };
-        } catch (e) {
-          return { addr, success: false, error: e };
-        }
-      })
-    );
+    // Use batchLoadAlts which has proper rate limiting built in
+    const loadedAlts = await this.batchLoadAlts(addresses);
 
-    for (const result of results) {
-      if (result.status === 'fulfilled' && result.value.success) {
+    // Update the cache with loaded ALTs
+    let loaded = 0;
+    let failed = 0;
+
+    for (const addr of addresses) {
+      const altAccount = loadedAlts.get(addr);
+      if (altAccount) {
+        this.altAccounts.set(addr, altAccount);
         loaded++;
       } else {
         failed++;
@@ -4115,9 +4105,18 @@ export class DexAltManager {
     for (const [category, pk] of this.altAddresses.entries()) {
       addressToCategory.set(pk.toBase58(), category);
     }
-    
-    // Also check altConfig for dexAlts addresses
+
+    // Also check altConfig for static ALT addresses (common, flashloan, userPdas)
     const altConfig = this.altConfig || await loadAltConfig();
+    if (altConfig.alts) {
+      for (const [category, addr] of Object.entries(altConfig.alts)) {
+        if (addr && !addressToCategory.has(addr)) {
+          addressToCategory.set(addr, category);
+        }
+      }
+    }
+
+    // Also check altConfig for dexAlts addresses
     if (altConfig.dexAlts) {
       for (const [dex, dexAltSet] of Object.entries(altConfig.dexAlts)) {
         if (dexAltSet?.addresses) {
@@ -5309,7 +5308,23 @@ export class DexAltManager {
       
       // Create new common ALT
       const address = await this.createAltOnChain(wallet, commonAccounts, 'common');
-      
+
+      // Update in-memory state
+      this.altAddresses.set('common', address);
+
+      // Also load the ALT account into cache for immediate use
+      try {
+        const connection = getConnection();
+        const altAccount = await withRpcLimit(
+          () => connection.getAddressLookupTable(address),
+          1,
+          { module: 'alt', method: 'getAddressLookupTable' }
+        );
+        if (altAccount.value) {
+          this.altAccounts.set(address.toBase58(), altAccount.value);
+        }
+      } catch {}
+
       // Save to config
       config.alts.common = address.toBase58();
       config.walletPublicKey = walletPk.toBase58();
