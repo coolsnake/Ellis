@@ -79,6 +79,32 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
     }
   }, [expanded]);
 
+  // Load ALT info for all categories when expanded (moved from render to effect)
+  React.useEffect(() => {
+    if (!expanded || !altStatus?.addresses) return;
+
+    const categories = Object.keys(altStatus.addresses);
+    // Only load info for categories we don't already have
+    const missingCategories = categories.filter(cat => !altInfos[cat]);
+
+    // Load sequentially with small delay to avoid overwhelming RPC
+    let cancelled = false;
+    const loadMissing = async () => {
+      for (const category of missingCategories) {
+        if (cancelled) break;
+        await loadAltInfo(category);
+        // Small delay between requests
+        await new Promise(r => setTimeout(r, 100));
+      }
+    };
+
+    if (missingCategories.length > 0) {
+      loadMissing();
+    }
+
+    return () => { cancelled = true; };
+  }, [expanded, altStatus?.addresses ? Object.keys(altStatus.addresses).join(',') : '']);
+
   const loadAltConfig = async () => {
     try {
       const res = await fetch(`${apiBase}${ROUTES.arb.alts.config}`, { headers: getAuthHeaders() });
@@ -819,10 +845,8 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
                   const isDeactivating = altActionLoading === `deactivate-${category}`;
                   const isClosing = altActionLoading === `close-${category}`;
 
-                  // Load info if not loaded
-                  if (!info && expanded) {
-                    loadAltInfo(category);
-                  }
+                  // NOTE: ALT info loading is now handled by useEffect above
+                  // to prevent excessive API calls on every render
 
                   return (
                     <div key={category} className="flex items-center justify-between bg-gray-900/40 rounded px-2 py-1.5 border border-gray-700">

@@ -3721,8 +3721,9 @@ async fn arb_graph_snapshot(
     Json(handle_graph_snapshot(state, req).await)
 }
 
-// Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once.
-// price_a_per_b always represents "source-per-1-target". To express target-per-1-source we invert.
+// Centralized price conversion: apply fee to price_a_per_b.
+// price_a_per_b represents "target-per-1-source" (B/A = how many B for 1 A).
+// This is already the rate_effective format we need - NO inversion required.
 #[inline]
 fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (f64, f64) {
     let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
@@ -3730,12 +3731,9 @@ fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (
     if !(px.is_finite() && px > 0.0) {
         return (0.0, 0.0);
     }
-    // price_a_per_b is always "source-per-1-target", so we always invert to get rate_effective
-    // rate_effective = "target-per-1-source" (what we get when traversing the edge)
-    let base: f64 = 1.0 / px;
-    if !(base.is_finite() && base > 0.0) {
-        return (0.0, 0.0);
-    }
+    // price_a_per_b is "target-per-1-source" (B/A), which is exactly what rate_effective needs.
+    // For edge A->B: rate_effective = how many B you get for 1 A = price_a_per_b (no inversion)
+    let base: f64 = px;
     let eff: f64 = base * (1.0 - fee_bps / 10_000.0).max(0.0);
     (base, eff)
 }

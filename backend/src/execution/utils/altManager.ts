@@ -8,9 +8,9 @@ import { accountCache } from './accountCache.js';
 import { loadAltConfig, saveAltConfig, type AltConfig, type DexAltSet } from './altConfig.js';
 
 // Batch size for ALT loading - conservative to avoid rate limits
-const ALT_BATCH_SIZE = 10;
+const ALT_BATCH_SIZE = 5;
 // Delay between batches in milliseconds
-const ALT_BATCH_DELAY_MS = 200;
+const ALT_BATCH_DELAY_MS = 500;
 
 /**
  * Manages Address Lookup Tables (ALTs) for DEX transactions
@@ -58,10 +58,10 @@ export class DexAltManager {
       if (pubkeys.length === 0) continue;
 
       try {
-        // Use higher weight for batch calls (3 = roughly 3 individual calls)
+        // Use higher weight for batch calls - getMultipleAccountsInfo is heavier than individual calls
         const accountInfos = await withRpcLimit(
           () => connection.getMultipleAccountsInfo(pubkeys),
-          3,
+          5,
           { module: 'alt', method: 'batchLoadAlts' }
         );
 
