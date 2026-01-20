@@ -21,10 +21,13 @@ function getDefaults(): RpcLimiterConfig {
   const envBurst = process.env.RPC_BURST ? Number(process.env.RPC_BURST) : null;
   const envMinGap = process.env.RPC_MIN_GAP_MS ? Number(process.env.RPC_MIN_GAP_MS) : null;
   
+  // Access CONFIG properties with type assertion since they exist at runtime
+  const configAny = CONFIG as any;
+  
   return {
-    maxRps: envMaxRps ?? CONFIG.rpcMaxRps ?? 50,
-    burst: envBurst ?? CONFIG.rpcBurst ?? 0, // 0 means auto-calculate
-    minGapMs: envMinGap ?? CONFIG.rpcMinGapMs ?? 20,
+    maxRps: envMaxRps ?? configAny.rpcMaxRps ?? 50,
+    burst: envBurst ?? configAny.rpcBurst ?? 0, // 0 means auto-calculate
+    minGapMs: envMinGap ?? configAny.rpcMinGapMs ?? 20,
   };
 }
 
