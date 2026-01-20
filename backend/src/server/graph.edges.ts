@@ -229,12 +229,13 @@ export function edgesFromPoolIncremental(
         if (s64 > 0n) {
           const decA = Number((p as any)?.decimals_a || (p as any)?.native_decimals_a || 9);
           const decB = Number((p as any)?.decimals_b || (p as any)?.native_decimals_b || 9);
-          // sqrt_price_x64^2 / 2^128 = price_b_per_a (in raw units)
-          // price_a_per_b = 1 / price_b_per_a (adjusted for decimals)
+          // sqrt_price_x64 = sqrt(tokenB_atomic / tokenA_atomic) * 2^64
+          // sqrt_price_x64^2 / 2^128 = tokenB_atomic / tokenA_atomic = price_a_per_b_atomic
+          // price_a_per_b_whole = price_a_per_b_atomic * 10^(decA - decB)
           const two128 = BigInt(2) ** BigInt(128);
-          const sqPriceNum = Number(s64 * s64) / Number(two128);
+          const priceAperB_atomic = Number(s64 * s64) / Number(two128);
           const decimalAdjust = 10 ** (decA - decB);
-          fwdRaw = (1 / sqPriceNum) * decimalAdjust;
+          fwdRaw = priceAperB_atomic * decimalAdjust;
         }
       } catch {}
     }

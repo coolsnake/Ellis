@@ -4,6 +4,8 @@ export const ROUTES = {
     base: '/system',
     config: '/system/config',
     shutdown: '/system/shutdown',
+    rpcMetrics: '/system/rpc/metrics',
+    rpcLimiterConfig: '/system/rpc/limiter/config',
   },
   tokens: {
     map: '/tokens/map',

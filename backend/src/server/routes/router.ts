@@ -144,6 +144,59 @@ export function createRouterRouter(io: SocketIOServer): Router {
   });
 
   /**
+   * POST /router/config - Update router configuration (alias for PUT)
+   */
+  api.post('/router/config', async (req: Request, res: Response) => {
+    try {
+      const updates = req.body;
+      
+      // If setting programId, validate it exists on-chain
+      if (updates.programId) {
+        try {
+          // Use cluster from updates or current config
+          const currentConfig = await loadRouterConfig();
+          const targetCluster = updates.cluster || currentConfig.cluster;
+          const connection = getRouterConnection(targetCluster);
+          const pubkey = new PublicKey(updates.programId);
+          const accountInfo = await connection.getAccountInfo(pubkey, 'confirmed');
+          
+          if (!accountInfo) {
+            return res.status(400).json({ 
+              success: false, 
+              error: `Program ${updates.programId} not found on ${getSolanaCluster()}` 
+            });
+          }
+          
+          if (!accountInfo.executable) {
+            return res.status(400).json({ 
+              success: false, 
+              error: `Account ${updates.programId} exists but is not executable` 
+            });
+          }
+          
+          logger.info('router.config.program_id_validated', {
+            cat: 'router',
+            programId: updates.programId,
+            cluster: getSolanaCluster(),
+          });
+        } catch (err: any) {
+          return res.status(400).json({ 
+            success: false, 
+            error: `Invalid program ID: ${err.message}` 
+          });
+        }
+      }
+      
+      const config = await saveRouterConfig(updates);
+      emit('router:config', config);
+      res.json({ success: true, config });
+    } catch (err: any) {
+      logger.error('router.config.update.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
    * PUT /router/config/mode - Update execution mode
    */
   api.put('/router/config/mode', async (req: Request, res: Response) => {

@@ -13,16 +13,25 @@ function parseEnvNumber(key: string, defaultValue: number): number {
   }
 }
 
-const maxRps = parseEnvNumber('RPC_MAX_RPS', 50);
-const burstEnv = parseEnvNumber('RPC_BURST', 0);
-const capacity = burstEnv > 0 ? burstEnv : Math.max(1, Math.ceil(maxRps / 4));
-const minGapMs = parseEnvNumber('RPC_MIN_GAP_MS', 20);
+// Configuration state (can be updated dynamically)
+let maxRps = parseEnvNumber('RPC_MAX_RPS', 50);
+let burstEnv = parseEnvNumber('RPC_BURST', 0);
+let capacity = burstEnv > 0 ? burstEnv : Math.max(1, Math.ceil(maxRps / 4));
+let minGapMs = parseEnvNumber('RPC_MIN_GAP_MS', 20);
 
 // Validate all values are finite numbers
-if (!Number.isFinite(maxRps) || !Number.isFinite(capacity) || !Number.isFinite(minGapMs)) {
-  console.error('[RPC LIMITER] FATAL: Invalid configuration', { maxRps, capacity, minGapMs });
-  throw new Error('RPC Limiter: Invalid numeric configuration');
+function validateConfig(): void {
+  if (!Number.isFinite(maxRps) || !Number.isFinite(capacity) || !Number.isFinite(minGapMs)) {
+    console.error('[RPC LIMITER] FATAL: Invalid configuration', { maxRps, capacity, minGapMs });
+    throw new Error('RPC Limiter: Invalid numeric configuration');
+  }
+  if (maxRps <= 0 || capacity <= 0 || minGapMs < 0) {
+    console.error('[RPC LIMITER] FATAL: Invalid configuration (must be positive)', { maxRps, capacity, minGapMs });
+    throw new Error('RPC Limiter: Configuration values must be positive');
+  }
 }
+
+validateConfig();
 
 // Start with full capacity so first requests don't block
 let tokens = capacity;
@@ -39,6 +48,88 @@ if (process.env.RPC_MAX_RPS || process.env.RPC_BURST || process.env.RPC_MIN_GAP_
     RPC_BURST: process.env.RPC_BURST,
     RPC_MIN_GAP_MS: process.env.RPC_MIN_GAP_MS
   });
+}
+
+/**
+ * Initialize RPC limiter from persisted config (called on startup)
+ * This loads the config from file and applies it, overriding env vars if present
+ */
+export async function initializeRpcLimiterFromConfig(): Promise<void> {
+  try {
+    const { loadRpcLimiterConfig } = await import('../server/rpcLimiterConfigStore.js');
+    const config = await loadRpcLimiterConfig();
+    
+    // Only update if we got a valid config from file (not just defaults)
+    // This allows env vars to take precedence on first run
+    updateRpcLimiterConfig({
+      maxRps: config.maxRps,
+      burst: config.burst,
+      minGapMs: config.minGapMs,
+    });
+    
+    console.log(`[RPC LIMITER] Loaded config from file: maxRps=${config.maxRps}, burst=${config.burst}, minGapMs=${config.minGapMs}`);
+  } catch (err: any) {
+    console.warn(`[RPC LIMITER] Failed to load config from file, using defaults: ${err?.message || err}`);
+  }
+}
+
+/**
+ * Update RPC rate limiter configuration at runtime
+ * @param newConfig Partial configuration to update
+ * @returns The new configuration
+ */
+export function updateRpcLimiterConfig(newConfig: {
+  maxRps?: number;
+  burst?: number;
+  minGapMs?: number;
+}): { maxRps: number; capacity: number; minGapMs: number } {
+  const oldMaxRps = maxRps;
+  const oldCapacity = capacity;
+  const oldMinGapMs = minGapMs;
+  
+  if (newConfig.maxRps !== undefined) {
+    maxRps = Number(newConfig.maxRps);
+  }
+  if (newConfig.burst !== undefined) {
+    burstEnv = Number(newConfig.burst);
+    capacity = burstEnv > 0 ? burstEnv : Math.max(1, Math.ceil(maxRps / 4));
+  } else if (newConfig.maxRps !== undefined) {
+    // Recalculate capacity if maxRps changed but burst didn't
+    capacity = burstEnv > 0 ? burstEnv : Math.max(1, Math.ceil(maxRps / 4));
+  }
+  if (newConfig.minGapMs !== undefined) {
+    minGapMs = Number(newConfig.minGapMs);
+  }
+  
+  // Validate new configuration
+  try {
+    validateConfig();
+  } catch (e) {
+    // Revert on validation failure
+    maxRps = oldMaxRps;
+    capacity = oldCapacity;
+    minGapMs = oldMinGapMs;
+    throw e;
+  }
+  
+  // Cap tokens to new capacity if capacity decreased
+  if (tokens > capacity) {
+    tokens = capacity;
+  }
+  
+  // Refill to ensure we have valid state
+  refill();
+  
+  console.log(`[RPC LIMITER] Configuration updated: maxRps=${maxRps}, capacity=${capacity}, minGapMs=${minGapMs}, tokens=${tokens.toFixed(2)}`);
+  
+  return { maxRps, capacity, minGapMs };
+}
+
+/**
+ * Get current RPC rate limiter configuration
+ */
+export function getRpcLimiterConfig(): { maxRps: number; capacity: number; minGapMs: number; burst: number } {
+  return { maxRps, capacity, minGapMs, burst: burstEnv };
 }
 
 // RPC Metrics tracking

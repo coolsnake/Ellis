@@ -151,7 +151,24 @@ export function swapPoolFields<T extends Record<string, any>>(obj: T): T {
 
   // Invert price (A per B becomes B per A, so invert)
   if (typeof out.price_a_per_b === 'number' && out.price_a_per_b > 0) {
-    out.price_a_per_b = 1 / out.price_a_per_b;
+    const inverted = 1 / out.price_a_per_b;
+    // CRITICAL: Check for Infinity and very small values that could cause downstream issues
+    // Infinity occurs when inverting very small prices (1/1e-320 = Infinity)
+    // 0 occurs when inverting Infinity (1/Infinity = 0)
+    if (Number.isFinite(inverted) && inverted > 0) {
+      out.price_a_per_b = inverted;
+    } else {
+      // Invalid inverted price - log warning and set to undefined
+      try {
+        logger.warn('canonical.swap.price_inversion_overflow', {
+          original_price: out.price_a_per_b,
+          inverted_price: inverted,
+          pool_id: (obj as any)?.id?.slice(0, 12),
+          cat: 'canonical'
+        });
+      } catch {}
+      out.price_a_per_b = undefined;
+    }
   }
   
   // Swap any keys that end with _a/_b

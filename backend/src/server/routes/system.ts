@@ -217,6 +217,74 @@ export function createSystemRouter(_io: SocketIOServer): Router {
     }
   });
 
+  api.get('/system/rpc/limiter/config', async (_req, res) => {
+    try {
+      const { loadRpcLimiterConfig } = await import('../rpcLimiterConfigStore.js');
+      const config = await loadRpcLimiterConfig();
+      res.json(config);
+    } catch (e: any) {
+      logger.error('server: failed to get RPC limiter config', { error: String(e?.message || e), cat: 'server' });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/system/rpc/limiter/config', async (req, res) => {
+    try {
+      const { maxRps, burst, minGapMs } = req.body as {
+        maxRps?: number;
+        burst?: number;
+        minGapMs?: number;
+      };
+
+      // Validate input
+      if (maxRps !== undefined && (!Number.isFinite(maxRps) || maxRps <= 0)) {
+        return res.status(400).json({ error: 'maxRps must be a positive number' });
+      }
+      if (burst !== undefined && (!Number.isFinite(burst) || burst < 0)) {
+        return res.status(400).json({ error: 'burst must be a non-negative number' });
+      }
+      if (minGapMs !== undefined && (!Number.isFinite(minGapMs) || minGapMs < 0)) {
+        return res.status(400).json({ error: 'minGapMs must be a non-negative number' });
+      }
+
+      // Update the in-memory limiter first
+      const { updateRpcLimiterConfig } = await import('../../utils/rpcLimiter.js');
+      const updated = updateRpcLimiterConfig({
+        maxRps,
+        burst,
+        minGapMs,
+      });
+
+      // Persist to file
+      const { saveRpcLimiterConfig, loadRpcLimiterConfig } = await import('../rpcLimiterConfigStore.js');
+      const currentConfig = await loadRpcLimiterConfig();
+      const saved = await saveRpcLimiterConfig({
+        maxRps: updated.maxRps,
+        burst: burst !== undefined ? burst : currentConfig.burst,
+        minGapMs: updated.minGapMs,
+      });
+
+      logger.info('server: RPC limiter config updated', {
+        maxRps: saved.maxRps,
+        burst: saved.burst,
+        minGapMs: saved.minGapMs,
+        cat: 'server',
+      });
+
+      emit('log', {
+        level: 'info',
+        message: `RPC rate limiter updated: maxRps=${saved.maxRps}, burst=${saved.burst}, minGapMs=${saved.minGapMs}ms`,
+        timestamp: new Date().toISOString(),
+        context: { cat: 'terminal' },
+      });
+
+      res.json({ success: true, config: saved });
+    } catch (e: any) {
+      logger.error('server: failed to update RPC limiter config', { error: String(e?.message || e), cat: 'server' });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 

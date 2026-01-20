@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { CollapsibleSection } from './CollapsibleSection';
 import { useSocket } from '../app/contexts/socket';
+import { apiBase } from '../utils/api';
+import { ROUTES } from '../utils/routes';
 
 interface RpcMetrics {
   overall: {
@@ -89,7 +91,7 @@ interface GraphQLMetrics {
   timestamp: number;
 }
 
-type ViewMode = 'overview' | 'modules' | 'methods' | 'errors' | 'graphql';
+type ViewMode = 'overview' | 'modules' | 'methods' | 'errors' | 'graphql' | 'config';
 
 const formatMs = (ms: number): string => {
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -118,11 +120,65 @@ const StatusIndicator: React.FC<{ status: 'good' | 'warning' | 'error' }> = ({ s
   return <span className={`inline-block w-2 h-2 rounded-full ${colors[status]}`} />;
 };
 
+interface RpcLimiterConfig {
+  maxRps: number;
+  burst: number;
+  minGapMs: number;
+}
+
 const RpcMonitorInner: React.FC = () => {
   const [metrics, setMetrics] = useState<RpcMetrics | null>(null);
   const [graphqlMetrics, setGraphqlMetrics] = useState<GraphQLMetrics | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('overview');
+  const [config, setConfig] = useState<RpcLimiterConfig | null>(null);
+  const [editingConfig, setEditingConfig] = useState<RpcLimiterConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
   const { socket } = useSocket();
+
+  // Load config on mount and when switching to config view
+  useEffect(() => {
+    if (viewMode === 'config' && !config) {
+      loadConfig();
+    }
+  }, [viewMode]);
+
+  const loadConfig = async () => {
+    try {
+      const response = await fetch(`${apiBase}${ROUTES.system.rpcLimiterConfig}`);
+      if (!response.ok) throw new Error('Failed to load config');
+      const data = await response.json();
+      setConfig(data);
+      setEditingConfig(data);
+      setConfigError(null);
+    } catch (err: any) {
+      setConfigError(err.message || 'Failed to load config');
+    }
+  };
+
+  const saveConfig = async () => {
+    if (!editingConfig) return;
+    setSaving(true);
+    setConfigError(null);
+    try {
+      const response = await fetch(`${apiBase}${ROUTES.system.rpcLimiterConfig}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingConfig),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to save config');
+      }
+      const saved = await response.json();
+      setConfig(saved.config);
+      setEditingConfig(saved.config);
+    } catch (err: any) {
+      setConfigError(err.message || 'Failed to save config');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!socket) return;
@@ -267,7 +323,7 @@ const RpcMonitorInner: React.FC = () => {
 
         {/* View Mode Tabs */}
         <div className="flex gap-2 border-b border-gray-700">
-          {(['overview', 'modules', 'methods', 'errors', 'graphql'] as ViewMode[]).map(mode => (
+          {(['overview', 'modules', 'methods', 'errors', 'graphql', 'config'] as ViewMode[]).map(mode => (
             <button
               key={mode}
               onClick={() => setViewMode(mode)}
@@ -483,6 +539,128 @@ const RpcMonitorInner: React.FC = () => {
                     <div className="text-sm text-gray-500 py-4 text-center">No GraphQL requests yet</div>
                   )}
                 </>
+              )}
+            </div>
+          )}
+
+          {viewMode === 'config' && (
+            <div className="space-y-4">
+              {configError && (
+                <div className="bg-red-900/20 border border-red-900/50 rounded p-3 text-sm text-red-400">
+                  {configError}
+                </div>
+              )}
+              
+              {!editingConfig ? (
+                <div className="text-sm text-gray-400 py-4 text-center">Loading configuration...</div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="bg-gray-900/50 p-4 rounded">
+                    <h3 className="text-lg font-semibold mb-4 text-white">RPC Rate Limiter Configuration</h3>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-sm mb-1 text-gray-300">Max RPS (requests/sec)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                          value={editingConfig.maxRps}
+                          onChange={(e) => setEditingConfig({ ...editingConfig, maxRps: Number(e.target.value) || 1 })}
+                        />
+                        <p className="text-xs text-gray-400 mt-1">Maximum RPC calls per second</p>
+                        <p className="text-xs text-gray-500 mt-1">Current: {metrics?.overall?.rateLimiter?.maxRps || 'N/A'}</p>
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm mb-1 text-gray-300">Burst Capacity (tokens)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                          value={editingConfig.burst}
+                          onChange={(e) => setEditingConfig({ ...editingConfig, burst: Number(e.target.value) || 0 })}
+                        />
+                        <p className="text-xs text-gray-400 mt-1">Token bucket capacity (0 = auto: maxRps/4)</p>
+                        <p className="text-xs text-gray-500 mt-1">Current: {metrics?.overall?.rateLimiter?.capacity || 'N/A'}</p>
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm mb-1 text-gray-300">Min Gap (ms)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                          value={editingConfig.minGapMs}
+                          onChange={(e) => setEditingConfig({ ...editingConfig, minGapMs: Number(e.target.value) || 0 })}
+                        />
+                        <p className="text-xs text-gray-400 mt-1">Minimum gap between requests in milliseconds</p>
+                      </div>
+                    </div>
+                    
+                    <div className="mt-4 p-3 bg-gray-800/50 rounded text-xs text-gray-300">
+                      <strong className="text-yellow-400">💡 Tips:</strong>
+                      <ul className="list-disc list-inside mt-2 space-y-1">
+                        <li>Lower burst capacity (4-5) reduces RPS spikes while maintaining sustained rate</li>
+                        <li>Set burst to 0 to auto-calculate as maxRps/4</li>
+                        <li>Changes take effect immediately and persist across restarts</li>
+                        <li>Monitor the Rate Limiter status in the Overview tab to see current token levels</li>
+                      </ul>
+                    </div>
+                    
+                    <div className="mt-4 flex gap-2">
+                      <button
+                        onClick={saveConfig}
+                        disabled={saving || !editingConfig}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded text-sm font-medium"
+                      >
+                        {saving ? 'Saving...' : 'Save Configuration'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (config) {
+                            setEditingConfig(config);
+                            setConfigError(null);
+                          }
+                        }}
+                        disabled={saving || !config}
+                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded text-sm"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* Current Status */}
+                  {metrics && (
+                    <div className="bg-gray-900/50 p-4 rounded">
+                      <h4 className="text-sm font-semibold mb-2 text-gray-300">Current Status</h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                        <div>
+                          <div className="text-xs text-gray-500">Max RPS</div>
+                          <div className="text-white">{metrics.overall?.rateLimiter?.maxRps || 'N/A'}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500">Capacity</div>
+                          <div className="text-white">{metrics.overall?.rateLimiter?.capacity || 'N/A'}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500">Available Tokens</div>
+                          <div className="text-green-400">{metrics.overall?.rateLimiter?.availableTokens?.toFixed(1) || 'N/A'}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500">Queue Depth</div>
+                          <div className={`${(metrics.overall?.rateLimiter?.queueDepth || 0) > 0 ? 'text-yellow-400' : 'text-gray-400'}`}>
+                            {metrics.overall?.rateLimiter?.queueDepth || 0}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}

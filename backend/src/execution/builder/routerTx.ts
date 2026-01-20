@@ -2099,6 +2099,7 @@ async function extractDexAccounts(
 
         // PRIORITY 1: Use SDK-provided bin arrays directly if available (SDK Quote mode)
         // The SDK returns validated bin arrays sorted by index (low to high)
+        // We use activeId to find the active bin array and select directionally from there
         const sdkBinArrays = (hop as any).binArrays as string[] | undefined;
         if (sdkBinArrays && sdkBinArrays.length > 0) {
           // Validate all SDK-provided addresses before directional selection
@@ -2111,24 +2112,71 @@ async function extractDexAccounts(
           }
 
           if (validatedArrays.length > 0) {
-            // SDK arrays are sorted by index (low to high)
-            // Select directionally: X→Y needs lower indices, Y→X needs upper indices
-            // The active bin array is typically near the middle of the sorted array
-            const midpoint = Math.floor(validatedArrays.length / 2);
-            
-            if (isXtoY) {
-              // X→Y: take from midpoint going DOWN (lower indices first)
-              // Reverse the lower half so active is first, then lower, lower-1, etc.
-              const lowerHalf = validatedArrays.slice(0, midpoint + 1).reverse();
-              directionalBinArrays = lowerHalf.slice(0, neededBinArrayCount);
-            } else {
-              // Y→X: take from midpoint going UP (higher indices)
-              directionalBinArrays = validatedArrays.slice(midpoint, midpoint + neededBinArrayCount);
+            // Calculate the active bin array index from activeId
+            // Each bin array contains BIN_ARRAY_SIZE (70) bins
+            const BIN_ARRAY_SIZE = 70;
+            const sdkActiveId = hop.activeId ?? activeId;
+            let activeArrayIndex = -1;
+
+            if (typeof sdkActiveId === 'number' && Number.isFinite(sdkActiveId)) {
+              // activeId tells us which bin is active; activeIndex = floor(activeId / 70)
+              const activeBinArrayIdx = Math.floor(sdkActiveId / BIN_ARRAY_SIZE);
+
+              // Derive the PDA for the active bin array to find it in the SDK list
+              const meteoraPoolIdClean = hop.poolId.replace(/[#-]rev$/, '');
+              const idxBn = new BN(activeBinArrayIdx);
+              const seed = idxBn.isNeg()
+                ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
+                : idxBn.toArrayLike(Buffer, 'le', 8);
+              const [activeBinArrayPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from('bin_array'), new PublicKey(meteoraPoolIdClean).toBuffer(), seed],
+                new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') // METEORA_DLMM_PROGRAM
+              );
+              const activeBinArrayAddr = activeBinArrayPda.toBase58();
+
+              // Find the active bin array's position in the SDK list
+              for (let i = 0; i < validatedArrays.length; i++) {
+                if (validatedArrays[i].toBase58() === activeBinArrayAddr) {
+                  activeArrayIndex = i;
+                  break;
+                }
+              }
+
+              logger.debug('routerTx.meteora.binArrays.activeIdLookup', {
+                cat: 'tx',
+                poolId: hop.poolId.slice(0, 8),
+                activeId: sdkActiveId,
+                activeBinArrayIdx,
+                activeBinArrayPda: activeBinArrayAddr.slice(0, 8),
+                foundAtIndex: activeArrayIndex,
+                sdkArrayCount: validatedArrays.length,
+              });
             }
-            
+
+            // If we found the active array, select directionally from there
+            // Otherwise fall back to midpoint heuristic
+            const startIndex = activeArrayIndex >= 0 ? activeArrayIndex : Math.floor(validatedArrays.length / 2);
+
+            if (isXtoY) {
+              // X→Y: price goes DOWN → need active array first, then lower indices
+              // Take from startIndex going DOWN (active, active-1, active-2, ...)
+              directionalBinArrays = [];
+              for (let i = startIndex; i >= 0 && directionalBinArrays.length < neededBinArrayCount; i--) {
+                directionalBinArrays.push(validatedArrays[i]);
+              }
+            } else {
+              // Y→X: price goes UP → need active array first, then higher indices
+              // Take from startIndex going UP (active, active+1, active+2, ...)
+              directionalBinArrays = [];
+              for (let i = startIndex; i < validatedArrays.length && directionalBinArrays.length < neededBinArrayCount; i++) {
+                directionalBinArrays.push(validatedArrays[i]);
+              }
+            }
+
             // Ensure we have enough arrays (pad with what we have if needed)
             while (directionalBinArrays.length < neededBinArrayCount && validatedArrays.length > 0) {
-              directionalBinArrays.push(validatedArrays[directionalBinArrays.length % validatedArrays.length]);
+              // Pad with the last array we have (safe fallback)
+              directionalBinArrays.push(directionalBinArrays[directionalBinArrays.length - 1] || validatedArrays[0]);
             }
 
             logger.debug('routerTx.meteora.binArrays.fromSdk', {
@@ -2140,7 +2188,8 @@ async function extractDexAccounts(
                 selectedCount: directionalBinArrays.length,
                 binStep: binStepNum,
                 isXtoY,
-                midpoint,
+                activeArrayIndex,
+                startIndex,
                 arrays: directionalBinArrays.map(a => a.toBase58().slice(0, 8)),
               },
             });
@@ -2498,33 +2547,62 @@ async function extractDexAccounts(
         const knownLower = validateBase58Address(hop.tickArrayLower, `orca.tickArrayLower.${poolIdStr.slice(0, 8)}`) || '';
         const knownUpper = validateBase58Address(hop.tickArrayUpper, `orca.tickArrayUpper.${poolIdStr.slice(0, 8)}`) || '';
 
-        // Default: use known-good arrays in directional order
-        // tickArray0 = center (contains current tick)
-        // tickArray1 = next in direction (lower for A→B, upper for B→A)
-        // tickArray2 = duplicate of tickArray1 (safe fallback - third array may not exist)
-        let tickArray0 = knownCenter;
-        let tickArray1 = isAtoBOrca ? knownLower : knownUpper;
-        let tickArray2 = tickArray1;  // Safe: duplicate the second array
-        
-        // Try to derive proper tick arrays, but validate and fallback
-        try {
-          const hot = executionCache.getHot(poolIdStr);
-          const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
-          const currentTick = (hot as any)?.currentTickIndex;
-          if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
-            const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
-            tickArray0 = derived.tickArray0.toBase58();
-            tickArray1 = derived.tickArray1.toBase58();
-            // For tickArray2: only use derived if it matches a known-good array
-            // Otherwise, duplicate tickArray1 to avoid using an uninitialized array
-            const derivedArray2 = derived.tickArray2.toBase58();
-            if (derivedArray2 === knownCenter || derivedArray2 === knownLower || derivedArray2 === knownUpper) {
-              tickArray2 = derivedArray2;  // Derived matches a known-good array
-            } else {
-              tickArray2 = tickArray1;  // Safe fallback: duplicate tickArray1
+        // PRIORITY 1: Use SDK-provided tick arrays directly if available
+        // The Orca SDK's swapInstructions() returns direction-aware tick arrays based on inputMint
+        // These are the most accurate because the SDK computes them for the actual swap direction
+        const sdkTickArray0 = validateBase58Address((hop as any).tickArray0, `orca.sdkTickArray0.${poolIdStr.slice(0, 8)}`) || '';
+        const sdkTickArray1 = validateBase58Address((hop as any).tickArray1, `orca.sdkTickArray1.${poolIdStr.slice(0, 8)}`) || '';
+        const sdkTickArray2 = validateBase58Address((hop as any).tickArray2, `orca.sdkTickArray2.${poolIdStr.slice(0, 8)}`) || '';
+
+        let tickArray0 = '';
+        let tickArray1 = '';
+        let tickArray2 = '';
+        let tickArraySource = 'none';
+
+        if (sdkTickArray0 && sdkTickArray1) {
+          // SDK provided direction-aware tick arrays - use them directly
+          tickArray0 = sdkTickArray0;
+          tickArray1 = sdkTickArray1;
+          tickArray2 = sdkTickArray2 || sdkTickArray1; // Fallback to array1 if array2 missing
+          tickArraySource = 'sdk';
+
+          logger.debug('routerTx.orca.tickArrays.usingSdk', {
+            cat: 'tx',
+            poolId: poolIdStr.slice(0, 8),
+            arrays: [tickArray0.slice(0, 8), tickArray1.slice(0, 8), tickArray2.slice(0, 8)],
+            isAtoB: isAtoBOrca,
+          });
+        } else {
+          // PRIORITY 2: Fall back to cache-based arrays with directional ordering
+          // tickArray0 = center (contains current tick)
+          // tickArray1 = next in direction (lower for A→B, upper for B→A)
+          // tickArray2 = duplicate of tickArray1 (safe fallback - third array may not exist)
+          tickArray0 = knownCenter;
+          tickArray1 = isAtoBOrca ? knownLower : knownUpper;
+          tickArray2 = tickArray1;  // Safe: duplicate the second array
+          tickArraySource = 'cache';
+
+          // PRIORITY 3: Try to derive proper tick arrays if cache incomplete
+          try {
+            const hot = executionCache.getHot(poolIdStr);
+            const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
+            const currentTick = (hot as any)?.currentTickIndex;
+            if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
+              const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
+              tickArray0 = derived.tickArray0.toBase58();
+              tickArray1 = derived.tickArray1.toBase58();
+              // For tickArray2: only use derived if it matches a known-good array
+              // Otherwise, duplicate tickArray1 to avoid using an uninitialized array
+              const derivedArray2 = derived.tickArray2.toBase58();
+              if (derivedArray2 === knownCenter || derivedArray2 === knownLower || derivedArray2 === knownUpper) {
+                tickArray2 = derivedArray2;  // Derived matches a known-good array
+              } else {
+                tickArray2 = tickArray1;  // Safe fallback: duplicate tickArray1
+              }
+              tickArraySource = 'derived';
             }
-          }
-        } catch { /* ignore */ }
+          } catch { /* ignore */ }
+        }
         
         // Get mint pubkeys for swapV2
         const orcaMintA = nativeMintA ? new PublicKey(nativeMintA) : inputMint;
@@ -2558,6 +2636,12 @@ async function extractDexAccounts(
           selectedVaultA: orcaVaultA,
           selectedVaultB: orcaVaultB,
           tickArrays: {
+            source: tickArraySource,
+            sdk: {
+              array0: sdkTickArray0?.slice(0, 8) || 'missing',
+              array1: sdkTickArray1?.slice(0, 8) || 'missing',
+              array2: sdkTickArray2?.slice(0, 8) || 'missing',
+            },
             known: {
               center: knownCenter?.slice(0, 8) || 'missing',
               lower: knownLower?.slice(0, 8) || 'missing',

@@ -174,10 +174,13 @@ export async function defaultNormalizeRaydiumPools(raw: any): Promise<PoolsPaylo
           price_from_sqrt = ratio.float;
         }
       } else if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+        // sqrt_price_x64 = sqrt(tokenB_atomic / tokenA_atomic) * 2^64
+        // price_a_per_b_atomic = (sqrt / 2^64)^2 = sqrt^2 / 2^128
+        // price_a_per_b_whole = price_a_per_b_atomic * 10^(decA - decB)
         const two64 = Math.pow(2, 64);
-        const calcRatio = sqrt / two64;
-        const scale = Math.pow(10, (decB as number) - (decA as number));
-        const cand = scale / (calcRatio * calcRatio);
+        const priceAperB_atomic = (sqrt / two64) * (sqrt / two64);
+        const decimalAdjust = Math.pow(10, (decA as number) - (decB as number));
+        const cand = priceAperB_atomic * decimalAdjust;
         price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
       }
       const px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
@@ -210,11 +213,14 @@ export async function defaultNormalizeRaydiumPools(raw: any): Promise<PoolsPaylo
       const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
       const reserveA0 = Number((it as any)?.reserveA ?? 0);
       const reserveB0 = Number((it as any)?.reserveB ?? 0);
-      const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
-        ? ((amount_a_whole as number) / (amount_b_whole as number))
-        : ((reserveB0 > 0) ? (reserveA0 / reserveB0) : 0);
-      const price_res_decs = (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(mintAmountA) && Number.isFinite(mintAmountB) && (mintAmountB as number) > 0)
-        ? ((mintAmountA as number) / Math.pow(10, decA as number)) / ((mintAmountB as number) / Math.pow(10, decB as number))
+      // price_a_per_b = "how many B for 1 A" = B/A
+      // For whole units: price = amount_b_whole / amount_a_whole
+      // For atomic units: price = (reserveB / reserveA) * 10^(decA - decB)
+      const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_a_whole as number) > 0)
+        ? ((amount_b_whole as number) / (amount_a_whole as number))
+        : ((reserveA0 > 0) ? (reserveB0 / reserveA0) : 0);
+      const price_res_decs = (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(mintAmountA) && Number.isFinite(mintAmountB) && (mintAmountA as number) > 0)
+        ? ((mintAmountB as number) / Math.pow(10, decB as number)) / ((mintAmountA as number) / Math.pow(10, decA as number))
         : 0;
       const px = price_res_decs > 0 ? price_res_decs : (price_res > 0 ? price_res : (Number(price) > 0 ? Number(price) : 0));
       const reserveARaw = anyToBigInt((it as any)?.reserveA ?? mintAmountA);

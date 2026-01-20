@@ -743,8 +743,17 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
   return { amm: ammCanon, clmm: [] } as any;
 }
 
+// Helper to chunk arrays for batch processing
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
 // New: explicit v1 and v2 HTTP fetchers and a union fetch for both
-export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[]> {
+export async function fetchMeteoraBalancedV1Http(baseUrl?: string, providedMints?: string[]): Promise<any[]> {
   const cfg: any = (CONFIG as any)?.meteoraBalanced || {};
   const baseUnsafe = baseUrl || cfg.apiUrl || '';
   const base = validateHttpUrl(baseUnsafe) || '';
@@ -753,27 +762,79 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   const backoffMs = Number(cfg.httpBackoffMs || 500);
   const maxPages = Number(cfg.maxPages || 10);
   const pageSize = Number(cfg.pageSize || 100);
+  const pageDelayMs = Number(cfg.pageDelayMs || 200);
+  const mintBatchSize = Number(cfg.mintBatchSize || 10);
   
   // API-level quality filters (V1 API specific)
   const hideLowApr = cfg.hideLowApr === true;
   const minLiqBase = Number(cfg.minLiqBase || 0);
-  const anchorTokensOnly = cfg.anchorTokensOnly !== false;
   
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
   
   // Use the new /pools/search endpoint with include_token_mints filter
-  // This endpoint supports pagination and proper token filtering in a single request
   const searchBase = base.replace(/\/pools\/?$/, '/pools/search');
   const allPools = new Map<string, any>(); // Dedupe by pool address
   
-  if (anchorTokensOnly) {
-    // Fetch pools containing SOL or USDC using the new search endpoint with pagination
-    const tokenMints = [
-      'So11111111111111111111111111111111111111112', // SOL
-      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC
-    ];
-    
+  // Get token universe - use provided mints or compute from universe
+  let mints: string[] = [];
+  if (providedMints && providedMints.length > 0) {
+    mints = providedMints;
+    logger.info('meteora.balanced.v1.universe', { mintCount: mints.length, shared: true, cat: 'meteora' });
+  } else {
+    try {
+      const { computeTokenUniverse } = await import('../universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+      logger.info('meteora.balanced.v1.universe', { mintCount: mints.length, shared: false, cat: 'meteora' });
+    } catch (e: any) {
+      logger.warn('meteora.balanced.v1.universe.failed', { error: String(e?.message || e), cat: 'meteora' });
+      // Fallback to SOL/USDC if universe fetch fails
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      mints = [SOL_MINT, USDC_MINT];
+    }
+  }
+
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  // Anchor tokens (SOL, USDC, USDT) have many pools and should be queried individually
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  
+  // First ensure anchors are in the mints list
+  const mintsSet = new Set(mints);
+  for (const anchor of anchors) {
+    mintsSet.add(anchor);
+  }
+  
+  // Then separate them for individual querying
+  for (const mint of mintsSet) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
+
+  logger.info('meteora.balanced.v1.fetch.start', {
+    totalMints: mintsSet.size,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
+    pageSize,
+    maxPages,
+    mintBatchSize,
+    cat: 'meteora',
+  });
+
+  // Add initial delay before first request to respect rate limits
+  if (pageDelayMs > 0 && mintsSet.size > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
+  // Helper to fetch pools for a single mint with pagination
+  const fetchPoolsForMint = async (mint: string, label: string): Promise<number> => {
     let page = 0;
     let hasMore = true;
     let totalFetched = 0;
@@ -783,11 +844,7 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
         const sp = new URLSearchParams();
         sp.append('page', String(page));
         sp.append('size', String(pageSize));
-        
-        // Add token mint filters - the API will return pools containing ANY of these tokens
-        for (const mint of tokenMints) {
-          sp.append('include_token_mints', mint);
-        }
+        sp.append('include_token_mints', mint);
         
         // Apply quality filters
         if (minLiqBase > 0) {
@@ -807,96 +864,7 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
         return `${searchBase}?${sp.toString()}`;
       })();
       
-      const poolsData = await fetchV1SearchWithRetry(
-        url, 
-        fetchFn, 
-        retries, 
-        backoffMs, 
-        `anchor_page_${page}`
-      );
-      
-      // Handle response structure from /pools/search endpoint
-      // Response can be: { data: [...], page: number, total_count: number }
-      // or just an array for backwards compatibility
-      let pools: any[] = [];
-      if (Array.isArray(poolsData)) {
-        pools = poolsData;
-      } else if (poolsData?.data) {
-        // If data is an array, use it; if it's a single object, wrap it
-        pools = Array.isArray(poolsData.data) ? poolsData.data : [poolsData.data];
-      }
-      
-      if (pools.length === 0) {
-        hasMore = false;
-      } else {
-        for (const pool of pools) {
-          const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
-          if (poolAddr) {
-            allPools.set(String(poolAddr), pool);
-          }
-        }
-        totalFetched += pools.length;
-        page++;
-        
-        // If we got fewer results than page size, we've reached the end
-        if (pools.length < pageSize) {
-          hasMore = false;
-        }
-      }
-      
-      // Small delay between requests to respect rate limits
-      if (hasMore && page < maxPages) {
-        await new Promise(r => setTimeout(r, 200));
-      }
-    }
-    
-    const data = Array.from(allPools.values());
-    
-    try {
-      logger.info('meteora.balanced.v1.fetch complete (search API)', {
-        count: data.length,
-        pages: page,
-        totalFetched,
-        anchorTokensOnly,
-        hideLowApr,
-        minLiqBase,
-        endpoint: 'pools/search',
-        cat: 'meteora'
-      });
-    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
-    
-    return data;
-  } else {
-    // No anchor token filter, fetch all pools with pagination
-    let page = 0;
-    let hasMore = true;
-    let totalFetched = 0;
-    
-    while (hasMore && page < maxPages) {
-      const url = (() => {
-        const sp = new URLSearchParams();
-        sp.append('page', String(page));
-        sp.append('size', String(pageSize));
-        
-        // Apply quality filters
-        if (minLiqBase > 0) {
-          sp.append('hide_low_tvl', String(minLiqBase));
-        }
-        if (hideLowApr) {
-          sp.append('hide_low_apr', 'true');
-        }
-        
-        // Filter for dynamic pool type (V1 pools)
-        sp.append('pool_type', 'dynamic');
-        
-        // Sort by TVL descending
-        sp.append('sort_key', 'tvl');
-        sp.append('order_by', 'desc');
-        
-        return `${searchBase}?${sp.toString()}`;
-      })();
-      
-      const poolsData = await fetchV1SearchWithRetry(url, fetchFn, retries, backoffMs, `all_page_${page}`);
+      const poolsData = await fetchV1SearchWithRetry(url, fetchFn, retries, backoffMs, label);
       
       let pools: any[] = [];
       if (Array.isArray(poolsData)) {
@@ -922,28 +890,99 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
         }
       }
       
-      if (hasMore && page < maxPages) {
-        await new Promise(r => setTimeout(r, 200));
+      if (hasMore && page < maxPages && pageDelayMs > 0) {
+        await new Promise(r => setTimeout(r, pageDelayMs));
       }
     }
     
-    const data = Array.from(allPools.values());
-    
+    return totalFetched;
+  };
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  // Each anchor gets its own pagination, avoiding crowding from other high-volume tokens
+  for (let i = 0; i < anchorMints.length; i++) {
+    const anchorMint = anchorMints[i];
     try {
-      logger.info('meteora.balanced.v1.fetch complete (search API)', {
-        count: data.length,
-        pages: page,
-        totalFetched,
-        anchorTokensOnly: false,
-        hideLowApr,
-        minLiqBase,
-        endpoint: 'pools/search',
-        cat: 'meteora'
+      const count = await fetchPoolsForMint(anchorMint, `anchor_${anchorMint.slice(0, 8)}`);
+      
+      logger.info('meteora.balanced.v1.anchor.complete', {
+        mint: anchorMint.slice(0, 8) + '…',
+        count,
+        total: allPools.size,
+        cat: 'meteora',
       });
-    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
-    
-    return data;
+    } catch (e: any) {
+      logger.warn('meteora.balanced.v1.anchor.failed', { 
+        mint: anchorMint.slice(0, 8) + '…',
+        error: String(e?.message || e), 
+        cat: 'meteora' 
+      });
+    }
+    // Rate limit delay between anchor queries
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(r => setTimeout(r, pageDelayMs));
+    }
   }
+
+  // PHASE 2: Query regular tokens in batches (they have fewer pools each)
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
+
+  logger.info('meteora.balanced.v1.batch.start', {
+    regularMints: regularMints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'meteora',
+  });
+
+  // Fetch pools for each batch of mints
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
+    
+    // For V1 API, we need to query each mint in the batch
+    // The API doesn't support multiple include_token_mints in one query effectively
+    for (const mint of mintBatch) {
+      try {
+        const count = await fetchPoolsForMint(mint, `batch_${batchIdx}_${mint.slice(0, 8)}`);
+        
+        logger.debug('meteora.balanced.v1.batch.mint', { 
+          batchIdx,
+          mint: mint.slice(0, 8) + '…',
+          count, 
+          total: allPools.size,
+          cat: 'meteora' 
+        });
+      } catch (e: any) {
+        logger.warn('meteora.balanced.v1.batch.mint.failed', { 
+          batchIdx,
+          mint: mint.slice(0, 8) + '…',
+          error: String(e?.message || e), 
+          cat: 'meteora' 
+        });
+      }
+    }
+    
+    // Rate limit delay between batches
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
+      await new Promise(r => setTimeout(r, pageDelayMs));
+    }
+  }
+  
+  const data = Array.from(allPools.values());
+  
+  try {
+    logger.info('meteora.balanced.v1.fetch complete', {
+      count: data.length,
+      anchorMints: anchorMints.length,
+      regularMints: regularMints.length,
+      batchCount: mintBatches.length,
+      hideLowApr,
+      minLiqBase,
+      endpoint: 'pools/search',
+      cat: 'meteora'
+    });
+  } catch (e) { logCatchError('pools.meteoraBalanced', e); }
+  
+  return data;
 }
 
 // Helper function to fetch v1 search API with retry logic
@@ -1510,7 +1549,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   return { pools, metrics: { success: successCount, fail: failCount, ms } };
 }
 
-export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[]> {
+export async function fetchMeteoraBalancedV2Http(baseUrl?: string, providedMints?: string[]): Promise<any[]> {
   const cfg: any = (CONFIG as any)?.meteoraBalanced || {};
   const baseUnsafe = baseUrl || cfg.apiUrlV2 || '';
   const base = validateHttpUrl(baseUnsafe) || '';
@@ -1518,13 +1557,18 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
   const retries = Number(cfg.maxHttpRetries || 2);
   const backoffMs = Number(cfg.httpBackoffMs || 500);
   const maxPages = Number(cfg.maxPages || 10);
-  const size = Number(cfg.pageSize || 200);
+  // V2 API has a server-side limit of 100 results per request
+  // Cap pageSize to avoid premature pagination termination
+  const V2_API_MAX_LIMIT = 100;
+  const requestedSize = Number(cfg.pageSize || 200);
+  const size = Math.min(requestedSize, V2_API_MAX_LIMIT);
+  const pageDelayMs = Number(cfg.pageDelayMs || 110);
+  const mintBatchSize = Number(cfg.mintBatchSize || 10);
   
   // API-level quality filters
   const hideLowTvl = cfg.hideLowTvl !== false; // Default true
   const hideLowApr = cfg.hideLowApr === true;
   const tokensVerified = cfg.tokensVerified === true;
-  const anchorTokensOnly = cfg.anchorTokensOnly !== false; // Default true
   
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
@@ -1532,14 +1576,62 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
   // Dedupe by pool_address since V2 API requires separate queries for token_a_mint and token_b_mint
   const allPools = new Map<string, any>();
   
-  // Anchor tokens to filter by
-  const anchorMints = anchorTokensOnly ? [
-    'So11111111111111111111111111111111111111112', // SOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC
-  ] : [];
+  // Get token universe - use provided mints or compute from universe
+  let mints: string[] = [];
+  if (providedMints && providedMints.length > 0) {
+    mints = providedMints;
+    logger.info('meteora.balanced.v2.universe', { mintCount: mints.length, shared: true, cat: 'meteora' });
+  } else {
+    try {
+      const { computeTokenUniverse } = await import('../universe.js');
+      const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(universe);
+      logger.info('meteora.balanced.v2.universe', { mintCount: mints.length, shared: false, cat: 'meteora' });
+    } catch (e: any) {
+      logger.warn('meteora.balanced.v2.universe.failed', { error: String(e?.message || e), cat: 'meteora' });
+      // Fallback to SOL/USDC if universe fetch fails
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      mints = [SOL_MINT, USDC_MINT];
+    }
+  }
+
+  // Separate anchor tokens from regular tokens to avoid pagination crowding
+  // Anchor tokens (SOL, USDC, USDT) have many pools and should be queried individually
+  const { getAnchorSet } = await import('../universe.js');
+  const anchors = getAnchorSet();
+  const anchorMints: string[] = [];
+  const regularMints: string[] = [];
+  
+  // First ensure anchors are in the mints list
+  const mintsSet = new Set(mints);
+  for (const anchor of anchors) {
+    mintsSet.add(anchor);
+  }
+  
+  // Then separate them for individual querying
+  for (const mint of mintsSet) {
+    if (anchors.has(mint)) {
+      anchorMints.push(mint);
+    } else {
+      regularMints.push(mint);
+    }
+  }
+
+  logger.info('meteora.balanced.v2.fetch.start', {
+    totalMints: mintsSet.size,
+    anchorMints: anchorMints.length,
+    regularMints: regularMints.length,
+    pageSize: size,
+    requestedPageSize: requestedSize,
+    apiMaxLimit: V2_API_MAX_LIMIT,
+    maxPages,
+    mintBatchSize,
+    cat: 'meteora',
+  });
   
   // Helper to fetch pages with a specific filter
-  const fetchWithFilter = async (filterKey: string, filterValue: string, label: string) => {
+  const fetchWithFilter = async (filterKey: string, filterValue: string, label: string): Promise<number> => {
     let offset = 0;
     let totalFetched = 0;
     
@@ -1603,82 +1695,93 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
       if (data.length < size) break;
       
       // Respect rate limits
-      await new Promise(r => setTimeout(r, 110));
+      if (pageDelayMs > 0) {
+        await new Promise(r => setTimeout(r, pageDelayMs));
+      }
     }
     
-    try {
-      logger.debug('meteora.balanced.v2.fetch.filter', {
-        filter: label,
-        fetched: totalFetched,
-        uniqueTotal: allPools.size,
-        cat: 'meteora'
-      });
-    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
+    return totalFetched;
   };
   
-  if (anchorTokensOnly && anchorMints.length > 0) {
-    // Fetch for each anchor as both token_a_mint AND token_b_mint
-    for (const mint of anchorMints) {
-      const mintLabel = mint.slice(0, 8);
-      await fetchWithFilter('token_a_mint', mint, `token_a=${mintLabel}`);
-      await fetchWithFilter('token_b_mint', mint, `token_b=${mintLabel}`);
+  // Add initial delay before first request to respect rate limits
+  if (pageDelayMs > 0 && mintsSet.size > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
+  // PHASE 1: Query anchor tokens INDIVIDUALLY to ensure full coverage
+  // Each anchor gets its own pagination, avoiding crowding from other high-volume tokens
+  for (let i = 0; i < anchorMints.length; i++) {
+    const mint = anchorMints[i];
+    const mintLabel = mint.slice(0, 8);
+    
+    try {
+      // For V2 API, query as both token_a_mint AND token_b_mint
+      const countA = await fetchWithFilter('token_a_mint', mint, `anchor_token_a=${mintLabel}`);
+      const countB = await fetchWithFilter('token_b_mint', mint, `anchor_token_b=${mintLabel}`);
+      
+      logger.info('meteora.balanced.v2.anchor.complete', {
+        mint: mintLabel + '…',
+        countA,
+        countB,
+        total: allPools.size,
+        cat: 'meteora',
+      });
+    } catch (e: any) {
+      logger.warn('meteora.balanced.v2.anchor.failed', { 
+        mint: mintLabel + '…',
+        error: String(e?.message || e), 
+        cat: 'meteora' 
+      });
     }
-  } else {
-    // No anchor filtering - fetch all pools with pagination (legacy behavior)
-    let offset = 0;
-    for (let i = 0; i < maxPages; i++) {
-      const url = (() => {
-        const sp = new URLSearchParams();
-        sp.append('limit', String(size));
-        sp.append('offset', String(offset));
-        if (hideLowTvl) sp.append('hide_low_tvl', 'true');
-        if (hideLowApr) sp.append('hide_low_apr', 'true');
-        if (tokensVerified) sp.append('tokens_verified', 'true');
-        sp.append('order_by', 'tvl');
-        sp.append('order', 'desc');
-        return `${base}?${sp.toString()}`;
-      })();
-      
-      const cid = httpLogStart({ source: 'meteora_balanced_v2', url });
-      let res: any = null; let ok = false;
-      
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        res = await fetchFn(url, { headers: { accept: 'application/json' } });
-        if (res?.status === 429) { 
-          httpLog429({ source: 'meteora_balanced_v2', url, cid }); 
-          await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); 
-          continue; 
-        }
-        if (!res?.ok) {
-          const txt = await res?.text?.();
-          httpLogNonOk({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
-          if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
-        }
-        ok = true; break;
+    
+    // Rate limit delay between anchor queries
+    if (pageDelayMs > 0 && i < anchorMints.length - 1) {
+      await new Promise(r => setTimeout(r, pageDelayMs));
+    }
+  }
+
+  // PHASE 2: Query regular tokens in batches (they have fewer pools each)
+  const mintBatches = chunkArray(regularMints, mintBatchSize);
+
+  logger.info('meteora.balanced.v2.batch.start', {
+    regularMints: regularMints.length,
+    batchCount: mintBatches.length,
+    mintBatchSize,
+    cat: 'meteora',
+  });
+
+  // Fetch pools for each batch of mints
+  for (let batchIdx = 0; batchIdx < mintBatches.length; batchIdx++) {
+    const mintBatch = mintBatches[batchIdx];
+    
+    // For V2 API, we need to query each mint as both token_a and token_b
+    for (const mint of mintBatch) {
+      try {
+        const mintLabel = mint.slice(0, 8);
+        const countA = await fetchWithFilter('token_a_mint', mint, `batch_${batchIdx}_token_a=${mintLabel}`);
+        const countB = await fetchWithFilter('token_b_mint', mint, `batch_${batchIdx}_token_b=${mintLabel}`);
+        
+        logger.debug('meteora.balanced.v2.batch.mint', { 
+          batchIdx,
+          mint: mintLabel + '…',
+          countA, 
+          countB,
+          total: allPools.size,
+          cat: 'meteora' 
+        });
+      } catch (e: any) {
+        logger.warn('meteora.balanced.v2.batch.mint.failed', { 
+          batchIdx,
+          mint: mint.slice(0, 8) + '…',
+          error: String(e?.message || e), 
+          cat: 'meteora' 
+        });
       }
-      
-      if (!ok || !res?.ok) { 
-        httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, ms: 0, count: 0 }); 
-        break; 
-      }
-      
-      const json: any = await res.json().catch(() => null);
-      const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-      
-      httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res.status, ms: 0, count: data.length });
-      
-      if (data.length === 0) break;
-      
-      for (const pool of data) {
-        const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
-        if (poolAddr && !allPools.has(poolAddr)) {
-          allPools.set(poolAddr, pool);
-        }
-      }
-      
-      offset += data.length;
-      if (data.length < size) break;
-      await new Promise(r => setTimeout(r, 110));
+    }
+    
+    // Rate limit delay between batches
+    if (pageDelayMs > 0 && batchIdx < mintBatches.length - 1) {
+      await new Promise(r => setTimeout(r, pageDelayMs));
     }
   }
   
@@ -1687,10 +1790,12 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
   try {
     logger.info('meteora.balanced.v2.fetch complete', {
       uniquePools: out.length,
+      anchorMints: anchorMints.length,
+      regularMints: regularMints.length,
+      batchCount: mintBatches.length,
       hideLowTvl,
       hideLowApr,
       tokensVerified,
-      anchorTokensOnly,
       cat: 'meteora'
     });
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }

@@ -123,7 +123,7 @@ export async function isFlashLoanAvailable(): Promise<boolean> {
  * Uses Helius devnet/mainnet endpoints with the existing API key
  */
 export function getRouterRpcUrl(cluster?: 'devnet' | 'mainnet-beta' | 'localnet'): string {
-  const clusterToUse = cluster || current?.cluster || 'devnet';
+  const clusterToUse = cluster || current?.cluster || 'mainnet-beta';
   
   // Extract API key from main RPC URL
   const mainRpcUrl = CONFIG.rpcUrl || '';
@@ -140,7 +140,7 @@ export function getRouterRpcUrl(cluster?: 'devnet' | 'mainnet-beta' | 'localnet'
     case 'localnet':
       return 'http://127.0.0.1:8899';
     default:
-      return 'https://api.devnet.solana.com';
+      return 'https://api.mainnet-beta.solana.com';
   }
 }
 

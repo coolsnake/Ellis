@@ -746,8 +746,10 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     const existingPool = poolData?.pool as AmmPool | undefined;
     
     // Get decimals from existing pool or use defaults
-    let decA = existingPool?.native_decimals_a ?? existingPool?.decimals_a;
-    let decB = existingPool?.native_decimals_b ?? existingPool?.decimals_b;
+    // CRITICAL: If native decimals missing, derive from canonical + was_swapped
+    const wasSwapped = (existingPool as any)?.was_swapped === true;
+    let decA = existingPool?.native_decimals_a ?? (wasSwapped ? existingPool?.decimals_b : existingPool?.decimals_a);
+    let decB = existingPool?.native_decimals_b ?? (wasSwapped ? existingPool?.decimals_a : existingPool?.decimals_b);
     
     if (!Number.isFinite(decA)) {
       // Try to resolve from mint cache
