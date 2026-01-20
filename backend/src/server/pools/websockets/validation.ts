@@ -1,12 +1,24 @@
 /**
  * Pool validation utilities
- * 
+ *
  * Validates decoded pools and tracks validation statistics
  */
 
 import { logger } from '../../../utils/logger.js';
+import { CONFIG } from '../../../utils/config.js';
 import type { DexSource, ValidationResult, ValidationStats } from './types.js';
 import { logCatchError } from '../../../utils/errorHandler.js';
+
+// Price validation bounds - aligned with graph.edges.ts clamp values
+// These are configurable via CONFIG.sanity.priceClampMin/Max
+const getPriceClampMin = (): number => {
+  const val = Number(((CONFIG as any)?.sanity as any)?.priceClampMin);
+  return Number.isFinite(val) && val > 0 ? val : 1e-12;
+};
+const getPriceClampMax = (): number => {
+  const val = Number(((CONFIG as any)?.sanity as any)?.priceClampMax);
+  return Number.isFinite(val) && val > 0 ? val : 1e12;
+};
 
 /**
  * Validation statistics per DEX
@@ -81,8 +93,11 @@ export function validateDecodedPool(
       reasons.push('invalid_price');
       try { wsValidationStats[dex].invalidPrice += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }
-    // Sanity check: price should be within reasonable bounds (0.00000001 to 100000000)
-    if (pool.price_a_per_b && (pool.price_a_per_b < 1e-8 || pool.price_a_per_b > 1e8)) {
+    // Sanity check: price should be within configurable bounds (default 1e-12 to 1e12)
+    // Aligned with graph.edges.ts clamp values to handle micro-cap tokens with extreme prices
+    const priceMin = getPriceClampMin();
+    const priceMax = getPriceClampMax();
+    if (pool.price_a_per_b && (pool.price_a_per_b < priceMin || pool.price_a_per_b > priceMax)) {
       reasons.push('price_out_of_bounds');
       try { wsValidationStats[dex].invalidPrice += 1; } catch (e) { logCatchError('pools.ws.validation', e); }
     }

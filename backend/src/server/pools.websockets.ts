@@ -749,8 +749,11 @@ function validateDecodedPool(
       reasons.push('invalid_price');
       try { wsValidationStats[dex].invalidPrice += 1; } catch {}
     }
-    // Sanity check: price should be within reasonable bounds (0.00000001 to 100000000)
-    if (pool.price_a_per_b && (pool.price_a_per_b < 1e-8 || pool.price_a_per_b > 1e8)) {
+    // Sanity check: price should be within configurable bounds (default 1e-12 to 1e12)
+    // Aligned with graph.edges.ts clamp values to handle micro-cap tokens with extreme prices
+    const priceMin = Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12;
+    const priceMax = Number(((CONFIG as any)?.sanity as any)?.priceClampMax) || 1e12;
+    if (pool.price_a_per_b && (pool.price_a_per_b < priceMin || pool.price_a_per_b > priceMax)) {
       reasons.push('price_out_of_bounds');
       try { wsValidationStats[dex].invalidPrice += 1; } catch {}
     }
