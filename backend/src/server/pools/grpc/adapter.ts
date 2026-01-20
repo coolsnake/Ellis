@@ -291,61 +291,68 @@ export class GrpcStreamAdapter {
    */
   private async handleAccountUpdate(accountUpdate: any): Promise<void> {
     const { info, pubkey, owner } = this.toAccountInfo(accountUpdate);
-    
+
     // Check if this is a pool account we're subscribed to
     const subscription = this.subscriptions.get(pubkey);
-    
+
     // Or check if it's a derived account (vault, tick array, etc.)
     const derivedInfo = this.derivedAccountToPool.get(pubkey);
-    
-    // Determine pool ID and DEX
+
+    // Determine pool ID (for metrics) and DEX type (for routing)
+    // poolId is used for metrics/logging, pubkey is passed to decoders
     const poolId = subscription?.poolId || derivedInfo?.poolId || pubkey;
     let dex = subscription?.dex || this.poolIdToDex.get(poolId) || this.getDexFromOwner(owner);
 
     if (!dex) {
-      logger.debug('grpc.adapter.unknown_account', { 
-        pubkey: pubkey.slice(0, 8), 
-        owner: owner.slice(0, 8), 
-        cat: 'grpc' 
+      logger.debug('grpc.adapter.unknown_account', {
+        pubkey: pubkey.slice(0, 8),
+        owner: owner.slice(0, 8),
+        cat: 'grpc'
       });
       return;
     }
 
     // Route to appropriate decoder
+    // IMPORTANT: Pass `pubkey` (actual account address), not `poolId`
+    // Decoders need the actual account address to:
+    // 1. Check owner program to identify pool vs vault accounts
+    // 2. Look up in derivedAccountToPool map for vault routing
     try {
       switch (dex) {
         case 'raydium':
-          await handleRaydiumUpdate(info, poolId, this.derivedAccountToPool);
+          await handleRaydiumUpdate(info, pubkey, this.derivedAccountToPool);
           break;
         case 'raydium-cpmm':
-          await handleRaydiumCpmmUpdate(info, poolId, this.derivedAccountToPool);
+          await handleRaydiumCpmmUpdate(info, pubkey, this.derivedAccountToPool);
           break;
         case 'orca':
           // Orca SDK requires PublicKey for parsing - create from the base58 pubkey
           const accountPubkey = new PublicKey(pubkey);
-          await handleOrcaUpdate(info, poolId, this.derivedAccountToPool, accountPubkey);
+          await handleOrcaUpdate(info, pubkey, this.derivedAccountToPool, accountPubkey);
           break;
         case 'meteora':
-          await handleMeteoraUpdate(info, poolId, this.derivedAccountToPool);
+          await handleMeteoraUpdate(info, pubkey, this.derivedAccountToPool);
           break;
         case 'pumpswap':
-          await handlePumpswapUpdate(info, poolId, this.derivedAccountToPool);
+          await handlePumpswapUpdate(info, pubkey, this.derivedAccountToPool);
           break;
         case 'meteora_balanced':
-          await handleMeteoraBalancedUpdate(info, poolId, this.derivedAccountToPool);
+          await handleMeteoraBalancedUpdate(info, pubkey, this.derivedAccountToPool);
           break;
       }
-      
+
       // Update per-DEX metrics on success
       this.dexMetrics[dex].updates++;
       this.dexMetrics[dex].lastUpdateMs = Date.now();
     } catch (err) {
       // Track errors per-DEX
       this.dexMetrics[dex].errors++;
-      
+
       logger.error('grpc.adapter.decoder_error', {
         dex,
+        pubkey: pubkey.slice(0, 8),
         poolId: poolId.slice(0, 8),
+        isDerived: !!derivedInfo,
         error: String((err as Error)?.message || err),
         cat: 'grpc'
       });

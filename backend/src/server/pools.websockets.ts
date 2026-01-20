@@ -5447,24 +5447,28 @@ function runWebsocketRefreshLoop(): void {
               } catch {}
               
               // Attach vault listeners for Meteora Balanced AMM pools
+              // Use native_account_a/b (set by normalization) with fallback to account_a/b
               try {
                 const pool = metbalCache.data?.amm?.find(p => p.id === addr);
                 if (pool) {
-                  if ((pool as any).account_a) {
-                    const vaultAPk = new web3.PublicKey((pool as any).account_a);
+                  const vaultAddrA = pool.native_account_a || pool.account_a;
+                  const vaultAddrB = pool.native_account_b || pool.account_b;
+
+                  if (vaultAddrA) {
+                    const vaultAPk = new web3.PublicKey(vaultAddrA);
                     const vaultAId = await subscribeAccountWithRetry(vaultAPk, handle);
                     subs.push({ kind: 'account', id: vaultAId });
-                    derivedAccountToPool.set((pool as any).account_a, { poolId: addr, accountType: 'vault' });
-                    targetedSourceByAccount.set((pool as any).account_a, 'meteora_balanced');
-                    debugLogTargeted('meteora_balanced', (pool as any).account_a, { kind: 'vault', side: 'a' });
+                    derivedAccountToPool.set(vaultAddrA, { poolId: addr, accountType: 'vault' });
+                    targetedSourceByAccount.set(vaultAddrA, 'meteora_balanced');
+                    debugLogTargeted('meteora_balanced', vaultAddrA, { kind: 'vault', side: 'a' });
                   }
-                  if ((pool as any).account_b) {
-                    const vaultBPk = new web3.PublicKey((pool as any).account_b);
+                  if (vaultAddrB) {
+                    const vaultBPk = new web3.PublicKey(vaultAddrB);
                     const vaultBId = await subscribeAccountWithRetry(vaultBPk, handle);
                     subs.push({ kind: 'account', id: vaultBId });
-                    derivedAccountToPool.set((pool as any).account_b, { poolId: addr, accountType: 'vault' });
-                    targetedSourceByAccount.set((pool as any).account_b, 'meteora_balanced');
-                    debugLogTargeted('meteora_balanced', (pool as any).account_b, { kind: 'vault', side: 'b' });
+                    derivedAccountToPool.set(vaultAddrB, { poolId: addr, accountType: 'vault' });
+                    targetedSourceByAccount.set(vaultAddrB, 'meteora_balanced');
+                    debugLogTargeted('meteora_balanced', vaultAddrB, { kind: 'vault', side: 'b' });
                   }
                 }
               } catch (e: any) {
