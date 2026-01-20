@@ -1676,11 +1676,41 @@ async function extractDexAccounts(
     // Direction flag uses NATIVE ordering (matches on-chain a_to_b interpretation)
     // CRITICAL: Use passed aToB if available to ensure consistency with on-chain instruction
     // This prevents mismatch between direction flag and account ordering if cache changes
-    const isAtoB = opts?.aToB !== undefined
-      ? opts.aToB
-      : (nativeMintA 
-          ? (hop.inputMint === nativeMintA) 
-          : (hop.inputMint === poolMintA));
+    let isAtoB: boolean;
+    let isAtoBDeterminedBy = 'unknown';
+
+    if (opts?.aToB !== undefined) {
+      isAtoB = opts.aToB;
+      isAtoBDeterminedBy = 'opts.aToB';
+    } else if (nativeMintA) {
+      isAtoB = hop.inputMint === nativeMintA;
+      isAtoBDeterminedBy = 'native_mint_a';
+    } else {
+      // FALLBACK: Use canonical ordering - but this may be WRONG if pool was_swapped
+      // When was_swapped=true, canonical mint_a != native mint_a, so direction would be inverted
+      const wasSwapped = stat?.was_swapped === true;
+      const canonicalIsAtoB = hop.inputMint === poolMintA;
+
+      // If pool was swapped during canonicalization, invert the direction
+      // Because canonical mint_a = native mint_b when was_swapped=true
+      isAtoB = wasSwapped ? !canonicalIsAtoB : canonicalIsAtoB;
+      isAtoBDeterminedBy = wasSwapped ? 'canonical_inverted_for_swap' : 'canonical_fallback';
+
+      // Log warning for Orca pools using canonical fallback (potential source of errors)
+      if (hop.dex?.toLowerCase() === 'orca') {
+        logger.warn('routerTx.orca.direction.canonical_fallback', {
+          cat: 'tx',
+          poolId: hop.poolId?.slice(0, 8) + '...',
+          inputMint: hop.inputMint?.slice(0, 8) + '...',
+          canonicalMintA: poolMintA?.slice(0, 8) + '...',
+          wasSwapped,
+          canonicalIsAtoB,
+          finalIsAtoB: isAtoB,
+          hint: 'native_mint_a missing from cache - direction determined using canonical ordering. ' +
+                'This may cause TickArraySequenceInvalidIndex if was_swapped handling is incorrect.',
+        });
+      }
+    }
 
     // Get hot cache for additional pool state (tick arrays, exBitmap, etc.)
     const hot = executionCache.getHot(hop.poolId.replace(/[#-]rev$/, ''));
@@ -1821,7 +1851,7 @@ async function extractDexAccounts(
             array2: (isAtoB ? hop.tickArrayUpper : hop.tickArrayLower) || 'missing',
             direction: isAtoB ? 'A→B (down)' : 'B→A (up)',
           },
-          isAtoBSource: nativeMintA ? 'native' : 'canonical_fallback',
+          isAtoBSource: isAtoBDeterminedBy,
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
         });
@@ -2658,7 +2688,8 @@ async function extractDexAccounts(
           userTokenA: userTokenA.toBase58(),
           userTokenB: userTokenB.toBase58(),
           isAtoB: isAtoBOrca,
-          isAtoBSource: nativeMintA ? 'native_mint_a' : 'canonical_fallback',
+          isAtoBSource: isAtoBDeterminedBy,
+          wasSwapped: stat?.was_swapped ?? 'unknown',
           inputMint: hop.inputMint,
           outputMint: hop.outputMint,
         });
@@ -3220,6 +3251,38 @@ async function extractDexAccounts(
           });
         }
 
+        // CRITICAL: Direction-aware vault selection (same pattern as CLMM)
+        // Raydium CPMM passes input_vault and output_vault based on swap direction
+        // native_account_a is paired with native_mint_a, native_account_b with native_mint_b
+        // Select vault based on which native mint matches input/output
+        const cpmmInputIsNativeA = nativeMintA
+          ? (hop.inputMint === nativeMintA)
+          : (hop.inputMint === poolMintA);
+        const cpmmOutputIsNativeA = nativeMintA
+          ? (hop.outputMint === nativeMintA)
+          : (hop.outputMint === poolMintA);
+
+        const cpmmInputVault = cpmmInputIsNativeA
+          ? (nativeAccountA || hop.vaultA || poolAccountA || hop.poolId)
+          : (nativeAccountB || hop.vaultB || poolAccountB || hop.poolId);
+        const cpmmOutputVault = cpmmOutputIsNativeA
+          ? (nativeAccountA || hop.vaultA || poolAccountA || hop.poolId)
+          : (nativeAccountB || hop.vaultB || poolAccountB || hop.poolId);
+
+        logger.debug('routerTx.raydiumCpmm.vaultSelection', {
+          cat: 'tx',
+          poolId: hop.poolId,
+          inputMint: hop.inputMint.slice(0, 8) + '...',
+          outputMint: hop.outputMint.slice(0, 8) + '...',
+          cpmmInputIsNativeA,
+          cpmmOutputIsNativeA,
+          cpmmInputVault,
+          cpmmOutputVault,
+          nativeMintA: nativeMintA || 'missing',
+          nativeAccountA: nativeAccountA || 'missing',
+          nativeAccountB: nativeAccountB || 'missing',
+        });
+
         accounts.push(
           wallet,                                                              // 0: Payer (signer)
           cpmmAuthority,                                                       // 1: Authority (PDA)
@@ -3227,8 +3290,8 @@ async function extractDexAccounts(
           poolId,                                                              // 3: Pool State
           userSourceAta,                                                       // 4: User Input Token Account
           userDestAta,                                                         // 5: User Output Token Account
-          new PublicKey(hop.vaultA || poolAccountA),                          // 6: Input Vault
-          new PublicKey(hop.vaultB || poolAccountB),                          // 7: Output Vault
+          new PublicKey(cpmmInputVault),                                       // 6: Input Vault (direction-aware)
+          new PublicKey(cpmmOutputVault),                                      // 7: Output Vault (direction-aware)
           cpmmInputTokenProgram,                                               // 8: Input Token Program
           cpmmOutputTokenProgram,                                              // 9: Output Token Program
           inputMint,                                                           // 10: Input Mint
