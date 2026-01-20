@@ -12,7 +12,6 @@ import { logger } from '../../../../utils/logger.js';
 import { logCatchError, logCatchDebug } from '../../../../utils/errorHandler.js';
 import { anyToBigInt } from '../../precision.js';
 import { processPriceThroughPipeline } from '../../pricePipeline.js';
-import { canonicalizePools } from '../../canonical.js';
 import { diffNormalizedPools } from '../../../pools.utils.js';
 import { raydiumCache } from '../../../pools.cache.js';
 import { deriveRaydiumClmmCacheFields } from '../../../pools.derivation.js';
@@ -817,29 +816,54 @@ async function handleAmmUpdate(
     }
   }
 
-  // Calculate price using correct AMM formula: price_a_per_b = reserveB / reserveA
-  // This means: for 1 unit of A, you get (reserveB / reserveA) units of B
-  let price_a_per_b: number | undefined;
-  if (rA > 0 && rB > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-    const atomicRatio = rB / rA;
-    const decimalAdjustment = Math.pow(10, decA! - decB!);
-    price_a_per_b = atomicRatio * decimalAdjustment;
+  // Process through price pipeline for consistent canonicalization (same as other DEXes)
+  const reserveA = rA > 0 ? BigInt(Math.floor(rA)) : undefined;
+  const reserveB = rB > 0 ? BigInt(Math.floor(rB)) : undefined;
+
+  const processedPrice = (reserveA && reserveB && Number.isFinite(decA) && Number.isFinite(decB))
+    ? processPriceThroughPipeline({
+        mintA,
+        mintB,
+        decimalsA: decA!,
+        decimalsB: decB!,
+        poolId,
+        dex: 'Raydium',
+        poolType: 'amm',
+        reserveA,
+        reserveB,
+      })
+    : null;
+
+  if (!processedPrice) {
+    wsDecodeStats.raydium_amm.failures += 1;
+    incrementSkipReason('raydium_amm', 'price_calc_failed');
+    return { success: false, error: 'price_calc_failed', skipped: true };
   }
 
-  // Build the pool item
+  // Build the pool item with canonical values from pipeline
   const item: AmmPool = {
     id: poolId,
     dex: 'Raydium',
-    mint_a: mintA,
-    mint_b: mintB,
+    mint_a: processedPrice.mintA,
+    mint_b: processedPrice.mintB,
     fee_bps: decoded.fee_bps,
-    price_a_per_b: price_a_per_b || 0,
+    price_a_per_b: processedPrice.priceForward,
     liquidity_base: decoded.liquidity_base || 0,
     updated_ms: Date.now(),
     pool_kind: 'amm',
     liquidity_display: decoded.liquidity_base,
-    decimals_a: decA,
-    decimals_b: decB,
+    decimals_a: processedPrice.decimalsA,
+    decimals_b: processedPrice.decimalsB,
+    was_swapped: processedPrice.wasSwapped,
+    native_mint_a: mintA,
+    native_mint_b: mintB,
+    native_decimals_a: decA,
+    native_decimals_b: decB,
+    reserve_a_raw: processedPrice.wasSwapped ? reserveB?.toString() : reserveA?.toString(),
+    reserve_b_raw: processedPrice.wasSwapped ? reserveA?.toString() : reserveB?.toString(),
+    native_reserve_a_raw: reserveA?.toString(),
+    native_reserve_b_raw: reserveB?.toString(),
+    _pipelineProcessed: true,
   } as AmmPool;
 
   // Validate decoded pool
@@ -853,9 +877,8 @@ async function handleAmmUpdate(
   // Track AMM attempt
   wsDecodeStats.raydium_amm.attempts += 1;
 
-  // Canonicalize pool
-  const [canonicalItem] = canonicalizePools([{ ...item }]);
-  let finalItem = canonicalItem || item;
+  // Item is already canonicalized by pipeline, no need for canonicalizePools
+  let finalItem = item;
 
   // Ensure orientation consistency with authoritative HTTP data
   const { pool: orientedItem, wasCorrected } = ensureOrientationConsistency(poolId, finalItem);
@@ -874,7 +897,7 @@ async function handleAmmUpdate(
 
   // Validate price delta against previous value
   // CRITICAL: Check orientation to handle differences between HTTP and WS updates
-  // For Raydium AMM, we use canonicalizePools which may swap mints
+  // For Raydium AMM, processPriceThroughPipeline handles canonicalization which may swap mints
   if (idx >= 0) {
     const prevPool = next.amm[idx];
     // Detect if canonicalization changed the orientation
