@@ -450,9 +450,27 @@ export async function handleMeteoraUpdate(
           error: String((resolveErr as Error)?.message || resolveErr),
           cat: 'pools'
         });
-        // Final fallback only if guaranteed resolution also fails
-        if (!Number.isFinite(decA)) decA = 9;
-        if (!Number.isFinite(decB)) decB = 6;
+        // Symmetric fallback - use 9 for both to avoid 1000000x price errors from mismatched decimals
+        if (!Number.isFinite(decA)) {
+          decA = 9;
+          logger.warn('meteora.decoder.decimals_fallback_used', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: tokenX?.slice(0, 8) + '…',
+            side: 'A',
+            fallbackDecimals: 9,
+            cat: 'pools'
+          });
+        }
+        if (!Number.isFinite(decB)) {
+          decB = 9;
+          logger.warn('meteora.decoder.decimals_fallback_used', {
+            poolId: poolId.slice(0, 8) + '…',
+            mint: tokenY?.slice(0, 8) + '…',
+            side: 'B',
+            fallbackDecimals: 9,
+            cat: 'pools'
+          });
+        }
       }
     }
 

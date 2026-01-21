@@ -28,6 +28,8 @@ import { fetchRaydiumSummaryOnly, fetchRaydiumClmmSummaryOnly, fetchRaydiumPools
 import { fetchOrcaSummaryOnly, fetchOrcaPoolsByAddress, normalizeOrcaGraphQL } from './pools/orcaGraphQL.js';
 import { fetchMeteoraSummaryOnly, fetchMeteoraPoolsByAddress, normalizeMeteoraGraphQL } from './pools/meteoraGraphQL.js';
 import { validateCrossDexPrices } from './pools/validation.js';
+import { loadPersistedDecimals, flushPersistedDecimals } from './pools/decimals.js';
+export { flushPersistedDecimals } from './pools/decimals.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
 import { checkPoolsActivityBatch } from './pools/activityCheck.js';
@@ -279,7 +281,17 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     };
   }
   (refreshAllSources as any).__isRunning = true;
-  
+
+  // Load persisted decimals early to avoid RPC calls for known tokens
+  try {
+    const loadedCount = await loadPersistedDecimals();
+    if (loadedCount > 0) {
+      logger.info('pools.refresh.decimals.loaded', { count: loadedCount, cat: 'decimals' });
+    }
+  } catch (e: any) {
+    logger.warn('pools.refresh.decimals.load_failed', { error: String(e?.message || e), cat: 'decimals' });
+  }
+
   // Mark that we're in a refresh cycle - individual fetchers should skip incremental graph updates
   // until all filtering is complete to avoid building huge unfiltered snapshots
   (refreshAllSources as any).__inProgress = true;

@@ -4,6 +4,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getMint } from '@solana/spl-token';
 import { CONFIG } from '../../utils/config.js';
 import { logCatchError } from '../../utils/errorHandler.js';
+import { readJson, writeJson, joinPath } from '../../utils/fs.js';
 
 // Anchor decimals: highest-priority source of truth for well-known tokens
 const ANCHOR_DECIMALS = new Map<string, number>([
@@ -87,6 +88,210 @@ const resolveCache = new Map<string, number>();
 let jupMapCache: Record<string, { decimals: number }> | null = null;
 let jupMapCacheTime = 0;
 const JUP_MAP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// ============================================
+// PERSISTENT DECIMALS STORE
+// ============================================
+// Persists RPC-resolved decimals to disk so they survive restarts
+// This prevents repeated RPC calls for the same mints
+
+interface PersistedDecimalsStore {
+  version: number;
+  updatedAt: number;
+  decimals: Record<string, { value: number; resolvedAt: number; source: 'rpc' | 'jupiter' }>;
+}
+
+const DECIMALS_STORE_VERSION = 1;
+const DECIMALS_STORE_PATH = joinPath(CONFIG.cacheDir || 'cache', 'mint-decimals.json');
+
+// Debounce state for persisting decimals
+let persistTimer: NodeJS.Timeout | null = null;
+let pendingPersistCount = 0;
+const PERSIST_DEBOUNCE_MS = 5000; // Wait 5s of inactivity before writing
+const PERSIST_MAX_PENDING = 50; // Force write after 50 new entries
+
+// Track whether we've loaded persisted data
+let persistedDataLoaded = false;
+
+/**
+ * Load persisted decimals from disk into the in-memory cache
+ * Called on module initialization
+ */
+export async function loadPersistedDecimals(): Promise<number> {
+  if (persistedDataLoaded) {
+    return resolveCache.size;
+  }
+
+  try {
+    const store = await readJson<PersistedDecimalsStore>(DECIMALS_STORE_PATH, {
+      version: DECIMALS_STORE_VERSION,
+      updatedAt: 0,
+      decimals: {},
+    });
+
+    // Version check - clear if incompatible
+    if (store.version !== DECIMALS_STORE_VERSION) {
+      logger.info('decimals.persist.version_mismatch', {
+        stored: store.version,
+        current: DECIMALS_STORE_VERSION,
+        action: 'clearing_store',
+        cat: 'decimals'
+      });
+      persistedDataLoaded = true;
+      return 0;
+    }
+
+    let loadedCount = 0;
+    let skippedCount = 0;
+
+    for (const [mint, entry] of Object.entries(store.decimals)) {
+      // Validate entry
+      if (!mint || mint.length < 32) {
+        skippedCount++;
+        continue;
+      }
+      if (typeof entry?.value !== 'number' || entry.value < 0 || entry.value > 18) {
+        skippedCount++;
+        continue;
+      }
+
+      // Don't overwrite anchor decimals
+      if (ANCHOR_DECIMALS.has(mint)) {
+        continue;
+      }
+
+      // Don't overwrite existing cache entries (in case of race)
+      if (!resolveCache.has(mint)) {
+        resolveCache.set(mint, entry.value);
+        loadedCount++;
+      }
+    }
+
+    persistedDataLoaded = true;
+
+    logger.info('decimals.persist.loaded', {
+      loaded: loadedCount,
+      skipped: skippedCount,
+      storeAge: Date.now() - store.updatedAt,
+      path: DECIMALS_STORE_PATH,
+      cat: 'decimals'
+    });
+
+    return loadedCount;
+  } catch (e: any) {
+    // File might not exist on first run - that's OK
+    if (e?.code !== 'ENOENT') {
+      logger.warn('decimals.persist.load_error', {
+        error: String(e?.message || e),
+        path: DECIMALS_STORE_PATH,
+        cat: 'decimals'
+      });
+    }
+    persistedDataLoaded = true;
+    return 0;
+  }
+}
+
+/**
+ * Persist a single decimal resolution to disk (debounced)
+ */
+function schedulePersist(mint: string, decimals: number, source: 'rpc' | 'jupiter'): void {
+  pendingPersistCount++;
+
+  // Clear existing timer
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+
+  // Force write if we have many pending
+  if (pendingPersistCount >= PERSIST_MAX_PENDING) {
+    void persistDecimalsNow();
+    return;
+  }
+
+  // Schedule debounced write
+  persistTimer = setTimeout(() => {
+    void persistDecimalsNow();
+  }, PERSIST_DEBOUNCE_MS);
+}
+
+/**
+ * Persist all cached decimals to disk immediately
+ */
+async function persistDecimalsNow(): Promise<void> {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+
+  const countToPersist = pendingPersistCount;
+  pendingPersistCount = 0;
+
+  try {
+    // Build store from cache (excluding anchors)
+    const decimals: Record<string, { value: number; resolvedAt: number; source: 'rpc' | 'jupiter' }> = {};
+    const now = Date.now();
+
+    for (const [mint, value] of resolveCache.entries()) {
+      // Skip anchors - they're hardcoded
+      if (ANCHOR_DECIMALS.has(mint)) continue;
+
+      decimals[mint] = {
+        value,
+        resolvedAt: now,
+        source: 'rpc', // Default to RPC since we don't track source in cache
+      };
+    }
+
+    const store: PersistedDecimalsStore = {
+      version: DECIMALS_STORE_VERSION,
+      updatedAt: now,
+      decimals,
+    };
+
+    await writeJson(DECIMALS_STORE_PATH, store);
+
+    logger.debug('decimals.persist.saved', {
+      entries: Object.keys(decimals).length,
+      pending: countToPersist,
+      path: DECIMALS_STORE_PATH,
+      cat: 'decimals'
+    });
+  } catch (e: any) {
+    logger.warn('decimals.persist.save_error', {
+      error: String(e?.message || e),
+      path: DECIMALS_STORE_PATH,
+      cat: 'decimals'
+    });
+  }
+}
+
+/**
+ * Force persist decimals (call on graceful shutdown)
+ */
+export async function flushPersistedDecimals(): Promise<void> {
+  if (pendingPersistCount > 0 || resolveCache.size > ANCHOR_DECIMALS.size) {
+    await persistDecimalsNow();
+  }
+}
+
+/**
+ * Get persistence stats
+ */
+export function getDecimalsPersistenceStats(): {
+  loaded: boolean;
+  cacheSize: number;
+  pendingPersist: number;
+  storePath: string;
+} {
+  return {
+    loaded: persistedDataLoaded,
+    cacheSize: resolveCache.size,
+    pendingPersist: pendingPersistCount,
+    storePath: DECIMALS_STORE_PATH,
+  };
+}
 
 /**
  * Get Jupiter token map with caching
@@ -273,11 +478,12 @@ export async function resolveManyDecimals(
               const decimals = accountInfo.data[44];
               if (decimals <= 18) {
                 result.set(mint, decimals);
-                resolveCache.set(mint, decimals); // CACHE FOR FUTURE USE
+                resolveCache.set(mint, decimals);
+                schedulePersist(mint, decimals, 'rpc');
                 rpcValidated++;
                 // Remove from Jupiter lookup queue
                 needsJupiter.delete(mint);
-                
+
                 // Store token program type if map provided
                 if (tokenPrograms) {
                   const program = owner === TOKEN_2022_PROGRAM_ID_STR ? 'token-2022' : 'spl-token';
@@ -393,7 +599,8 @@ export async function resolveManyDecimals(
                 if (decimals <= 18) {
                   result.set(mint, decimals);
                   resolveCache.set(mint, decimals);
-                  
+                  schedulePersist(mint, decimals, 'rpc');
+
                   // Store token program type if map provided
                   if (tokenPrograms) {
                     const program = owner === TOKEN_2022_PROGRAM_ID_STR ? 'token-2022' : 'spl-token';
@@ -618,10 +825,11 @@ export async function resolveDecimalsFromRpc(mint: string): Promise<number | und
         return undefined;
       }
       
-      // Success - cache the result
+      // Success - cache the result and schedule persistence
       resolveCache.set(mint, decimals);
       resolutionMetrics.rpcSuccesses++;
-      
+      schedulePersist(mint, decimals, 'rpc');
+
       logger.debug('decimals.rpc.resolved', {
         mint: mint.slice(0, 12) + '…',
         decimals,
@@ -751,8 +959,9 @@ export async function resolveDecimalsFromRpcBatch(
         
         result.set(mint, decimals);
         resolveCache.set(mint, decimals);
+        schedulePersist(mint, decimals, 'rpc');
         rpcSuccessCount++;
-        
+
         if (tokenPrograms) {
           const program = owner === TOKEN_2022_PROGRAM_ID_STR ? 'token-2022' : 'spl-token';
           tokenPrograms.set(mint, program);
@@ -851,6 +1060,7 @@ export async function resolveDecimalsGuaranteed(
     const jupDecimals = jupMap[mint]?.decimals;
     if (jupDecimals != null && Number.isFinite(jupDecimals) && jupDecimals >= 0 && jupDecimals <= 18) {
       resolveCache.set(mint, jupDecimals);
+      schedulePersist(mint, jupDecimals, 'jupiter');
       resolutionMetrics.jupiterHits++;
       const valid = validateDecimalsForMint(mint, jupDecimals, poolId, dex);
       return { decimals: jupDecimals, source: 'jupiter', validated: valid };
@@ -950,7 +1160,7 @@ export async function resolveDecimalsGuaranteedBatch(
   
   // Pass 3: Jupiter fallback for remaining
   const needsJupiter = needsRpc.filter(m => !rpcResults.has(m));
-  
+
   if (needsJupiter.length > 0) {
     try {
       const jupMap = await getJupiterMap();
@@ -958,6 +1168,7 @@ export async function resolveDecimalsGuaranteedBatch(
         const jupDecimals = jupMap[mint]?.decimals;
         if (jupDecimals != null && Number.isFinite(jupDecimals) && jupDecimals >= 0 && jupDecimals <= 18) {
           resolveCache.set(mint, jupDecimals);
+          schedulePersist(mint, jupDecimals, 'jupiter');
           resolutionMetrics.jupiterHits++;
           const poolId = context?.poolIds?.get(mint);
           const valid = validateDecimalsForMint(mint, jupDecimals, poolId, context?.dex);
