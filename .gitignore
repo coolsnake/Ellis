@@ -633,3 +633,4 @@ arb-rs/Cargo.lock
 arb-rs/target/.rustc_info.json
 nul
 .claude/settings.local.json
+.claude/settings.local.json

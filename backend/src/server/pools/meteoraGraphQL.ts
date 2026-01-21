@@ -1012,15 +1012,12 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         });
       }
       
-      // Default fee: Meteora DLMM typically uses binStep as fee indicator
-      // binStep of 10 = 0.1% = 10 bps, binStep of 25 = 0.25% = 25 bps
-      let fee_bps = 25; // Default
-      try {
-        const binStep = Number(pool.binStep || 0);
-        if (binStep > 0 && binStep <= 1000) {
-          fee_bps = binStep; // binStep is already in bps
-        }
-      } catch (e) { logCatchError('pools.meteoraGraphQL', e); }
+      // NOTE: Meteora DLMM fees are NOT the same as binStep!
+      // The actual fee formula is: fee_bps = binStep * baseFactor / 10000
+      // Since baseFactor is not available in GraphQL response, we set fee_bps = 0
+      // and let websocket/gRPC updates populate the correct fee from on-chain data.
+      // See: https://docs.meteora.ag/overview/products/dlmm/dlmm-fee-calculation
+      let fee_bps = 0;
       
       // Process price through pipeline with raw Meteora DLMM data
       let price_a_per_b = 0;
