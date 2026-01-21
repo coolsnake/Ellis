@@ -541,30 +541,38 @@ export async function handleMeteoraUpdate(
     const liquidity = liquidityRaw ? Number(liquidityRaw) : Number(state?.liquidity ?? 0);
     const sqrtPriceRaw = anyToBigInt(state?.sqrtPriceX64 ?? state?.sqrt_price_x64 ?? 0);
     
-    // CRITICAL: Meteora DLMM fee extraction
-    // Priority order: tradeFeeRate > feeRate > fee_rate > fees > baseFee
-    // DO NOT use parameters.baseFactor - it's a pricing parameter, NOT the fee rate!
-    // Fee values may be in PPM (parts per million) - need to convert to BPS.
-    // Fallback to cached fee_bps from HTTP fetch or execution cache to preserve correct fees.
-    let feeBps = Number(
-      state?.tradeFeeRate ?? 
-      state?.feeRate ?? 
-      state?.fee_rate ?? 
-      state?.fees ??
-      state?.baseFee ??
-      0  // Removed: parameters.baseFactor is NOT a fee rate
-    );
-    
-    // Convert from PPM to BPS if value appears to be in PPM format
-    // PPM values >= 1000 are likely in PPM format (1000 PPM = 10 BPS = 0.1% fee)
-    // Example conversions:
-    //   1000 PPM = 10 BPS = 0.1% fee
-    //  10000 PPM = 100 BPS = 1% fee
-    //  12500 PPM = 125 BPS = 1.25% fee
-    if (Number.isFinite(feeBps) && feeBps >= 1000) {
-      feeBps = Math.round(feeBps / 100);
+    // CRITICAL: Meteora DLMM fee calculation
+    // The base fee formula is: fee_bps = binStep * baseFactor / 10000
+    // See: https://docs.meteora.ag/overview/products/dlmm/dlmm-fee-calculation
+    // Priority: 1) Calculate from binStep * baseFactor, 2) Direct fee fields, 3) Cached values
+    let feeBps = 0;
+
+    // Try to calculate fee from binStep and baseFactor (most accurate)
+    const baseFactor = Number(state?.parameters?.baseFactor ?? 0);
+    if (Number.isFinite(binStep) && binStep > 0 && Number.isFinite(baseFactor) && baseFactor > 0) {
+      // Formula: fee_bps = binStep * baseFactor / 10000
+      feeBps = Math.round((binStep * baseFactor) / 10000);
     }
-    
+
+    // Fallback to direct fee fields if calculation didn't work
+    if (!Number.isFinite(feeBps) || feeBps <= 0) {
+      feeBps = Number(
+        state?.tradeFeeRate ??
+        state?.feeRate ??
+        state?.fee_rate ??
+        state?.fees ??
+        state?.baseFee ??
+        0
+      );
+
+      // Convert from PPM to BPS if value appears to be in PPM format
+      // PPM values >= 1000 are likely in PPM format (1000 PPM = 10 BPS = 0.1% fee)
+      if (Number.isFinite(feeBps) && feeBps >= 1000) {
+        feeBps = Math.round(feeBps / 100);
+      }
+    }
+
+    // Final fallback to cached values
     if (!Number.isFinite(feeBps) || feeBps <= 0) {
       // Try to get cached fee from pool cache
       const cachedPools = meteoraCache.data;
