@@ -37,6 +37,20 @@ import type { AmmPool, PoolsPayload } from '../../types.js';
 export const METEORA_BALANCED_V1_PROGRAM = 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB';
 export const METEORA_BALANCED_V2_PROGRAM = 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG'; // CP-AMM SDK
 
+// Known decimals for common tokens - used when resolution fails
+// This prevents 1000x pricing errors when using wrong default decimals
+const KNOWN_DECIMALS_FALLBACK: Record<string, number> = {
+  'So11111111111111111111111111111111111111112': 9,  // SOL
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6, // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6, // USDT
+  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': 9,  // mSOL
+  'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1': 9,  // bSOL
+  'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 9, // JitoSOL
+  '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj': 9, // stSOL
+  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 5, // BONK
+  'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 6,  // JUP
+};
+
 // Minimum buffer length for pool account decoding
 const MIN_DAMM_V1_POOL_BUFFER_LENGTH = 232;
 
