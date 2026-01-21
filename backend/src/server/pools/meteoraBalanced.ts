@@ -6,20 +6,6 @@ import type { AmmPool, PoolsPayload } from './types.js';
 import { validateHttpUrl } from './common.js';
 import { canonicalizePools } from './canonical.js';
 import { resolveManyDecimals, validateDecimalsForMint } from './decimals.js';
-
-// Known decimals for common tokens - used when resolution fails
-// SOL and SOL-derivatives have 9 decimals, stablecoins have 6
-const KNOWN_DECIMALS_FALLBACK: Record<string, number> = {
-  'So11111111111111111111111111111111111111112': 9,  // SOL
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6, // USDC
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6, // USDT
-  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': 9,  // mSOL
-  'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1': 9,  // bSOL
-  'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 9, // JitoSOL
-  '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj': 9, // stSOL
-  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 5, // BONK
-  'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 6,  // JUP
-};
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { PublicKey } from '@solana/web3.js';
 import { anyToBigInt } from './precision.js';
@@ -256,19 +242,17 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
 
       // Get decimals from centralized resolver with smart fallback chain:
       // 1. API response decimals (a?.decimals)
-      // 2. Batch-resolved decimals from resolveManyDecimals (decimalsMap)
-      // 3. Known token decimals fallback (KNOWN_DECIMALS_FALLBACK)
-      // 4. Default to 9 (most common on Solana) - NOT 6 which causes 1000x errors for SOL
-      let decA = toDec(a?.decimals ?? it?.decimalsA) ?? decimalsMap.get(mint_a) ?? KNOWN_DECIMALS_FALLBACK[mint_a] ?? 9;
-      let decB = toDec(b?.decimals ?? it?.decimalsB) ?? decimalsMap.get(mint_b) ?? KNOWN_DECIMALS_FALLBACK[mint_b] ?? 9;
+      // 2. Batch-resolved decimals from resolveManyDecimals (includes RPC + Jupiter + known tokens)
+      // 3. Default to 9 (most common on Solana) - NOT 6 which causes 1000x errors for SOL
+      // Note: resolveManyDecimals already handles known tokens via KNOWN_TOKEN_DECIMALS and persists RPC results
+      let decA = toDec(a?.decimals ?? it?.decimalsA) ?? decimalsMap.get(mint_a) ?? 9;
+      let decB = toDec(b?.decimals ?? it?.decimalsB) ?? decimalsMap.get(mint_b) ?? 9;
 
       // Log warning if we had to use fallback (indicates resolution failure)
       const decASource = toDec(a?.decimals ?? it?.decimalsA) !== undefined ? 'api' :
-                         decimalsMap.has(mint_a) ? 'resolved' :
-                         KNOWN_DECIMALS_FALLBACK[mint_a] !== undefined ? 'known' : 'default';
+                         decimalsMap.has(mint_a) ? 'resolved' : 'default';
       const decBSource = toDec(b?.decimals ?? it?.decimalsB) !== undefined ? 'api' :
-                         decimalsMap.has(mint_b) ? 'resolved' :
-                         KNOWN_DECIMALS_FALLBACK[mint_b] !== undefined ? 'known' : 'default';
+                         decimalsMap.has(mint_b) ? 'resolved' : 'default';
 
       if (decASource === 'default' || decBSource === 'default') {
         logger.warn('meteora.balanced.decimals.fallback_used', {
@@ -279,7 +263,7 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
           decB,
           decASource,
           decBSource,
-          warning: 'Using default decimals - may cause pricing errors if wrong',
+          warning: 'Using default decimals (9) - resolveManyDecimals did not resolve this mint',
           cat: 'meteora'
         });
       }
@@ -643,13 +627,14 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       // Do NOT use pool_version from enrichment as it may incorrectly override V1 pools
       const dex = 'MeteoraBalanced_v1';
       
-      // Get decimals from centralized resolver with smart fallback chain
-      const decimalsA = decimalsMap.get(mint_a) ?? KNOWN_DECIMALS_FALLBACK[mint_a] ?? 9;
-      const decimalsB = decimalsMap.get(mint_b) ?? KNOWN_DECIMALS_FALLBACK[mint_b] ?? 9;
+      // Get decimals from centralized resolver (includes RPC + Jupiter + known tokens with persistence)
+      // Default to 9 (most common on Solana) if not resolved
+      const decimalsA = decimalsMap.get(mint_a) ?? 9;
+      const decimalsB = decimalsMap.get(mint_b) ?? 9;
 
       // Log warning if we had to use fallback
-      const decASource = decimalsMap.has(mint_a) ? 'resolved' : KNOWN_DECIMALS_FALLBACK[mint_a] !== undefined ? 'known' : 'default';
-      const decBSource = decimalsMap.has(mint_b) ? 'resolved' : KNOWN_DECIMALS_FALLBACK[mint_b] !== undefined ? 'known' : 'default';
+      const decASource = decimalsMap.has(mint_a) ? 'resolved' : 'default';
+      const decBSource = decimalsMap.has(mint_b) ? 'resolved' : 'default';
 
       if (decASource === 'default' || decBSource === 'default') {
         logger.warn('meteora.balanced.v1.decimals.fallback_used', {
@@ -660,7 +645,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
           decimalsB,
           decASource,
           decBSource,
-          warning: 'Using default decimals - may cause pricing errors if wrong',
+          warning: 'Using default decimals (9) - resolveManyDecimals did not resolve this mint',
           cat: 'meteora'
         });
       }
