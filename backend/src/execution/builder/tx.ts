@@ -238,69 +238,104 @@ export async function buildDirectArbTx(
             },
           });
           
-          // Build transaction with router instructions
-          const { Transaction, ComputeBudgetProgram } = await import('@solana/web3.js');
-          const tx = new Transaction();
+          // Build transaction with router instructions using VersionedTransaction for accurate size with ALTs
+          const { ComputeBudgetProgram, TransactionMessage, VersionedTransaction } = await import('@solana/web3.js');
+          
+          // Collect all instructions
+          const allInstructions: TransactionInstruction[] = [];
           
           // Add compute budget
           if (cb?.computeUnitLimit) {
-            tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: cb.computeUnitLimit }));
+            allInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: cb.computeUnitLimit }));
           }
           if (cb?.computeUnitPriceMicroLamports) {
-            tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cb.computeUnitPriceMicroLamports }));
+            allInstructions.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cb.computeUnitPriceMicroLamports }));
           }
           
           // Add extra setup instructions
           for (const ix of extraSetupIxs) {
-            if (ix) tx.add(ix);
+            if (ix) allInstructions.push(ix);
           }
           
           // Add router instructions
           for (const ix of result.instructions) {
-            tx.add(ix);
+            allInstructions.push(ix);
           }
           
-          // Set placeholder blockhash for size calculation only
-          // The actual blockhash will be set when the transaction is sent via assembleAndSend
-          tx.recentBlockhash = '11111111111111111111111111111111';
-          tx.feePayer = wallet.publicKey;
+          // Load ALTs for accurate size calculation - this is critical for multi-hop CLMM transactions
+          const poolIds = plan.hops.map(h => h.poolId);
+          const altResult = await loadAltsForRoute(poolIds);
+          const lookupTables = altResult.lookupTables;
+          const altAddresses = altResult.altAddresses;
           
-          // DIAGNOSTIC: Check tx.instructions BEFORE serialize
-          const routerProgramId = '2Jgxnj7GGgR1EpwsfNKQhcFhmxAAhDoHmaiaDt2z9Fnw';
-          for (let i = 0; i < tx.instructions.length; i++) {
-            const ix = tx.instructions[i];
-            if (ix?.programId?.toBase58?.() === routerProgramId) {
-              console.log('[buildDirectArbTx] BEFORE serialize - router ix:', {
-                ixIndex: i,
-                keyCount: ix?.keys?.length || 0,
-                key0: ix?.keys?.[0]?.pubkey?.toBase58?.() || 'unknown',
-                key0_isSigner: ix?.keys?.[0]?.isSigner,
-                key1: ix?.keys?.[1]?.pubkey?.toBase58?.() || 'unknown',
-                key1_isSigner: ix?.keys?.[1]?.isSigner,
-              });
-            }
-          }
+          // Log ALT coverage for router path
+          try {
+            logger.debug('tx.build.router.alt_coverage', {
+              cat: 'tx',
+              ctx: {
+                traceId,
+                poolCount: poolIds.length,
+                altCount: lookupTables.length,
+                coverage: `${(altResult.coverage * 100).toFixed(1)}%`,
+                coveredPools: altResult.coveredPools.length,
+                missingPools: altResult.missingPools.slice(0, 5),
+              },
+            });
+          } catch (e) { logCatchError('builder.tx', e); }
           
-          const sizeBytes = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).length;
+          // Use VersionedTransaction with ALTs for accurate size calculation
+          // This properly compresses accounts that are in the lookup tables
+          const placeholderBlockhash = '11111111111111111111111111111111';
+          const messageV0 = new TransactionMessage({
+            payerKey: wallet.publicKey,
+            recentBlockhash: placeholderBlockhash,
+            instructions: allInstructions,
+          }).compileToV0Message(lookupTables);
           
-          // DIAGNOSTIC: Check tx.instructions AFTER serialize
-          for (let i = 0; i < tx.instructions.length; i++) {
-            const ix = tx.instructions[i];
-            if (ix?.programId?.toBase58?.() === routerProgramId) {
-              console.log('[buildDirectArbTx] AFTER serialize - router ix:', {
-                ixIndex: i,
-                keyCount: ix?.keys?.length || 0,
-                key0: ix?.keys?.[0]?.pubkey?.toBase58?.() || 'unknown',
-                key0_isSigner: ix?.keys?.[0]?.isSigner,
-                key1: ix?.keys?.[1]?.pubkey?.toBase58?.() || 'unknown',
-                key1_isSigner: ix?.keys?.[1]?.isSigner,
-              });
-            }
+          const versionedTx = new VersionedTransaction(messageV0);
+          const sizeBytes = versionedTx.serialize().length;
+          
+          // Log size details for debugging
+          try {
+            const totalAccounts = allInstructions.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0);
+            logger.debug('tx.build.router.size_check', {
+              cat: 'tx',
+              ctx: {
+                traceId,
+                sizeBytes,
+                maxSize: 1232,
+                ixCount: allInstructions.length,
+                totalAccounts,
+                altCount: lookupTables.length,
+                usedVersionedTx: true,
+              },
+            });
+          } catch (e) { logCatchError('builder.tx', e); }
+          
+          // Check if transaction fits
+          if (sizeBytes > 1232) {
+            const errorMsg = `Transaction too large: ${sizeBytes} > 1232 bytes (with ${lookupTables.length} ALTs, ${(altResult.coverage * 100).toFixed(1)}% coverage)`;
+            logger.error('tx.build.router.too_large', {
+              cat: 'tx',
+              ctx: {
+                traceId,
+                sizeBytes,
+                altCount: lookupTables.length,
+                coverage: `${(altResult.coverage * 100).toFixed(1)}%`,
+                missingPools: altResult.missingPools,
+                suggestion: 'Add tick arrays to ALTs or reduce hop count',
+              },
+            });
+            throw new Error(errorMsg);
           }
           
           return {
-            tx,
-            ixCount: result.instructions.length + extraSetupIxs.length + 2,
+            tx: { 
+              instructions: allInstructions, 
+              v: 0,
+              lookupTableAddresses: altAddresses, // Include ALT addresses for sender.ts
+            },
+            ixCount: allInstructions.length,
             sizeBytes,
             usedRouter: true,
             usedFlashLoan: result.usedFlashLoan,

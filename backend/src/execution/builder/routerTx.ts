@@ -2718,62 +2718,56 @@ async function extractDexAccounts(
         const knownLower = validateBase58Address(hop.tickArrayLower, `orca.tickArrayLower.${poolIdStr.slice(0, 8)}`) || '';
         const knownUpper = validateBase58Address(hop.tickArrayUpper, `orca.tickArrayUpper.${poolIdStr.slice(0, 8)}`) || '';
 
-        // PRIORITY 1: Use SDK-provided tick arrays directly if available
-        // The Orca SDK's swapInstructions() returns direction-aware tick arrays based on inputMint
-        // These are the most accurate because the SDK computes them for the actual swap direction
-        const sdkTickArray0 = validateBase58Address((hop as any).tickArray0, `orca.sdkTickArray0.${poolIdStr.slice(0, 8)}`) || '';
-        const sdkTickArray1 = validateBase58Address((hop as any).tickArray1, `orca.sdkTickArray1.${poolIdStr.slice(0, 8)}`) || '';
-        const sdkTickArray2 = validateBase58Address((hop as any).tickArray2, `orca.sdkTickArray2.${poolIdStr.slice(0, 8)}`) || '';
-
+        // ALWAYS use directional ordering based on known tick arrays (center, lower, upper)
+        // The SDK cache does NOT store direction-aware arrays - it stores positional arrays
+        // So we MUST reorder based on the current swap direction to get correct tick array sequence
+        //
+        // For aToB = true (A→B): ticks traverse downward, need [center, lower, even_lower]
+        // For aToB = false (B→A): ticks traverse upward, need [center, upper, even_upper]
+        
         let tickArray0 = '';
         let tickArray1 = '';
         let tickArray2 = '';
         let tickArraySource = 'none';
 
-        if (sdkTickArray0 && sdkTickArray1) {
-          // SDK provided direction-aware tick arrays - use them directly
-          tickArray0 = sdkTickArray0;
-          tickArray1 = sdkTickArray1;
-          tickArray2 = sdkTickArray2 || sdkTickArray1; // Fallback to array1 if array2 missing
-          tickArraySource = 'sdk';
+        // PRIORITY 1: Use cache-based arrays with DIRECTIONAL ordering
+        // tickArray0 = center (contains current tick)
+        // tickArray1 = next in direction (lower for A→B, upper for B→A)
+        // tickArray2 = duplicate of tickArray1 (safe fallback - third array may not exist)
+        tickArray0 = knownCenter;
+        tickArray1 = isAtoBOrca ? knownLower : knownUpper;
+        tickArray2 = tickArray1;  // Safe: duplicate the second array
+        tickArraySource = 'cache_directional';
 
-          logger.debug('routerTx.orca.tickArrays.usingSdk', {
-            cat: 'tx',
-            poolId: poolIdStr.slice(0, 8),
-            arrays: [tickArray0.slice(0, 8), tickArray1.slice(0, 8), tickArray2.slice(0, 8)],
-            isAtoB: isAtoBOrca,
-          });
-        } else {
-          // PRIORITY 2: Fall back to cache-based arrays with directional ordering
-          // tickArray0 = center (contains current tick)
-          // tickArray1 = next in direction (lower for A→B, upper for B→A)
-          // tickArray2 = duplicate of tickArray1 (safe fallback - third array may not exist)
-          tickArray0 = knownCenter;
-          tickArray1 = isAtoBOrca ? knownLower : knownUpper;
-          tickArray2 = tickArray1;  // Safe: duplicate the second array
-          tickArraySource = 'cache';
-
-          // PRIORITY 3: Try to derive proper tick arrays if cache incomplete
-          try {
-            const hot = executionCache.getHot(poolIdStr);
-            const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
-            const currentTick = (hot as any)?.currentTickIndex;
-            if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
-              const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
-              tickArray0 = derived.tickArray0.toBase58();
-              tickArray1 = derived.tickArray1.toBase58();
-              // For tickArray2: only use derived if it matches a known-good array
-              // Otherwise, duplicate tickArray1 to avoid using an uninitialized array
-              const derivedArray2 = derived.tickArray2.toBase58();
-              if (derivedArray2 === knownCenter || derivedArray2 === knownLower || derivedArray2 === knownUpper) {
-                tickArray2 = derivedArray2;  // Derived matches a known-good array
-              } else {
-                tickArray2 = tickArray1;  // Safe fallback: duplicate tickArray1
-              }
-              tickArraySource = 'derived';
+        // PRIORITY 2: Try to derive proper tick arrays if cache incomplete or we need third array
+        try {
+          const hot = executionCache.getHot(poolIdStr);
+          const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
+          const currentTick = (hot as any)?.currentTickIndex;
+          if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
+            const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
+            tickArray0 = derived.tickArray0.toBase58();
+            tickArray1 = derived.tickArray1.toBase58();
+            // For tickArray2: only use derived if it matches a known-good array
+            // Otherwise, duplicate tickArray1 to avoid using an uninitialized array
+            const derivedArray2 = derived.tickArray2.toBase58();
+            if (derivedArray2 === knownCenter || derivedArray2 === knownLower || derivedArray2 === knownUpper) {
+              tickArray2 = derivedArray2;  // Derived matches a known-good array
+            } else {
+              tickArray2 = tickArray1;  // Safe fallback: duplicate tickArray1
             }
-          } catch { /* ignore */ }
-        }
+            tickArraySource = 'derived';
+          }
+        } catch { /* ignore derivation errors, use cache-based directional ordering */ }
+
+        logger.debug('routerTx.orca.tickArrays.directional', {
+          cat: 'tx',
+          poolId: poolIdStr.slice(0, 8),
+          arrays: [tickArray0.slice(0, 8), tickArray1.slice(0, 8), tickArray2.slice(0, 8)],
+          isAtoB: isAtoBOrca,
+          source: tickArraySource,
+          known: { center: knownCenter.slice(0, 8), lower: knownLower.slice(0, 8), upper: knownUpper.slice(0, 8) },
+        });
         
         // Get mint pubkeys for swapV2
         const orcaMintA = nativeMintA ? new PublicKey(nativeMintA) : inputMint;
