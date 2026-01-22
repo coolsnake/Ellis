@@ -2256,18 +2256,34 @@ export class ArbExecutor {
             return minSize;
           }
           
-          const balance = startToken === SOL_MINT 
+          // When starting with SOL, reserve some for ATA rent and transaction fees
+          // - ATA rent: ~0.00203 SOL per new account (reserve for 2-3 intermediate ATAs)
+          // - Transaction fees: ~0.0001 SOL
+          // - Minimum wallet balance: keep ~0.001 SOL to avoid account issues
+          const SOL_RESERVE_FOR_FEES = 0.007; // ~0.007 SOL reserve (covers ~3 ATAs + fees + buffer)
+          
+          const rawBalance = startToken === SOL_MINT 
             ? balances.sol 
             : (balances.tokens[startToken] || 0);
           
+          // For SOL, subtract the reserve; for other tokens, use full balance
+          const balance = startToken === SOL_MINT
+            ? Math.max(0, rawBalance - SOL_RESERVE_FOR_FEES)
+            : rawBalance;
+          
           // Check if we have any balance at all
           if (balance <= 0) {
+            const reason = startToken === SOL_MINT && rawBalance > 0 
+              ? 'sol_below_reserve' 
+              : 'zero_balance';
             logger.warn('arb.executor.sizing.no_wallet_balance', {
               cat: 'arb',
               path: opp.path.join('->'),
               startToken: startToken.slice(0, 8) + '...',
               balance,
-              reason: 'zero_balance',
+              rawBalance,
+              solReserve: startToken === SOL_MINT ? SOL_RESERVE_FOR_FEES : 0,
+              reason,
             });
             // Truly no balance - can't trade
             return 0;
@@ -2282,6 +2298,9 @@ export class ArbExecutor {
               path: opp.path.join('->'),
               startToken: startToken.slice(0, 8) + '...',
               walletBalanceUsd,
+              rawBalance,
+              effectiveBalance: balance,
+              solReserveApplied: startToken === SOL_MINT ? SOL_RESERVE_FOR_FEES : 0,
               isFlashloanable,
               flashloanEnabled,
             });

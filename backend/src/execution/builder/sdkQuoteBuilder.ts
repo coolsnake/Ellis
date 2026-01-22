@@ -82,6 +82,7 @@ export interface SdkProvidedAccounts {
   activeId?: number;
   binArrayLower?: string;
   binArrayUpper?: string;
+  bitmapExtension?: string;  // Required when activeId is outside ±35,840 range
 
   // Meteora DAMM (v1/v2)
   poolAuthority?: string;
@@ -1922,6 +1923,42 @@ async function getMeteoraSdkQuote(
       vaultB = lbPair?.reserveY?.toBase58?.() || lbPair?.reserve_y?.toBase58?.();
     }
 
+    // Derive bitmap extension PDA if needed
+    // The bitmap extension is required when activeId is outside the default internal bitmap range
+    // Default range is ±512 * BIN_ARRAY_SIZE (70) = ±35,840
+    const DEFAULT_BITMAP_RANGE = 512 * BIN_ARRAY_SIZE; // 35,840
+    let bitmapExtension: string | undefined;
+    
+    if (Math.abs(activeId) > DEFAULT_BITMAP_RANGE) {
+      try {
+        // Derive bitmap extension PDA: seeds = ["bitmap", lb_pair]
+        const [bitmapPda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('bitmap'), poolPk.toBuffer()],
+          METEORA_DLMM_PROGRAM
+        );
+        bitmapExtension = bitmapPda.toBase58();
+        
+        logger.debug('sdkQuoteBuilder.meteora.bitmapExtension.derived', {
+          cat: 'tx',
+          ctx: {
+            poolId: poolId.slice(0, 8) + '...',
+            activeId,
+            threshold: DEFAULT_BITMAP_RANGE,
+            bitmapExtension: bitmapExtension.slice(0, 8) + '...',
+          },
+        });
+      } catch (e) {
+        logger.warn('sdkQuoteBuilder.meteora.bitmapExtension.derivation_failed', {
+          cat: 'tx',
+          ctx: {
+            poolId: poolId.slice(0, 8) + '...',
+            activeId,
+            error: (e as Error).message,
+          },
+        });
+      }
+    }
+
     // Cap bin arrays to prevent transaction bloat
     // routerTx will select the correct directional subset based on swap direction
     const cappedBinArrays = binArrayAddresses.slice(0, 7);
@@ -1931,6 +1968,7 @@ async function getMeteoraSdkQuote(
       activeId,
       binArrayLower: cappedBinArrays[0],
       binArrayUpper: cappedBinArrays[cappedBinArrays.length - 1],
+      bitmapExtension,
       vaultA,
       vaultB,
     };

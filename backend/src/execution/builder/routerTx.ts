@@ -398,13 +398,20 @@ async function buildFlashLoanArbTx(
     // Intermediate token ATAs for multi-hop routes
     for (let i = 0; i < plan.hops.length - 1; i++) {
       const hop = plan.hops[i];
-      const intermediateMint = new PublicKey(hop.outputMint);
-      const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022' 
-        ? TOKEN_2022_PROGRAM_ID 
-        : TOKEN_PROGRAM_ID;
       
       // Skip if same as input (shouldn't happen in well-formed plan)
-      if (hop.outputMint !== plan.hops[0].inputMint) {
+      if (hop.outputMint === plan.hops[0].inputMint) {
+        continue;
+      }
+      
+      if (isSolMint(hop.outputMint)) {
+        // SOL intermediate: need WSOL ATA to receive output and pass to next hop
+        atasToCreate.push({ mint: NATIVE_MINT, tokenProgram: TOKEN_PROGRAM_ID });
+      } else {
+        const intermediateMint = new PublicKey(hop.outputMint);
+        const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022' 
+          ? TOKEN_2022_PROGRAM_ID 
+          : TOKEN_PROGRAM_ID;
         atasToCreate.push({ mint: intermediateMint, tokenProgram: intermediateTokenProgram });
       }
     }
@@ -692,13 +699,18 @@ async function buildDirectRouterTx(
     // Intermediate token ATAs for multi-hop routes
     for (let i = 0; i < plan.hops.length - 1; i++) {
       const hop = plan.hops[i];
-      const intermediateMint = new PublicKey(hop.outputMint);
-      const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022' 
-        ? TOKEN_2022_PROGRAM_ID 
-        : TOKEN_PROGRAM_ID;
       
-      // Skip if it's SOL (handled as WSOL)
-      if (!isSolMint(hop.outputMint)) {
+      if (isSolMint(hop.outputMint)) {
+        // SOL intermediate: need WSOL ATA to receive output and pass to next hop
+        // Previously this was skipped with "handled as WSOL" but that only applied
+        // when inputIsSol was true (first hop input is SOL). For intermediate SOL,
+        // we must explicitly create the WSOL ATA.
+        atasToCreate.push({ mint: NATIVE_MINT, tokenProgram: TOKEN_PROGRAM_ID });
+      } else {
+        const intermediateMint = new PublicKey(hop.outputMint);
+        const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022' 
+          ? TOKEN_2022_PROGRAM_ID 
+          : TOKEN_PROGRAM_ID;
         atasToCreate.push({ mint: intermediateMint, tokenProgram: intermediateTokenProgram });
       }
     }
@@ -1070,13 +1082,20 @@ async function buildSdkQuoteRouterTx(
     // Intermediate token ATAs for multi-hop routes
     for (let i = 0; i < plan.hops.length - 1; i++) {
       const hop = plan.hops[i];
-      const intermediateMint = new PublicKey(hop.outputMint);
-      const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022'
-        ? TOKEN_2022_PROGRAM_ID
-        : TOKEN_PROGRAM_ID;
-
-      // Skip if it's SOL (handled as WSOL) or same as input/output
-      if (!isSolMint(hop.outputMint) && hop.outputMint !== plan.hops[0].inputMint) {
+      
+      // Skip if same as input/output (shouldn't happen in well-formed plan)
+      if (hop.outputMint === plan.hops[0].inputMint) {
+        continue;
+      }
+      
+      if (isSolMint(hop.outputMint)) {
+        // SOL intermediate: need WSOL ATA to receive output and pass to next hop
+        atasToCreate.push({ mint: NATIVE_MINT, tokenProgram: TOKEN_PROGRAM_ID });
+      } else {
+        const intermediateMint = new PublicKey(hop.outputMint);
+        const intermediateTokenProgram = hop.outputTokenProgram === 'token-2022'
+          ? TOKEN_2022_PROGRAM_ID
+          : TOKEN_PROGRAM_ID;
         atasToCreate.push({ mint: intermediateMint, tokenProgram: intermediateTokenProgram });
       }
     }
@@ -1248,6 +1267,10 @@ function applysdkAccountsToHop(hop: DirectHop, sdkAccounts: SdkProvidedAccounts)
   }
   if (sdkAccounts.activeId !== undefined) {
     hop.activeId = sdkAccounts.activeId;
+  }
+  // Bitmap extension for pools with activeId outside default range
+  if (sdkAccounts.bitmapExtension) {
+    hop.bitmapExtension = sdkAccounts.bitmapExtension;
   }
 
   // Meteora DAMM accounts (v1/v2)
@@ -2086,6 +2109,43 @@ async function extractDexAccounts(
         const meteoraPoolIdStr = hop.poolId.replace(/[#-]rev$/, '');
         const hotCache = executionCache.getHot(meteoraPoolIdStr) as any;
         const activeId = hop.activeId ?? hotCache?.activeId;
+        
+        // Derive bitmap extension PDA if needed but not provided
+        // The bitmap extension is required when activeId is outside the default internal bitmap range
+        // Default range is ±512 * BIN_ARRAY_SIZE (70) = ±35,840
+        const BIN_ARRAY_SIZE = 70;
+        const DEFAULT_BITMAP_RANGE = 512 * BIN_ARRAY_SIZE; // 35,840
+        
+        if (!hop.bitmapExtension && typeof activeId === 'number' && Math.abs(activeId) > DEFAULT_BITMAP_RANGE) {
+          try {
+            // Derive bitmap extension PDA: seeds = ["bitmap", lb_pair]
+            const meteoraPoolPk = new PublicKey(meteoraPoolIdStr);
+            const [bitmapPda] = PublicKey.findProgramAddressSync(
+              [Buffer.from('bitmap'), meteoraPoolPk.toBuffer()],
+              programIdKey
+            );
+            hop.bitmapExtension = bitmapPda.toBase58();
+            
+            logger.debug('routerTx.meteora.bitmapExtension.derived', {
+              cat: 'tx',
+              ctx: {
+                poolId: meteoraPoolIdStr.slice(0, 8) + '...',
+                activeId,
+                threshold: DEFAULT_BITMAP_RANGE,
+                bitmapExtension: hop.bitmapExtension.slice(0, 8) + '...',
+              },
+            });
+          } catch (e) {
+            logger.warn('routerTx.meteora.bitmapExtension.derivation_failed', {
+              cat: 'tx',
+              ctx: {
+                poolId: meteoraPoolIdStr.slice(0, 8) + '...',
+                activeId,
+                error: (e as Error).message,
+              },
+            });
+          }
+        }
         
         // Derive 3 directional bin arrays based on swap direction
         // X→Y (isXtoY): active, active-1, active-2 (price goes DOWN → lower direction)
