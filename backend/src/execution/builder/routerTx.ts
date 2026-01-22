@@ -2802,11 +2802,6 @@ async function extractDexAccounts(
           selectedVaultB: orcaVaultB,
           tickArrays: {
             source: tickArraySource,
-            sdk: {
-              array0: sdkTickArray0?.slice(0, 8) || 'missing',
-              array1: sdkTickArray1?.slice(0, 8) || 'missing',
-              array2: sdkTickArray2?.slice(0, 8) || 'missing',
-            },
             known: {
               center: knownCenter?.slice(0, 8) || 'missing',
               lower: knownLower?.slice(0, 8) || 'missing',
