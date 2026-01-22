@@ -20,6 +20,7 @@ import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import type { DirectHop } from '../types.js';
+import { executionCache } from '../cache.js';
 
 // ============================================================================
 // Constants
@@ -125,6 +126,518 @@ export interface SdkQuoteResult {
   accounts: SdkProvidedAccounts;
   quotedAmountOut?: bigint;
   error?: string;
+  fromCache?: boolean;  // Indicates if result came from cache
+}
+
+// ============================================================================
+// SDK Account Caching Helpers
+// ============================================================================
+
+/**
+ * Cache key includes pool ID and variant to handle different DEX variants
+ */
+function getCacheKey(poolId: string, variant?: string): string {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  return variant ? `${cleanPoolId}:${variant}` : cleanPoolId;
+}
+
+/**
+ * Try to get cached SDK accounts for Orca Whirlpool
+ * Returns accounts if all required fields are present and tick arrays are valid
+ */
+function tryGetCachedOrcaAccounts(poolId: string): SdkProvidedAccounts | null {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  const staticData = executionCache.getStatic(cleanPoolId);
+  const hotData = executionCache.getHot(cleanPoolId);
+  
+  // Check if we have the required static account (oracle)
+  // Oracle is a PDA derived from pool - it never changes
+  const oracle = staticData?.oracle;
+  
+  // Check if we have valid tick arrays (not needing validation)
+  // Orca uses tickArray0/1/2 naming in hop, but cache stores as tickArrayLower/Center/Upper
+  const hasValidTickArrays = hotData?.tickArrays && 
+    hotData.needsTickArrayValidation !== true &&
+    (hotData.tickArrays.center || hotData.tickArrays.lower);
+  
+  if (!oracle && !hasValidTickArrays) {
+    return null;
+  }
+  
+  // Build accounts from cache
+  const accounts: SdkProvidedAccounts = {};
+  
+  if (oracle) {
+    accounts.oracle = oracle;
+  }
+  
+  if (hasValidTickArrays && hotData?.tickArrays) {
+    // Map cache format to Orca format (tickArray0/1/2)
+    const ta = hotData.tickArrays;
+    if (ta.center) accounts.tickArray0 = ta.center;
+    if (ta.lower) {
+      const lowerArr = Array.isArray(ta.lower) ? ta.lower : [ta.lower];
+      if (lowerArr[0]) accounts.tickArray1 = lowerArr[0];
+    }
+    if (ta.upper) {
+      const upperArr = Array.isArray(ta.upper) ? ta.upper : [ta.upper];
+      if (upperArr[0]) accounts.tickArray2 = upperArr[0];
+    }
+  }
+  
+  // Also get vaults from static cache
+  if (staticData?.token_vault_a) accounts.vaultA = staticData.token_vault_a;
+  if (staticData?.token_vault_b) accounts.vaultB = staticData.token_vault_b;
+  
+  // Only return if we have meaningful data
+  const hasAccounts = accounts.oracle || accounts.tickArray0 || accounts.vaultA;
+  return hasAccounts ? accounts : null;
+}
+
+/**
+ * Store Orca SDK accounts to cache
+ */
+function cacheOrcaAccounts(poolId: string, accounts: SdkProvidedAccounts): void {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  
+  // Store oracle in static cache (never changes)
+  if (accounts.oracle) {
+    const existing = executionCache.getStatic(cleanPoolId) || {};
+    executionCache.setStatic(cleanPoolId, {
+      ...existing,
+      oracle: accounts.oracle,
+      token_vault_a: accounts.vaultA || existing.token_vault_a,
+      token_vault_b: accounts.vaultB || existing.token_vault_b,
+    });
+  }
+  
+  // Store tick arrays in hot cache (may change on boundary crossing)
+  if (accounts.tickArray0 || accounts.tickArray1 || accounts.tickArray2) {
+    const existing = executionCache.getHot(cleanPoolId) || {};
+    executionCache.setHot(cleanPoolId, {
+      ...existing,
+      tickArrays: {
+        center: accounts.tickArray0,
+        lower: accounts.tickArray1 ? [accounts.tickArray1] : undefined,
+        upper: accounts.tickArray2 ? [accounts.tickArray2] : undefined,
+      },
+      needsTickArrayValidation: false,
+      tickArraysValidatedAt: Date.now(),
+    });
+  }
+}
+
+/**
+ * Try to get cached SDK accounts for Raydium CLMM
+ */
+function tryGetCachedRaydiumClmmAccounts(poolId: string): SdkProvidedAccounts | null {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  const staticData = executionCache.getStatic(cleanPoolId);
+  const hotData = executionCache.getHot(cleanPoolId);
+  
+  // Required static accounts for Raydium CLMM
+  const ammConfig = staticData?.amm_config;
+  const observationState = staticData?.observation_state;
+  
+  // Check if we have valid tick arrays
+  const hasValidTickArrays = hotData?.tickArrays && 
+    hotData.needsTickArrayValidation !== true &&
+    hotData.tickArrays.center;
+  
+  // Need at least ammConfig or observationState, and valid tick arrays
+  if (!ammConfig && !observationState && !hasValidTickArrays) {
+    return null;
+  }
+  
+  const accounts: SdkProvidedAccounts = {};
+  
+  if (ammConfig) accounts.ammConfig = ammConfig;
+  if (observationState) accounts.observationState = observationState;
+  if (staticData?.ex_bitmap) accounts.exBitmap = staticData.ex_bitmap;
+  if (staticData?.vault_a) accounts.vaultA = staticData.vault_a;
+  if (staticData?.vault_b) accounts.vaultB = staticData.vault_b;
+  
+  if (hasValidTickArrays && hotData?.tickArrays) {
+    accounts.tickArrayCenter = hotData.tickArrays.center;
+    if (hotData.tickArrays.lower) {
+      const lowerArr = Array.isArray(hotData.tickArrays.lower) ? hotData.tickArrays.lower : [hotData.tickArrays.lower];
+      accounts.tickArrayLower = lowerArr[0];
+    }
+    if (hotData.tickArrays.upper) {
+      const upperArr = Array.isArray(hotData.tickArrays.upper) ? hotData.tickArrays.upper : [hotData.tickArrays.upper];
+      accounts.tickArrayUpper = upperArr[0];
+    }
+  }
+  
+  // Only return if we have meaningful accounts
+  const hasAccounts = accounts.ammConfig || accounts.observationState || accounts.tickArrayCenter;
+  return hasAccounts ? accounts : null;
+}
+
+/**
+ * Store Raydium CLMM SDK accounts to cache
+ */
+function cacheRaydiumClmmAccounts(poolId: string, accounts: SdkProvidedAccounts): void {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  
+  // Store static accounts (ammConfig, observationState, exBitmap - rarely change)
+  const staticUpdates: Record<string, any> = {};
+  if (accounts.ammConfig) staticUpdates.amm_config = accounts.ammConfig;
+  if (accounts.observationState) staticUpdates.observation_state = accounts.observationState;
+  if (accounts.exBitmap) staticUpdates.ex_bitmap = accounts.exBitmap;
+  if (accounts.vaultA) staticUpdates.vault_a = accounts.vaultA;
+  if (accounts.vaultB) staticUpdates.vault_b = accounts.vaultB;
+  
+  if (Object.keys(staticUpdates).length > 0) {
+    const existing = executionCache.getStatic(cleanPoolId) || {};
+    executionCache.setStatic(cleanPoolId, { ...existing, ...staticUpdates });
+  }
+  
+  // Store tick arrays in hot cache
+  if (accounts.tickArrayCenter || accounts.tickArrayLower || accounts.tickArrayUpper) {
+    const existing = executionCache.getHot(cleanPoolId) || {};
+    executionCache.setHot(cleanPoolId, {
+      ...existing,
+      tickArrays: {
+        center: accounts.tickArrayCenter,
+        lower: accounts.tickArrayLower ? [accounts.tickArrayLower] : undefined,
+        upper: accounts.tickArrayUpper ? [accounts.tickArrayUpper] : undefined,
+      },
+      needsTickArrayValidation: false,
+      tickArraysValidatedAt: Date.now(),
+    });
+  }
+}
+
+/**
+ * Try to get cached SDK accounts for Raydium AMM v4
+ */
+function tryGetCachedRaydiumAmmAccounts(poolId: string): SdkProvidedAccounts | null {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  const staticData = executionCache.getStatic(cleanPoolId);
+  
+  if (!staticData) return null;
+  
+  // Raydium AMM v4 accounts are all static (Serum market accounts don't change)
+  const accounts: SdkProvidedAccounts = {};
+  
+  // AMM accounts
+  if (staticData.amm_authority) accounts.ammAuthority = staticData.amm_authority;
+  if (staticData.amm_open_orders || staticData.open_orders) {
+    accounts.openOrders = staticData.amm_open_orders || staticData.open_orders;
+  }
+  if (staticData.amm_target_orders || staticData.target_orders) {
+    accounts.targetOrders = staticData.amm_target_orders || staticData.target_orders;
+  }
+  if (staticData.vault_a) accounts.vaultA = staticData.vault_a;
+  if (staticData.vault_b) accounts.vaultB = staticData.vault_b;
+  if (staticData.lp_mint) accounts.lpMint = staticData.lp_mint;
+  
+  // Serum/OpenBook market accounts
+  if (staticData.market_id || staticData.market) {
+    accounts.marketId = staticData.market_id || staticData.market;
+  }
+  if (staticData.market_program_id) accounts.marketProgramId = staticData.market_program_id;
+  if (staticData.market_bids || staticData.serum_bids) {
+    accounts.serumBids = staticData.market_bids || staticData.serum_bids;
+  }
+  if (staticData.market_asks || staticData.serum_asks) {
+    accounts.serumAsks = staticData.market_asks || staticData.serum_asks;
+  }
+  if (staticData.market_event_queue || staticData.serum_event_queue) {
+    accounts.serumEventQueue = staticData.market_event_queue || staticData.serum_event_queue;
+  }
+  if (staticData.market_base_vault || staticData.serum_coin_vault) {
+    accounts.serumCoinVault = staticData.market_base_vault || staticData.serum_coin_vault;
+  }
+  if (staticData.market_quote_vault || staticData.serum_pc_vault) {
+    accounts.serumPcVault = staticData.market_quote_vault || staticData.serum_pc_vault;
+  }
+  if (staticData.market_authority || staticData.serum_vault_signer) {
+    accounts.serumVaultSigner = staticData.market_authority || staticData.serum_vault_signer;
+  }
+  
+  // Need at least the key market accounts to be useful
+  const hasMarketAccounts = accounts.marketId && accounts.serumBids && accounts.serumAsks;
+  return hasMarketAccounts ? accounts : null;
+}
+
+/**
+ * Store Raydium AMM v4 SDK accounts to cache
+ */
+function cacheRaydiumAmmAccounts(poolId: string, accounts: SdkProvidedAccounts): void {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  
+  const staticUpdates: Record<string, any> = {};
+  
+  if (accounts.ammAuthority) staticUpdates.amm_authority = accounts.ammAuthority;
+  if (accounts.openOrders) staticUpdates.amm_open_orders = accounts.openOrders;
+  if (accounts.targetOrders) staticUpdates.amm_target_orders = accounts.targetOrders;
+  if (accounts.vaultA) staticUpdates.vault_a = accounts.vaultA;
+  if (accounts.vaultB) staticUpdates.vault_b = accounts.vaultB;
+  if (accounts.lpMint) staticUpdates.lp_mint = accounts.lpMint;
+  if (accounts.marketId) staticUpdates.market_id = accounts.marketId;
+  if (accounts.marketProgramId) staticUpdates.market_program_id = accounts.marketProgramId;
+  if (accounts.serumBids) staticUpdates.market_bids = accounts.serumBids;
+  if (accounts.serumAsks) staticUpdates.market_asks = accounts.serumAsks;
+  if (accounts.serumEventQueue) staticUpdates.market_event_queue = accounts.serumEventQueue;
+  if (accounts.serumCoinVault) staticUpdates.market_base_vault = accounts.serumCoinVault;
+  if (accounts.serumPcVault) staticUpdates.market_quote_vault = accounts.serumPcVault;
+  if (accounts.serumVaultSigner) staticUpdates.market_authority = accounts.serumVaultSigner;
+  
+  if (Object.keys(staticUpdates).length > 0) {
+    const existing = executionCache.getStatic(cleanPoolId) || {};
+    executionCache.setStatic(cleanPoolId, { ...existing, ...staticUpdates });
+  }
+}
+
+/**
+ * Try to get cached SDK accounts for Meteora DLMM
+ */
+function tryGetCachedMeteoraDlmmAccounts(poolId: string): SdkProvidedAccounts | null {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  const staticData = executionCache.getStatic(cleanPoolId);
+  const hotData = executionCache.getHot(cleanPoolId);
+  
+  // Check if we have valid bin arrays
+  const hasValidBinArrays = hotData?.binArrays && 
+    hotData.needsBinArrayValidation !== true &&
+    (hotData.binArrays.arrays?.length || hotData.binArrays.lower);
+  
+  if (!hasValidBinArrays) {
+    return null;
+  }
+  
+  const accounts: SdkProvidedAccounts = {};
+  
+  // Get activeId from hot cache
+  if (hotData?.activeId !== undefined) {
+    accounts.activeId = hotData.activeId;
+  }
+  
+  // Get bin arrays
+  if (hotData?.binArrays) {
+    if (hotData.binArrays.arrays?.length) {
+      accounts.binArrays = hotData.binArrays.arrays.map(a => a.address);
+      accounts.binArrayLower = hotData.binArrays.lower || accounts.binArrays[0];
+      accounts.binArrayUpper = hotData.binArrays.upper || accounts.binArrays[accounts.binArrays.length - 1];
+    } else if (hotData.binArrays.lower || hotData.binArrays.upper) {
+      const arrays: string[] = [];
+      if (hotData.binArrays.lower) arrays.push(hotData.binArrays.lower);
+      if (hotData.binArrays.active && hotData.binArrays.active !== hotData.binArrays.lower) {
+        arrays.push(hotData.binArrays.active);
+      }
+      if (hotData.binArrays.upper && hotData.binArrays.upper !== hotData.binArrays.active) {
+        arrays.push(hotData.binArrays.upper);
+      }
+      accounts.binArrays = arrays;
+      accounts.binArrayLower = hotData.binArrays.lower;
+      accounts.binArrayUpper = hotData.binArrays.upper;
+    }
+  }
+  
+  // Get vaults from static or hot
+  if (staticData?.vault_a) accounts.vaultA = staticData.vault_a;
+  if (staticData?.vault_b) accounts.vaultB = staticData.vault_b;
+  
+  const hasBinArrays = accounts.binArrays && accounts.binArrays.length > 0;
+  return hasBinArrays ? accounts : null;
+}
+
+/**
+ * Store Meteora DLMM SDK accounts to cache
+ */
+function cacheMeteoraDlmmAccounts(poolId: string, accounts: SdkProvidedAccounts): void {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  
+  // Store vaults in static cache
+  if (accounts.vaultA || accounts.vaultB) {
+    const existing = executionCache.getStatic(cleanPoolId) || {};
+    executionCache.setStatic(cleanPoolId, {
+      ...existing,
+      vault_a: accounts.vaultA || existing.vault_a,
+      vault_b: accounts.vaultB || existing.vault_b,
+    });
+  }
+  
+  // Store bin arrays and activeId in hot cache
+  if (accounts.binArrays?.length || accounts.activeId !== undefined) {
+    const existing = executionCache.getHot(cleanPoolId) || {};
+    
+    // Build bin array cache structure
+    const binArraysCache: any = {};
+    if (accounts.binArrays?.length) {
+      // Store as indexed arrays for full coverage
+      binArraysCache.arrays = accounts.binArrays.map((addr, i) => ({
+        index: i,  // We don't have real index, use position
+        address: addr,
+      }));
+      binArraysCache.lower = accounts.binArrayLower || accounts.binArrays[0];
+      binArraysCache.upper = accounts.binArrayUpper || accounts.binArrays[accounts.binArrays.length - 1];
+    }
+    
+    executionCache.setHot(cleanPoolId, {
+      ...existing,
+      activeId: accounts.activeId ?? existing.activeId,
+      binArrays: Object.keys(binArraysCache).length > 0 ? binArraysCache : existing.binArrays,
+      needsBinArrayValidation: false,
+      binArraysValidatedAt: Date.now(),
+    });
+  }
+}
+
+/**
+ * Try to get cached SDK accounts for Meteora DAMM v1
+ */
+function tryGetCachedMeteoraDammV1Accounts(poolId: string): SdkProvidedAccounts | null {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  const staticData = executionCache.getStatic(cleanPoolId);
+  
+  if (!staticData) return null;
+  
+  const accounts: SdkProvidedAccounts = {};
+  
+  // All DAMM v1 accounts are static (Mercurial vault structure doesn't change)
+  // We use the cache fields that align with the SdkProvidedAccounts interface
+  if (staticData.authority) accounts.poolAuthority = staticData.authority;
+  if (staticData.vault_a) accounts.aVault = staticData.vault_a;
+  if (staticData.vault_b) accounts.bVault = staticData.vault_b;
+  
+  // Check for the detailed vault accounts we need
+  // These may be stored with specific field names
+  const anyStatic = staticData as any;
+  if (anyStatic.aTokenVault) accounts.aTokenVault = anyStatic.aTokenVault;
+  if (anyStatic.bTokenVault) accounts.bTokenVault = anyStatic.bTokenVault;
+  if (anyStatic.aVaultLpMint) accounts.aVaultLpMint = anyStatic.aVaultLpMint;
+  if (anyStatic.bVaultLpMint) accounts.bVaultLpMint = anyStatic.bVaultLpMint;
+  if (anyStatic.aVaultLp) accounts.aVaultLp = anyStatic.aVaultLp;
+  if (anyStatic.bVaultLp) accounts.bVaultLp = anyStatic.bVaultLp;
+  if (anyStatic.protocolTokenAFee) accounts.protocolTokenAFee = anyStatic.protocolTokenAFee;
+  if (anyStatic.protocolTokenBFee) accounts.protocolTokenBFee = anyStatic.protocolTokenBFee;
+  if (anyStatic.vaultProgram) accounts.vaultProgram = anyStatic.vaultProgram;
+  if (staticData.lp_mint) accounts.lpMint = staticData.lp_mint;
+  
+  // Need the key vault accounts to be useful
+  const hasVaultAccounts = accounts.aVault && accounts.bVault && 
+    accounts.aTokenVault && accounts.bTokenVault;
+  return hasVaultAccounts ? accounts : null;
+}
+
+/**
+ * Store Meteora DAMM v1 SDK accounts to cache
+ */
+function cacheMeteoraDammV1Accounts(poolId: string, accounts: SdkProvidedAccounts): void {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  
+  const staticUpdates: Record<string, any> = {};
+  
+  if (accounts.poolAuthority) staticUpdates.authority = accounts.poolAuthority;
+  if (accounts.aVault) staticUpdates.vault_a = accounts.aVault;
+  if (accounts.bVault) staticUpdates.vault_b = accounts.bVault;
+  if (accounts.aTokenVault) staticUpdates.aTokenVault = accounts.aTokenVault;
+  if (accounts.bTokenVault) staticUpdates.bTokenVault = accounts.bTokenVault;
+  if (accounts.aVaultLpMint) staticUpdates.aVaultLpMint = accounts.aVaultLpMint;
+  if (accounts.bVaultLpMint) staticUpdates.bVaultLpMint = accounts.bVaultLpMint;
+  if (accounts.aVaultLp) staticUpdates.aVaultLp = accounts.aVaultLp;
+  if (accounts.bVaultLp) staticUpdates.bVaultLp = accounts.bVaultLp;
+  if (accounts.protocolTokenAFee) staticUpdates.protocolTokenAFee = accounts.protocolTokenAFee;
+  if (accounts.protocolTokenBFee) staticUpdates.protocolTokenBFee = accounts.protocolTokenBFee;
+  if (accounts.vaultProgram) staticUpdates.vaultProgram = accounts.vaultProgram;
+  if (accounts.lpMint) staticUpdates.lp_mint = accounts.lpMint;
+  
+  if (Object.keys(staticUpdates).length > 0) {
+    const existing = executionCache.getStatic(cleanPoolId) || {};
+    executionCache.setStatic(cleanPoolId, { ...existing, ...staticUpdates });
+  }
+}
+
+/**
+ * Try to get cached SDK accounts for Meteora DAMM v2
+ */
+function tryGetCachedMeteoraDammV2Accounts(poolId: string): SdkProvidedAccounts | null {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  const staticData = executionCache.getStatic(cleanPoolId);
+  
+  if (!staticData) return null;
+  
+  const accounts: SdkProvidedAccounts = {};
+  
+  if (staticData.authority) accounts.poolAuthority = staticData.authority;
+  if (staticData.vault_a) accounts.vaultA = staticData.vault_a;
+  if (staticData.vault_b) accounts.vaultB = staticData.vault_b;
+  if (staticData.lp_mint) accounts.lpMint = staticData.lp_mint;
+  
+  // Need at least vaults to be useful
+  const hasVaults = accounts.vaultA && accounts.vaultB;
+  return hasVaults ? accounts : null;
+}
+
+/**
+ * Store Meteora DAMM v2 SDK accounts to cache
+ */
+function cacheMeteoraDammV2Accounts(poolId: string, accounts: SdkProvidedAccounts): void {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  
+  const staticUpdates: Record<string, any> = {};
+  
+  if (accounts.poolAuthority) staticUpdates.authority = accounts.poolAuthority;
+  if (accounts.vaultA) staticUpdates.vault_a = accounts.vaultA;
+  if (accounts.vaultB) staticUpdates.vault_b = accounts.vaultB;
+  if (accounts.lpMint) staticUpdates.lp_mint = accounts.lpMint;
+  
+  if (Object.keys(staticUpdates).length > 0) {
+    const existing = executionCache.getStatic(cleanPoolId) || {};
+    executionCache.setStatic(cleanPoolId, { ...existing, ...staticUpdates });
+  }
+}
+
+/**
+ * Try to get cached SDK accounts for PumpSwap
+ */
+function tryGetCachedPumpswapAccounts(poolId: string): SdkProvidedAccounts | null {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  const staticData = executionCache.getStatic(cleanPoolId);
+  
+  // PumpSwap global config is actually global (same for all pools)
+  // Check if we have it cached anywhere
+  const anyStatic = staticData as any;
+  
+  const accounts: SdkProvidedAccounts = {};
+  
+  // Global config and protocol fee recipient (same for all pools)
+  if (anyStatic?.protocol_fee_recipient) {
+    accounts.protocolFeeRecipient = anyStatic.protocol_fee_recipient;
+  }
+  
+  // Pool-specific accounts
+  accounts.bondingCurve = cleanPoolId;
+  
+  // Use pre-computed global config PDA
+  accounts.globalConfig = PUMPSWAP_GLOBAL_CONFIG_PDA.toBase58();
+  
+  // Need protocol fee recipient to be useful (main reason we call SDK)
+  return accounts.protocolFeeRecipient ? accounts : null;
+}
+
+/**
+ * Store PumpSwap SDK accounts to cache
+ */
+function cachePumpswapAccounts(poolId: string, accounts: SdkProvidedAccounts): void {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  
+  const staticUpdates: Record<string, any> = {};
+  
+  if (accounts.protocolFeeRecipient) {
+    staticUpdates.protocol_fee_recipient = accounts.protocolFeeRecipient;
+  }
+  if (accounts.associatedBondingCurve) {
+    staticUpdates.associatedBondingCurve = accounts.associatedBondingCurve;
+  }
+  
+  if (Object.keys(staticUpdates).length > 0) {
+    const existing = executionCache.getStatic(cleanPoolId) || {};
+    executionCache.setStatic(cleanPoolId, { ...existing, ...staticUpdates });
+  }
 }
 
 // ============================================================================
@@ -547,6 +1060,29 @@ async function getOrcaSdkQuote(
 ): Promise<SdkQuoteResult> {
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
 
+  // OPTIMIZATION: Check cache first before calling SDK
+  const cachedAccounts = tryGetCachedOrcaAccounts(poolId);
+  if (cachedAccounts) {
+    logger.debug('sdkQuoteBuilder.orca.cache.hit', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        hasOracle: !!cachedAccounts.oracle,
+        hasTickArrays: !!(cachedAccounts.tickArray0 || cachedAccounts.tickArray1),
+      },
+    });
+    return {
+      success: true,
+      accounts: cachedAccounts,
+      fromCache: true,
+    };
+  }
+
+  logger.debug('sdkQuoteBuilder.orca.cache.miss', {
+    cat: 'tx',
+    ctx: { poolId: poolId.slice(0, 8) + '...' },
+  });
+
   try {
     const sdkAvailable = await initOrcaSdk();
     if (!sdkAvailable || !OrcaSwapInstructions) {
@@ -698,6 +1234,9 @@ async function getOrcaSdkQuote(
       },
     });
 
+    // OPTIMIZATION: Cache SDK accounts for future use
+    cacheOrcaAccounts(poolId, accounts);
+
     return {
       success: true,
       accounts,
@@ -780,6 +1319,29 @@ async function getRaydiumSdkQuote(
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
   const poolPk = new PublicKey(poolId);
   const programId = hop.programId ? new PublicKey(hop.programId) : RAYDIUM_CLMM_PROGRAM;
+
+  // OPTIMIZATION: Check cache first before calling SDK
+  const cachedAccounts = tryGetCachedRaydiumClmmAccounts(poolId);
+  if (cachedAccounts) {
+    logger.debug('sdkQuoteBuilder.raydium.cache.hit', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        hasAmmConfig: !!cachedAccounts.ammConfig,
+        hasTickArrays: !!cachedAccounts.tickArrayCenter,
+      },
+    });
+    return {
+      success: true,
+      accounts: cachedAccounts,
+      fromCache: true,
+    };
+  }
+
+  logger.debug('sdkQuoteBuilder.raydium.cache.miss', {
+    cat: 'tx',
+    ctx: { poolId: poolId.slice(0, 8) + '...' },
+  });
 
   try {
     const sdkAvailable = await initRaydiumSdk();
@@ -1119,6 +1681,9 @@ async function getRaydiumSdkQuote(
       },
     });
 
+    // OPTIMIZATION: Cache SDK accounts for future use
+    cacheRaydiumClmmAccounts(poolId, accounts);
+
     return {
       success: true,
       accounts,
@@ -1146,6 +1711,29 @@ async function getMeteoraSdkQuote(
 ): Promise<SdkQuoteResult> {
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
   const poolPk = new PublicKey(poolId);
+
+  // OPTIMIZATION: Check cache first before calling SDK
+  const cachedAccounts = tryGetCachedMeteoraDlmmAccounts(poolId);
+  if (cachedAccounts) {
+    logger.debug('sdkQuoteBuilder.meteora.cache.hit', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        hasBinArrays: !!(cachedAccounts.binArrays?.length),
+        binArrayCount: cachedAccounts.binArrays?.length || 0,
+      },
+    });
+    return {
+      success: true,
+      accounts: cachedAccounts,
+      fromCache: true,
+    };
+  }
+
+  logger.debug('sdkQuoteBuilder.meteora.cache.miss', {
+    cat: 'tx',
+    ctx: { poolId: poolId.slice(0, 8) + '...' },
+  });
 
   try {
     const sdkAvailable = await initMeteoraSdk();
@@ -1357,6 +1945,9 @@ async function getMeteoraSdkQuote(
       },
     });
 
+    // OPTIMIZATION: Cache SDK accounts for future use
+    cacheMeteoraDlmmAccounts(poolId, accounts);
+
     return {
       success: true,
       accounts,
@@ -1385,6 +1976,30 @@ async function getRaydiumAmmSdkQuote(
 ): Promise<SdkQuoteResult> {
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
   const poolPk = new PublicKey(poolId);
+
+  // OPTIMIZATION: Check cache first before calling SDK
+  // Raydium AMM v4 accounts are ALL static (Serum market accounts never change)
+  const cachedAccounts = tryGetCachedRaydiumAmmAccounts(poolId);
+  if (cachedAccounts) {
+    logger.debug('sdkQuoteBuilder.raydiumAmm.cache.hit', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        hasMarketId: !!cachedAccounts.marketId,
+        hasSerumAccounts: !!(cachedAccounts.serumBids && cachedAccounts.serumAsks),
+      },
+    });
+    return {
+      success: true,
+      accounts: cachedAccounts,
+      fromCache: true,
+    };
+  }
+
+  logger.debug('sdkQuoteBuilder.raydiumAmm.cache.miss', {
+    cat: 'tx',
+    ctx: { poolId: poolId.slice(0, 8) + '...' },
+  });
 
   try {
     const sdkAvailable = await initRaydiumAmmSdk();
@@ -1502,6 +2117,9 @@ async function getRaydiumAmmSdkQuote(
         hasSerumAccounts: !!accounts.serumBids,
       });
       
+      // OPTIMIZATION: Cache SDK accounts for future use
+      cacheRaydiumAmmAccounts(poolId, accounts);
+      
       return { success: true, accounts };
     } catch (decodeErr) {
       logger.warn('sdkQuoteBuilder.raydiumAmm.decode.fallback', {
@@ -1509,6 +2127,8 @@ async function getRaydiumAmmSdkQuote(
         error: (decodeErr as Error).message,
       });
       // Return partial success - some accounts may be populated from cache
+      // Still cache what we have
+      cacheRaydiumAmmAccounts(poolId, accounts);
       return { success: true, accounts };
     }
   } catch (e) {
@@ -1553,6 +2173,30 @@ async function getMeteoraDammV1SdkQuote(
 ): Promise<SdkQuoteResult> {
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
   const poolPk = new PublicKey(poolId);
+
+  // OPTIMIZATION: Check cache first before calling SDK
+  // DAMM v1 accounts are ALL static (Mercurial vault structure doesn't change)
+  const cachedAccounts = tryGetCachedMeteoraDammV1Accounts(poolId);
+  if (cachedAccounts) {
+    logger.debug('sdkQuoteBuilder.meteoraDammV1.cache.hit', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        hasVaults: !!(cachedAccounts.aVault && cachedAccounts.bVault),
+        hasTokenVaults: !!(cachedAccounts.aTokenVault && cachedAccounts.bTokenVault),
+      },
+    });
+    return {
+      success: true,
+      accounts: cachedAccounts,
+      fromCache: true,
+    };
+  }
+
+  logger.debug('sdkQuoteBuilder.meteoraDammV1.cache.miss', {
+    cat: 'tx',
+    ctx: { poolId: poolId.slice(0, 8) + '...' },
+  });
 
   try {
     const sdkAvailable = await initMeteoraDammV1Sdk();
@@ -1852,6 +2496,9 @@ async function getMeteoraDammV1SdkQuote(
       ),
     });
     
+    // OPTIMIZATION: Cache SDK accounts for future use
+    cacheMeteoraDammV1Accounts(poolId, accounts);
+    
     return { success: true, accounts };
   } catch (e) {
     logCatchError('sdkQuoteBuilder.meteoraDammV1.quote', e);
@@ -1872,6 +2519,28 @@ async function getMeteoraDammV2SdkQuote(
 ): Promise<SdkQuoteResult> {
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
   const poolPk = new PublicKey(poolId);
+
+  // OPTIMIZATION: Check cache first before calling SDK
+  const cachedAccounts = tryGetCachedMeteoraDammV2Accounts(poolId);
+  if (cachedAccounts) {
+    logger.debug('sdkQuoteBuilder.meteoraDammV2.cache.hit', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        hasVaults: !!(cachedAccounts.vaultA && cachedAccounts.vaultB),
+      },
+    });
+    return {
+      success: true,
+      accounts: cachedAccounts,
+      fromCache: true,
+    };
+  }
+
+  logger.debug('sdkQuoteBuilder.meteoraDammV2.cache.miss', {
+    cat: 'tx',
+    ctx: { poolId: poolId.slice(0, 8) + '...' },
+  });
 
   try {
     const sdkAvailable = await initMeteoraDammV2Sdk();
@@ -1934,6 +2603,9 @@ async function getMeteoraDammV2SdkQuote(
       hasAuthority: !!accounts.poolAuthority,
     });
     
+    // OPTIMIZATION: Cache SDK accounts for future use
+    cacheMeteoraDammV2Accounts(poolId, accounts);
+    
     return { success: true, accounts };
   } catch (e) {
     logCatchError('sdkQuoteBuilder.meteoraDammV2.quote', e);
@@ -1959,6 +2631,29 @@ async function getPumpswapSdkQuote(
 ): Promise<SdkQuoteResult> {
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
   const poolPk = new PublicKey(poolId);
+
+  // OPTIMIZATION: Check cache first before calling SDK
+  // PumpSwap protocolFeeRecipient is global (same for all pools)
+  const cachedAccounts = tryGetCachedPumpswapAccounts(poolId);
+  if (cachedAccounts) {
+    logger.debug('sdkQuoteBuilder.pumpswap.cache.hit', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        hasProtocolFeeRecipient: !!cachedAccounts.protocolFeeRecipient,
+      },
+    });
+    return {
+      success: true,
+      accounts: cachedAccounts,
+      fromCache: true,
+    };
+  }
+
+  logger.debug('sdkQuoteBuilder.pumpswap.cache.miss', {
+    cat: 'tx',
+    ctx: { poolId: poolId.slice(0, 8) + '...' },
+  });
 
   try {
     const accounts: SdkProvidedAccounts = {};
@@ -2088,6 +2783,9 @@ async function getPumpswapSdkQuote(
       hasFeeRecipient: !!accounts.protocolFeeRecipient,
       hasAssociatedBC: !!accounts.associatedBondingCurve,
     });
+    
+    // OPTIMIZATION: Cache SDK accounts for future use
+    cachePumpswapAccounts(poolId, accounts);
     
     return { success: true, accounts };
   } catch (e) {
@@ -2255,6 +2953,8 @@ export async function getSdkQuoteAccounts(hop: DirectHop): Promise<SdkQuoteResul
 export async function getSdkQuoteAccountsForPlan(
   hops: DirectHop[]
 ): Promise<{ success: boolean; results: SdkQuoteResult[]; error?: string }> {
+  const startMs = Date.now();
+  
   // Run all hop SDK quotes in parallel
   const results = await Promise.all(
     hops.map(hop => getSdkQuoteAccounts(hop))
@@ -2271,6 +2971,27 @@ export async function getSdkQuoteAccountsForPlan(
       };
     }
   }
+
+  // OPTIMIZATION: Log cache hit/miss summary for performance tracking
+  const cacheHits = results.filter(r => r.fromCache).length;
+  const cacheMisses = results.length - cacheHits;
+  const elapsedMs = Date.now() - startMs;
+  
+  logger.debug('sdkQuoteBuilder.plan.complete', {
+    cat: 'tx',
+    ctx: {
+      hopCount: hops.length,
+      cacheHits,
+      cacheMisses,
+      elapsedMs,
+      avgMsPerHop: Math.round(elapsedMs / hops.length),
+      pools: hops.map((h, i) => ({
+        dex: h.dex,
+        poolId: h.poolId.slice(0, 8),
+        fromCache: results[i].fromCache || false,
+      })),
+    },
+  });
 
   return {
     success: true,

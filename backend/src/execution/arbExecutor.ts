@@ -395,35 +395,48 @@ export class ArbExecutor {
     // REMOVED: Concurrent execution limit check - no limit on concurrency
     // Transactions awaiting confirmation no longer count towards a limit
 
-    // Process opportunities in order
-    let accepted = 0;
-    let filtered = 0;
-    for (const opp of opportunities) {
-      // REMOVED: Concurrency check inside loop - no limit on concurrency
+    // PARALLEL EVALUATION: Evaluate all opportunities simultaneously
+    // This avoids the sequential bottleneck where evaluating one opp blocked others
+    const evaluations = await Promise.all(
+      opportunities.map(async (opp) => ({
+        opp,
+        shouldExec: await this.shouldExecute(opp),
+        oppKey: this.getOpportunityKey(opp),
+      }))
+    );
 
-      // Check if we should execute (now async)
-      const shouldExec = await this.shouldExecute(opp);
-      if (shouldExec) {
-        accepted++;
-        // Don't await - execute in background
-        this.executeOpportunity(opp).catch((e) => {
-          logger.error('arb.executor.execution_failed', {
-            cat: 'arb',
-            path: opp.path.join('->'),
-            error: String((e as any)?.message || e),
-          });
-        });
-      } else {
-        filtered++;
+    // Filter to accepted opportunities and deduplicate by oppKey
+    // Deduplication handles the case where two identical opportunities in the same
+    // batch both pass shouldExecute (since inFlight check ran in parallel)
+    const seenKeys = new Set<string>();
+    const toExecute: Opportunity[] = [];
+    
+    for (const { opp, shouldExec, oppKey } of evaluations) {
+      if (shouldExec && !seenKeys.has(oppKey)) {
+        seenKeys.add(oppKey);
+        toExecute.push(opp);
       }
+    }
+
+    // Execute all accepted opportunities in parallel (fire-and-forget)
+    for (const opp of toExecute) {
+      this.executeOpportunity(opp).catch((e) => {
+        logger.error('arb.executor.execution_failed', {
+          cat: 'arb',
+          path: opp.path.join('->'),
+          error: String((e as any)?.message || e),
+        });
+      });
     }
     
     // Summary log (debug - fires every batch)
+    const duplicatesRemoved = evaluations.filter(e => e.shouldExec).length - toExecute.length;
     logger.debug('arb.executor.batch_processed', {
       cat: 'arb',
       total: opportunities.length,
-      accepted,
-      filtered,
+      accepted: toExecute.length,
+      filtered: opportunities.length - toExecute.length,
+      duplicatesRemoved,
       inFlight: this.state.inFlight.size,
     });
   }
@@ -518,17 +531,10 @@ export class ArbExecutor {
       return false;
     }
 
-    // Check global cooldown
-    const timeSinceLastExec = Date.now() - this.state.lastExecutionTime;
-    if (timeSinceLastExec < 100) { // Minimum 100ms between any executions
-      logger.debug('arb.executor.filtered', {
-        cat: 'arb',
-        reason: 'global_cooldown',
-        path: pathStr,
-        elapsedMs: timeSinceLastExec,
-      });
-      return false;
-    }
+    // REMOVED: Global cooldown check was blocking parallel execution
+    // The per-path cooldown (recentExecutions) already prevents duplicate attempts
+    // on the same opportunity, and inFlight tracking prevents concurrent execution
+    // of the same path. Global cooldown was causing only 1 opp per batch to execute.
 
     // Pool quarantine check - skip opportunities with quarantined/blocked pools
     if (opp.hop_pool_ids && opp.hop_pool_ids.length > 0) {
@@ -674,7 +680,7 @@ export class ArbExecutor {
     const traceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     
     this.state.inFlight.add(oppKey);
-    this.state.lastExecutionTime = Date.now();
+    this.state.lastExecutionTime = Date.now(); // For status tracking only, not blocking
     this.state.executionsThisMinute++;
     this.state.totalExecutions++;
 
