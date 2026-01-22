@@ -117,6 +117,9 @@ export const CONFIG = {
   system: {
     // Unified pools refresh cadence (drives both Raydium and Orca timers)
     poolsRefreshMs: Number(process.env.POOLS_REFRESH_MS || 60_000),
+    // ALT cache refresh interval (0 = disabled, only refresh on-demand)
+    // Default: 30 minutes. ALTs rarely change on-chain, so frequent refresh is wasteful.
+    altRefreshMs: Number(process.env.ALT_REFRESH_MS || 1800_000),
     jupiterApiUrl: process.env.JUPITER_API_URL || 'https://quote-api.jup.ag/v6',
     targetTickTimeMs: Number(process.env.TARGET_TICK_TIME_MS || 2000),
     graphStartDelayMs: Number(process.env.GRAPH_START_DELAY_MS || 5000),

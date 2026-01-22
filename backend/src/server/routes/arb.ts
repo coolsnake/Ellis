@@ -2520,7 +2520,18 @@ export function createArbRouter(io: SocketIOServer): Router {
     try {
       const configPath = 'backend/config/arbExecutor.json';
       const config = await readJson(configPath, {});
-      res.json(config);
+      
+      // Auto-migrate old dynamicSizing config to new sizingConfig if needed
+      const { migrateExecutorConfig, needsMigration } = await import('../../execution/capacity/configMigration.js');
+      const migratedConfig = migrateExecutorConfig(config);
+      
+      // If migration was needed, save the migrated config back to file
+      if (needsMigration(config)) {
+        await writeJson(configPath, migratedConfig);
+        logger.info('arb.executor.config_migrated', { cat: 'arb', message: 'Migrated dynamicSizing to sizingConfig' });
+      }
+      
+      res.json(migratedConfig);
     } catch (e: any) {
       logger.error('arb.executor.api.config_read_failed', { cat: 'arb', error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });

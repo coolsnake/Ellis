@@ -3876,8 +3876,25 @@ export class DexAltManager {
         errors.push(`Failed to preload ALT accounts: ${String(e)}`);
       }
 
-      // Start background refresh to keep cache fresh (every 60 seconds)
-      this.startBackgroundRefresh(60000);
+      // Start background refresh if enabled (default: 30 minutes, 0 = disabled)
+      // ALTs rarely change on-chain, so frequent refresh is wasteful
+      const altRefreshMs = CONFIG.system?.altRefreshMs ?? 1800_000;
+      if (altRefreshMs > 0) {
+        this.startBackgroundRefresh(altRefreshMs);
+        try {
+          logger.info('alt.startup.background_refresh.enabled', {
+            cat: 'tx',
+            ctx: { intervalMs: altRefreshMs, intervalMinutes: Math.round(altRefreshMs / 60000) },
+          });
+        } catch {}
+      } else {
+        try {
+          logger.info('alt.startup.background_refresh.disabled', {
+            cat: 'tx',
+            ctx: { note: 'ALT cache will only refresh on-demand' },
+          });
+        } catch {}
+      }
 
       this.initialized = true;
       this.startupStatus = {

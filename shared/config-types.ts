@@ -141,6 +141,44 @@ export interface MeteoraGraphQLConfig {
   pageDelayMs?: number;
 }
 
+// Trade Sizing Configuration (capacity-based system)
+export type PoolTypeAdjustment = 'default' | 'cautious' | 'aggressive';
+
+export interface SizingConfigPublic {
+  /** Master toggle for dynamic sizing */
+  enabled: boolean;
+  /** Minimum trade size in USD (floor) */
+  minSizeUsd: number;
+  /** Maximum trade size in USD (ceiling) */
+  maxSizeUsd: number;
+  /** Whether to cap trade size to wallet balance when not using flashloan */
+  respectWalletBalance: boolean;
+  /** Fraction of break-even capacity to use (0.5 to 0.95) */
+  aggressiveness: number;
+  /** Maximum acceptable slippage in basis points */
+  maxSlippageBps: number;
+  /** Per-pool-type capacity adjustment */
+  poolTypeAdjustments?: {
+    amm?: PoolTypeAdjustment;
+    clmm?: PoolTypeAdjustment;
+    dlmm?: PoolTypeAdjustment;
+  };
+}
+
+export const DEFAULT_SIZING_CONFIG_PUBLIC: SizingConfigPublic = {
+  enabled: true,
+  minSizeUsd: 5,
+  maxSizeUsd: 500,
+  respectWalletBalance: true,
+  aggressiveness: 0.70,
+  maxSlippageBps: 500,
+  poolTypeAdjustments: {
+    amm: 'default',
+    clmm: 'default',
+    dlmm: 'default',
+  },
+};
+
 // Pool Subscription Mode (WSS vs gRPC)
 export type PoolSubscriptionMode = 'wss' | 'grpc' | 'disabled';
 

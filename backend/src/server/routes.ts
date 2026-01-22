@@ -499,6 +499,19 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }, 1000); // Update every 1 second (more responsive for activity indicator)
   } catch {}
 
+  // Background: poll and emit HTTP metrics for UI monitoring
+  try {
+    setInterval(async () => {
+      try {
+        const { getHttpMetrics } = await import('./pools/httpMetrics.js');
+        const metrics = getHttpMetrics();
+        emit('http-metrics', metrics);
+      } catch (e: any) {
+        // Silent failure - don't spam logs
+      }
+    }, 1000); // Update every 1 second
+  } catch {}
+
   
   api.post('/bot/start', async (_req, res) => {
     try {

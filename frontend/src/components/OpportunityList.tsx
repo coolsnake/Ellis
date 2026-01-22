@@ -32,6 +32,36 @@ type WalletBalances = {
   tokens?: Record<string, number>;
 };
 
+// Types for execution results from backend socket events
+type ExecutionResult = {
+  type: 'success' | 'sim_failed' | 'exec_failed';
+  timestamp: number;
+  traceId?: string;
+  signature?: string;
+  error?: string;
+  profitBps?: number;
+  netBps?: number;
+  analysis?: {
+    swapsExecuted: number;
+    totalHops: number;
+    profitCheckFailed: boolean;
+    failedAt?: number | 'profit_check';
+    adaptiveAttempts?: number;
+  };
+  simulationDetails?: {
+    swapsExecuted: Array<{ step: number; dex: string; amountIn: string; minOut: string }>;
+    profitValue?: string;
+    errorCode?: number;
+    errorMessage?: string;
+  };
+  executionContext?: {
+    sizeUsd?: number;
+    adaptiveAttempts?: number;
+    durationMs?: number;
+    usedFlashloan?: boolean;
+  };
+};
+
 export function OpportunityList(
   {
     items,
@@ -58,6 +88,67 @@ export function OpportunityList(
   const [showAll, setShowAll] = React.useState(false);
   const [simLogs, setSimLogs] = React.useState<string[] | null>(null);
   const [simErr, setSimErr] = React.useState<string | null>(null);
+  // Track execution results per opportunity
+  const [executionResults, setExecutionResults] = React.useState<Map<string, ExecutionResult[]>>(new Map());
+
+  // Helper to create opportunity key for matching
+  const getOpportunityKey = React.useCallback((pathMints: string[], hopPoolIds?: string[]) => {
+    if (hopPoolIds?.length) {
+      return `${pathMints.join('>')}|${hopPoolIds.join('>')}`;
+    }
+    return pathMints.join('>');
+  }, []);
+
+  // Subscribe to execution result events from backend
+  React.useEffect(() => {
+    if (!socket) return;
+
+    const handleExecutionResult = (data: any, type: 'success' | 'sim_failed' | 'exec_failed') => {
+      // Use pathMints and hopPoolIds from enriched event payload
+      const pathMints = data.pathMints || [];
+      const hopPoolIds = data.hopPoolIds || [];
+      if (!pathMints.length) return; // Can't match without path
+
+      const key = getOpportunityKey(pathMints, hopPoolIds);
+
+      setExecutionResults(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(key) || [];
+        // Keep last 5 results per opportunity
+        const updated: ExecutionResult[] = [
+          {
+            type,
+            timestamp: data.timestamp || Date.now(),
+            traceId: data.traceId,
+            signature: data.signature,
+            error: data.error,
+            profitBps: data.profitBps,
+            netBps: data.netBps,
+            analysis: data.analysis,
+            simulationDetails: data.simulationDetails,
+            executionContext: data.executionContext,
+          },
+          ...existing.slice(0, 4),
+        ];
+        newMap.set(key, updated);
+        return newMap;
+      });
+    };
+
+    const onSuccess = (data: any) => handleExecutionResult(data, 'success');
+    const onSimFailed = (data: any) => handleExecutionResult(data, 'sim_failed');
+    const onExecFailed = (data: any) => handleExecutionResult(data, 'exec_failed');
+
+    try { socket.on('arb:execution', onSuccess); } catch {}
+    try { socket.on('arb:simulation:failed', onSimFailed); } catch {}
+    try { socket.on('arb:execution:failed', onExecFailed); } catch {}
+
+    return () => {
+      try { socket.off('arb:execution', onSuccess); } catch {}
+      try { socket.off('arb:simulation:failed', onSimFailed); } catch {}
+      try { socket.off('arb:execution:failed', onExecFailed); } catch {}
+    };
+  }, [socket, getOpportunityKey]);
 
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null || isNaN(n as any)) return '—';
@@ -305,6 +396,108 @@ export function OpportunityList(
                 return null;
               })()}
             </div>
+            {/* Execution Results Section */}
+            {(() => {
+              const execKey = getOpportunityKey(op.path, op.hop_pool_ids);
+              const results = executionResults.get(execKey);
+              if (!results?.length) return null;
+
+              const latest = results[0];
+              const statusColor = latest.type === 'success' 
+                ? 'text-green-400' 
+                : 'text-red-400';
+              const statusIcon = latest.type === 'success' ? '✓' : '✗';
+              const statusLabel = latest.type === 'success' 
+                ? 'Executed' 
+                : latest.type === 'sim_failed' 
+                  ? 'Sim Failed' 
+                  : 'Exec Failed';
+              const agoSec = Math.max(0, Math.floor((Date.now() - latest.timestamp) / 1000));
+
+              return (
+                <div className="mt-2 p-2 bg-black/30 rounded text-[11px] border-l-2 border-l-blue-500/50">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <span className={`font-semibold ${statusColor}`}>
+                      {statusIcon} {statusLabel}
+                    </span>
+                    <span className="opacity-70">{agoSec}s ago</span>
+                    {latest.signature && (
+                      <a 
+                        href={`https://solscan.io/tx/${latest.signature}`} 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="text-blue-400 underline"
+                      >
+                        {latest.signature.slice(0, 8)}…
+                      </a>
+                    )}
+                    {results.length > 1 && (
+                      <span className="opacity-60">({results.length} attempts)</span>
+                    )}
+                    {latest.traceId && (
+                      <span className="opacity-50 text-[10px]">trace: {latest.traceId}</span>
+                    )}
+                  </div>
+
+                  {latest.type !== 'success' && (
+                    <>
+                      {/* Error message */}
+                      {latest.error && (
+                        <div className="text-red-300 mb-1 break-words" title={latest.error}>
+                          {latest.error.length > 100 ? latest.error.slice(0, 100) + '...' : latest.error}
+                        </div>
+                      )}
+
+                      {/* Analysis summary */}
+                      {latest.analysis && (
+                        <div className="flex flex-wrap gap-2 opacity-80 mb-1">
+                          <span>Swaps: {latest.analysis.swapsExecuted}/{latest.analysis.totalHops}</span>
+                          {latest.analysis.profitCheckFailed && (
+                            <span className="px-1 rounded bg-yellow-900/40 text-yellow-300">Profit Check Failed</span>
+                          )}
+                          {latest.analysis.failedAt !== undefined && latest.analysis.failedAt !== 'profit_check' && (
+                            <span>Failed at hop {latest.analysis.failedAt}</span>
+                          )}
+                          {latest.analysis.adaptiveAttempts !== undefined && latest.analysis.adaptiveAttempts > 0 && (
+                            <span>Retries: {latest.analysis.adaptiveAttempts}</span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Simulation details */}
+                      {latest.simulationDetails && (
+                        <div className="opacity-70 mb-1">
+                          {latest.simulationDetails.errorMessage && (
+                            <span className="mr-2">Error: {latest.simulationDetails.errorMessage}</span>
+                          )}
+                          {latest.simulationDetails.errorCode && (
+                            <span className="mr-2">Code: {latest.simulationDetails.errorCode}</span>
+                          )}
+                          {latest.simulationDetails.profitValue && (
+                            <span>Profit: {latest.simulationDetails.profitValue}</span>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* Execution context - show for both success and failure */}
+                  {latest.executionContext && (
+                    <div className="opacity-60 text-[10px]">
+                      {latest.executionContext.sizeUsd !== undefined && (
+                        <span>Size: ${latest.executionContext.sizeUsd.toFixed(2)} · </span>
+                      )}
+                      {latest.executionContext.durationMs !== undefined && (
+                        <span>Duration: {latest.executionContext.durationMs}ms</span>
+                      )}
+                      {latest.executionContext.usedFlashloan && (
+                        <span> · Flashloan</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
           );
         })}

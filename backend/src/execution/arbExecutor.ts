@@ -32,6 +32,14 @@ import { loadJitoConfig } from '../server/jitoConfigStore.js';
 import { getPriceByMint } from '../server/priceStore.js';
 import { calculateOptimalSizeFromOpportunity } from './optimalSizing.js';
 import { loadRouterConfig } from '../server/routerConfigStore.js';
+import {
+  lookupCapacity,
+  getOptimalSizeFromCurve,
+  getPoolTypeFromDex,
+  DEFAULT_SIZING_CONFIG,
+} from './capacity/index.js';
+import type { SizingConfig, PoolType } from './capacity/types.js';
+import { executionCache } from './cache.js';
 import { deriveVaultPda, fetchVault } from '../router/sdk.js';
 import { PublicKey } from '@solana/web3.js';
 import { resolveDecimals } from '../server/pools/decimals.js';
@@ -148,6 +156,9 @@ export interface ExecutorConfig {
     minSizeUsd: number;           // Don't retry below this size (default: 5)
     timeoutMs: number;            // Total timeout for all retries (default: 500ms)
   };
+  // NEW: Capacity-based sizing configuration (replaces dynamicSizing when enabled)
+  // This system pre-computes capacity curves and provides instant size lookups
+  sizingConfig?: SizingConfig;
 }
 
 interface ExecutionState {
@@ -1274,11 +1285,33 @@ export class ArbExecutor {
             path: pathStr,
             error: `Simulation failed: ${simResult.err}`,
             timestamp: Date.now(),
+            // Matching data for frontend correlation
+            pathMints: opp.path,
+            hopPoolIds: opp.hop_pool_ids,
+            hopDexes: opp.hop_dexes,
+            traceId,
             analysis: {
               swapsExecuted: simAnalysis.swapsExecuted.length,
               totalHops: plan.hops.length,
               profitCheckFailed: simAnalysis.profitCheckFailed,
               failedAt: simReport.analysis?.failedAtHop,
+            },
+            // Simulation details for UI display
+            simulationDetails: {
+              swapsExecuted: simAnalysis.swapsExecuted.map(s => ({
+                step: s.stepIndex,
+                dex: s.dex,
+                amountIn: s.amountIn.toString(),
+                minOut: s.minAmountOut.toString(),
+              })),
+              profitValue: simAnalysis.profitValue?.toString(),
+              errorCode: simAnalysis.errorCode,
+              errorMessage: simAnalysis.errorMessage,
+            },
+            // Execution context
+            executionContext: {
+              sizeUsd: effectiveSizeUsd,
+              durationMs: Date.now() - startTime,
             },
           });
         } else {
@@ -1499,12 +1532,35 @@ export class ArbExecutor {
             path: pathStr,
             error: `Simulation failed after ${attempt} attempts: ${lastSimResult.err}`,
             timestamp: Date.now(),
+            // Matching data for frontend correlation
+            pathMints: opp.path,
+            hopPoolIds: opp.hop_pool_ids,
+            hopDexes: opp.hop_dexes,
+            traceId,
             analysis: {
               swapsExecuted: lastSimAnalysis!.swapsExecuted.length,
               totalHops: currentPlan.hops.length,
               profitCheckFailed: lastSimAnalysis!.profitCheckFailed,
               failedAt: simReport.analysis?.failedAtHop,
               adaptiveAttempts: attempt,
+            },
+            // Simulation details for UI display
+            simulationDetails: {
+              swapsExecuted: lastSimAnalysis!.swapsExecuted.map(s => ({
+                step: s.stepIndex,
+                dex: s.dex,
+                amountIn: s.amountIn.toString(),
+                minOut: s.minAmountOut.toString(),
+              })),
+              profitValue: lastSimAnalysis!.profitValue?.toString(),
+              errorCode: lastSimAnalysis!.errorCode,
+              errorMessage: lastSimAnalysis!.errorMessage,
+            },
+            // Execution context
+            executionContext: {
+              sizeUsd: currentSizeUsd,
+              adaptiveAttempts: attempt,
+              durationMs: Date.now() - startTime,
             },
           });
 
@@ -1604,6 +1660,17 @@ export class ArbExecutor {
             profitBps: opp.profit_bps,
             netBps: opp.net_bps,
             timestamp: Date.now(),
+            // Matching data for frontend correlation
+            pathMints: opp.path,
+            hopPoolIds: opp.hop_pool_ids,
+            hopDexes: opp.hop_dexes,
+            traceId,
+            // Execution context
+            executionContext: {
+              sizeUsd: currentSizeUsd,
+              adaptiveAttempts: attempt,
+              durationMs: Date.now() - startTime,
+            },
           });
         }
       } else {
@@ -1808,6 +1875,17 @@ export class ArbExecutor {
             profitBps: opp.profit_bps,
             netBps: opp.net_bps,
             timestamp: Date.now(),
+            // Matching data for frontend correlation
+            pathMints: opp.path,
+            hopPoolIds: opp.hop_pool_ids,
+            hopDexes: opp.hop_dexes,
+            traceId,
+            // Execution context
+            executionContext: {
+              sizeUsd: effectiveSizeUsd,
+              durationMs: Date.now() - startTime,
+              usedFlashloan: useFlashloan,
+            },
           });
         }
       }
@@ -1928,6 +2006,15 @@ export class ArbExecutor {
         path: pathStr,
         error: errorMsg,
         timestamp: Date.now(),
+        // Matching data for frontend correlation
+        pathMints: opp.path,
+        hopPoolIds: opp.hop_pool_ids,
+        hopDexes: opp.hop_dexes,
+        traceId,
+        // Execution context
+        executionContext: {
+          durationMs: Date.now() - startTime,
+        },
       });
 
       // Pool failure tracking - identify and record which pool caused the failure
@@ -2021,20 +2108,34 @@ export class ArbExecutor {
   /**
    * Calculate dynamic trade size based on opportunity characteristics.
    * 
-   * Supports three methods:
-   * - 'heuristic': Simple fraction of bottleneck liquidity (fast)
-   * - 'optimal_analytical': Closed-form profit maximization (AMM-only, fast)
-   * - 'optimal_iterative': Golden section search profit maximization (any pool type)
+   * Two systems are supported:
+   * 
+   * 1. NEW: Capacity-based system (sizingConfig)
+   *    - Pre-computed capacity curves for each pool type
+   *    - Instant lookups during execution
+   *    - Simple, intuitive configuration
+   * 
+   * 2. LEGACY: Dynamic sizing system (dynamicSizing)
+   *    - Three methods: heuristic, optimal_analytical, optimal_iterative
+   *    - More complex configuration with magic multipliers
+   *    - Kept for backward compatibility
    */
   private async calculateDynamicSize(opp: Opportunity): Promise<number> {
-    const dynamicCfg = this.config.dynamicSizing;
-    
     // Common constants used in both paths
     const SOL_MINT = 'So11111111111111111111111111111111111111112';
     const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const startToken = opp.path[0];
     const isFlashloanable = startToken === SOL_MINT || startToken === USDC_MINT;
     const flashloanEnabled = this.config.flashloanSettings?.enabled ?? false;
+    
+    // NEW: Capacity-based sizing system
+    const sizingCfg = this.config.sizingConfig;
+    if (sizingCfg?.enabled) {
+      return this.calculateCapacityBasedSize(opp, sizingCfg, startToken, isFlashloanable, flashloanEnabled);
+    }
+    
+    // LEGACY: Dynamic sizing system
+    const dynamicCfg = this.config.dynamicSizing;
     
     // If dynamic sizing disabled, use fixed config BUT still cap to wallet balance
     if (!dynamicCfg?.enabled) {
@@ -2296,6 +2397,131 @@ export class ArbExecutor {
     });
     
     return sizeUsd;
+  }
+
+  /**
+   * NEW: Capacity-based sizing using pre-computed capacity curves.
+   * 
+   * This method:
+   * 1. Looks up capacity curves for each pool in the path
+   * 2. Finds the bottleneck pool (lowest capacity)
+   * 3. Calculates optimal size using the capacity curve
+   * 4. Applies user configuration (aggressiveness, max slippage)
+   * 5. Respects wallet balance constraints
+   */
+  private async calculateCapacityBasedSize(
+    opp: Opportunity,
+    config: SizingConfig,
+    startToken: string,
+    isFlashloanable: boolean,
+    flashloanEnabled: boolean
+  ): Promise<number> {
+    const profitBps = opp.net_bps ?? opp.profit_bps ?? 0;
+    
+    // Get wallet balance constraint
+    let walletBalanceUsd = Infinity;
+    if (config.respectWalletBalance && (!isFlashloanable || !flashloanEnabled)) {
+      try {
+        if (this.walletPublicKey) {
+          const balances = await this.getCachedBalances();
+          if (balances) {
+            const SOL_MINT = 'So11111111111111111111111111111111111111112';
+            const balance = startToken === SOL_MINT 
+              ? balances.sol 
+              : (balances.tokens[startToken] || 0);
+            
+            if (balance <= 0) {
+              logger.warn('arb.executor.capacity_sizing.no_balance', {
+                cat: 'arb',
+                path: opp.path.join('->'),
+                startToken: startToken.slice(0, 8) + '...',
+              });
+              return 0;
+            }
+            
+            const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+            if (price > 0) {
+              walletBalanceUsd = balance * price;
+            }
+          }
+        }
+      } catch (e) {
+        logger.warn('arb.executor.capacity_sizing.balance_error', {
+          cat: 'arb',
+          error: String((e as any)?.message || e),
+        });
+        walletBalanceUsd = config.minSizeUsd;
+      }
+    }
+    
+    // Find the bottleneck pool's capacity curve
+    const hopPoolIds = opp.hop_pool_ids || [];
+    const hopDexes = opp.hop_dexes || opp.dexes || [];
+    
+    let minCapacity = Infinity;
+    let bottleneckCurve: ReturnType<typeof lookupCapacity> | null = null;
+    let bottleneckHopIdx = -1;
+    
+    for (let i = 0; i < hopPoolIds.length; i++) {
+      const poolId = hopPoolIds[i].replace(/[#-]rev$/, '');
+      const dex = hopDexes[i] || '';
+      const poolType = getPoolTypeFromDex(dex);
+      
+      // Get hot data from execution cache
+      const hot = executionCache.getHot(poolId) || {};
+      
+      // Look up capacity curve (instant if cached, or generates Tier 1 fallback)
+      const curve = lookupCapacity(poolId, poolType, hot, config);
+      
+      // Track the bottleneck (lowest break-even capacity)
+      if (curve.breakEvenSizeUsd < minCapacity) {
+        minCapacity = curve.breakEvenSizeUsd;
+        bottleneckCurve = curve;
+        bottleneckHopIdx = i;
+      }
+    }
+    
+    // If we have no curve, fall back to simple heuristic
+    if (!bottleneckCurve) {
+      const bottleneckUsd = opp.est_capacity ?? opp.min_edge_liquidity ?? 1000;
+      const sizeUsd = Math.max(
+        config.minSizeUsd,
+        Math.min(config.maxSizeUsd, bottleneckUsd * 0.02 * config.aggressiveness)
+      );
+      
+      logger.debug('arb.executor.capacity_sizing.fallback', {
+        cat: 'arb',
+        path: opp.path.join('->'),
+        bottleneckUsd,
+        sizeUsd,
+      });
+      
+      return Math.min(sizeUsd, walletBalanceUsd);
+    }
+    
+    // Calculate optimal size from the bottleneck curve
+    const result = getOptimalSizeFromCurve(
+      bottleneckCurve,
+      profitBps,
+      config,
+      walletBalanceUsd
+    );
+    
+    logger.debug('arb.executor.capacity_sizing.computed', {
+      cat: 'arb',
+      path: opp.path.join('->'),
+      bottleneckHop: bottleneckHopIdx,
+      bottleneckPoolType: bottleneckCurve.poolType,
+      breakEvenSizeUsd: bottleneckCurve.breakEvenSizeUsd.toFixed(2),
+      confidence: bottleneckCurve.confidence,
+      computedSizeUsd: result.sizeUsd.toFixed(2),
+      expectedSlippageBps: result.expectedSlippageBps,
+      constrainedBy: result.constrainedBy ?? 'none',
+      profitBps,
+      aggressiveness: config.aggressiveness,
+    });
+    
+    return result.sizeUsd;
   }
 
   /**
@@ -2563,6 +2789,10 @@ export class ArbExecutor {
       adaptiveSizing: updates.adaptiveSizing !== undefined
         ? { ...this.config.adaptiveSizing, ...updates.adaptiveSizing }
         : this.config.adaptiveSizing,
+      // Deep merge sizingConfig (NEW capacity-based system)
+      sizingConfig: updates.sizingConfig !== undefined
+        ? { ...DEFAULT_SIZING_CONFIG, ...this.config.sizingConfig, ...updates.sizingConfig }
+        : this.config.sizingConfig,
     };
     logger.info('arb.executor.config_updated', { cat: 'arb', config: this.config });
     
@@ -2574,6 +2804,10 @@ export class ArbExecutor {
       }
       if (updates.manualPoolBlocklist !== undefined) {
         setManualBlocklist(updates.manualPoolBlocklist);
+      }
+      // Pass sizing config to execution cache for capacity curve computation
+      if (updates.sizingConfig && this.config.sizingConfig) {
+        executionCache.setSizingConfig(this.config.sizingConfig);
       }
     } catch (e) {
       logger.warn('arb.executor.tracker_update_failed', { 

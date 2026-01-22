@@ -1,5 +1,7 @@
 import { CONFIG } from '../utils/config.js';
 import { ensureDir, readJson, writeJson, joinPath } from '../utils/fs.js';
+import { recomputeCapacityCurve, invalidateCapacityCurve } from './capacity/index.js';
+import type { PoolType, SizingConfig } from './capacity/types.js';
 
 type PoolStatic = {
   programId?: string;
@@ -262,6 +264,58 @@ export class ExecutionCache {
     };
     
     this.hotByPool.set(poolId, merged);
+    
+    // Trigger capacity curve recomputation on boundary crossings
+    // This runs asynchronously to avoid blocking the hot path
+    if (tickArrayBoundaryCrossed || binArrayBoundaryCrossed) {
+      const poolType = this.inferPoolType(poolId, existing, val);
+      if (poolType) {
+        // Invalidate existing curve and trigger async recomputation
+        invalidateCapacityCurve(poolId);
+        recomputeCapacityCurve(poolId, poolType, merged, this.sizingConfig);
+      }
+    }
+  }
+  
+  /**
+   * Infer pool type from hot data and static cache
+   */
+  private inferPoolType(poolId: string, existing: PoolHot, incoming: PoolHot): PoolType | null {
+    // Check for CLMM indicators (tick-based)
+    if (incoming.currentTickIndex !== undefined || existing.currentTickIndex !== undefined) {
+      return 'clmm';
+    }
+    
+    // Check for DLMM indicators (bin-based)
+    if (incoming.activeId !== undefined || existing.activeId !== undefined) {
+      return 'dlmm';
+    }
+    
+    // Check static cache for pool_kind
+    const staticData = this.staticByPool.get(poolId)?.value;
+    if (staticData?.pool_kind === 'clmm') return 'clmm';
+    if (staticData?.pool_kind === 'amm') return 'amm';
+    
+    // Check dex string
+    const dex = staticData?.dex?.toLowerCase() || '';
+    if (dex.includes('meteora') && !dex.includes('balanced')) return 'dlmm';
+    if (dex.includes('orca') || dex.includes('clmm')) return 'clmm';
+    
+    // Default to AMM if we can't determine
+    return 'amm';
+  }
+  
+  /**
+   * Sizing configuration for capacity computation
+   * Can be updated at runtime via setSizingConfig()
+   */
+  private sizingConfig: SizingConfig | undefined;
+  
+  /**
+   * Set the sizing configuration for capacity computation
+   */
+  setSizingConfig(config: SizingConfig): void {
+    this.sizingConfig = config;
   }
 
   /**
