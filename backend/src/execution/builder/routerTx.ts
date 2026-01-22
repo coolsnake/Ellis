@@ -797,7 +797,16 @@ async function buildDirectRouterTx(
       const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
       // CRITICAL: Use NATIVE mint ordering for aToB flag
       // On-chain programs (Meteora, Raydium, Orca) use native ordering for direction
-      const poolMintA = stat?.native_mint_a || stat?.mint_a;
+      // When native_mint_a is missing, use was_swapped to correct canonical fallback
+      let poolMintA: string | undefined;
+      if (stat?.native_mint_a) {
+        poolMintA = stat.native_mint_a;
+      } else {
+        // Canonical fallback with wasSwapped correction
+        // When was_swapped=true, canonical mint_a is actually native mint_b
+        const wasSwapped = stat?.was_swapped === true;
+        poolMintA = wasSwapped ? stat?.mint_b : stat?.mint_a;
+      }
       const aToB = hop.inputMint === poolMintA;
       
       // Cap amountIn to actual balance to prevent "insufficient funds" errors
@@ -1424,7 +1433,18 @@ async function buildRouteStepsWithSdkAccounts(
 
     // Compute swap direction from pool's native mint ordering
     const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
-    const poolMintA = stat?.native_mint_a || stat?.mint_a;
+    
+    // CRITICAL: Use NATIVE mint ordering for aToB flag
+    // When native_mint_a is missing, use was_swapped to correct canonical fallback
+    let poolMintA: string | undefined;
+    if (stat?.native_mint_a) {
+      poolMintA = stat.native_mint_a;
+    } else {
+      // Canonical fallback with wasSwapped correction
+      // When was_swapped=true, canonical mint_a is actually native mint_b
+      const wasSwapped = stat?.was_swapped === true;
+      poolMintA = wasSwapped ? stat?.mint_b : stat?.mint_a;
+    }
     
     // CRITICAL: PumpSwap has specific direction semantics:
     // aToB = true → Buy (SOL → Token), aToB = false → Sell (Token → SOL)
@@ -1580,7 +1600,18 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
     // Compute swap direction from pool's native mint ordering
     // aToB = true means swapping mint A -> mint B
     const stat = executionCache.getStatic(hop.poolId.replace(/[#-]rev$/, ''));
-    const poolMintA = stat?.native_mint_a || stat?.mint_a;
+    
+    // CRITICAL: Use NATIVE mint ordering for aToB flag
+    // When native_mint_a is missing, use was_swapped to correct canonical fallback
+    let poolMintA: string | undefined;
+    if (stat?.native_mint_a) {
+      poolMintA = stat.native_mint_a;
+    } else {
+      // Canonical fallback with wasSwapped correction
+      // When was_swapped=true, canonical mint_a is actually native mint_b
+      const wasSwapped = stat?.was_swapped === true;
+      poolMintA = wasSwapped ? stat?.mint_b : stat?.mint_a;
+    }
     
     // CRITICAL: PumpSwap has specific direction semantics:
     // aToB = true → Buy (SOL → Token), aToB = false → Sell (Token → SOL)

@@ -634,3 +634,6 @@ arb-rs/target/.rustc_info.json
 nul
 .claude/settings.local.json
 .claude/settings.local.json
+importedlogs/invalidticks.json
+importedlogs/lamports.json
+importedlogs/toolarge.json

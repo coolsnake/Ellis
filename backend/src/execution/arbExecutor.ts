@@ -873,28 +873,42 @@ export class ArbExecutor {
           const balances = await this.getCachedBalances();
           
           if (balances) {
-            const balance = startToken === SOL_MINT 
+            // CRITICAL: Apply SOL reserve for ATA rent and transaction fees
+            // This must match the reserve applied in calculateOptimalSize
+            const SOL_RESERVE_FOR_FEES = 0.007; // ~0.007 SOL reserve (covers ~3 ATAs + fees + buffer)
+            
+            const rawBalance = startToken === SOL_MINT 
               ? balances.sol 
               : (balances.tokens[startToken] || 0);
             
-            // First check: do we have any balance at all?
+            // For SOL, subtract the reserve; for other tokens, use full balance
+            const balance = startToken === SOL_MINT
+              ? Math.max(0, rawBalance - SOL_RESERVE_FOR_FEES)
+              : rawBalance;
+            
+            // First check: do we have any usable balance at all?
             if (balance <= 0) {
+              const reason = startToken === SOL_MINT && rawBalance > 0 
+                ? 'sol_below_reserve' 
+                : 'zero_balance_no_flashloan';
               logger.debug('arb.executor.skipped.no_balance', {
                 cat: 'arb',
                 traceId,
                 path: executionPath.join('->'),
                 startToken: startToken.slice(0, 8) + '...',
                 balance,
+                rawBalance,
+                solReserve: startToken === SOL_MINT ? SOL_RESERVE_FOR_FEES : 0,
                 requestedSize: sizeUsd,
-                reason: 'zero_balance_no_flashloan',
+                reason,
               });
-              throw new Error('insufficient_balance: wallet has no balance for start token and flashloan unavailable');
+              throw new Error(`insufficient_balance: ${reason}`);
             }
             
             const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
             
             if (price > 0) {
-              // Have price data - use USD-based capping
+              // Have price data - use USD-based capping (with reserve already subtracted)
               const walletBalanceUsd = balance * price;
               
               if (walletBalanceUsd < effectiveSizeUsd) {
@@ -904,12 +918,14 @@ export class ArbExecutor {
                   originalSize: effectiveSizeUsd,
                   walletBalanceUsd,
                   effectiveSize: walletBalanceUsd,
+                  rawBalance,
+                  solReserveApplied: startToken === SOL_MINT ? SOL_RESERVE_FOR_FEES : 0,
                   reason: 'final_safety_cap',
                 });
                 effectiveSizeUsd = walletBalanceUsd;
               }
             } else {
-              // Have balance but no price - use FRESH balance for raw size
+              // Have balance but no price - use FRESH balance for raw size (with reserve applied)
               // Don't rely on stale _rawBalanceFallback from sizing phase
               logger.debug('arb.executor.using_raw_balance', {
                 cat: 'arb',
@@ -917,11 +933,13 @@ export class ArbExecutor {
                 path: executionPath.join('->'),
                 startToken: startToken.slice(0, 8) + '...',
                 balance,
+                rawBalance,
+                solReserveApplied: startToken === SOL_MINT ? SOL_RESERVE_FOR_FEES : 0,
                 reason: 'no_price_data_using_fresh_balance',
               });
-              // Store fresh balance and mark for raw size in resolver
+              // Store fresh balance (with reserve subtracted) and mark for raw size in resolver
               (opp as any)._useRawSize = true;
-              (opp as any)._rawBalanceFallback = balance; // Always use fresh balance
+              (opp as any)._rawBalanceFallback = balance; // Balance already has reserve subtracted
             }
           } else {
             // Cannot verify balance - use minimum safe size or the flashloan check's balance if available
