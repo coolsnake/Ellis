@@ -188,6 +188,23 @@ class RealtimeLogger extends EventEmitter {
     }
   }
 
+  // Patterns for logs that should ALWAYS be recorded to session (for tx dump completeness)
+  // regardless of log level visibility settings. Console output still respects settings.
+  private alwaysRecordPatterns = [
+    /^routerTx\./i,                    // Router transaction builder (pool data, accounts, native mints, wasSwapped, etc.)
+    /^tx\.(lookup_table|alt|build|preflight|send|resolve|sim)/i,  // ALT, build, and tx lifecycle logs
+    /^arb\.executor\./i,               // Arb executor logs
+    /^arb\.jito\./i,                   // Jito execution logs
+    /^(raydium|orca|meteora|pumpswap)\./i,  // DEX-specific instruction builder logs
+    /^ix\.build\./i,                   // Instruction building logs
+    /^resolver\./i,                    // Resolver logs (plan resolution)
+    /^sdkQuote\./i,                    // SDK quote builder logs
+  ];
+
+  private shouldAlwaysRecord(message: string): boolean {
+    return this.alwaysRecordPatterns.some(p => p.test(message));
+  }
+
   log(level: LogEvent['level'], message: string, context?: Record<string, unknown>): void {
     const ctx = context || undefined;
     // Promote structured fields from context if provided
@@ -198,7 +215,7 @@ class RealtimeLogger extends EventEmitter {
     const span = (ctx as any)?.span as LogSpan | undefined;
     const cat = (catFromCtx && typeof catFromCtx === 'string') ? catFromCtx.toLowerCase() : this.deriveCategory(message, ctx);
     if (!this.isCategoryAllowed(cat)) return;
-    if (!this.shouldLog(level, cat, code)) return;
+    
     const derivedCode = code || this.deriveCodeFromMessage(message);
     const event: LogEvent = {
       level,
@@ -212,15 +229,29 @@ class RealtimeLogger extends EventEmitter {
       cid,
       span,
     };
-    this.emit('log', event);
-    const prefix = level.toUpperCase();
-    // eslint-disable-next-line no-console
-    console.log(`[${prefix}]`, event.timestamp, `[${cat}${subcat?'.'+subcat:''}]`, code ? code + ':' : '', message, ctx ? JSON.stringify(ctx) : '');
-    if (this.logToFile) {
-      try {
-        const payload = JSON.stringify({ ts: event.timestamp, level, cat, subcat, code, cid, span, message, context: ctx || {} });
-        this.writeFileLine(payload);
-      } catch {}
+    
+    // Check if this log should bypass visibility settings for session recording
+    // This ensures tx dumps capture ALL relevant logs even if console is filtered
+    const alwaysRecord = this.shouldAlwaysRecord(message);
+    const passesFilter = this.shouldLog(level, cat, code);
+    
+    // Always emit for session recording if it matches alwaysRecord patterns
+    // This allows tx dump files to be complete regardless of console visibility
+    if (alwaysRecord || passesFilter) {
+      this.emit('log', event);
+    }
+    
+    // Console output and file logging still respect visibility settings
+    if (passesFilter) {
+      const prefix = level.toUpperCase();
+      // eslint-disable-next-line no-console
+      console.log(`[${prefix}]`, event.timestamp, `[${cat}${subcat?'.'+subcat:''}]`, code ? code + ':' : '', message, ctx ? JSON.stringify(ctx) : '');
+      if (this.logToFile) {
+        try {
+          const payload = JSON.stringify({ ts: event.timestamp, level, cat, subcat, code, cid, span, message, context: ctx || {} });
+          this.writeFileLine(payload);
+        } catch {}
+      }
     }
   }
 

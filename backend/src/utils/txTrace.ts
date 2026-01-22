@@ -80,13 +80,14 @@ export async function logTxTrace(kind: TraceKind, entry: Record<string, any>): P
   await appendJsonl(file, entry);
 }
 
-// Consolidated transaction dump (single file per attempt, not split by DEX)
+// Consolidated transaction dump (single file per opportunity, includes all phases)
 // Now includes complete trace from opportunity detection through transaction send
 export async function writeTxFullDump(
   phase: 'preflight' | 'execute', 
   payload: Record<string, any>
 ): Promise<void> {
-  const dir = resolve(LOG_DIR_SAFE, `${phase}-attempts`);
+  // Consolidate all logs into single directory - phase included in filename
+  const dir = resolve(LOG_DIR_SAFE, 'execution-attempts');
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true });
   }
@@ -129,12 +130,12 @@ export async function writeTxFullDump(
     }
   }
   
-  // Create unique filename: timestamp-tokenPath-traceId-status.json
-  // Format: 1704412800000-SOL-USDC-JitoSOL-abc123def-success.json
+  // Create unique filename: timestamp-phase-tokenPath-traceId-status.json
+  // Format: 1704412800000-execute-SOL-USDC-JitoSOL-abc123def-success.json
   const timestamp = Date.now();
   const idPart = String(traceId).slice(0, 12); // Truncate long IDs
   const pathPart = tokenPathStr ? `-${tokenPathStr}` : '';
-  const filename = `${timestamp}${pathPart}-${idPart}-${status}.json`;
+  const filename = `${timestamp}-${phase}${pathPart}-${idPart}-${status}.json`;
   const file = resolve(dir, filename);
   
   // Enrich payload with metadata and ensure all opportunity data is included

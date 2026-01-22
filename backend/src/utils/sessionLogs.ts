@@ -116,16 +116,10 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
   try {
     const relevant: SessionLogEvent[] = [];
     
-    // STRICT patterns - only capture logs DIRECTLY related to transaction execution
-    const txPatterns = [
+    // Patterns that REQUIRE traceId correlation (general execution patterns)
+    const traceIdRequiredPatterns = [
       // Transaction lifecycle patterns (specific execution phases only)
       /^tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc|ix\.coerce)/i,
-      // ALT/Lookup table patterns (for transaction assembly)
-      /^tx\.(lookup_table|alt)\./i,
-      // Additional tx.build patterns for router mode and ALTs
-      /^tx\.build\.(router|alts)/i,
-      // Router transaction builder patterns (onchain router - includes pool data, native mints, wasSwapped, etc.)
-      /^routerTx\./i,
       // DEX-specific instruction builder patterns
       /^(raydium|orca|meteora|pumpswap)\.(clmm|amm|dlmm|whirlpool)\./i,
       /ix\.build\.(raydium|orca|meteora|pumpswap)/i,
@@ -138,6 +132,18 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
       /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_data|cycle_closed|balance_check_passed|resolving_plan|sizing|flashloan|build)/i,
       // Jito execution patterns
       /^arb\.jito\.(bundle|tip|send)/i,
+    ];
+    
+    // TIME-WINDOW ONLY patterns - captured based on timing alone (no traceId required)
+    // These are router/ALT logs that don't have traceId in their context but are
+    // highly relevant to transaction building and occur within the execution window
+    const timeWindowOnlyPatterns = [
+      // Router transaction builder patterns (onchain router - includes pool data, native mints, wasSwapped, etc.)
+      /^routerTx\./i,
+      // ALT/Lookup table patterns (for transaction assembly)
+      /^tx\.(lookup_table|alt)\./i,
+      // Additional tx.build patterns for router mode and ALTs
+      /^tx\.build\.(router|alts|timing|compute|detail|ok|err|hop|arb_cycle|amount_propagation|priority|accounts)/i,
     ];
     
     // EXCLUSION patterns - filter out non-execution logs
@@ -182,8 +188,8 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
       const shouldExclude = excludePatterns.some(p => p.test(msg) || p.test(ctxStr));
       if (shouldExclude) continue;
       
-      // PRIMARY CHECK: Direct traceId match in context (REQUIRED for inclusion)
-      // This ensures only logs explicitly tagged with this traceId are captured
+      // PRIMARY CHECK: Direct traceId match in context
+      // This ensures logs explicitly tagged with this traceId are captured
       const hasDirectTraceId = traceId && (
         (ctx as any).traceId === traceId ||
         (ctx as any).txId === traceId ||
@@ -196,13 +202,21 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
         msg.includes(traceId)
       );
       
-      // STRICT PATTERN CHECK: Only include if BOTH traceId matches AND pattern is execution-related
-      // This prevents capturing random logs that happen to be in the time window
-      const matchesExecutionPattern = txPatterns.some(p => p.test(msg));
+      // Pattern checks
+      const matchesTraceIdRequiredPattern = traceIdRequiredPatterns.some(p => p.test(msg));
+      const matchesTimeWindowOnlyPattern = timeWindowOnlyPatterns.some(p => p.test(msg));
       
-      // Only include if we have a traceId correlation AND it's an execution-related log
-      // OR if it has a direct traceId match (which means it was intentionally tagged)
-      if (hasDirectTraceId || (hasTraceIdSubstring && matchesExecutionPattern)) {
+      // CAPTURE LOGIC:
+      // 1. Direct traceId match - always capture (log was explicitly tagged)
+      // 2. TraceId substring + any execution pattern - capture (indirect correlation)
+      // 3. Time-window patterns (routerTx, tx.lookup_table, tx.build.*) - capture based on timing alone
+      //    These logs don't have traceId but are highly relevant to transaction building
+      const shouldCapture = 
+        hasDirectTraceId ||
+        (hasTraceIdSubstring && (matchesTraceIdRequiredPattern || matchesTimeWindowOnlyPattern)) ||
+        matchesTimeWindowOnlyPattern;  // Capture router/ALT logs within time window
+      
+      if (shouldCapture) {
         relevant.unshift(event); // Add to beginning to maintain chronological order
         if (relevant.length >= maxLogs) break;
       }
