@@ -6,7 +6,7 @@ export type EdgeAllow = {
   raydium?: { amm?: boolean; clmm?: boolean; cpmm?: boolean };
   orca?: { amm?: boolean; clmm?: boolean };
   meteora?: { amm?: boolean; clmm?: boolean };
-  meteoraBalanced?: { amm?: boolean };
+  meteoraBalanced?: { amm?: boolean; v1?: boolean; v2?: boolean };
   pumpswap?: { amm?: boolean };
 };
 
@@ -311,7 +311,37 @@ export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm' | 'cpmm', all
   if (d.includes('raydium')) return (allow.raydium?.[k] !== false);
   if (d.includes('orca')) return (allow.orca?.[k] !== false);
   // Check MeteoraBalanced BEFORE plain Meteora (more specific first)
-  if (d.includes('meteorabalanced')) return (allow.meteoraBalanced?.[k] !== false);
+  // Support v1/v2 variants separately, with backward compatibility for old 'amm' field
+  if (d.includes('meteorabalanced')) {
+    // Check for version-specific variants first
+    if (d.includes('_v1') || d.includes('-v1')) {
+      // If old 'amm' field exists, use it; otherwise use v1 field
+      if (allow.meteoraBalanced?.amm !== undefined) {
+        return allow.meteoraBalanced.amm !== false;
+      }
+      return (allow.meteoraBalanced?.v1 !== false);
+    }
+    if (d.includes('_v2') || d.includes('-v2')) {
+      // If old 'amm' field exists, use it; otherwise use v2 field
+      if (allow.meteoraBalanced?.amm !== undefined) {
+        return allow.meteoraBalanced.amm !== false;
+      }
+      return (allow.meteoraBalanced?.v2 !== false);
+    }
+    // Fallback: if no version specified, check old 'amm' field first (backward compatibility)
+    if (allow.meteoraBalanced?.amm !== undefined) {
+      return allow.meteoraBalanced.amm !== false;
+    }
+    // If old format not present, check both v1 and v2
+    const v1Allowed = allow.meteoraBalanced?.v1 !== false;
+    const v2Allowed = allow.meteoraBalanced?.v2 !== false;
+    // If both are undefined, allow (default behavior)
+    if (allow.meteoraBalanced?.v1 === undefined && allow.meteoraBalanced?.v2 === undefined) {
+      return true;
+    }
+    // Otherwise, allow if at least one version is allowed
+    return v1Allowed || v2Allowed;
+  }
   if (d.includes('meteora')) return (allow.meteora?.[k] !== false);
   if (d.includes('pumpswap')) return (allow.pumpswap?.[k] !== false);
   return true;
