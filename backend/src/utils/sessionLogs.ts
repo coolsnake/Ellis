@@ -140,6 +140,8 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
     const timeWindowOnlyPatterns = [
       // Router transaction builder patterns (onchain router - includes pool data, native mints, wasSwapped, etc.)
       /^routerTx\./i,
+      // SDK Quote Builder patterns (cache hits/misses for SDK account resolution)
+      /^sdkQuoteBuilder\./i,
       // ALT/Lookup table patterns (for transaction assembly)
       /^tx\.(lookup_table|alt)\./i,
       // Additional tx.build patterns for router mode and ALTs

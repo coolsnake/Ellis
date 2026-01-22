@@ -198,7 +198,7 @@ class RealtimeLogger extends EventEmitter {
     /^(raydium|orca|meteora|pumpswap)\./i,  // DEX-specific instruction builder logs
     /^ix\.build\./i,                   // Instruction building logs
     /^resolver\./i,                    // Resolver logs (plan resolution)
-    /^sdkQuote\./i,                    // SDK quote builder logs
+    /^sdkQuote(Builder)?\./i,          // SDK quote builder logs (cache hits/misses)
   ];
 
   private shouldAlwaysRecord(message: string): boolean {
