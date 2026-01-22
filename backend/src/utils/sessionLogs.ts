@@ -120,6 +120,12 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
     const txPatterns = [
       // Transaction lifecycle patterns (specific execution phases only)
       /^tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc|ix\.coerce)/i,
+      // ALT/Lookup table patterns (for transaction assembly)
+      /^tx\.(lookup_table|alt)\./i,
+      // Additional tx.build patterns for router mode and ALTs
+      /^tx\.build\.(router|alts)/i,
+      // Router transaction builder patterns (onchain router - includes pool data, native mints, wasSwapped, etc.)
+      /^routerTx\./i,
       // DEX-specific instruction builder patterns
       /^(raydium|orca|meteora|pumpswap)\.(clmm|amm|dlmm|whirlpool)\./i,
       /ix\.build\.(raydium|orca|meteora|pumpswap)/i,
