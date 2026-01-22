@@ -2718,9 +2718,12 @@ async function extractDexAccounts(
         const knownLower = validateBase58Address(hop.tickArrayLower, `orca.tickArrayLower.${poolIdStr.slice(0, 8)}`) || '';
         const knownUpper = validateBase58Address(hop.tickArrayUpper, `orca.tickArrayUpper.${poolIdStr.slice(0, 8)}`) || '';
 
-        // ALWAYS use directional ordering based on known tick arrays (center, lower, upper)
-        // The SDK cache does NOT store direction-aware arrays - it stores positional arrays
-        // So we MUST reorder based on the current swap direction to get correct tick array sequence
+        // Tick array selection strategy:
+        // 1. PRIORITY 1: Derive tick arrays from current tick (most accurate)
+        // 2. PRIORITY 2: Use known arrays with directional ordering (fallback)
+        //
+        // CRITICAL: We must use a CONSISTENT source - don't mix derived and known arrays
+        // because if price moved, known arrays might not be contiguous with derived ones.
         //
         // For aToB = true (A→B): ticks traverse downward, need [center, lower, even_lower]
         // For aToB = false (B→A): ticks traverse upward, need [center, upper, even_upper]
@@ -2730,35 +2733,47 @@ async function extractDexAccounts(
         let tickArray2 = '';
         let tickArraySource = 'none';
 
-        // PRIORITY 1: Use cache-based arrays with DIRECTIONAL ordering
-        // tickArray0 = center (contains current tick)
-        // tickArray1 = next in direction (lower for A→B, upper for B→A)
-        // tickArray2 = duplicate of tickArray1 (safe fallback - third array may not exist)
-        tickArray0 = knownCenter;
-        tickArray1 = isAtoBOrca ? knownLower : knownUpper;
-        tickArray2 = tickArray1;  // Safe: duplicate the second array
-        tickArraySource = 'cache_directional';
-
-        // PRIORITY 2: Try to derive proper tick arrays if cache incomplete or we need third array
+        // PRIORITY 1: Try to derive tick arrays from current tick index
+        // This gives us the most accurate arrays for the current price
+        let derivationSucceeded = false;
         try {
           const hot = executionCache.getHot(poolIdStr);
           const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
           const currentTick = (hot as any)?.currentTickIndex;
           if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
             const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
-            tickArray0 = derived.tickArray0.toBase58();
-            tickArray1 = derived.tickArray1.toBase58();
-            // For tickArray2: only use derived if it matches a known-good array
-            // Otherwise, duplicate tickArray1 to avoid using an uninitialized array
+            const derivedArray0 = derived.tickArray0.toBase58();
+            const derivedArray1 = derived.tickArray1.toBase58();
             const derivedArray2 = derived.tickArray2.toBase58();
-            if (derivedArray2 === knownCenter || derivedArray2 === knownLower || derivedArray2 === knownUpper) {
-              tickArray2 = derivedArray2;  // Derived matches a known-good array
-            } else {
-              tickArray2 = tickArray1;  // Safe fallback: duplicate tickArray1
+            
+            // Check if derived arrays match known arrays (validates they exist on-chain)
+            const allKnown = [knownCenter, knownLower, knownUpper].filter(Boolean);
+            const array0IsKnown = allKnown.includes(derivedArray0);
+            const array1IsKnown = allKnown.includes(derivedArray1);
+            const array2IsKnown = allKnown.includes(derivedArray2);
+            
+            if (array0IsKnown && array1IsKnown) {
+              // Derived arrays 0 and 1 are validated - use them
+              tickArray0 = derivedArray0;
+              tickArray1 = derivedArray1;
+              // For array2: use if known, otherwise duplicate array1
+              tickArray2 = array2IsKnown ? derivedArray2 : derivedArray1;
+              tickArraySource = array2IsKnown ? 'derived_full' : 'derived_dup2';
+              derivationSucceeded = true;
             }
-            tickArraySource = 'derived';
           }
-        } catch { /* ignore derivation errors, use cache-based directional ordering */ }
+        } catch { /* derivation failed, fall back to cache-based */ }
+
+        // PRIORITY 2: Fall back to cache-based arrays with directional ordering
+        if (!derivationSucceeded) {
+          // tickArray0 = center (contains current tick - may be stale but validated)
+          // tickArray1 = next in direction (lower for A→B, upper for B→A)
+          // tickArray2 = duplicate of tickArray1 (safe fallback)
+          tickArray0 = knownCenter;
+          tickArray1 = isAtoBOrca ? knownLower : knownUpper;
+          tickArray2 = tickArray1;  // Safe: duplicate the second array
+          tickArraySource = 'cache_directional';
+        }
 
         logger.debug('routerTx.orca.tickArrays.directional', {
           cat: 'tx',

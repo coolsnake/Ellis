@@ -154,6 +154,8 @@ export interface PlanForComparison {
     amountInRaw?: bigint;
     minOutRaw?: bigint;
     quotedOutputRaw?: bigint;
+    inputDecimals?: number;
+    outputDecimals?: number;
   }>;
   isArbCycle?: boolean;
   initialInputRaw?: bigint;
@@ -245,25 +247,40 @@ export function buildSimulationReport(
     },
   };
   
-  // Add per-hop comparison if we have both expected and actual data
-  if (opp.hop_outs || simAnalysis.swapsExecuted.length > 0) {
+  // Add per-hop RATE comparison if we have expected rates or actual data
+  // Compare expected rates (from arb-rs hop_rates) with quoted rates (from resolver)
+  if (opp.hop_rates || simAnalysis.swapsExecuted.length > 0) {
     report.hopComparison = plan.hops.map((hop, i) => {
-      const expectedOut = opp.hop_outs?.[i];
-      const quotedOut = hop.quotedOutputRaw;
+      const expectedRate = opp.hop_rates?.[i];
       const actualSwap = simAnalysis.swapsExecuted.find(s => s.stepIndex === i);
       const expectedDex = opp.hop_dexes?.[i];
       
-      // Calculate delta between quoted and expected
-      let quotedVsExpectedDelta: string | null = null;
-      if (expectedOut && quotedOut && expectedOut > 0) {
+      // Calculate the quoted rate from amountInRaw and quotedOutputRaw
+      // Rate = (quotedOutput / 10^outDecimals) / (amountIn / 10^inDecimals)
+      //      = quotedOutput * 10^inDecimals / (amountIn * 10^outDecimals)
+      let quotedRate: number | null = null;
+      if (hop.amountInRaw && hop.quotedOutputRaw && hop.amountInRaw > 0n) {
+        const inDec = hop.inputDecimals ?? 6;
+        const outDec = hop.outputDecimals ?? 6;
         try {
-          const expectedBigInt = BigInt(Math.floor(expectedOut));
-          const quotedBigInt = BigInt(quotedOut.toString());
-          const deltaBps = ((quotedBigInt - expectedBigInt) * 10000n) / expectedBigInt;
-          quotedVsExpectedDelta = `${deltaBps.toString()} bps`;
+          // Use floating point for rate calculation to match arb-rs behavior
+          const amtIn = Number(hop.amountInRaw) / Math.pow(10, inDec);
+          const amtOut = Number(hop.quotedOutputRaw) / Math.pow(10, outDec);
+          if (amtIn > 0) {
+            quotedRate = amtOut / amtIn;
+          }
         } catch {
-          quotedVsExpectedDelta = 'calc_error';
+          quotedRate = null;
         }
+      }
+      
+      // Calculate rate delta in bps: ((quoted - expected) / expected) * 10000
+      let rateDeltaBps: number | null = null;
+      let rateOk = false;
+      if (expectedRate !== undefined && expectedRate > 0 && quotedRate !== null && quotedRate > 0) {
+        rateDeltaBps = Math.round(((quotedRate - expectedRate) / expectedRate) * 10000);
+        // Consider rates "ok" if within ±50 bps (0.5%) - accounts for minor price movement
+        rateOk = Math.abs(rateDeltaBps) <= 50;
       }
       
       return {
@@ -271,12 +288,18 @@ export function buildSimulationReport(
         dex: hop.dex,
         expectedDex,
         dexMatch: !expectedDex || hop.dex.toLowerCase().includes(expectedDex.toLowerCase()),
-        expectedOutRaw: expectedOut?.toString(),
-        quotedOutRaw: quotedOut?.toString(),
+        // Rate comparison (the main useful info)
+        expectedRate: expectedRate?.toFixed(8),
+        quotedRate: quotedRate?.toFixed(8),
+        rateDeltaBps,
+        rateOk,
+        // Raw amounts for debugging
+        amountInRaw: hop.amountInRaw?.toString(),
+        quotedOutRaw: hop.quotedOutputRaw?.toString(),
+        // Actual execution info
         actualInRaw: actualSwap?.amountIn.toString(),
         actualMinOut: actualSwap?.minAmountOut.toString(),
         executed: !!actualSwap,
-        quotedVsExpectedDelta,
       };
     });
   }
@@ -288,33 +311,50 @@ export function buildSimulationReport(
  * Format simulation report for logging (condensed version)
  */
 export function formatSimReportForLog(report: Record<string, any>): Record<string, any> {
+  // Calculate quoted rate product for comparison
+  let quotedRateProduct: number | null = null;
+  if (report.hopComparison?.length > 0) {
+    quotedRateProduct = 1.0;
+    for (const h of report.hopComparison) {
+      const rate = parseFloat(h.quotedRate);
+      if (!isNaN(rate) && rate > 0) {
+        quotedRateProduct *= rate;
+      } else {
+        quotedRateProduct = null;
+        break;
+      }
+    }
+  }
+  
   return {
     path: report.pathStr,
     hopCount: report.hopCount,
     isArbCycle: report.isArbCycle,
-    expected: {
-      profitBps: report.expected?.profitBps,
-      rateProduct: report.expected?.rateProduct,
+    comparison: {
+      expectedProfitBps: report.expected?.profitBps,
+      expectedNetBps: report.expected?.netBps,
+      expectedRateProduct: report.expected?.rateProduct,
+      quotedMinProfit: report.quoted?.calculatedMinProfit,
+      isArbCycle: report.isArbCycle,
+      initialInputRaw: report.quoted?.initialInputRaw,
     },
-    quoted: {
-      initialInput: report.quoted?.initialInputRaw,
-      minProfit: report.quoted?.calculatedMinProfit,
-    },
-    actual: {
+    simulation: {
       swapsExecuted: report.actual?.swapsExecuted,
+      totalHops: report.hopCount,
       profitCheckFailed: report.actual?.profitCheckFailed,
-      profitValue: report.actual?.profitValue,
       errorCode: report.actual?.errorCode,
       errorMessage: report.actual?.errorMessage,
+      lastSuccessfulStep: report.actual?.lastSuccessfulStep,
     },
-    failedAt: report.analysis?.failedAtHop,
+    // Per-hop rate comparison: expected (arb-rs) vs quoted (resolver)
     hopComparison: report.hopComparison?.map((h: any) => ({
       i: h.index,
       dex: h.dex,
-      exp: h.expectedOutRaw,
-      quoted: h.quotedOutRaw,
-      delta: h.quotedVsExpectedDelta,
-      ok: h.executed,
+      // Rate comparison - the key diagnostic info
+      expRate: h.expectedRate,         // Expected rate from arb-rs prices
+      quotedRate: h.quotedRate,        // Actual rate from DEX quote
+      deltaBps: h.rateDeltaBps,        // Difference in bps (negative = quoted worse than expected)
+      ok: h.rateOk,                    // true if rates within acceptable range
     })),
   };
 }
