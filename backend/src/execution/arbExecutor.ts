@@ -44,6 +44,44 @@ import { deriveVaultPda, fetchVault } from '../router/sdk.js';
 import { PublicKey } from '@solana/web3.js';
 import { resolveDecimals } from '../server/pools/decimals.js';
 
+/**
+ * Serialize simulation error to a readable string.
+ * Simulation errors can be objects like { InstructionError: [0, { Custom: 6001 }] }
+ */
+function serializeSimError(err: any): string {
+  if (err === null || err === undefined) return 'unknown_error';
+  if (typeof err === 'string') return err;
+  
+  try {
+    // Handle InstructionError format: { InstructionError: [index, { Custom: code }] }
+    if (err.InstructionError) {
+      const [index, detail] = err.InstructionError;
+      if (detail?.Custom !== undefined) {
+        return `InstructionError at ${index}: Custom(${detail.Custom})`;
+      }
+      if (typeof detail === 'string') {
+        return `InstructionError at ${index}: ${detail}`;
+      }
+      return `InstructionError at ${index}: ${JSON.stringify(detail)}`;
+    }
+    
+    // Handle Error objects
+    if (err instanceof Error) {
+      return err.message;
+    }
+    
+    // Handle { message: string } objects
+    if (err.message && typeof err.message === 'string') {
+      return err.message;
+    }
+    
+    // Fallback to JSON serialization
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
 interface Opportunity {
   path: string[];
   dexes: string[];           // Deduplicated set of DEX families
@@ -1261,11 +1299,12 @@ export class ArbExecutor {
         
         if (simResult.err) {
           // Simulation failed - log detailed error analysis
+          const simErrStr = serializeSimError(simResult.err);
           logger.error('arb.executor.simulate.failed', {
             cat: 'arb',
             traceId,
             path: pathStr,
-            error: simResult.err,
+            error: simErrStr,
             simulation: {
               swapsExecuted: simAnalysis.swapsExecuted.length,
               totalHops: plan.hops.length,
@@ -1289,7 +1328,7 @@ export class ArbExecutor {
           
           emit('arb:simulation:failed', {
             path: pathStr,
-            error: `Simulation failed: ${simResult.err}`,
+            error: `Simulation failed: ${simErrStr}`,
             timestamp: Date.now(),
             // Matching data for frontend correlation
             pathMints: opp.path,
@@ -1327,7 +1366,7 @@ export class ArbExecutor {
             traceId,
             path: pathStr,
             simResult: {
-              err: simResult.err,
+              err: simResult.err ? serializeSimError(simResult.err) : null,
               logsCount: simResult.logs?.length,
             },
             analysis: {
@@ -1500,12 +1539,13 @@ export class ArbExecutor {
           // Parse simulation logs for detailed analysis
           const simReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
           const condensedReport = formatSimReportForLog(simReport);
+          const lastSimErrStr = serializeSimError(lastSimResult.err);
           
           logger.error('arb.executor.simulate_then_execute.sim_failed', {
             cat: 'arb',
             traceId,
             path: pathStr,
-            error: lastSimResult.err,
+            error: lastSimErrStr,
             adaptiveAttempts: attempt,
             finalSizeUsd: currentSizeUsd,
             originalSizeUsd,
@@ -1536,7 +1576,7 @@ export class ArbExecutor {
 
           emit('arb:execution:failed', {
             path: pathStr,
-            error: `Simulation failed after ${attempt} attempts: ${lastSimResult.err}`,
+            error: `Simulation failed after ${attempt} attempts: ${lastSimErrStr}`,
             timestamp: Date.now(),
             // Matching data for frontend correlation
             pathMints: opp.path,
@@ -1570,7 +1610,7 @@ export class ArbExecutor {
             },
           });
 
-          throw new Error(`Simulation failed after ${attempt} attempt(s): ${lastSimResult.err}`);
+          throw new Error(`Simulation failed after ${attempt} attempt(s): ${lastSimErrStr}`);
         }
 
         logger.info('arb.executor.simulate_then_execute.sim_ok', {
