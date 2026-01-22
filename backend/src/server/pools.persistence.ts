@@ -468,6 +468,8 @@ export function populateExecutionCacheFromPools(
       if ((pool as any).native_account_b) staticData.native_account_b = (pool as any).native_account_b;
       if ((pool as any).native_mint_a) staticData.native_mint_a = (pool as any).native_mint_a;
       if ((pool as any).native_mint_b) staticData.native_mint_b = (pool as any).native_mint_b;
+      // CRITICAL: Store was_swapped flag for direction fallback when native_mint_a is missing
+      if ((pool as any).was_swapped !== undefined) staticData.was_swapped = (pool as any).was_swapped;
       
       // Raydium CLMM-specific
       if ((pool as any).observation_state) staticData.observation_state = (pool as any).observation_state;
@@ -516,6 +518,18 @@ export function populateExecutionCacheFromPools(
       
       executionCache.setStatic(pool.id, staticData);
       populated++;
+      
+      // DIAGNOSTIC: Log warning for Orca pools missing native_mint_a (potential InvalidTickArraySequence source)
+      if (dex === 'Orca' && !staticData.native_mint_a) {
+        logger.warn('pools.persistence.orca.missing_native_mint', {
+          cat: 'pools',
+          poolId: pool.id?.slice(0, 12) + '...',
+          hasWasSwapped: staticData.was_swapped !== undefined,
+          hasMintA: !!staticData.mint_a,
+          hasMintB: !!staticData.mint_b,
+          hint: 'Pool loaded from snapshot without native_mint_a - may cause InvalidTickArraySequence errors',
+        });
+      }
       
       // Also populate hot cache with price/tick data if available
       const hotData: any = {};

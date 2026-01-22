@@ -1691,10 +1691,46 @@ async function extractDexAccounts(
     const poolAccountB = stat?.account_b;  // Canonical account B (paired with mint_b)
     
     // NATIVE ordering - critical for on-chain direction flag
-    const nativeMintA = stat?.native_mint_a;  // On-chain token_mint_0
-    const nativeMintB = stat?.native_mint_b;  // On-chain token_mint_1
+    let nativeMintA = stat?.native_mint_a;  // On-chain token_mint_0
+    let nativeMintB = stat?.native_mint_b;  // On-chain token_mint_1
     const nativeAccountA = stat?.native_account_a;  // On-chain vault for token_mint_0
     const nativeAccountB = stat?.native_account_b;  // On-chain vault for token_mint_1
+    
+    // FALLBACK: If native_mint_a is missing but we have rawAccountData, derive it
+    // This handles the case where pools were loaded from persistence or lazy mode without native_mint_a
+    if (!nativeMintA && stat?.rawAccountData && hop.dex?.toLowerCase() === 'orca') {
+      try {
+        const rawData = stat.rawAccountData;
+        // Orca Whirlpool account layout: tokenMintA is at offset 101 (32 bytes)
+        // tokenMintB is at offset 133 (32 bytes)
+        if (rawData.length >= 165) {
+          const mintABytes = rawData.slice(101, 133);
+          const mintBBytes = rawData.slice(133, 165);
+          nativeMintA = new PublicKey(mintABytes).toBase58();
+          nativeMintB = new PublicKey(mintBBytes).toBase58();
+          
+          // Update the execution cache with derived native mints for future use
+          executionCache.setStatic(hop.poolId.replace(/[#-]rev$/, ''), {
+            ...stat,
+            native_mint_a: nativeMintA,
+            native_mint_b: nativeMintB,
+          });
+          
+          logger.info('routerTx.orca.native_mint.derived_from_raw', {
+            cat: 'tx',
+            poolId: hop.poolId?.slice(0, 8) + '...',
+            nativeMintA: nativeMintA?.slice(0, 8) + '...',
+            nativeMintB: nativeMintB?.slice(0, 8) + '...',
+          });
+        }
+      } catch (e) {
+        logger.warn('routerTx.orca.native_mint.derivation_failed', {
+          cat: 'tx',
+          poolId: hop.poolId?.slice(0, 8) + '...',
+          error: String((e as Error)?.message || e),
+        });
+      }
+    }
     
     // Direction flag uses NATIVE ordering (matches on-chain a_to_b interpretation)
     // CRITICAL: Use passed aToB if available to ensure consistency with on-chain instruction
@@ -1719,19 +1755,33 @@ async function extractDexAccounts(
       isAtoB = wasSwapped ? !canonicalIsAtoB : canonicalIsAtoB;
       isAtoBDeterminedBy = wasSwapped ? 'canonical_inverted_for_swap' : 'canonical_fallback';
 
-      // Log warning for Orca pools using canonical fallback (potential source of errors)
+      // Log ERROR for Orca pools using canonical fallback (high risk of InvalidTickArraySequence)
       if (hop.dex?.toLowerCase() === 'orca') {
-        logger.warn('routerTx.orca.direction.canonical_fallback', {
+        logger.error('routerTx.orca.direction.canonical_fallback', {
           cat: 'tx',
           poolId: hop.poolId?.slice(0, 8) + '...',
           inputMint: hop.inputMint?.slice(0, 8) + '...',
+          outputMint: hop.outputMint?.slice(0, 8) + '...',
           canonicalMintA: poolMintA?.slice(0, 8) + '...',
+          canonicalMintB: poolMintB?.slice(0, 8) + '...',
           wasSwapped,
           canonicalIsAtoB,
           finalIsAtoB: isAtoB,
-          hint: 'native_mint_a missing from cache - direction determined using canonical ordering. ' +
-                'This may cause TickArraySequenceInvalidIndex if was_swapped handling is incorrect.',
+          hasRawAccountData: !!stat?.rawAccountData,
+          rawAccountDataLen: stat?.rawAccountData?.length,
+          statKeys: stat ? Object.keys(stat).join(',') : 'null',
+          hint: 'CRITICAL: native_mint_a missing - direction may be WRONG causing InvalidTickArraySequence. ' +
+                'Check if pool was loaded from persistence without native_mint_a or WS update pending.',
         });
+        
+        // STRICT MODE: Fail early rather than submit a likely-to-fail transaction
+        // This prevents wasting compute and transaction fees on InvalidTickArraySequence errors
+        // The canonical fallback is unreliable when was_swapped might be incorrect or missing
+        throw new Error(
+          `ORCA_DIRECTION_UNRELIABLE: Pool ${hop.poolId?.slice(0, 12)}... is missing native_mint_a. ` +
+          `Cannot reliably determine swap direction. Pool needs WS update or revalidation. ` +
+          `(wasSwapped=${wasSwapped}, hasRawData=${!!stat?.rawAccountData})`
+        );
       }
     }
 
