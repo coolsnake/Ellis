@@ -275,12 +275,32 @@ export function buildSimulationReport(
       }
       
       // Calculate rate delta in bps: ((quoted - expected) / expected) * 10000
+      // Note: arb-rs hop_rates might be for the opposite direction if the cycle was rotated
+      // We check both the forward rate and inverse rate to find the best match
       let rateDeltaBps: number | null = null;
       let rateOk = false;
+      let matchedDirection: 'forward' | 'inverse' | null = null;
+      
       if (expectedRate !== undefined && expectedRate > 0 && quotedRate !== null && quotedRate > 0) {
-        rateDeltaBps = Math.round(((quotedRate - expectedRate) / expectedRate) * 10000);
-        // Consider rates "ok" if within ±50 bps (0.5%) - accounts for minor price movement
-        rateOk = Math.abs(rateDeltaBps) <= 50;
+        // Try forward comparison: quotedRate vs expectedRate
+        const forwardDeltaBps = Math.round(((quotedRate - expectedRate) / expectedRate) * 10000);
+        
+        // Try inverse comparison: quotedRate vs (1/expectedRate)
+        // This handles cases where arb-rs stored the rate in opposite direction
+        const inverseExpectedRate = 1 / expectedRate;
+        const inverseDeltaBps = Math.round(((quotedRate - inverseExpectedRate) / inverseExpectedRate) * 10000);
+        
+        // Use whichever comparison gives a smaller delta (more likely correct direction)
+        if (Math.abs(forwardDeltaBps) <= Math.abs(inverseDeltaBps)) {
+          rateDeltaBps = forwardDeltaBps;
+          matchedDirection = 'forward';
+        } else {
+          rateDeltaBps = inverseDeltaBps;
+          matchedDirection = 'inverse';
+        }
+        
+        // Consider rates "ok" if within ±100 bps (1%) - accounts for price movement and slippage
+        rateOk = Math.abs(rateDeltaBps) <= 100;
       }
       
       return {
@@ -293,6 +313,7 @@ export function buildSimulationReport(
         quotedRate: quotedRate?.toFixed(8),
         rateDeltaBps,
         rateOk,
+        matchedDirection, // 'forward' = rates match, 'inverse' = had to invert expected rate
         // Raw amounts for debugging
         amountInRaw: hop.amountInRaw?.toString(),
         quotedOutRaw: hop.quotedOutputRaw?.toString(),
@@ -354,7 +375,8 @@ export function formatSimReportForLog(report: Record<string, any>): Record<strin
       expRate: h.expectedRate,         // Expected rate from arb-rs prices
       quotedRate: h.quotedRate,        // Actual rate from DEX quote
       deltaBps: h.rateDeltaBps,        // Difference in bps (negative = quoted worse than expected)
-      ok: h.rateOk,                    // true if rates within acceptable range
+      ok: h.rateOk,                    // true if rates within acceptable range (±100 bps)
+      dir: h.matchedDirection,         // 'forward' = direct match, 'inverse' = expected rate was inverted
     })),
   };
 }

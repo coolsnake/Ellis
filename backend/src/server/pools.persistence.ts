@@ -539,8 +539,10 @@ export function populateExecutionCacheFromPools(
         hotData.sqrtPriceX64 = BigInt(String(pool.sqrt_price_x64));
         hasHotData = true;
       }
-      if ((pool as any).tick_current !== undefined) {
-        hotData.currentTickIndex = (pool as any).tick_current;
+      // Support both field names: tick_current_index (current) and tick_current (legacy)
+      const tickCurrentIndex = (pool as any).tick_current_index ?? (pool as any).native_tick_current_index ?? (pool as any).tick_current;
+      if (tickCurrentIndex !== undefined) {
+        hotData.currentTickIndex = Number(tickCurrentIndex);
         hasHotData = true;
       }
       if ((pool as any).active_id !== undefined) {

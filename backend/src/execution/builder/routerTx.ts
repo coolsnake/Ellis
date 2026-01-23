@@ -2773,6 +2773,20 @@ async function extractDexAccounts(
           tickArray1 = isAtoBOrca ? knownLower : knownUpper;
           tickArray2 = tickArray1;  // Safe: duplicate the second array
           tickArraySource = 'cache_directional';
+          
+          // Log warning when derivation fails - this indicates potential stale tick arrays
+          const hot = executionCache.getHot(poolIdStr);
+          logger.warn('routerTx.orca.tickArrays.derivation_failed', {
+            cat: 'tx',
+            poolId: poolIdStr.slice(0, 8) + '...',
+            hasHotCache: !!hot,
+            hasCurrentTickIndex: hot?.currentTickIndex !== undefined,
+            currentTickIndex: hot?.currentTickIndex,
+            hasTickSpacing: !!hot?.tickSpacing,
+            tickSpacing: hot?.tickSpacing,
+            hopTickSpacing: hop.tickSpacing,
+            hint: 'Using cache_directional fallback - tick arrays may be stale if price moved',
+          });
         }
 
         logger.debug('routerTx.orca.tickArrays.directional', {
@@ -4013,12 +4027,22 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
             missingAccounts.push('observationId');
           }
         }
-        // Check token programs
+        // Check token programs - MUST respect swap direction (aToB)
+        // When aToB=true: input=mintA, output=mintB
+        // When aToB=false (reverse/#rev): input=mintB, output=mintA
         if (!(hop as any).tokenProgramIn) {
-          (hop as any).tokenProgramIn = stat?.token_program_a || 'spl-token';
+          if (hop.aToB !== false) {
+            (hop as any).tokenProgramIn = stat?.token_program_a || 'spl-token';
+          } else {
+            (hop as any).tokenProgramIn = stat?.token_program_b || 'spl-token';
+          }
         }
         if (!(hop as any).tokenProgramOut) {
-          (hop as any).tokenProgramOut = stat?.token_program_b || 'spl-token';
+          if (hop.aToB !== false) {
+            (hop as any).tokenProgramOut = stat?.token_program_b || 'spl-token';
+          } else {
+            (hop as any).tokenProgramOut = stat?.token_program_a || 'spl-token';
+          }
         }
         break;
     }
