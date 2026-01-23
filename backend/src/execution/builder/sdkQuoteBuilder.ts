@@ -149,49 +149,36 @@ function getCacheKey(poolId: string, variant?: string): string {
 function tryGetCachedOrcaAccounts(poolId: string): SdkProvidedAccounts | null {
   const cleanPoolId = poolId.replace(/[#-]rev$/, '');
   const staticData = executionCache.getStatic(cleanPoolId);
-  const hotData = executionCache.getHot(cleanPoolId);
   
   // Check if we have the required static account (oracle)
   // Oracle is a PDA derived from pool - it never changes
   const oracle = staticData?.oracle;
   
-  // Check if we have valid tick arrays (not needing validation)
-  // Orca uses tickArray0/1/2 naming in hop, but cache stores as tickArrayLower/Center/Upper
-  const hasValidTickArrays = hotData?.tickArrays && 
-    hotData.needsTickArrayValidation !== true &&
-    (hotData.tickArrays.center || hotData.tickArrays.lower);
+  // IMPORTANT: Do NOT cache tick arrays for Orca!
+  // The cache stores tick arrays positionally (center/lower/upper), but Orca expects
+  // them in DIRECTIONAL order based on swap direction:
+  //   - A→B (down): [center, lower, even_lower]
+  //   - B→A (up): [center, upper, even_upper]
+  // Returning cached [center, lower, upper] as [tickArray0/1/2] is WRONG for B→A swaps.
+  // The SDK must compute fresh tick arrays for each swap direction.
   
-  if (!oracle && !hasValidTickArrays) {
+  if (!oracle) {
     return null;
   }
   
-  // Build accounts from cache
+  // Build accounts from cache - only static data (oracle, vaults)
   const accounts: SdkProvidedAccounts = {};
   
   if (oracle) {
     accounts.oracle = oracle;
   }
   
-  if (hasValidTickArrays && hotData?.tickArrays) {
-    // Map cache format to Orca format (tickArray0/1/2)
-    const ta = hotData.tickArrays;
-    if (ta.center) accounts.tickArray0 = ta.center;
-    if (ta.lower) {
-      const lowerArr = Array.isArray(ta.lower) ? ta.lower : [ta.lower];
-      if (lowerArr[0]) accounts.tickArray1 = lowerArr[0];
-    }
-    if (ta.upper) {
-      const upperArr = Array.isArray(ta.upper) ? ta.upper : [ta.upper];
-      if (upperArr[0]) accounts.tickArray2 = upperArr[0];
-    }
-  }
-  
-  // Also get vaults from static cache
+  // Vaults are static and can be cached
   if (staticData?.token_vault_a) accounts.vaultA = staticData.token_vault_a;
   if (staticData?.token_vault_b) accounts.vaultB = staticData.token_vault_b;
   
   // Only return if we have meaningful data
-  const hasAccounts = accounts.oracle || accounts.tickArray0 || accounts.vaultA;
+  const hasAccounts = accounts.oracle || accounts.vaultA;
   return hasAccounts ? accounts : null;
 }
 
@@ -201,31 +188,24 @@ function tryGetCachedOrcaAccounts(poolId: string): SdkProvidedAccounts | null {
 function cacheOrcaAccounts(poolId: string, accounts: SdkProvidedAccounts): void {
   const cleanPoolId = poolId.replace(/[#-]rev$/, '');
   
-  // Store oracle in static cache (never changes)
-  if (accounts.oracle) {
+  // Store oracle and vaults in static cache (never change)
+  if (accounts.oracle || accounts.vaultA || accounts.vaultB) {
     const existing = executionCache.getStatic(cleanPoolId) || {};
     executionCache.setStatic(cleanPoolId, {
       ...existing,
-      oracle: accounts.oracle,
+      oracle: accounts.oracle || existing.oracle,
       token_vault_a: accounts.vaultA || existing.token_vault_a,
       token_vault_b: accounts.vaultB || existing.token_vault_b,
     });
   }
   
-  // Store tick arrays in hot cache (may change on boundary crossing)
-  if (accounts.tickArray0 || accounts.tickArray1 || accounts.tickArray2) {
-    const existing = executionCache.getHot(cleanPoolId) || {};
-    executionCache.setHot(cleanPoolId, {
-      ...existing,
-      tickArrays: {
-        center: accounts.tickArray0,
-        lower: accounts.tickArray1 ? [accounts.tickArray1] : undefined,
-        upper: accounts.tickArray2 ? [accounts.tickArray2] : undefined,
-      },
-      needsTickArrayValidation: false,
-      tickArraysValidatedAt: Date.now(),
-    });
-  }
+  // IMPORTANT: Do NOT cache SDK tick arrays for Orca!
+  // The SDK returns tick arrays in DIRECTIONAL order (array0=current, array1=next in direction).
+  // But the cache stores them as POSITIONAL (center/lower/upper).
+  // For A→B swaps, SDK returns [center, lower, ...] - storing as lower=array1 is correct.
+  // For B→A swaps, SDK returns [center, upper, ...] - storing as lower=array1 is WRONG!
+  // The tick arrays in the cache should only be populated by the resolver/validator
+  // which knows the actual positional tick arrays from on-chain data.
 }
 
 /**
@@ -1061,27 +1041,21 @@ async function getOrcaSdkQuote(
 ): Promise<SdkQuoteResult> {
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
 
-  // OPTIMIZATION: Check cache first before calling SDK
+  // Get cached static accounts (oracle, vaults) - these never change
+  // IMPORTANT: We do NOT cache tick arrays because they are direction-dependent
+  // The SDK must be called every time to get correct tick arrays for the swap direction
   const cachedAccounts = tryGetCachedOrcaAccounts(poolId);
-  if (cachedAccounts) {
-    logger.debug('sdkQuoteBuilder.orca.cache.hit', {
-      cat: 'tx',
-      ctx: {
-        poolId: poolId.slice(0, 8) + '...',
-        hasOracle: !!cachedAccounts.oracle,
-        hasTickArrays: !!(cachedAccounts.tickArray0 || cachedAccounts.tickArray1),
-      },
-    });
-    return {
-      success: true,
-      accounts: cachedAccounts,
-      fromCache: true,
-    };
-  }
-
-  logger.debug('sdkQuoteBuilder.orca.cache.miss', {
+  
+  // Always log cache state for debugging, but DON'T short-circuit
+  // We need to call the SDK for fresh tick arrays every time
+  logger.debug('sdkQuoteBuilder.orca.cache.check', {
     cat: 'tx',
-    ctx: { poolId: poolId.slice(0, 8) + '...' },
+    ctx: {
+      poolId: poolId.slice(0, 8) + '...',
+      hasCachedOracle: !!cachedAccounts?.oracle,
+      hasCachedVaults: !!(cachedAccounts?.vaultA || cachedAccounts?.vaultB),
+      willCallSdk: true, // Always call SDK for tick arrays
+    },
   });
 
   try {
@@ -1235,12 +1209,21 @@ async function getOrcaSdkQuote(
       },
     });
 
-    // OPTIMIZATION: Cache SDK accounts for future use
+    // OPTIMIZATION: Cache static SDK accounts (oracle, vaults) for future use
     cacheOrcaAccounts(poolId, accounts);
+
+    // Merge with any cached static accounts (oracle, vaults) in case SDK extraction missed them
+    const mergedAccounts: SdkProvidedAccounts = {
+      ...accounts,
+      // Use cached values as fallback if SDK didn't extract them
+      oracle: accounts.oracle || cachedAccounts?.oracle,
+      vaultA: accounts.vaultA || cachedAccounts?.vaultA,
+      vaultB: accounts.vaultB || cachedAccounts?.vaultB,
+    };
 
     return {
       success: true,
-      accounts,
+      accounts: mergedAccounts,
       quotedAmountOut,
     };
   } catch (e) {
