@@ -17,6 +17,7 @@ import { resolveManyDecimals } from '../server/pools/decimals.js';
 import { processPriceThroughPipeline } from '../server/pools/pricePipeline.js';
 import { updateEligibilityFromBatchValidation } from '../server/pools.websockets.js';
 import { CONFIG } from '../utils/config.js';
+import { METEORA_BIN_ARRAY_SIZE } from './constants.js';
 
 // RPC context for rate limiting
 const RPC_MODULE = 'cacheValidator';
@@ -34,7 +35,6 @@ const PUMPSWAP_PROGRAM = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMf
 // Constants for tick/bin array derivation
 const ORCA_TICK_ARRAY_SIZE = 88;
 const RAYDIUM_TICK_ARRAY_SIZE = 60;
-const METEORA_BIN_ARRAY_SIZE = 70;
 
 // Bitmap extension range - default bitmap covers bin array indices -512 to +511
 const METEORA_BITMAP_RANGE = 512;
@@ -4035,6 +4035,57 @@ async function validatePoolTickArrays(
 }
 
 /**
+ * Process a single pool that needs bin array validation (Meteora DLMM)
+ */
+async function validatePoolBinArrays(
+  connection: Connection,
+  poolId: string
+): Promise<boolean> {
+  try {
+    const dex = detectPoolDex(poolId);
+    if (dex !== 'meteora') {
+      const hot = executionCache.getHot(poolId);
+      if (hot?.needsBinArrayValidation) {
+        executionCache.setHot(poolId, {
+          ...hot,
+          needsBinArrayValidation: false,
+        });
+      }
+      return false;
+    }
+    
+    const result = await fetchFreshBinDataAndValidate(connection, poolId);
+    if (!result) return false;
+    
+    const { binArrays } = result;
+    const hasAnyBinArray = !!(binArrays?.arrays?.length || binArrays?.lower || binArrays?.upper || binArrays?.active);
+    
+    if (hasAnyBinArray) {
+      executionCache.setValidatedBinArrays(poolId, {
+        lower: binArrays?.lower,
+        upper: binArrays?.upper,
+        active: binArrays?.active,
+        arrays: binArrays?.arrays,
+      });
+      return true;
+    }
+    
+    const hot = executionCache.getHot(poolId) || {};
+    executionCache.setHot(poolId, {
+      ...hot,
+      binArrays: undefined,
+      needsBinArrayValidation: false,
+      binArraysValidatedAt: Date.now(),
+    });
+    
+    return true;
+  } catch (err) {
+    logCatchError('cacheValidator.reactive.validatePoolBin', err as any);
+    return false;
+  }
+}
+
+/**
  * Main reactive validation loop - processes pools needing validation
  */
 async function runReactiveValidationLoop(): Promise<void> {
@@ -4044,38 +4095,62 @@ async function runReactiveValidationLoop(): Promise<void> {
   if (!reactiveValidationRunning || !reactiveValidationConnection) return;
   
   try {
-    // Get pools needing tick array validation
-    const poolsNeedingValidation = executionCache.getPoolsNeedingTickArrayValidation();
+    const tickPools = executionCache.getPoolsNeedingTickArrayValidation();
+    const binPools = executionCache.getPoolsNeedingBinArrayValidation();
     
-    if (poolsNeedingValidation.length === 0) return;
+    if (tickPools.length === 0 && binPools.length === 0) return;
     
     // Process pools per cycle - configurable via REACTIVE_BATCH_SIZE env var
     // Default reduced from 5 to 2 to respect RPC rate limits
     const reactiveBatchSize = (CONFIG as any)?.system?.reactiveBatchSize ?? 2;
-    const batch = poolsNeedingValidation.slice(0, reactiveBatchSize);
     
-    logger.debug('cacheValidator.reactive.processing', {
-      cat: 'cache',
-      batchSize: batch.length,
-      totalPending: poolsNeedingValidation.length,
-    });
-    
-    // Process in parallel
-    const results = await Promise.allSettled(
-      batch.map(p => validatePoolTickArrays(reactiveValidationConnection!, p.poolId))
-    );
-    
-    const validated = results.filter(r => r.status === 'fulfilled' && r.value).length;
-    if (validated > 0) {
-      logger.debug('cacheValidator.reactive.batch_complete', {
+    if (tickPools.length > 0) {
+      const batch = tickPools.slice(0, reactiveBatchSize);
+      logger.debug('cacheValidator.reactive.processing_ticks', {
         cat: 'cache',
-        validated,
-        total: batch.length,
-        remaining: poolsNeedingValidation.length - batch.length,
+        batchSize: batch.length,
+        totalPending: tickPools.length,
       });
+      
+      const results = await Promise.allSettled(
+        batch.map(p => validatePoolTickArrays(reactiveValidationConnection!, p.poolId))
+      );
+      
+      const validated = results.filter(r => r.status === 'fulfilled' && r.value).length;
+      if (validated > 0) {
+        logger.debug('cacheValidator.reactive.batch_complete_ticks', {
+          cat: 'cache',
+          validated,
+          total: batch.length,
+          remaining: tickPools.length - batch.length,
+        });
+      }
+    }
+    
+    if (binPools.length > 0) {
+      const batch = binPools.slice(0, reactiveBatchSize);
+      logger.debug('cacheValidator.reactive.processing_bins', {
+        cat: 'cache',
+        batchSize: batch.length,
+        totalPending: binPools.length,
+      });
+      
+      const results = await Promise.allSettled(
+        batch.map(p => validatePoolBinArrays(reactiveValidationConnection!, p.poolId))
+      );
+      
+      const validated = results.filter(r => r.status === 'fulfilled' && r.value).length;
+      if (validated > 0) {
+        logger.debug('cacheValidator.reactive.batch_complete_bins', {
+          cat: 'cache',
+          validated,
+          total: batch.length,
+          remaining: binPools.length - batch.length,
+        });
+      }
     }
   } catch (err) {
-    logCatchError('cacheValidator.reactive.loop', err);
+    logCatchError('cacheValidator.reactive.loop', err as any);
   }
 }
 

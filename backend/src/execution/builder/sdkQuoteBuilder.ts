@@ -142,6 +142,45 @@ function getCacheKey(poolId: string, variant?: string): string {
   return variant ? `${cleanPoolId}:${variant}` : cleanPoolId;
 }
 
+function getOrcaDirectionCacheKey(poolId: string, aToB: boolean): string {
+  const cleanPoolId = poolId.replace(/[#-]rev$/, '');
+  return `${cleanPoolId}:orca:${aToB ? 'AtoB' : 'BtoA'}`;
+}
+
+function resolveOrcaDirection(hop: DirectHop): boolean | null {
+  const cleanPoolId = hop.poolId.replace(/[#-]rev$/, '');
+  const stat = executionCache.getStatic(cleanPoolId);
+  let poolMintA: string | undefined;
+  if (stat?.native_mint_a) {
+    poolMintA = stat.native_mint_a;
+  } else if (stat?.mint_a || stat?.mint_b) {
+    const wasSwapped = stat?.was_swapped === true;
+    poolMintA = wasSwapped ? stat?.mint_b : stat?.mint_a;
+  }
+  if (poolMintA) {
+    return hop.inputMint === poolMintA;
+  }
+  if (typeof hop.aToB === 'boolean') {
+    return hop.aToB;
+  }
+  return null;
+}
+
+function tryGetCachedOrcaDirectionalTickArrays(poolId: string, aToB: boolean): SdkProvidedAccounts | null {
+  const directionKey = getOrcaDirectionCacheKey(poolId, aToB);
+  const hot = executionCache.getHot(directionKey);
+  if (!hot || hot.needsTickArrayValidation === true) return null;
+  if (!hot.tickArrays?.center) return null;
+  const lower = Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower;
+  const upper = Array.isArray(hot.tickArrays.upper) ? hot.tickArrays.upper[0] : hot.tickArrays.upper;
+  if (!lower || !upper) return null;
+  return {
+    tickArray0: hot.tickArrays.center,
+    tickArray1: lower,
+    tickArray2: upper,
+  };
+}
+
 /**
  * Try to get cached SDK accounts for Orca Whirlpool
  * Returns accounts if all required fields are present and tick arrays are valid
@@ -1042,9 +1081,33 @@ async function getOrcaSdkQuote(
   const poolId = hop.poolId.replace(/[#-]rev$/, '');
 
   // Get cached static accounts (oracle, vaults) - these never change
-  // IMPORTANT: We do NOT cache tick arrays because they are direction-dependent
-  // The SDK must be called every time to get correct tick arrays for the swap direction
+  // Tick arrays are cached per-direction to avoid incorrect ordering
   const cachedAccounts = tryGetCachedOrcaAccounts(poolId);
+  const aToB = resolveOrcaDirection(hop);
+  const cachedDirectional = aToB !== null ? tryGetCachedOrcaDirectionalTickArrays(poolId, aToB) : null;
+  
+  if (cachedDirectional) {
+    logger.debug('sdkQuoteBuilder.orca.cache.hit', {
+      cat: 'tx',
+      ctx: {
+        poolId: poolId.slice(0, 8) + '...',
+        direction: aToB ? 'AtoB' : 'BtoA',
+        hasCachedOracle: !!cachedAccounts?.oracle,
+        hasCachedVaults: !!(cachedAccounts?.vaultA || cachedAccounts?.vaultB),
+      },
+    });
+    
+    return {
+      success: true,
+      accounts: {
+        ...cachedDirectional,
+        oracle: cachedAccounts?.oracle,
+        vaultA: cachedAccounts?.vaultA,
+        vaultB: cachedAccounts?.vaultB,
+      },
+      fromCache: true,
+    };
+  }
   
   // Always log cache state for debugging, but DON'T short-circuit
   // We need to call the SDK for fresh tick arrays every time
@@ -1054,7 +1117,8 @@ async function getOrcaSdkQuote(
       poolId: poolId.slice(0, 8) + '...',
       hasCachedOracle: !!cachedAccounts?.oracle,
       hasCachedVaults: !!(cachedAccounts?.vaultA || cachedAccounts?.vaultB),
-      willCallSdk: true, // Always call SDK for tick arrays
+      direction: aToB === null ? 'unknown' : (aToB ? 'AtoB' : 'BtoA'),
+      willCallSdk: true,
     },
   });
 
@@ -1211,6 +1275,20 @@ async function getOrcaSdkQuote(
 
     // OPTIMIZATION: Cache static SDK accounts (oracle, vaults) for future use
     cacheOrcaAccounts(poolId, accounts);
+    
+    // Cache direction-specific tick arrays to avoid repeated SDK calls
+    if (aToB !== null && accounts.tickArray0 && accounts.tickArray1 && accounts.tickArray2) {
+      const directionKey = getOrcaDirectionCacheKey(poolId, aToB);
+      executionCache.setHot(directionKey, {
+        tickArrays: {
+          center: accounts.tickArray0,
+          lower: accounts.tickArray1,
+          upper: accounts.tickArray2,
+        },
+        needsTickArrayValidation: false,
+        tickArraysValidatedAt: Date.now(),
+      });
+    }
 
     // Merge with any cached static accounts (oracle, vaults) in case SDK extraction missed them
     const mergedAccounts: SdkProvidedAccounts = {

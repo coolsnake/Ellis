@@ -2124,8 +2124,8 @@ async function extractDexAccounts(
         const wasSwapped = (stat as any)?.was_swapped === 'true' || (stat as any)?.was_swapped === true;
         const canonicalProgramA = tokenProgramLabelToKey((hop as any).tokenProgramA);
         const canonicalProgramB = tokenProgramLabelToKey((hop as any).tokenProgramB);
-        const tokenXProgram = wasSwapped ? canonicalProgramB : canonicalProgramA;
-        const tokenYProgram = wasSwapped ? canonicalProgramA : canonicalProgramB;
+        let tokenXProgram = wasSwapped ? canonicalProgramB : canonicalProgramA;
+        let tokenYProgram = wasSwapped ? canonicalProgramA : canonicalProgramB;
         
         // Detect if we need swap2 (Token-2022) or can use swap (standard SPL)
         const isToken2022X = tokenXProgram.equals(TOKEN_2022_PROGRAM_ID);
@@ -2148,15 +2148,15 @@ async function extractDexAccounts(
         // When wasSwapped is true: native X = canonical B, native Y = canonical A
         const canonicalVaultX = wasSwapped ? hop.vaultB : hop.vaultA;
         const canonicalVaultY = wasSwapped ? hop.vaultA : hop.vaultB;
-        const reserveX = hop.reserveX || meteoraNativeReserveX || meteoraNativeAccountA || canonicalVaultX || hop.poolId;
-        const reserveY = hop.reserveY || meteoraNativeReserveY || meteoraNativeAccountB || canonicalVaultY || hop.poolId;
+        let reserveX = hop.reserveX || meteoraNativeReserveX || meteoraNativeAccountA || canonicalVaultX || hop.poolId;
+        let reserveY = hop.reserveY || meteoraNativeReserveY || meteoraNativeAccountB || canonicalVaultY || hop.poolId;
         
         // Token X/Y mints must also be native ordering
         // CRITICAL: When native_mint_a/b are not available, use was_swapped to correct the canonical fallback
         // When wasSwapped is true: native X = canonical B, native Y = canonical A
         // This matches the token program logic above (lines 1169-1170)
-        const tokenXMint = meteoraNativeMintA || (wasSwapped ? poolMintB : poolMintA);
-        const tokenYMint = meteoraNativeMintB || (wasSwapped ? poolMintA : poolMintB);
+        let tokenXMint = meteoraNativeMintA || (wasSwapped ? poolMintB : poolMintA);
+        let tokenYMint = meteoraNativeMintB || (wasSwapped ? poolMintA : poolMintB);
         
         // Warn if we're using canonical fallback (native ordering is preferred)
         if (!meteoraNativeMintA || !meteoraNativeMintB) {
@@ -2177,14 +2177,46 @@ async function extractDexAccounts(
         
         // Recalculate isAtoB using native mint ordering for Meteora
         // X->Y means inputMint matches tokenXMint (native mint A)
-        const isXtoY = hop.inputMint === tokenXMint;
+        let isXtoY = hop.inputMint === tokenXMint;
         
         // CRITICAL: Meteora expects user token accounts in X/Y order, NOT input/output order!
         // The program infers swap direction from amounts and which account has funds.
         // isXtoY = true: User sends X, receives Y → userTokenX = source, userTokenY = dest
         // isXtoY = false: User sends Y, receives X → userTokenX = dest, userTokenY = source
-        const userTokenX = isXtoY ? userSourceAta : userDestAta;
-        const userTokenY = isXtoY ? userDestAta : userSourceAta;
+        let userTokenX = isXtoY ? userSourceAta : userDestAta;
+        let userTokenY = isXtoY ? userDestAta : userSourceAta;
+
+        // Ensure swap direction matches hop input/output for Meteora DLMM.
+        // Meteora swap2 does not take an explicit direction flag; it infers direction
+        // from X/Y ordering and which user account has funds. If hop input is tokenY,
+        // re-map X/Y ordering so tokenX aligns with hop input.
+        if (
+          tokenXMint &&
+          tokenYMint &&
+          hop.inputMint === tokenYMint &&
+          hop.outputMint === tokenXMint
+        ) {
+          const prevX = tokenXMint;
+          const prevY = tokenYMint;
+          tokenXMint = prevY;
+          tokenYMint = prevX;
+          [reserveX, reserveY] = [reserveY, reserveX];
+          [tokenXProgram, tokenYProgram] = [tokenYProgram, tokenXProgram];
+          [userTokenX, userTokenY] = [userTokenY, userTokenX];
+          isXtoY = true;
+          logger.debug('routerTx.meteora.direction.remap', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              inputMint: hop.inputMint,
+              outputMint: hop.outputMint,
+              prevTokenX: prevX,
+              prevTokenY: prevY,
+              remappedTokenX: tokenXMint,
+              remappedTokenY: tokenYMint,
+            },
+          });
+        }
         
         // Get activeId from cache for directional bin array derivation
         const meteoraPoolIdStr = hop.poolId.replace(/[#-]rev$/, '');

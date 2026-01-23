@@ -166,6 +166,9 @@ export const CONFIG = {
     validationBatchDelayMs: Number(process.env.VALIDATION_BATCH_DELAY_MS || 200), // Delay between batches
     reactiveBatchSize: Number(process.env.REACTIVE_BATCH_SIZE || 2),         // Pools per cycle in reactive validation
     tickArrayValidatorIntervalMs: Number(process.env.TICK_ARRAY_VALIDATOR_INTERVAL_MS || 500), // Reactive validation loop interval
+    // Array cache TTLs (0 = disable TTL invalidation)
+    tickArrayTtlMs: Number(process.env.TICK_ARRAY_TTL_MS || 5 * 60 * 1000),
+    binArrayTtlMs: Number(process.env.BIN_ARRAY_TTL_MS || 5 * 60 * 1000),
     
     // Graph diff filter knobs
     graphDiffFilterEnable: (process.env.GRAPH_DIFF_FILTER_ENABLE || 'true') !== 'false',

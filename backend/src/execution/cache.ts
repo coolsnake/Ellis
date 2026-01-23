@@ -2,6 +2,8 @@ import { CONFIG } from '../utils/config.js';
 import { ensureDir, readJson, writeJson, joinPath } from '../utils/fs.js';
 import { recomputeCapacityCurve, invalidateCapacityCurve } from './capacity/index.js';
 import type { PoolType, SizingConfig } from './capacity/types.js';
+import { logger } from '../utils/logger.js';
+import { METEORA_BIN_ARRAY_SIZE } from './constants.js';
 
 type PoolStatic = {
   programId?: string;
@@ -181,7 +183,59 @@ export class ExecutionCache {
   }
 
   getHot(poolId: string): PoolHot | undefined {
-    return this.hotByPool.get(poolId);
+    const hot = this.hotByPool.get(poolId);
+    if (!hot) return undefined;
+    
+    const now = Date.now();
+    const tickTtlMs = Number((CONFIG.system as any)?.tickArrayTtlMs || 0);
+    const binTtlMs = Number((CONFIG.system as any)?.binArrayTtlMs || 0);
+    
+    let updated: PoolHot | null = null;
+    
+    if (tickTtlMs > 0 && hot.tickArraysValidatedAt && (now - hot.tickArraysValidatedAt) > tickTtlMs) {
+      updated = {
+        ...hot,
+        tickArrays: undefined,
+        needsTickArrayValidation: true,
+        tickArrayInvalidatedAt: now,
+        tickArraysValidatedAt: undefined,
+      };
+      try {
+        logger.debug('cache.tickArrays.ttl_expired', {
+          cat: 'cache',
+          poolId: poolId.slice(0, 8) + '…',
+          ageMs: now - hot.tickArraysValidatedAt,
+          ttlMs: tickTtlMs,
+        });
+      } catch {}
+    }
+    
+    const hotForBin = updated || hot;
+    if (binTtlMs > 0 && hotForBin.binArraysValidatedAt && (now - hotForBin.binArraysValidatedAt) > binTtlMs) {
+      const next = {
+        ...hotForBin,
+        binArrays: undefined,
+        needsBinArrayValidation: true,
+        binArrayInvalidatedAt: now,
+        binArraysValidatedAt: undefined,
+      };
+      updated = next;
+      try {
+        logger.debug('cache.binArrays.ttl_expired', {
+          cat: 'cache',
+          poolId: poolId.slice(0, 8) + '…',
+          ageMs: now - hotForBin.binArraysValidatedAt,
+          ttlMs: binTtlMs,
+        });
+      } catch {}
+    }
+    
+    if (updated) {
+      this.hotByPool.set(poolId, updated);
+      return updated;
+    }
+    
+    return hot;
   }
   
   setHot(poolId: string, val: PoolHot): void {
@@ -358,14 +412,9 @@ export class ExecutionCache {
       return false;
     }
     
-    // Meteora bin arrays typically cover ~70 bins per array (based on SDK internals)
-    // The exact formula is: binIdToBinArrayIndex(binId) = floor(binId / BIN_ARRAY_BITMAP_SIZE)
-    // where BIN_ARRAY_BITMAP_SIZE is typically 512 for the bitmap, but each array covers fewer bins
-    // Using 70 as a conservative estimate based on observed behavior
-    const BINS_PER_ARRAY = 70;
-    
-    const oldArrayIndex = Math.floor(existing.activeId / BINS_PER_ARRAY);
-    const newArrayIndex = Math.floor(incoming.activeId / BINS_PER_ARRAY);
+    // Use the real bin array size to align with Meteora derivation logic
+    const oldArrayIndex = Math.floor(existing.activeId / METEORA_BIN_ARRAY_SIZE);
+    const newArrayIndex = Math.floor(incoming.activeId / METEORA_BIN_ARRAY_SIZE);
     
     // If array index changed, we crossed a boundary
     return oldArrayIndex !== newArrayIndex;

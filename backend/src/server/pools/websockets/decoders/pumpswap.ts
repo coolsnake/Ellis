@@ -151,26 +151,20 @@ export function decodePumpswapPool(
   try {
     if (!existingPool) return null;
 
-    // CRITICAL: Use native mints/decimals consistently
-    // If native fields are missing, derive them from canonical fields + was_swapped flag
+    // CRITICAL: Use on-chain base/quote (native) ordering for PumpSwap.
+    // Do NOT derive native mints from canonical order here; that can invert base/quote.
     const wasSwapped = (existingPool as any).was_swapped === true;
     
-    // Get mints - prefer native, derive from canonical if needed
+    // Get mints - prefer native/on-chain, skip if missing
     let mintA: string | undefined;
     let mintB: string | undefined;
     
     if (existingPool.native_mint_a && existingPool.native_mint_a.length > 10) {
       mintA = existingPool.native_mint_a;
       mintB = existingPool.native_mint_b;
-    } else if (existingPool.mint_a && existingPool.mint_a.length > 10) {
-      // Derive native mints from canonical + was_swapped
-      if (wasSwapped) {
-        mintA = existingPool.mint_b;
-        mintB = existingPool.mint_a;
-      } else {
-        mintA = existingPool.mint_a;
-        mintB = existingPool.mint_b;
-      }
+    } else if ((existingPool as any).onchain_base_mint && (existingPool as any).onchain_quote_mint) {
+      mintA = (existingPool as any).onchain_base_mint;
+      mintB = (existingPool as any).onchain_quote_mint;
     }
     
     if (!mintA || !mintB) {
@@ -186,7 +180,8 @@ export function decodePumpswapPool(
       decA = existingPool.native_decimals_a;
       decB = existingPool.native_decimals_b;
     } else if (Number.isFinite(existingPool.decimals_a)) {
-      // Derive native decimals from canonical + was_swapped
+      // Fallback to canonical decimals only if native decimals are missing
+      // (Decimals are per-mint; this does not affect base/quote ordering.)
       if (wasSwapped) {
         decA = existingPool.decimals_b;
         decB = existingPool.decimals_a;
@@ -232,29 +227,15 @@ export function decodePumpswapPool(
     let reserveB = vaultBBalance;
 
     // Fall back to cached raw reserves if vault balances not available
-    // CRITICAL: Use native reserves, derive from canonical if needed
+    // CRITICAL: Use native reserves, do NOT derive from canonical order for PumpSwap
     if (reserveA === null) {
       if (existingPool.native_reserve_a_raw) {
         reserveA = anyToBigInt(existingPool.native_reserve_a_raw);
-      } else if (existingPool.reserve_a_raw) {
-        // Derive native reserves from canonical + was_swapped
-        if (wasSwapped) {
-          reserveA = anyToBigInt(existingPool.reserve_b_raw);
-        } else {
-          reserveA = anyToBigInt(existingPool.reserve_a_raw);
-        }
       }
     }
     if (reserveB === null) {
       if (existingPool.native_reserve_b_raw) {
         reserveB = anyToBigInt(existingPool.native_reserve_b_raw);
-      } else if (existingPool.reserve_b_raw) {
-        // Derive native reserves from canonical + was_swapped
-        if (wasSwapped) {
-          reserveB = anyToBigInt(existingPool.reserve_a_raw);
-        } else {
-          reserveB = anyToBigInt(existingPool.reserve_b_raw);
-        }
       }
     }
 
@@ -288,6 +269,10 @@ export function decodePumpswapPool(
       native_reserve_b_raw: reserveB.toString(),
       native_account_a: existingPool.native_account_a,
       native_account_b: existingPool.native_account_b,
+      onchain_base_mint: mintA,
+      onchain_quote_mint: mintB,
+      onchain_base_vault: existingPool.native_account_a,
+      onchain_quote_vault: existingPool.native_account_b,
     };
   } catch (e) {
     logCatchDebug('pumpswap.decode', e);
@@ -372,6 +357,10 @@ export async function handlePumpswapPoolAccountUpdate(
       native_account_b: vaultB,
       native_mint_a: baseMint,
       native_mint_b: quoteMint,
+      onchain_base_mint: baseMint,
+      onchain_quote_mint: quoteMint,
+      onchain_base_vault: vaultA,
+      onchain_quote_vault: vaultB,
     };
 
     // Decode the pool with vault balances
@@ -641,35 +630,18 @@ export async function handlePumpswapVaultUpdate(
     const existingPool = poolData.pool as AmmPool;
     
     // Get vault addresses from the pool
-    // CRITICAL: Must use native vault addresses consistently with native mints/decimals
-    // If native_account_a is missing, derive it from canonical account_a + was_swapped flag
-    const wasSwapped = (existingPool as any).was_swapped === true;
-    
+    // CRITICAL: Must use on-chain base/quote vaults (native order) for PumpSwap.
+    // Do NOT derive from canonical order, which can invert base/quote.
     let vaultA: string | undefined;
     let vaultB: string | undefined;
     
-    // Prefer native vault addresses if available (non-empty)
+    // Prefer native/on-chain vault addresses if available (non-empty)
     if (existingPool.native_account_a && existingPool.native_account_a.length > 10) {
       vaultA = existingPool.native_account_a;
       vaultB = existingPool.native_account_b;
-    } else if (existingPool.account_a && existingPool.account_a.length > 10) {
-      // Canonical vaults available - derive native order from was_swapped
-      if (wasSwapped) {
-        // If swapped: canonical A = native B, canonical B = native A
-        vaultA = existingPool.account_b;
-        vaultB = existingPool.account_a;
-      } else {
-        vaultA = existingPool.account_a;
-        vaultB = existingPool.account_b;
-      }
-      
-      logger.debug('pumpswap.vault.derived_native_order', {
-        pool: poolId.slice(0, 8) + '…',
-        wasSwapped,
-        vaultA: vaultA?.slice(0, 8) + '…',
-        vaultB: vaultB?.slice(0, 8) + '…',
-        cat: 'pools'
-      });
+    } else if ((existingPool as any).onchain_base_vault && (existingPool as any).onchain_quote_vault) {
+      vaultA = (existingPool as any).onchain_base_vault;
+      vaultB = (existingPool as any).onchain_quote_vault;
     }
     
     if (!vaultA || !vaultB) {
