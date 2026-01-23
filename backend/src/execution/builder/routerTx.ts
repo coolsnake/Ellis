@@ -2718,12 +2718,15 @@ async function extractDexAccounts(
         const knownLower = validateBase58Address(hop.tickArrayLower, `orca.tickArrayLower.${poolIdStr.slice(0, 8)}`) || '';
         const knownUpper = validateBase58Address(hop.tickArrayUpper, `orca.tickArrayUpper.${poolIdStr.slice(0, 8)}`) || '';
 
-        // Tick array selection strategy:
-        // 1. PRIORITY 1: Derive tick arrays from current tick (most accurate)
-        // 2. PRIORITY 2: Use known arrays with directional ordering (fallback)
+        // Tick array selection strategy (in priority order):
+        // 1. PRIORITY 0: Use SDK-provided tick arrays (freshest, already direction-aware from quote)
+        // 2. PRIORITY 1: Derive tick arrays from current tick (accurate if currentTickIndex available)
+        // 3. PRIORITY 2: Use cached arrays with directional ordering (fallback, may be stale)
         //
-        // CRITICAL: We must use a CONSISTENT source - don't mix derived and known arrays
-        // because if price moved, known arrays might not be contiguous with derived ones.
+        // CRITICAL: SDK tick arrays are the BEST source because:
+        // - They were just computed by the Orca SDK for THIS specific swap
+        // - They are already direction-aware (the SDK knows aToB)
+        // - They reflect the current on-chain state at quote time
         //
         // For aToB = true (A→B): ticks traverse downward, need [center, lower, even_lower]
         // For aToB = false (B→A): ticks traverse upward, need [center, upper, even_upper]
@@ -2733,39 +2736,59 @@ async function extractDexAccounts(
         let tickArray2 = '';
         let tickArraySource = 'none';
 
-        // PRIORITY 1: Try to derive tick arrays from current tick index
-        // This gives us the most accurate arrays for the current price
-        let derivationSucceeded = false;
-        try {
-          const hot = executionCache.getHot(poolIdStr);
-          const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
-          const currentTick = (hot as any)?.currentTickIndex;
-          if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
-            const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
-            const derivedArray0 = derived.tickArray0.toBase58();
-            const derivedArray1 = derived.tickArray1.toBase58();
-            const derivedArray2 = derived.tickArray2.toBase58();
-            
-            // Check if derived arrays match known arrays (validates they exist on-chain)
-            const allKnown = [knownCenter, knownLower, knownUpper].filter(Boolean);
-            const array0IsKnown = allKnown.includes(derivedArray0);
-            const array1IsKnown = allKnown.includes(derivedArray1);
-            const array2IsKnown = allKnown.includes(derivedArray2);
-            
-            if (array0IsKnown && array1IsKnown) {
-              // Derived arrays 0 and 1 are validated - use them
+        // PRIORITY 0: Use SDK-provided tick arrays if available
+        // These are the freshest and most accurate - computed by SDK for this exact swap
+        const sdkTickArray0 = validateBase58Address((hop as any).tickArray0, `orca.sdk.tickArray0.${poolIdStr.slice(0, 8)}`);
+        const sdkTickArray1 = validateBase58Address((hop as any).tickArray1, `orca.sdk.tickArray1.${poolIdStr.slice(0, 8)}`);
+        const sdkTickArray2 = validateBase58Address((hop as any).tickArray2, `orca.sdk.tickArray2.${poolIdStr.slice(0, 8)}`);
+
+        if (sdkTickArray0 && sdkTickArray1) {
+          // SDK provided valid tick arrays - use them directly
+          tickArray0 = sdkTickArray0;
+          tickArray1 = sdkTickArray1;
+          tickArray2 = sdkTickArray2 || sdkTickArray1; // Fallback to array1 if array2 missing
+          tickArraySource = sdkTickArray2 ? 'sdk' : 'sdk_dup2';
+          
+          logger.debug('routerTx.orca.tickArrays.using_sdk', {
+            cat: 'tx',
+            poolId: poolIdStr.slice(0, 8) + '...',
+            arrays: [sdkTickArray0.slice(0, 8), sdkTickArray1.slice(0, 8), (sdkTickArray2 || sdkTickArray1).slice(0, 8)],
+            source: tickArraySource,
+          });
+        }
+        
+        // PRIORITY 1: If no SDK arrays, try to derive from current tick index
+        if (!tickArray0) {
+          try {
+            const hot = executionCache.getHot(poolIdStr);
+            const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
+            const currentTick = (hot as any)?.currentTickIndex;
+            if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
+              const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
+              const derivedArray0 = derived.tickArray0.toBase58();
+              const derivedArray1 = derived.tickArray1.toBase58();
+              const derivedArray2 = derived.tickArray2.toBase58();
+              
+              // Use derived arrays directly - they're based on current tick position
               tickArray0 = derivedArray0;
               tickArray1 = derivedArray1;
-              // For array2: use if known, otherwise duplicate array1
-              tickArray2 = array2IsKnown ? derivedArray2 : derivedArray1;
-              tickArraySource = array2IsKnown ? 'derived_full' : 'derived_dup2';
-              derivationSucceeded = true;
+              tickArray2 = derivedArray1; // Duplicate array1 (third array may not exist on thin pools)
+              tickArraySource = 'derived';
+              
+              logger.debug('routerTx.orca.tickArrays.derived', {
+                cat: 'tx',
+                poolId: poolIdStr.slice(0, 8) + '...',
+                currentTick,
+                tickSpacing,
+                isAtoB: isAtoBOrca,
+                arrays: [derivedArray0.slice(0, 8), derivedArray1.slice(0, 8), derivedArray1.slice(0, 8)],
+              });
             }
-          }
-        } catch { /* derivation failed, fall back to cache-based */ }
+          } catch { /* derivation failed, fall back to cache-based */ }
+        }
 
         // PRIORITY 2: Fall back to cache-based arrays with directional ordering
-        if (!derivationSucceeded) {
+        if (!tickArray0) {
           // tickArray0 = center (contains current tick - may be stale but validated)
           // tickArray1 = next in direction (lower for A→B, upper for B→A)
           // tickArray2 = duplicate of tickArray1 (safe fallback)
@@ -2774,9 +2797,9 @@ async function extractDexAccounts(
           tickArray2 = tickArray1;  // Safe: duplicate the second array
           tickArraySource = 'cache_directional';
           
-          // Log warning when derivation fails - this indicates potential stale tick arrays
+          // Log warning when using cache fallback - SDK arrays should normally be available
           const hot = executionCache.getHot(poolIdStr);
-          logger.warn('routerTx.orca.tickArrays.derivation_failed', {
+          logger.warn('routerTx.orca.tickArrays.cache_fallback', {
             cat: 'tx',
             poolId: poolIdStr.slice(0, 8) + '...',
             hasHotCache: !!hot,
@@ -2785,6 +2808,7 @@ async function extractDexAccounts(
             hasTickSpacing: !!hot?.tickSpacing,
             tickSpacing: hot?.tickSpacing,
             hopTickSpacing: hop.tickSpacing,
+            hasSdkArrays: !!(sdkTickArray0 || sdkTickArray1),
             hint: 'Using cache_directional fallback - tick arrays may be stale if price moved',
           });
         }

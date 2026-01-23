@@ -1322,14 +1322,16 @@ async function getRaydiumSdkQuote(
   const programId = hop.programId ? new PublicKey(hop.programId) : RAYDIUM_CLMM_PROGRAM;
 
   // OPTIMIZATION: Check cache first before calling SDK
+  // CRITICAL: Only use cache if tick arrays are present - they're required for CLMM swaps
+  // Without tick arrays, the swap instruction will panic with "Option::unwrap() on None"
   const cachedAccounts = tryGetCachedRaydiumClmmAccounts(poolId);
-  if (cachedAccounts) {
+  if (cachedAccounts && cachedAccounts.tickArrayCenter) {
     logger.debug('sdkQuoteBuilder.raydium.cache.hit', {
       cat: 'tx',
       ctx: {
         poolId: poolId.slice(0, 8) + '...',
         hasAmmConfig: !!cachedAccounts.ammConfig,
-        hasTickArrays: !!cachedAccounts.tickArrayCenter,
+        hasTickArrays: true,
       },
     });
     return {
@@ -1339,9 +1341,15 @@ async function getRaydiumSdkQuote(
     };
   }
 
+  // Log whether we're doing full SDK derivation or just need tick arrays
+  const hasPartialCache = cachedAccounts && !cachedAccounts.tickArrayCenter;
   logger.debug('sdkQuoteBuilder.raydium.cache.miss', {
     cat: 'tx',
-    ctx: { poolId: poolId.slice(0, 8) + '...' },
+    ctx: { 
+      poolId: poolId.slice(0, 8) + '...',
+      reason: hasPartialCache ? 'tick_arrays_missing' : 'no_cache',
+      hasAmmConfig: !!cachedAccounts?.ammConfig,
+    },
   });
 
   try {
