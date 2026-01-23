@@ -125,18 +125,50 @@ export function lookupCapacity(
   // 1. Check cache first (instant)
   const cached = getCapacityCurve(poolId);
   if (cached) {
+    logger.debug('capacity.lookup.cache_hit', {
+      cat: 'sizing',
+      poolId: poolId.slice(0, 12) + '...',
+      poolType,
+      breakEvenSizeUsd: cached.breakEvenSizeUsd.toFixed(2),
+      confidence: cached.confidence,
+      hasCalibration: !!cached.metadata?.calibration,
+    });
     return cached;
   }
   
-  // 2. No cache - generate Tier 1 estimate
+  // 2. No cache - try SYNCHRONOUS full computation first for accurate sizing
+  // This ensures the first call gets the best possible estimate with calibration
+  if (triggerCompute) {
+    const fullCurve = computeAndCacheCapacityCurve(poolId, poolType, hot, config);
+    if (fullCurve) {
+      logger.debug('capacity.lookup.computed', {
+        cat: 'sizing',
+        poolId: poolId.slice(0, 12) + '...',
+        poolType,
+        breakEvenSizeUsd: fullCurve.breakEvenSizeUsd.toFixed(2),
+        confidence: fullCurve.confidence,
+        hasCalibration: !!fullCurve.metadata?.calibration,
+        hotDataAvailable: !!(hot.liquidity || hot.sqrtPriceX64),
+      });
+      return fullCurve;
+    }
+  }
+  
+  // 3. Fall back to Tier 1 estimate if full computation failed
+  // Tier 1 now also applies calibration if available
   const tier1Curve = generateTier1Curve(poolId, poolType, hot, config);
   
-  // 3. Optionally trigger async computation for future requests
-  if (triggerCompute) {
-    setImmediate(() => {
-      computeAndCacheCapacityCurve(poolId, poolType, hot, config);
-    });
-  }
+  logger.debug('capacity.lookup.tier1_fallback', {
+    cat: 'sizing',
+    poolId: poolId.slice(0, 12) + '...',
+    poolType,
+    breakEvenSizeUsd: tier1Curve.breakEvenSizeUsd.toFixed(2),
+    hasCalibration: !!tier1Curve.metadata?.calibration,
+    reason: 'full_computation_failed_or_disabled',
+  });
+  
+  // Cache the Tier 1 curve so future lookups don't recompute
+  setCapacityCurve(poolId, tier1Curve);
   
   return tier1Curve;
 }
@@ -365,6 +397,8 @@ export function recomputeCapacityCurve(
 /**
  * Generate a Tier 1 (instant) capacity curve estimate.
  * Used when no pre-computed curve is available.
+ * 
+ * Now also applies learned calibration if available.
  */
 function generateTier1Curve(
   poolId: string,
@@ -373,7 +407,18 @@ function generateTier1Curve(
   config: SizingConfig
 ): CapacityCurve {
   const now = Date.now();
-  const adjustment = config.poolTypeAdjustments[poolType];
+  
+  // Get user-configured adjustment
+  const userAdjustment = config.poolTypeAdjustments[poolType];
+  
+  // Get learned calibration (if available with sufficient confidence)
+  const calibration = getPoolCalibration(poolId);
+  const learnedFactor = calibration && calibration.confidence > 0.3 
+    ? calibration.scaleFactor 
+    : 1.0;
+  
+  // Combine adjustments: user preference * learned correction
+  const adjustment = userAdjustment * learnedFactor;
   
   // Standard points for the curve
   const sizes = [1, 5, 10, 50, 100, 500, 1000];
@@ -433,6 +478,29 @@ function generateTier1Curve(
     }
   }
   
+  // Build calibration metadata if calibration was applied
+  const calibrationMeta = calibration && calibration.confidence > 0.3 ? {
+    calibration: {
+      scaleFactor: calibration.scaleFactor,
+      confidence: calibration.confidence,
+      observationCount: calibration.observations.length,
+      avgSlippageError: calibration.avgSlippageError,
+    },
+  } : {};
+  
+  // Log when calibration is applied in Tier 1
+  if (calibration && calibration.confidence > 0.3) {
+    logger.debug('capacity.tier1.calibration_applied', {
+      cat: 'sizing',
+      poolId: poolId.slice(0, 12) + '...',
+      poolType,
+      learnedFactor: learnedFactor.toFixed(3),
+      confidence: calibration.confidence.toFixed(2),
+      effectiveAdjustment: adjustment.toFixed(3),
+      breakEvenSizeUsd: breakEvenSizeUsd.toFixed(2),
+    });
+  }
+  
   return {
     poolId,
     poolType,
@@ -446,6 +514,7 @@ function generateTier1Curve(
       binStep: hot.binStep,
       feeBps: hot.feeRate,
       adjustment,
+      ...calibrationMeta,
     },
   };
 }

@@ -146,6 +146,8 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
       /^tx\.(lookup_table|alt)\./i,
       // Additional tx.build patterns for router mode and ALTs
       /^tx\.build\.(router|alts|timing|compute|detail|ok|err|hop|arb_cycle|amount_propagation|priority|accounts)/i,
+      // Capacity/sizing system patterns (calibration, curve lookup, feedback, pool-specific computation)
+      /^capacity\.(lookup|compute|tier1|cache|feedback|calibration|amm|clmm|dlmm)/i,
     ];
     
     // EXCLUSION patterns - filter out non-execution logs

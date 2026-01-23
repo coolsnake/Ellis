@@ -838,6 +838,9 @@ export class ArbExecutor {
       // Track effective size for adaptive retries (scoped outside try block)
       let effectiveSizeUsd = 0;
       
+      // Track if we already emitted enriched failure data (to avoid catch block overwriting)
+      let enrichedFailureEmitted = false;
+      
       try {
         // Calculate dynamic size based on opportunity characteristics
         const sizeUsd = await this.calculateDynamicSize(opp);
@@ -1671,6 +1674,9 @@ export class ArbExecutor {
               durationMs: Date.now() - startTime,
             },
           });
+          
+          // Mark that we already emitted enriched data (prevent catch block from overwriting)
+          enrichedFailureEmitted = true;
 
           throw new Error(`Simulation failed after ${attempt} attempt(s): ${lastSimErrStr}`);
         }
@@ -2109,21 +2115,23 @@ export class ArbExecutor {
         },
       });
 
-      // Emit failure to frontend
-      emit('arb:execution:failed', {
-        path: pathStr,
-        error: errorMsg,
-        timestamp: Date.now(),
-        // Matching data for frontend correlation
-        pathMints: opp.path,
-        hopPoolIds: opp.hop_pool_ids,
-        hopDexes: opp.hop_dexes,
-        traceId,
-        // Execution context
-        executionContext: {
-          durationMs: Date.now() - startTime,
-        },
-      });
+      // Emit failure to frontend (skip if enriched data was already emitted)
+      if (!enrichedFailureEmitted) {
+        emit('arb:execution:failed', {
+          path: pathStr,
+          error: errorMsg,
+          timestamp: Date.now(),
+          // Matching data for frontend correlation
+          pathMints: opp.path,
+          hopPoolIds: opp.hop_pool_ids,
+          hopDexes: opp.hop_dexes,
+          traceId,
+          // Execution context
+          executionContext: {
+            durationMs: Date.now() - startTime,
+          },
+        });
+      }
 
       // Pool failure tracking - identify and record which pool caused the failure
       try {
@@ -2634,6 +2642,9 @@ export class ArbExecutor {
       walletBalanceUsd
     );
     
+    // Extract calibration info if present
+    const calibrationInfo = bottleneckCurve.metadata?.calibration;
+    
     logger.debug('arb.executor.capacity_sizing.computed', {
       cat: 'arb',
       path: opp.path.join('->'),
@@ -2646,6 +2657,10 @@ export class ArbExecutor {
       constrainedBy: result.constrainedBy ?? 'none',
       profitBps,
       aggressiveness: config.aggressiveness,
+      // Calibration info (if learning system has data for this pool)
+      calibrationApplied: !!calibrationInfo,
+      calibrationScaleFactor: calibrationInfo?.scaleFactor?.toFixed(3),
+      calibrationConfidence: calibrationInfo?.confidence?.toFixed(2),
     });
     
     return result.sizeUsd;
