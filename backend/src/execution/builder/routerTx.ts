@@ -3113,9 +3113,11 @@ async function extractDexAccounts(
         const pumpUserVolumeAccumulator = derivePumpswapUserVolumeAccumulator(wallet);
         
         // Determine if this is a buy or sell operation
-        // Buy: inputMint == quoteMint (SOL -> Token), needs 23 accounts
-        // Sell: inputMint == baseMint (Token -> SOL), needs 21 accounts (no volume accumulators)
-        const isPumpswapBuy = hop.inputMint === pumpQuoteMint;
+        // Buy: inputMint == SOL (quote), needs 23 accounts (SOL -> Token)
+        // Sell: inputMint == Token (base), needs 21 accounts (Token -> SOL)
+        // CRITICAL: Don't rely on pumpQuoteMint fallback which may be incorrect
+        // PumpSwap quoteMint is ALWAYS WSOL, so check directly against SOL mint
+        const isPumpswapBuy = hop.inputMint === SOL_MINT;
         
         // Log accounts for debugging
         logger.debug('routerTx.pumpswap.accounts.v3', {
