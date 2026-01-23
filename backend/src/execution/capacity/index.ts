@@ -26,6 +26,7 @@ import {
   DEFAULT_SIZING_CONFIG,
   interpolateCurve,
   findSizeAtSlippage,
+  getPoolTypeFromDex,
 } from './types.js';
 
 import {
@@ -38,12 +39,13 @@ import {
 import { computeClmmCapacityCurve, clmmTier1Estimate } from './clmmCapacity.js';
 import { computeDlmmCapacityCurve, dlmmTier1Estimate } from './dlmmCapacity.js';
 import { computeAmmCapacityCurve, ammTier1Estimate } from './ammCapacity.js';
+import { getPoolCalibration } from './calibrationStore.js';
 
 import { logger } from '../../utils/logger.js';
 
 // Re-export types and utilities
 export type { CapacityCurve, PoolType, SizingConfig, OptimalSizeResult, Tier1EstimateResult };
-export { DEFAULT_SIZING_CONFIG } from './types.js';
+export { DEFAULT_SIZING_CONFIG, getPoolTypeFromDex } from './types.js';
 export { getCapacityCurve, setCapacityCurve, invalidateCapacityCurve, hasValidCurve } from './curveCache.js';
 export {
   migrateFromDynamicSizing,
@@ -53,6 +55,27 @@ export {
   uiAdjustmentToMultiplier,
   multiplierToUiAdjustment,
 } from './configMigration.js';
+
+// Re-export calibration store functions
+export {
+  loadCalibrations,
+  saveCalibrations,
+  saveOnShutdown,
+  getPoolCalibration,
+  recordObservation,
+  getCalibrationStats,
+  getCalibratedPoolCount,
+  clearCalibrations,
+  type SlippageObservation,
+  type PoolCalibration,
+} from './calibrationStore.js';
+
+// Re-export feedback collector functions
+export {
+  recordSlippageFeedback,
+  recordPoolFeedback,
+  type FeedbackOutcome,
+} from './feedbackCollector.js';
 
 // ============================================================================
 // Pool Hot Data Interface (matches ExecutionCache.PoolHot)
@@ -204,7 +227,18 @@ export function computeAndCacheCapacityCurve(
   config: SizingConfig = DEFAULT_SIZING_CONFIG
 ): CapacityCurve | null {
   try {
-    const adjustment = config.poolTypeAdjustments[poolType];
+    // Get user-configured adjustment
+    const userAdjustment = config.poolTypeAdjustments[poolType];
+    
+    // Get learned calibration (if available with sufficient confidence)
+    const calibration = getPoolCalibration(poolId);
+    const learnedFactor = calibration && calibration.confidence > 0.3 
+      ? calibration.scaleFactor 
+      : 1.0;
+    
+    // Combine adjustments: user preference * learned correction
+    const adjustment = userAdjustment * learnedFactor;
+    
     let curve: CapacityCurve;
     
     switch (poolType) {
@@ -266,6 +300,28 @@ export function computeAndCacheCapacityCurve(
         );
         break;
       }
+    }
+    
+    // Add calibration info to curve metadata
+    if (calibration && calibration.confidence > 0.3) {
+      curve.metadata = {
+        ...curve.metadata,
+        calibration: {
+          scaleFactor: calibration.scaleFactor,
+          confidence: calibration.confidence,
+          observationCount: calibration.observations.length,
+          avgSlippageError: calibration.avgSlippageError,
+        },
+      };
+      
+      logger.debug('capacity.compute.calibration_applied', {
+        cat: 'sizing',
+        poolId: poolId.slice(0, 12) + '...',
+        poolType,
+        learnedFactor: learnedFactor.toFixed(3),
+        confidence: calibration.confidence.toFixed(2),
+        effectiveAdjustment: adjustment.toFixed(3),
+      });
     }
     
     // Cache the result
@@ -397,27 +453,6 @@ function generateTier1Curve(
 // ============================================================================
 // Utility Functions
 // ============================================================================
-
-/**
- * Determine pool type from dex string
- */
-export function getPoolTypeFromDex(dex: string, variant?: string): PoolType {
-  const dexLower = (dex || '').toLowerCase();
-  const variantLower = (variant || '').toLowerCase();
-  
-  // CLMM pools
-  if (dexLower.includes('clmm') || dexLower === 'orca' || variantLower === 'clmm') {
-    return 'clmm';
-  }
-  
-  // DLMM pools (Meteora non-balanced)
-  if (dexLower.includes('dlmm') || (dexLower === 'meteora' && !dexLower.includes('balanced'))) {
-    return 'dlmm';
-  }
-  
-  // Everything else is AMM
-  return 'amm';
-}
 
 /**
  * Quick estimate of capacity without full curve computation.

@@ -409,6 +409,15 @@ export async function shutdown() {
       try { logger.warn('pools.shutdown.snapshot_failed', { error: err.message, cat: 'pools' }); } catch {}
     }
 
+    // Save capacity calibration data
+    try {
+      const { saveOnShutdown } = await import('../execution/capacity/calibrationStore.js');
+      await saveOnShutdown();
+      logger.info('capacity.calibrations.shutdown_saved', { cat: 'sizing' });
+    } catch (err: any) {
+      try { logger.warn('capacity.calibrations.save_failed', { error: err.message, cat: 'sizing' }); } catch {}
+    }
+
     // Stop timers and clear in-memory caches
     try { 
       const pools = await import('./pools.js'); 
@@ -596,6 +605,17 @@ server.listen(CONFIG.port, () => {
       
       // Load precomputed CLMM cache from disk
       try { await loadClmmCacheFromDisk(); logger.info('clmm.cache.loaded'); } catch {}
+      
+      // Load capacity calibration data
+      try {
+        const { loadCalibrations } = await import('../execution/capacity/calibrationStore.js');
+        const calibrationCount = await loadCalibrations();
+        if (calibrationCount > 0) {
+          logger.info('capacity.calibrations.loaded', { cat: 'sizing', poolCount: calibrationCount });
+        }
+      } catch (err: any) {
+        logger.warn('capacity.calibrations.load_failed', { cat: 'sizing', error: err.message });
+      }
       
       // Load MarginFi flashloan cache from disk
       try {

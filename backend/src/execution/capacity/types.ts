@@ -84,6 +84,13 @@ export interface CapacityCurve {
     feeBps?: number;
     /** Adjustment factor applied */
     adjustment?: number;
+    /** Learned calibration data (if applied) */
+    calibration?: {
+      scaleFactor: number;
+      confidence: number;
+      observationCount: number;
+      avgSlippageError: number;
+    };
   };
 }
 
@@ -322,4 +329,25 @@ export function findSizeAtSlippage(curve: Map<number, number>, targetSlippageBps
   }
   
   return sizes[0]; // Very high slippage even at minimum
+}
+
+/**
+ * Determine pool type from dex string
+ */
+export function getPoolTypeFromDex(dex: string, variant?: string): PoolType {
+  const dexLower = (dex || '').toLowerCase();
+  const variantLower = (variant || '').toLowerCase();
+  
+  // CLMM pools
+  if (dexLower.includes('clmm') || dexLower === 'orca' || variantLower === 'clmm') {
+    return 'clmm';
+  }
+  
+  // DLMM pools (Meteora non-balanced)
+  if (dexLower.includes('dlmm') || (dexLower === 'meteora' && !dexLower.includes('balanced'))) {
+    return 'dlmm';
+  }
+  
+  // Everything else is AMM
+  return 'amm';
 }

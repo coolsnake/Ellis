@@ -39,6 +39,7 @@ import {
   DEFAULT_SIZING_CONFIG,
 } from './capacity/index.js';
 import type { SizingConfig, PoolType } from './capacity/types.js';
+import { recordSlippageFeedback } from './capacity/feedbackCollector.js';
 import { executionCache } from './cache.js';
 import { deriveVaultPda, fetchVault } from '../router/sdk.js';
 import { PublicKey } from '@solana/web3.js';
@@ -1315,6 +1316,24 @@ export class ArbExecutor {
         const simReport = buildSimulationReport(opp, plan, simAnalysis);
         const condensedReport = formatSimReportForLog(simReport);
         
+        // Record calibration feedback for capacity learning
+        try {
+          if (simAnalysis.profitCheckFailed) {
+            // 6007/NoProfitFromRoute - slippage was worse than expected
+            recordSlippageFeedback(simReport, '6007', effectiveSizeUsd);
+          } else if (!simResult.err) {
+            // Successful simulation - validates current calibration
+            recordSlippageFeedback(simReport, 'success', effectiveSizeUsd);
+          }
+          // Note: other errors (non-6007) are not used for calibration
+        } catch (feedbackErr) {
+          // Don't let feedback recording failures impact execution
+          logger.debug('capacity.feedback.error', {
+            cat: 'sizing',
+            error: String(feedbackErr),
+          });
+        }
+        
         if (simResult.err) {
           // Simulation failed - log detailed error analysis
           const simErrStr = serializeSimError(simResult.err);
@@ -1508,6 +1527,18 @@ export class ArbExecutor {
                 elapsedMs: Date.now() - adaptiveStartTime,
               });
             }
+            
+            // Record success feedback for capacity learning
+            try {
+              const successSimReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
+              recordSlippageFeedback(successSimReport, 'success', currentSizeUsd);
+            } catch (feedbackErr) {
+              logger.debug('capacity.feedback.error', {
+                cat: 'sizing',
+                error: String(feedbackErr),
+              });
+            }
+            
             // Update plan and built to use the successful versions
             plan = currentPlan;
             built = currentBuilt;
@@ -1558,6 +1589,19 @@ export class ArbExecutor {
           const simReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
           const condensedReport = formatSimReportForLog(simReport);
           const lastSimErrStr = serializeSimError(lastSimResult.err);
+          
+          // Record calibration feedback for capacity learning
+          try {
+            if (lastSimAnalysis!.profitCheckFailed) {
+              recordSlippageFeedback(simReport, '6007', currentSizeUsd);
+            }
+            // Note: non-6007 errors are not used for calibration
+          } catch (feedbackErr) {
+            logger.debug('capacity.feedback.error', {
+              cat: 'sizing',
+              error: String(feedbackErr),
+            });
+          }
           
           logger.error('arb.executor.simulate_then_execute.sim_failed', {
             cat: 'arb',

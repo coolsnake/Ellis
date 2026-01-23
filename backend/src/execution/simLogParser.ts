@@ -305,6 +305,7 @@ export function buildSimulationReport(
       
       return {
         index: i,
+        poolId: hop.poolId,  // Pool ID for calibration feedback
         dex: hop.dex,
         expectedDex,
         dexMatch: !expectedDex || hop.dex.toLowerCase().includes(expectedDex.toLowerCase()),
