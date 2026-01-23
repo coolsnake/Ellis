@@ -189,7 +189,7 @@ export function OpportunityList(
         <span className="text-xs opacity-70">{showAll ? `Showing ${items.length}` : `Showing ${Math.min(10, items.length)} of ${items.length}`}</span>
         <button className="px-2 py-1 border rounded" onClick={()=> setShowAll(!showAll)}>{showAll ? 'Show Top 10' : 'Show All'}</button>
       </div>
-      <div className="max-h-96 overflow-y-auto">
+      <div className="max-h-[600px] overflow-y-auto">
         <div className="space-y-2">
         {visible.map((op) => {
           const key = `${(op.path||[]).join('>')}|${(op.dexes||[]).join('>')}`;
@@ -416,10 +416,16 @@ export function OpportunityList(
 
               return (
                 <div className="mt-2 p-2 bg-black/30 rounded text-[11px] border-l-2 border-l-blue-500/50">
+                  {/* Header with status, size, time, and signature */}
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <span className={`font-semibold ${statusColor}`}>
                       {statusIcon} {statusLabel}
                     </span>
+                    {latest.executionContext?.sizeUsd !== undefined && (
+                      <span className="px-1 rounded bg-blue-900/40 text-blue-300">
+                        ${latest.executionContext.sizeUsd.toFixed(2)}
+                      </span>
+                    )}
                     <span className="opacity-70">{agoSec}s ago</span>
                     {latest.signature && (
                       <a 
@@ -434,9 +440,6 @@ export function OpportunityList(
                     {results.length > 1 && (
                       <span className="opacity-60">({results.length} attempts)</span>
                     )}
-                    {latest.traceId && (
-                      <span className="opacity-50 text-[10px]">trace: {latest.traceId}</span>
-                    )}
                   </div>
 
                   {latest.type !== 'success' && (
@@ -444,7 +447,7 @@ export function OpportunityList(
                       {/* Error message */}
                       {latest.error && (
                         <div className="text-red-300 mb-1 break-words" title={latest.error}>
-                          {latest.error.length > 100 ? latest.error.slice(0, 100) + '...' : latest.error}
+                          {latest.error.length > 120 ? latest.error.slice(0, 120) + '...' : latest.error}
                         </div>
                       )}
 
@@ -453,7 +456,9 @@ export function OpportunityList(
                         <div className="flex flex-wrap gap-2 opacity-80 mb-1">
                           <span>Swaps: {latest.analysis.swapsExecuted}/{latest.analysis.totalHops}</span>
                           {latest.analysis.profitCheckFailed && (
-                            <span className="px-1 rounded bg-yellow-900/40 text-yellow-300">Profit Check Failed</span>
+                            <span className="px-1 rounded bg-yellow-900/40 text-yellow-300">
+                              Profit Check Failed (6007)
+                            </span>
                           )}
                           {latest.analysis.failedAt !== undefined && latest.analysis.failedAt !== 'profit_check' && (
                             <span>Failed at hop {latest.analysis.failedAt}</span>
@@ -464,8 +469,37 @@ export function OpportunityList(
                         </div>
                       )}
 
-                      {/* Simulation details */}
-                      {latest.simulationDetails && (
+                      {/* Per-hop swap details for profit check failures (6007) */}
+                      {latest.analysis?.profitCheckFailed && 
+                       latest.simulationDetails?.swapsExecuted && 
+                       latest.simulationDetails.swapsExecuted.length > 0 && (
+                        <div className="mt-1 p-1.5 bg-black/20 rounded">
+                          <div className="font-semibold text-[10px] opacity-70 mb-1">Swap Execution Details:</div>
+                          <div className="space-y-0.5">
+                            {latest.simulationDetails.swapsExecuted.map((swap, i) => (
+                              <div key={i} className="text-[10px] opacity-80 font-mono flex gap-2">
+                                <span className="text-gray-400">{i + 1}.</span>
+                                <span className={swap.dex === 'Orca' ? 'text-yellow-300' : swap.dex === 'Raydium' ? 'text-green-400' : 'text-blue-300'}>
+                                  {swap.dex}
+                                </span>
+                                <span>In: {fmt(Number(swap.amountIn), 0)}</span>
+                                <span>MinOut: {fmt(Number(swap.minOut), 0)}</span>
+                              </div>
+                            ))}
+                          </div>
+                          {latest.simulationDetails.profitValue && (
+                            <div className="text-yellow-300 text-[10px] mt-1 font-semibold">
+                              Actual Profit: {latest.simulationDetails.profitValue}
+                              {latest.profitBps !== undefined && (
+                                <span className="opacity-70 ml-2">(Expected: +{latest.profitBps} bps)</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Other simulation details (non-6007 errors) */}
+                      {!latest.analysis?.profitCheckFailed && latest.simulationDetails && (
                         <div className="opacity-70 mb-1">
                           {latest.simulationDetails.errorMessage && (
                             <span className="mr-2">Error: {latest.simulationDetails.errorMessage}</span>
@@ -481,17 +515,17 @@ export function OpportunityList(
                     </>
                   )}
 
-                  {/* Execution context - show for both success and failure */}
+                  {/* Execution context - duration, flashloan, trace */}
                   {latest.executionContext && (
-                    <div className="opacity-60 text-[10px]">
-                      {latest.executionContext.sizeUsd !== undefined && (
-                        <span>Size: ${latest.executionContext.sizeUsd.toFixed(2)} · </span>
-                      )}
+                    <div className="opacity-60 text-[10px] mt-1">
                       {latest.executionContext.durationMs !== undefined && (
                         <span>Duration: {latest.executionContext.durationMs}ms</span>
                       )}
                       {latest.executionContext.usedFlashloan && (
                         <span> · Flashloan</span>
+                      )}
+                      {latest.traceId && (
+                        <span> · trace: {latest.traceId}</span>
                       )}
                     </div>
                   )}
