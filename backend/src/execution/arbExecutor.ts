@@ -725,6 +725,10 @@ export class ArbExecutor {
 
     const startTime = Date.now();
     let signature: string | null = null;
+    
+    // Track if we already emitted enriched failure data (to avoid catch block overwriting)
+    // Must be declared outside try block to be accessible in catch
+    let enrichedFailureEmitted = false;
 
     try {
       logger.info('arb.executor.attempt', {
@@ -837,9 +841,6 @@ export class ArbExecutor {
       
       // Track effective size for adaptive retries (scoped outside try block)
       let effectiveSizeUsd = 0;
-      
-      // Track if we already emitted enriched failure data (to avoid catch block overwriting)
-      let enrichedFailureEmitted = false;
       
       try {
         // Calculate dynamic size based on opportunity characteristics
