@@ -19,6 +19,10 @@ export type AmmPool = {
   native_decimals_b?: number;
   native_reserve_a_raw?: string;
   native_reserve_b_raw?: string;
+  onchain_base_mint?: string;
+  onchain_quote_mint?: string;
+  onchain_base_vault?: string;
+  onchain_quote_vault?: string;
   pool_kind?: 'amm';
   amount_a_whole?: number;
   amount_b_whole?: number;

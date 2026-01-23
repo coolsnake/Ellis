@@ -62,6 +62,10 @@ export interface DecodedPool {
   native_account_b?: string;
   native_reserve_a_raw?: string;
   native_reserve_b_raw?: string;
+  onchain_base_mint?: string;
+  onchain_quote_mint?: string;
+  onchain_base_vault?: string;
+  onchain_quote_vault?: string;
   
   // Vault accounts
   account_a?: string;
