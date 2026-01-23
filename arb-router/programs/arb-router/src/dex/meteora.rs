@@ -93,8 +93,8 @@ pub struct SwapParams {
 /// 1. `[]` Bin Array Bitmap Extension (optional, use program ID as placeholder)
 /// 2. `[writable]` Reserve X (token vault)
 /// 3. `[writable]` Reserve Y (token vault)
-/// 4. `[writable]` User Token X (X token account - native order, NOT input/output!)
-/// 5. `[writable]` User Token Y (Y token account - native order, NOT input/output!)
+/// 4. `[writable]` User Token In (INPUT token account - INPUT/OUTPUT order, same as swap!)
+/// 5. `[writable]` User Token Out (OUTPUT token account - INPUT/OUTPUT order, same as swap!)
 /// 6. `[]` Token X Mint
 /// 7. `[]` Token Y Mint
 /// 8. `[writable]` Oracle

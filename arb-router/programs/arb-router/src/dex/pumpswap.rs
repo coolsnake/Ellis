@@ -3,7 +3,11 @@
 //! Program ID: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA (Post-graduation AMM)
 //!
 //! PumpSwap is the AMM used by Pump.fun for token trading after graduation.
-//! Account layout updated to match official @pump-fun/pump-swap-sdk IDL v1.0.0.
+//! Account layout updated to match official @pump-fun/pump-swap-sdk IDL v1.13.0.
+//!
+//! IMPORTANT: Buy and Sell have different account counts!
+//! - Buy: 23 accounts (includes global_volume_accumulator and user_volume_accumulator)
+//! - Sell: 21 accounts (no volume accumulators)
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
@@ -11,8 +15,14 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke};
 use crate::constants::dex_programs::PUMPSWAP;
 use crate::error::ArbRouterError;
 
-/// Number of accounts needed for a PumpSwap swap (matches SDK IDL v1.0.0)
-pub const ACCOUNTS_NEEDED: usize = 23;
+/// Number of accounts needed for PumpSwap BUY (matches SDK IDL v1.13.0)
+pub const ACCOUNTS_NEEDED_BUY: usize = 23;
+
+/// Number of accounts needed for PumpSwap SELL (matches SDK IDL v1.13.0)
+pub const ACCOUNTS_NEEDED_SELL: usize = 21;
+
+/// Legacy constant for backwards compatibility - use direction-specific constants instead
+pub const ACCOUNTS_NEEDED: usize = 21; // Minimum (sell)
 
 /// PumpSwap buy instruction discriminator (from IDL)
 const BUY_DISCRIMINATOR: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
@@ -22,7 +32,21 @@ const SELL_DISCRIMINATOR: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
 
 /// Execute a swap on PumpSwap
 ///
-/// Expected accounts (in order, matching official SDK IDL v1.0.0):
+/// Account layouts differ between buy and sell:
+///
+/// ## Buy (23 accounts):
+/// 0-18: Common accounts (pool, user, config, mints, ATAs, programs, creator vault)
+/// 19. `[]` global_volume_accumulator - Global volume accumulator PDA
+/// 20. `[writable]` user_volume_accumulator - User's volume accumulator PDA
+/// 21. `[]` fee_config - Fee configuration PDA
+/// 22. `[]` fee_program - Pump fee program ID
+///
+/// ## Sell (21 accounts):
+/// 0-18: Common accounts (pool, user, config, mints, ATAs, programs, creator vault)
+/// 19. `[]` fee_config - Fee configuration PDA
+/// 20. `[]` fee_program - Pump fee program ID
+///
+/// Common accounts (0-18):
 /// 0.  `[writable]` pool - The pool account
 /// 1.  `[signer, writable]` user - The user performing the swap
 /// 2.  `[]` global_config - Global configuration PDA
@@ -42,10 +66,6 @@ const SELL_DISCRIMINATOR: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
 /// 16. `[]` program - PumpSwap program ID
 /// 17. `[writable]` coin_creator_vault_ata - Coin creator's fee vault ATA
 /// 18. `[]` coin_creator_vault_authority - Coin creator's vault authority PDA
-/// 19. `[]` global_volume_accumulator - Global volume accumulator PDA
-/// 20. `[writable]` user_volume_accumulator - User's volume accumulator PDA
-/// 21. `[]` fee_config - Fee configuration PDA
-/// 22. `[]` fee_program - Pump fee program ID
 ///
 /// # Arguments
 /// * `accounts` - DEX-specific accounts in the order above
@@ -58,8 +78,14 @@ pub fn swap(
     min_amount_out: u64,
     is_buy: bool,
 ) -> Result<()> {
-    if accounts.len() < ACCOUNTS_NEEDED {
-        msg!("PumpSwap: Insufficient accounts. Expected {}, got {}", ACCOUNTS_NEEDED, accounts.len());
+    // Determine required account count based on direction
+    let required_accounts = if is_buy { ACCOUNTS_NEEDED_BUY } else { ACCOUNTS_NEEDED_SELL };
+    
+    if accounts.len() < required_accounts {
+        msg!("PumpSwap: Insufficient accounts for {}. Expected {}, got {}", 
+             if is_buy { "buy" } else { "sell" }, 
+             required_accounts, 
+             accounts.len());
         return Err(ArbRouterError::InvalidAccount.into());
     }
 
@@ -86,14 +112,23 @@ pub fn swap(
     }
 
     // Build account metas matching SDK IDL order
-    // Writable accounts: 0 (pool), 1 (user), 5-8 (token accounts), 10 (protocol fee ata), 17 (creator vault), 20 (user volume)
+    // Common writable accounts: 0 (pool), 1 (user), 5-8 (token accounts), 10 (protocol fee ata), 17 (creator vault)
+    // Buy-only writable: 20 (user_volume_accumulator)
     // Signer: 1 (user)
-    let account_metas: Vec<AccountMeta> = accounts[..ACCOUNTS_NEEDED]
+    let account_metas: Vec<AccountMeta> = accounts[..required_accounts]
         .iter()
         .enumerate()
         .map(|(i, acc)| {
             let is_signer = i == 1; // User at index 1 is the signer
-            let is_writable = matches!(i, 0 | 1 | 5 | 6 | 7 | 8 | 10 | 17 | 20);
+            
+            // Determine if account should be writable based on direction
+            // Buy (23 accounts): writable at 0, 1, 5, 6, 7, 8, 10, 17, 20 (user_volume_accumulator)
+            // Sell (21 accounts): writable at 0, 1, 5, 6, 7, 8, 10, 17
+            let is_writable = if is_buy {
+                matches!(i, 0 | 1 | 5 | 6 | 7 | 8 | 10 | 17 | 20)
+            } else {
+                matches!(i, 0 | 1 | 5 | 6 | 7 | 8 | 10 | 17)
+            };
             
             if is_signer {
                 AccountMeta::new(*acc.key, true)
@@ -111,11 +146,14 @@ pub fn swap(
         data,
     };
 
-    // Invoke the swap - pass all accounts for CPI
-    let account_infos: Vec<AccountInfo> = accounts[..ACCOUNTS_NEEDED].to_vec();
+    // Invoke the swap - pass only the accounts needed for this direction
+    let account_infos: Vec<AccountInfo> = accounts[..required_accounts].to_vec();
     invoke(&ix, &account_infos)?;
 
-    msg!("PumpSwap swap executed: {} in, min {} out, is_buy: {}", amount_in, min_amount_out, is_buy);
+    msg!("PumpSwap {} executed: {} in, min {} out", 
+         if is_buy { "buy" } else { "sell" }, 
+         amount_in, 
+         min_amount_out);
     Ok(())
 }
 

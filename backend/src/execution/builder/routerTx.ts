@@ -2112,9 +2112,10 @@ async function extractDexAccounts(
         //   14: Program, 15+: BinArrays
         //
         // swap2 (Token-2022 compatible - 19 accounts):
-        //   0-14: 15 fixed accounts (includes Memo at 13), user tokens in X/Y order
+        //   0-14: 15 fixed accounts (includes Memo at 13), user tokens in INPUT/OUTPUT order
         //   15: Program, 16+: BinArrays
         //
+        // BOTH variants use INPUT/OUTPUT order for user token accounts (indices 4-5).
         // On-chain router auto-detects based on Memo Program at index 13.
         const meteoraEventAuthority = deriveMeteoraDlmmEventAuthority();
         
@@ -2179,44 +2180,11 @@ async function extractDexAccounts(
         // X->Y means inputMint matches tokenXMint (native mint A)
         let isXtoY = hop.inputMint === tokenXMint;
         
-        // CRITICAL: Meteora expects user token accounts in X/Y order, NOT input/output order!
-        // The program infers swap direction from amounts and which account has funds.
+        // User token accounts for logging (X/Y native order)
         // isXtoY = true: User sends X, receives Y → userTokenX = source, userTokenY = dest
         // isXtoY = false: User sends Y, receives X → userTokenX = dest, userTokenY = source
-        let userTokenX = isXtoY ? userSourceAta : userDestAta;
-        let userTokenY = isXtoY ? userDestAta : userSourceAta;
-
-        // Ensure swap direction matches hop input/output for Meteora DLMM.
-        // Meteora swap2 does not take an explicit direction flag; it infers direction
-        // from X/Y ordering and which user account has funds. If hop input is tokenY,
-        // re-map X/Y ordering so tokenX aligns with hop input.
-        if (
-          tokenXMint &&
-          tokenYMint &&
-          hop.inputMint === tokenYMint &&
-          hop.outputMint === tokenXMint
-        ) {
-          const prevX = tokenXMint;
-          const prevY = tokenYMint;
-          tokenXMint = prevY;
-          tokenYMint = prevX;
-          [reserveX, reserveY] = [reserveY, reserveX];
-          [tokenXProgram, tokenYProgram] = [tokenYProgram, tokenXProgram];
-          [userTokenX, userTokenY] = [userTokenY, userTokenX];
-          isXtoY = true;
-          logger.debug('routerTx.meteora.direction.remap', {
-            cat: 'tx',
-            ctx: {
-              poolId: hop.poolId,
-              inputMint: hop.inputMint,
-              outputMint: hop.outputMint,
-              prevTokenX: prevX,
-              prevTokenY: prevY,
-              remappedTokenX: tokenXMint,
-              remappedTokenY: tokenYMint,
-            },
-          });
-        }
+        const userTokenX = isXtoY ? userSourceAta : userDestAta;
+        const userTokenY = isXtoY ? userDestAta : userSourceAta;
         
         // Get activeId from cache for directional bin array derivation
         const meteoraPoolIdStr = hop.poolId.replace(/[#-]rev$/, '');
@@ -2605,7 +2573,8 @@ async function extractDexAccounts(
         
         if (needsSwap2) {
           // swap2: Token-2022 compatible (19 accounts)
-          // User tokens in X/Y native order, includes Memo Program
+          // CRITICAL: User tokens are in INPUT/OUTPUT order (userTokenIn, userTokenOut), NOT X/Y order!
+          // This matches the Meteora DLMM SDK's swap2 account layout.
           accounts.push(
             poolId,                                                              // 0: LB Pair
             hop.bitmapExtension 
@@ -2613,8 +2582,8 @@ async function extractDexAccounts(
               : programIdKey,                                                    // 1: Bitmap Extension (use program ID as placeholder)
             new PublicKey(reserveX),                                             // 2: Reserve X (native, paired with tokenXMint)
             new PublicKey(reserveY),                                             // 3: Reserve Y (native, paired with tokenYMint)
-            userTokenX,                                                          // 4: User Token X (X/Y order for swap2!)
-            userTokenY,                                                          // 5: User Token Y (X/Y order for swap2!)
+            userSourceAta,                                                       // 4: User Token In (INPUT/OUTPUT order for swap2!)
+            userDestAta,                                                         // 5: User Token Out (INPUT/OUTPUT order for swap2!)
             tokenXMint ? new PublicKey(tokenXMint) : inputMint,                 // 6: Token X Mint (native)
             tokenYMint ? new PublicKey(tokenYMint) : outputMint,                // 7: Token Y Mint (native)
             hop.oracle ? new PublicKey(hop.oracle) : poolId,                    // 8: Oracle (from pool data)
@@ -3143,6 +3112,11 @@ async function extractDexAccounts(
         // Derive user volume accumulator PDA (for volume tracking rewards)
         const pumpUserVolumeAccumulator = derivePumpswapUserVolumeAccumulator(wallet);
         
+        // Determine if this is a buy or sell operation
+        // Buy: inputMint == quoteMint (SOL -> Token), needs 23 accounts
+        // Sell: inputMint == baseMint (Token -> SOL), needs 21 accounts (no volume accumulators)
+        const isPumpswapBuy = hop.inputMint === pumpQuoteMint;
+        
         // Log accounts for debugging
         logger.debug('routerTx.pumpswap.accounts.v3', {
           cat: 'tx',
@@ -3162,9 +3136,12 @@ async function extractDexAccounts(
           userVolumeAccumulator: pumpUserVolumeAccumulator.toBase58(),
           feeConfig: PUMPSWAP_FEE_CONFIG.toBase58(),
           feeProgram: PUMPSWAP_FEE_PROGRAM.toBase58(),
+          isPumpswapBuy,
         });
         
-        // Push all 23 accounts in order matching SDK IDL
+        // Push accounts in order matching SDK IDL
+        // Buy: 23 accounts (includes volume accumulators at positions 19-20)
+        // Sell: 21 accounts (no volume accumulators, fee_config at 19, fee_program at 20)
         accounts.push(
           poolId,                                                              // 0: pool
           wallet,                                                              // 1: user (signer)
@@ -3185,11 +3162,23 @@ async function extractDexAccounts(
           PUMPSWAP_PROGRAM,                                                    // 16: program
           pumpCoinCreatorVaultAta,                                             // 17: coin_creator_vault_ata
           pumpCoinCreatorVaultAuthority,                                       // 18: coin_creator_vault_authority
-          PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR,                                  // 19: global_volume_accumulator
-          pumpUserVolumeAccumulator,                                           // 20: user_volume_accumulator
-          PUMPSWAP_FEE_CONFIG,                                                 // 21: fee_config
-          PUMPSWAP_FEE_PROGRAM,                                                // 22: fee_program
         );
+        
+        if (isPumpswapBuy) {
+          // Buy instruction: 23 accounts (includes volume accumulators)
+          accounts.push(
+            PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR,                                // 19: global_volume_accumulator
+            pumpUserVolumeAccumulator,                                         // 20: user_volume_accumulator
+            PUMPSWAP_FEE_CONFIG,                                               // 21: fee_config
+            PUMPSWAP_FEE_PROGRAM,                                              // 22: fee_program
+          );
+        } else {
+          // Sell instruction: 21 accounts (no volume accumulators)
+          accounts.push(
+            PUMPSWAP_FEE_CONFIG,                                               // 19: fee_config
+            PUMPSWAP_FEE_PROGRAM,                                              // 20: fee_program
+          );
+        }
         break;
 
       case DexType.RaydiumAmm:

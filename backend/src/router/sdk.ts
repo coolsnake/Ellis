@@ -472,6 +472,7 @@ export function buildExecuteIx(
     'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', // Orca Whirlpool
     '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', // PumpSwap Bonding Curve
     'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', // PumpSwap AMM
+    'pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ', // Pump Fee Program
     'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX', // Serum/OpenBook
     'opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EQBh8x', // OpenBook v2
   ]);
@@ -570,7 +571,10 @@ export function getAccountsNeededForDex(dexType: DexType): number {
     case DexType.Orca:
       return 12; // Orca Whirlpool: 11 swap accounts + 1 program
     case DexType.PumpSwap:
-      return 23; // PumpSwap AMM: 23 accounts (matching @pump-fun/pump-swap-sdk IDL v1.0.0)
+      // PumpSwap AMM: buy = 23 accounts, sell = 21 accounts (SDK IDL v1.13.0)
+      // Buy includes global_volume_accumulator and user_volume_accumulator
+      // Return minimum (sell). Builder determines actual count based on direction.
+      return 21;
     case DexType.RaydiumAmm:
       return 19; // Raydium AMM v4: 18 accounts + program
     case DexType.MeteoraDAMM:
