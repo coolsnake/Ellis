@@ -2482,6 +2482,11 @@ export function createArbRouter(io: SocketIOServer): Router {
         } catch {}
       }
       
+      // Migrate old dynamicSizing config to new sizingConfig if needed
+      // This ensures the capacity-based sizing system is used
+      const { migrateExecutorConfig } = await import('../../execution/capacity/configMigration.js');
+      config = migrateExecutorConfig(config);
+      
       const executor = getArbExecutor(config);
       await executor.start();
       
@@ -2558,7 +2563,12 @@ export function createArbRouter(io: SocketIOServer): Router {
         
         // Reload the complete config from file (not just the updates)
         // This ensures the runtime instance always matches what's saved in the file
-        const fullConfig = await readJson(configPath, {});
+        let fullConfig = await readJson(configPath, {});
+        
+        // Migrate to ensure sizingConfig is populated from dynamicSizing
+        const { migrateExecutorConfig } = await import('../../execution/capacity/configMigration.js');
+        fullConfig = migrateExecutorConfig(fullConfig);
+        
         executor.updateConfig(fullConfig); // This will replace the entire config
         
         logger.info('arb.executor.api.config_updated', { 
