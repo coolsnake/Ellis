@@ -1312,7 +1312,7 @@ export class ArbExecutor {
         }
         
         // Parse simulation logs for analysis (both success and failure)
-        const simAnalysis = parseSimulationLogs(simResult.logs);
+        const simAnalysis = parseSimulationLogs(simResult.logs, simResult.err);
         const simReport = buildSimulationReport(opp, plan, simAnalysis);
         const condensedReport = formatSimReportForLog(simReport);
         
@@ -1511,7 +1511,7 @@ export class ArbExecutor {
           });
           
           lastSimResult = simResult;
-          lastSimAnalysis = parseSimulationLogs(simResult.logs);
+          lastSimAnalysis = parseSimulationLogs(simResult.logs, simResult.err);
           
           // Success! Break out of retry loop
           if (!simResult.err) {

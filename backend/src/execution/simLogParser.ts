@@ -24,15 +24,52 @@ export interface SimulationAnalysis {
 }
 
 /**
- * Parse simulation logs to extract swap execution details
+ * Extract error code from simResult.err (handles InstructionError format)
  */
-export function parseSimulationLogs(logs: string[] | undefined): SimulationAnalysis {
+export function extractErrorCodeFromSimError(err: any): number | undefined {
+  if (!err) return undefined;
+  
+  // Handle InstructionError format: { InstructionError: [index, { Custom: code }] }
+  if (err.InstructionError && Array.isArray(err.InstructionError)) {
+    const errDetail = err.InstructionError[1];
+    if (typeof errDetail === 'object' && errDetail.Custom !== undefined) {
+      return errDetail.Custom;
+    }
+  }
+  
+  // Handle string format: "Custom(6007)" or "InstructionError at 3: Custom(6007)"
+  if (typeof err === 'string') {
+    const match = err.match(/Custom\((\d+)\)/);
+    if (match) return parseInt(match[1], 10);
+  }
+  
+  return undefined;
+}
+
+/**
+ * Parse simulation logs to extract swap execution details
+ * @param logs - Simulation logs from simResult.logs
+ * @param simErr - Optional error from simResult.err to extract error code from
+ */
+export function parseSimulationLogs(logs: string[] | undefined, simErr?: any): SimulationAnalysis {
   const result: SimulationAnalysis = {
     swapsExecuted: [],
     profitCheckFailed: false,
   };
 
-  if (!logs) return result;
+  // Extract error code from simResult.err if provided
+  const errCodeFromSimErr = extractErrorCodeFromSimError(simErr);
+  if (errCodeFromSimErr !== undefined) {
+    result.errorCode = errCodeFromSimErr;
+  }
+
+  if (!logs) {
+    // Even with no logs, check if error code indicates profit check failure
+    if (result.errorCode === 6007) {
+      result.profitCheckFailed = true;
+    }
+    return result;
+  }
 
   // Patterns for different DEX swap logs
   const swapPatterns = [
@@ -105,6 +142,12 @@ export function parseSimulationLogs(logs: string[] | undefined): SimulationAnaly
       result.errorMessage = errorCodeMatch[1];
       result.errorCode = parseInt(errorCodeMatch[2], 10);
     }
+  }
+
+  // Correlate error code 6007 (NoProfitFromRoute) with profitCheckFailed
+  // This handles cases where the error comes from simResult.err rather than log text
+  if (result.errorCode === 6007) {
+    result.profitCheckFailed = true;
   }
 
   return result;
