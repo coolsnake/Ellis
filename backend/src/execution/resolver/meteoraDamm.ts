@@ -69,9 +69,13 @@ export async function resolveMeteoraDamm(hop: DirectHop): Promise<DirectHop> {
         }
       );
       
-      // Populate vault addresses based on swap direction
-      hop.vaultA = orientation.poolVaultInput || String((p as any)?.account_a || '');
-      hop.vaultB = orientation.poolVaultOutput || String((p as any)?.account_b || '');
+      // Populate vault addresses in CANONICAL order (A/B), not swap direction (INPUT/OUTPUT)
+      // The on-chain DAMM v2 program expects vaults paired with their corresponding mints:
+      // - Token A Vault must have mint == Token A Mint
+      // - Token B Vault must have mint == Token B Mint
+      // Swap direction is handled by userSourceAta/userDestAta (positions 2-3) in routerTx
+      hop.vaultA = String((p as any)?.account_a || '');
+      hop.vaultB = String((p as any)?.account_b || '');
       
       // Store pool address for swap instruction
       (hop as any).poolAddress = String((p as any)?.id || id);
