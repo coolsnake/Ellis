@@ -1222,11 +1222,11 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     }
   }
 
-  if (vaultAddresses.length === 0) {
-    return { pools, metrics: { success: 0, fail: 0, ms: Date.now() - t0 } };
-  }
+  // NOTE: Don't early return here even if vaultAddresses.length === 0
+  // We still need to fetch pool account data to decode vault addresses for pools
+  // that are missing them from the API (especially DAMM v2 pools)
 
-  // Fetch vault account data via RPC
+  // Setup RPC connection for both owner check and vault balance fetching
   const web3 = await import('@solana/web3.js');
   const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
   const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
@@ -1240,10 +1240,13 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
 
   // CRITICAL: Verify pool version by checking on-chain owner program
   // This is the authoritative source - API pool_version may be incorrect
+  // ALSO: Decode vault addresses from pool account data for pools missing them from API
   const DAMM_V1_PROGRAM = 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB';
   const DAMM_V2_PROGRAM = 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG';
   const poolAddresses: string[] = pools.map(p => String(p?.pool_address || p?.address || p?.id || p?.pubkey || '')).filter(Boolean);
   const poolVersionMap: Map<string, number> = new Map();
+  // Map to store vault addresses decoded from on-chain pool account data
+  const poolVaultMap: Map<string, { aVault: string; bVault: string }> = new Map();
   
   try {
     logger.info('meteora.balanced.rpc.owner_check.start', { poolCount: poolAddresses.length, cat: 'meteora' });
@@ -1272,6 +1275,19 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
           } else if (ownerStr === DAMM_V2_PROGRAM) {
             poolVersionMap.set(poolId, 2);
           }
+          
+          // Decode vault addresses from pool account data
+          // Pool layout (both V1 and V2): aVault at offset 104-136, bVault at offset 136-168
+          if (account.data && account.data.length >= 168) {
+            try {
+              const data = Buffer.from(account.data);
+              const aVault = new PublicKey(data.subarray(104, 136)).toBase58();
+              const bVault = new PublicKey(data.subarray(136, 168)).toBase58();
+              poolVaultMap.set(poolId, { aVault, bVault });
+            } catch (decodeErr) {
+              // Ignore decode errors - vault addresses will remain missing
+            }
+          }
         }
       }
     } catch (e) {
@@ -1279,9 +1295,10 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     }
   }
   
-  // Update pool versions based on on-chain owner
+  // Update pool versions and vault addresses based on on-chain data
   let v1Count = 0;
   let v2Count = 0;
+  let vaultsAddedFromRpc = 0;
   for (const pool of pools) {
     const poolId = String(pool?.pool_address || pool?.address || pool?.id || pool?.pubkey || '');
     const version = poolVersionMap.get(poolId);
@@ -1290,6 +1307,51 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       if (version === 1) v1Count++;
       else if (version === 2) v2Count++;
     }
+    
+    // Update vault addresses from on-chain data if missing from API
+    const decodedVaults = poolVaultMap.get(poolId);
+    if (decodedVaults) {
+      if (!pool.token_a_vault && decodedVaults.aVault) {
+        pool.token_a_vault = decodedVaults.aVault;
+        vaultsAddedFromRpc++;
+      }
+      if (!pool.token_b_vault && decodedVaults.bVault) {
+        pool.token_b_vault = decodedVaults.bVault;
+      }
+    }
+  }
+  
+  // Re-collect vault addresses now that we've populated missing ones from RPC
+  // This ensures V2 pools that were missing vault addresses from API can now be enriched
+  if (vaultsAddedFromRpc > 0) {
+    vaultAddresses.length = 0; // Clear existing
+    poolToVaults.clear();
+    
+    for (let i = 0; i < pools.length; i++) {
+      const pool = pools[i];
+      const vaultA = pool?.token_a_vault;
+      const vaultB = pool?.token_b_vault;
+      const mintA = pool?.token_a_mint;
+      const mintB = pool?.token_b_mint;
+      const lpMint = pool?.lp_mint;
+      
+      if (vaultA && vaultB && mintA && mintB) {
+        vaultAddresses.push(vaultA, vaultB);
+        if (lpMint) {
+          lpMintAddresses.push(lpMint);
+        }
+        poolToVaults.set(i, { vaultA, vaultB, mintA, mintB, lpMint });
+      }
+    }
+    
+    try {
+      logger.info('meteora.balanced.rpc.vaults_from_onchain', {
+        vaultsAddedFromRpc,
+        totalVaultAddresses: vaultAddresses.length,
+        poolsWithVaults: poolToVaults.size,
+        cat: 'meteora'
+      });
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
   }
   
   try {
@@ -1299,6 +1361,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       id: id?.slice(0, 8) + '...',
       matched: poolVersionMap.has(id),
       version: poolVersionMap.get(id),
+      hasVaults: poolVaultMap.has(id),
     }));
     
     logger.info('meteora.balanced.rpc.owner_check.done', { 
@@ -1308,10 +1371,25 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       totalPoolIds: poolAddresses.length,
       emptyPoolIds: poolAddresses.filter(id => !id || id.trim() === '').length,
       matchedIds: poolVersionMap.size,
+      vaultsDecodedFromRpc: poolVaultMap.size,
+      vaultsAddedFromRpc,
       sampleMatches,
       cat: 'meteora' 
     });
   } catch (e) { logCatchError('pools.meteoraBalanced', e); }
+
+  // Early return if still no vault addresses after on-chain decoding
+  if (vaultAddresses.length === 0) {
+    try {
+      logger.info('meteora.balanced.rpc.enrichment.no_vaults', {
+        poolCount: pools.length,
+        vaultsDecodedFromRpc: poolVaultMap.size,
+        note: 'No vault addresses found from API or on-chain decoding',
+        cat: 'meteora'
+      });
+    } catch (e) { logCatchError('pools.meteoraBalanced', e); }
+    return { pools, metrics: { success: 0, fail: 0, ms: Date.now() - t0 } };
+  }
 
   // Fetch vault balances
   for (let i = 0; i < vaultAddresses.length; i += batchSize) {
