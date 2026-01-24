@@ -3252,12 +3252,9 @@ async function extractDexAccounts(
           const dammV2VaultB = hop.vaultB || poolAccountB;
           
           // Determine token programs for each token (support Token-2022)
-          const tokenProgramA = (hop as any).tokenProgramA === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
-            ? new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
-            : TOKEN_PROGRAM_ID;
-          const tokenProgramB = (hop as any).tokenProgramB === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
-            ? new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
-            : TOKEN_PROGRAM_ID;
+          // Use tokenProgramLabelToKey to convert labels ('spl-token', 'token-2022') to PublicKey
+          const tokenProgramA = tokenProgramLabelToKey((hop as any).tokenProgramA);
+          const tokenProgramB = tokenProgramLabelToKey((hop as any).tokenProgramB);
           
           // Derive Event Authority PDA: seeds = ["__event_authority"]
           const [eventAuthority] = PublicKey.findProgramAddressSync(
