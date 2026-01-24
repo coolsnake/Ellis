@@ -278,11 +278,18 @@ export function buildSimulationReport(
     // Delta analysis
     analysis: {
       // Did all hops execute?
-      allHopsExecuted: simAnalysis.swapsExecuted.length >= plan.hops.length,
+      // Note: If profitCheckFailed is true, we KNOW all hops executed because
+      // the profit check instruction runs AFTER all swap instructions
+      allHopsExecuted: simAnalysis.profitCheckFailed || simAnalysis.swapsExecuted.length >= plan.hops.length,
       // Which hop failed (if any)?
-      failedAtHop: simAnalysis.swapsExecuted.length < plan.hops.length 
-        ? simAnalysis.swapsExecuted.length 
-        : (simAnalysis.profitCheckFailed ? 'profit_check' : null),
+      // IMPORTANT: Check profitCheckFailed FIRST - error 6007 means all swaps succeeded
+      // but the final profit check failed. Don't rely on swapsExecuted count which
+      // may be 0 if swap logs weren't captured.
+      failedAtHop: simAnalysis.profitCheckFailed 
+        ? 'profit_check'
+        : (simAnalysis.swapsExecuted.length < plan.hops.length 
+          ? simAnalysis.swapsExecuted.length 
+          : null),
       // Profit delta (if we have both expected and actual)
       profitDelta: opp.profit_bps !== undefined && simAnalysis.profitValue !== undefined
         ? `expected ${opp.profit_bps} bps, got ${simAnalysis.profitValue.toString()} raw`

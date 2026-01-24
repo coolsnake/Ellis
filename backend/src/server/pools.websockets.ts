@@ -5485,86 +5485,156 @@ function runWebsocketRefreshLoop(): void {
             await preloadMeteoraBalancedVaultCache();
           }
           
-          // CRITICAL: Batch-fetch vault addresses for pools missing them from API
-          // This ensures we can subscribe to vault accounts for all pools (especially DAMM v2)
-          // Pool layout (both V1 and V2): aVault at offset 104-136, bVault at offset 136-168
+          // CRITICAL: Batch-fetch ALL pool accounts to decode native mints, decimals, and vaults from on-chain data
+          // This ensures swap direction (aToB) is calculated correctly using the program's native ordering
+          // Pool layout (both V1 and V2):
+          //   - tokenAMint at offset 40-72 (on-chain native order)
+          //   - tokenBMint at offset 72-104 (on-chain native order)
+          //   - aVault at offset 104-136
+          //   - bVault at offset 136-168
           if (uniqueMbal.length > 0) {
             try {
-              // Find pools missing vault addresses
-              const poolsMissingVaults: { poolId: string; poolIndex: number }[] = [];
-              for (let i = 0; i < uniqueMbal.length; i++) {
-                const poolId = uniqueMbal[i];
-                const pool = metbalCache.data?.amm?.find(p => p.id === poolId);
-                if (pool) {
-                  const hasVaultA = !!(pool.native_account_a || pool.account_a);
-                  const hasVaultB = !!(pool.native_account_b || pool.account_b);
-                  if (!hasVaultA || !hasVaultB) {
-                    poolsMissingVaults.push({ poolId, poolIndex: i });
+              logger.info('pools.ws.meteora_balanced.onchain_enrich.start', {
+                totalPools: uniqueMbal.length,
+                cat: 'pools'
+              });
+              
+              // Two-pass approach:
+              // Pass 1: Decode all pool accounts to extract native mints and vaults
+              // Pass 2: Batch resolve decimals for all unique mints, then update caches
+              
+              type DecodedPoolData = {
+                poolId: string;
+                tokenAMint: string;
+                tokenBMint: string;
+                aVault: string;
+                bVault: string;
+              };
+              
+              const decodedPools: DecodedPoolData[] = [];
+              const allMints = new Set<string>();
+              const batchSize = 100;
+              let decodeFailed = 0;
+              
+              // Pass 1: Decode pool accounts
+              for (let batchStart = 0; batchStart < uniqueMbal.length; batchStart += batchSize) {
+                const batch = uniqueMbal.slice(batchStart, batchStart + batchSize);
+                const pubkeys = batch.map(poolId => new web3.PublicKey(poolId));
+                
+                try {
+                  const accounts = await conn.getMultipleAccountsInfo(pubkeys);
+                  
+                  for (let j = 0; j < accounts.length; j++) {
+                    const account = accounts[j];
+                    const poolId = batch[j];
+                    
+                    if (account && account.data && account.data.length >= 168) {
+                      try {
+                        const data = Buffer.from(account.data);
+                        // Decode token mints from on-chain data (authoritative native order)
+                        const tokenAMint = new web3.PublicKey(data.subarray(40, 72)).toBase58();
+                        const tokenBMint = new web3.PublicKey(data.subarray(72, 104)).toBase58();
+                        // Decode vault addresses
+                        const aVault = new web3.PublicKey(data.subarray(104, 136)).toBase58();
+                        const bVault = new web3.PublicKey(data.subarray(136, 168)).toBase58();
+                        
+                        decodedPools.push({ poolId, tokenAMint, tokenBMint, aVault, bVault });
+                        allMints.add(tokenAMint);
+                        allMints.add(tokenBMint);
+                      } catch (decodeErr) {
+                        decodeFailed++;
+                      }
+                    } else {
+                      decodeFailed++;
+                    }
                   }
+                } catch (batchErr: any) {
+                  decodeFailed += batch.length;
+                  logger.warn('pools.ws.meteora_balanced.onchain_enrich.decode_batch_failed', {
+                    batchStart,
+                    batchSize: batch.length,
+                    error: String(batchErr?.message || batchErr),
+                    cat: 'pools'
+                  });
                 }
               }
               
-              if (poolsMissingVaults.length > 0) {
-                logger.info('pools.ws.meteora_balanced.vault_fetch.start', {
-                  poolsMissingVaults: poolsMissingVaults.length,
-                  totalPools: uniqueMbal.length,
-                  cat: 'pools'
-                });
-                
-                // Batch fetch pool accounts to decode vault addresses
-                const batchSize = 100;
-                let vaultsDecoded = 0;
-                
-                for (let batchStart = 0; batchStart < poolsMissingVaults.length; batchStart += batchSize) {
-                  const batch = poolsMissingVaults.slice(batchStart, batchStart + batchSize);
-                  const pubkeys = batch.map(p => new web3.PublicKey(p.poolId));
-                  
-                  try {
-                    const accounts = await conn.getMultipleAccountsInfo(pubkeys);
-                    
-                    for (let j = 0; j < accounts.length; j++) {
-                      const account = accounts[j];
-                      const { poolId } = batch[j];
-                      
-                      if (account && account.data && account.data.length >= 168) {
-                        try {
-                          const data = Buffer.from(account.data);
-                          const aVault = new web3.PublicKey(data.subarray(104, 136)).toBase58();
-                          const bVault = new web3.PublicKey(data.subarray(136, 168)).toBase58();
-                          
-                          // Update cache with decoded vault addresses
-                          const pool = metbalCache.data?.amm?.find(p => p.id === poolId);
-                          if (pool) {
-                            if (!pool.native_account_a) pool.native_account_a = aVault;
-                            if (!pool.native_account_b) pool.native_account_b = bVault;
-                            if (!pool.account_a) pool.account_a = aVault;
-                            if (!pool.account_b) pool.account_b = bVault;
-                            vaultsDecoded++;
-                          }
-                        } catch (decodeErr) {
-                          // Ignore decode errors for individual pools
-                        }
-                      }
-                    }
-                  } catch (batchErr: any) {
-                    logger.warn('pools.ws.meteora_balanced.vault_fetch.batch_failed', {
-                      batchStart,
-                      batchSize: batch.length,
-                      error: String(batchErr?.message || batchErr),
-                      cat: 'pools'
-                    });
-                  }
+              // Pass 2: Batch resolve decimals for all unique mints
+              let decimalsMap = new Map<string, number>();
+              if (allMints.size > 0) {
+                try {
+                  const { resolveManyDecimals } = await import('./pools/decimals.js');
+                  decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+                    logger,
+                    batchSize: 100,
+                    normalizeMode: false 
+                  });
+                  logger.debug('pools.ws.meteora_balanced.onchain_enrich.decimals_resolved', {
+                    uniqueMints: allMints.size,
+                    resolved: decimalsMap.size,
+                    cat: 'pools'
+                  });
+                } catch (decErr: any) {
+                  logger.warn('pools.ws.meteora_balanced.onchain_enrich.decimals_failed', {
+                    error: String(decErr?.message || decErr),
+                    cat: 'pools'
+                  });
                 }
-                
-                logger.info('pools.ws.meteora_balanced.vault_fetch.complete', {
-                  poolsMissingVaults: poolsMissingVaults.length,
-                  vaultsDecoded,
-                  cat: 'pools'
-                });
               }
-            } catch (vaultFetchErr: any) {
-              logger.warn('pools.ws.meteora_balanced.vault_fetch.failed', {
-                error: String(vaultFetchErr?.message || vaultFetchErr),
+              
+              // Pass 3: Update pool and execution caches with all decoded data
+              let poolsEnriched = 0;
+              for (const decoded of decodedPools) {
+                const { poolId, tokenAMint, tokenBMint, aVault, bVault } = decoded;
+                
+                // Get decimals from resolved map (fallback to 9 for safety)
+                const decimalsA = decimalsMap.get(tokenAMint) ?? 9;
+                const decimalsB = decimalsMap.get(tokenBMint) ?? 9;
+                
+                // Update pool cache with decoded native mints, decimals, and vaults
+                const pool = metbalCache.data?.amm?.find(p => p.id === poolId);
+                if (pool) {
+                  // CRITICAL: Set native mints from on-chain data (authoritative source)
+                  // This ensures aToB direction is calculated correctly
+                  pool.native_mint_a = tokenAMint;
+                  pool.native_mint_b = tokenBMint;
+                  // CRITICAL: Set native decimals to match native mint order
+                  (pool as any).native_decimals_a = decimalsA;
+                  (pool as any).native_decimals_b = decimalsB;
+                  // Update vault addresses if missing
+                  if (!pool.native_account_a) pool.native_account_a = aVault;
+                  if (!pool.native_account_b) pool.native_account_b = bVault;
+                  if (!pool.account_a) pool.account_a = aVault;
+                  if (!pool.account_b) pool.account_b = bVault;
+                  poolsEnriched++;
+                  
+                  // CRITICAL: Update execution cache with native mints, decimals, and vaults
+                  try {
+                    const existingStatic = executionCache.getStatic(poolId) || {};
+                    executionCache.setStatic(poolId, {
+                      ...existingStatic,
+                      native_mint_a: tokenAMint,
+                      native_mint_b: tokenBMint,
+                      native_decimals_a: decimalsA,
+                      native_decimals_b: decimalsB,
+                      native_account_a: aVault,
+                      native_account_b: bVault,
+                    });
+                  } catch {}
+                }
+              }
+              
+              logger.info('pools.ws.meteora_balanced.onchain_enrich.complete', {
+                totalPools: uniqueMbal.length,
+                poolsEnriched,
+                decodeFailed,
+                uniqueMints: allMints.size,
+                decimalsResolved: decimalsMap.size,
+                cat: 'pools'
+              });
+            } catch (enrichErr: any) {
+              logger.warn('pools.ws.meteora_balanced.onchain_enrich.failed', {
+                error: String(enrichErr?.message || enrichErr),
                 cat: 'pools'
               });
             }

@@ -1377,7 +1377,10 @@ export class ArbExecutor {
             hopDexes: opp.hop_dexes,
             traceId,
             analysis: {
-              swapsExecuted: simAnalysis.swapsExecuted.length,
+              // When profit check failed, all swaps executed (profit check runs after swaps)
+              swapsExecuted: simAnalysis.profitCheckFailed 
+                ? plan.hops.length 
+                : simAnalysis.swapsExecuted.length,
               totalHops: plan.hops.length,
               profitCheckFailed: simAnalysis.profitCheckFailed,
               failedAt: simReport.analysis?.failedAtHop,
@@ -1650,7 +1653,10 @@ export class ArbExecutor {
             hopDexes: opp.hop_dexes,
             traceId,
             analysis: {
-              swapsExecuted: lastSimAnalysis!.swapsExecuted.length,
+              // When profit check failed, all swaps executed (profit check runs after swaps)
+              swapsExecuted: lastSimAnalysis!.profitCheckFailed 
+                ? currentPlan.hops.length 
+                : lastSimAnalysis!.swapsExecuted.length,
               totalHops: currentPlan.hops.length,
               profitCheckFailed: lastSimAnalysis!.profitCheckFailed,
               failedAt: simReport.analysis?.failedAtHop,

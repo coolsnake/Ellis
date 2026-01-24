@@ -2699,6 +2699,35 @@ async function getMeteoraDammV2SdkQuote(
           accounts.vaultA = aVault.toBase58();
           accounts.vaultB = bVault.toBase58();
           accounts.lpMint = lpMint.toBase58();
+          
+          // CRITICAL: Update execution cache with native mints and decimals for direction calculation
+          // This ensures aToB is calculated correctly using on-chain ordering
+          try {
+            const { resolveDecimals } = await import('../../server/pools/decimals.js');
+            const [decimalsA, decimalsB] = await Promise.all([
+              resolveDecimals(tokenAMint.toBase58()),
+              resolveDecimals(tokenBMint.toBase58()),
+            ]);
+            
+            const existingStatic = executionCache.getStatic(poolId) || {};
+            executionCache.setStatic(poolId, {
+              ...existingStatic,
+              native_mint_a: tokenAMint.toBase58(),
+              native_mint_b: tokenBMint.toBase58(),
+              native_decimals_a: decimalsA ?? 9,
+              native_decimals_b: decimalsB ?? 9,
+              native_account_a: aVault.toBase58(),
+              native_account_b: bVault.toBase58(),
+            });
+            logger.debug('sdkQuoteBuilder.meteoraDammV2.cache.native_mints_updated', {
+              cat: 'tx',
+              poolId: poolId.slice(0, 8) + '...',
+              nativeMintA: tokenAMint.toBase58().slice(0, 8) + '...',
+              nativeMintB: tokenBMint.toBase58().slice(0, 8) + '...',
+              decimalsA: decimalsA ?? 9,
+              decimalsB: decimalsB ?? 9,
+            });
+          } catch {}
         }
       }
     }
