@@ -25,7 +25,9 @@ import {
   handleOrcaUpdate,
   handleMeteoraUpdate,
   handlePumpswapUpdate,
+  handlePumpswapVaultUpdate,
   handleMeteoraBalancedUpdate,
+  handleMeteoraBalancedVaultUpdate,
   isRaydiumOwner,
   isRaydiumCpmmOwner,
   isOrcaOwner,
@@ -1638,7 +1640,49 @@ function runWebsocketRefreshLoop(): void {
                 try { wsCounts['raydium-cpmm'] = (wsCounts['raydium-cpmm'] || 0) + 1; } catch {}
               }
               
-              // Process vault/reserve updates locally without RPC calls
+              // CRITICAL: Route meteora_balanced and pumpswap vaults to their modular handlers
+              // These DEXes use vault-based pricing and have dedicated vault update handlers
+              if (vaultSource === 'meteora_balanced' && (derivedMeta.accountType === 'vault' || derivedMeta.accountType === 'reserve')) {
+                try {
+                  const accountInfo: DecoderAccountInfo = {
+                    data: Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []),
+                    executable: info.executable ?? false,
+                    lamports: info.lamports ?? 0,
+                    owner: info.owner,
+                  };
+                  await handleMeteoraBalancedVaultUpdate(accountInfo, pk58, derivedMeta.poolId);
+                } catch (e: any) {
+                  logger.debug('pools.ws meteora_balanced.vault.handler.error', {
+                    vault: pk58.slice(0,8)+'…',
+                    pool: derivedMeta.poolId.slice(0,8)+'…',
+                    error: String(e?.message || e),
+                    cat: 'pools'
+                  });
+                }
+                return; // Handled by modular decoder
+              }
+              
+              if (vaultSource === 'pumpswap' && (derivedMeta.accountType === 'vault' || derivedMeta.accountType === 'reserve')) {
+                try {
+                  const accountInfo: DecoderAccountInfo = {
+                    data: Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []),
+                    executable: info.executable ?? false,
+                    lamports: info.lamports ?? 0,
+                    owner: info.owner,
+                  };
+                  await handlePumpswapVaultUpdate(accountInfo, pk58, derivedMeta.poolId);
+                } catch (e: any) {
+                  logger.debug('pools.ws pumpswap.vault.handler.error', {
+                    vault: pk58.slice(0,8)+'…',
+                    pool: derivedMeta.poolId.slice(0,8)+'…',
+                    error: String(e?.message || e),
+                    cat: 'pools'
+                  });
+                }
+                return; // Handled by modular decoder
+              }
+              
+              // Process vault/reserve updates locally without RPC calls (Raydium AMM/CPMM)
               if (derivedMeta.accountType === 'vault' || derivedMeta.accountType === 'reserve') {
                 try {
                   // Parse token account balance
