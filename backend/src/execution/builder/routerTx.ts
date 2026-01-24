@@ -3273,8 +3273,28 @@ async function extractDexAccounts(
           const cachedProgramA = wasSwapped ? stat?.token_program_b : stat?.token_program_a;
           const cachedProgramB = wasSwapped ? stat?.token_program_a : stat?.token_program_b;
           
+          // Log mint sources for debugging token program detection
+          logger.debug('routerTx.meteoraDamm.v2.mintSources', {
+            cat: 'tx',
+            poolId: hop.poolId,
+            nativeMintA: stat?.native_mint_a || 'missing',
+            nativeMintB: stat?.native_mint_b || 'missing',
+            poolMintA: poolMintA || 'missing',
+            poolMintB: poolMintB || 'missing',
+            inputMint: inputMint.toBase58(),
+            outputMint: outputMint.toBase58(),
+            resolvedMintA: dammV2MintA.toBase58(),
+            resolvedMintB: dammV2MintB.toBase58(),
+            wasSwapped,
+          });
+          
           if (cachedProgramA) {
             tokenProgramA = tokenProgramLabelToKey(cachedProgramA);
+            logger.debug('routerTx.meteoraDamm.v2.tokenProgramA.cached', {
+              cat: 'tx',
+              cachedLabel: cachedProgramA,
+              resolved: tokenProgramA.toBase58(),
+            });
           } else {
             // Detect from mint owner - getTokenMeta checks if mint is owned by Token-2022 program
             const mintAStr = dammV2MintA.toBase58();
@@ -3282,13 +3302,19 @@ async function extractDexAccounts(
             tokenProgramA = metaA.program === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
             logger.debug('routerTx.meteoraDamm.v2.tokenProgramA.detected', {
               cat: 'tx',
-              mint: mintAStr.slice(0, 8) + '...',
+              mint: mintAStr,
               program: metaA.program,
+              resolved: tokenProgramA.toBase58(),
             });
           }
           
           if (cachedProgramB) {
             tokenProgramB = tokenProgramLabelToKey(cachedProgramB);
+            logger.debug('routerTx.meteoraDamm.v2.tokenProgramB.cached', {
+              cat: 'tx',
+              cachedLabel: cachedProgramB,
+              resolved: tokenProgramB.toBase58(),
+            });
           } else {
             // Detect from mint owner - getTokenMeta checks if mint is owned by Token-2022 program
             const mintBStr = dammV2MintB.toBase58();
@@ -3296,8 +3322,9 @@ async function extractDexAccounts(
             tokenProgramB = metaB.program === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
             logger.debug('routerTx.meteoraDamm.v2.tokenProgramB.detected', {
               cat: 'tx',
-              mint: mintBStr.slice(0, 8) + '...',
+              mint: mintBStr,
               program: metaB.program,
+              resolved: tokenProgramB.toBase58(),
             });
           }
           
@@ -3307,33 +3334,19 @@ async function extractDexAccounts(
             programIdKey
           );
           
-          // Determine swap direction: A→B or B→A (based on native mints)
-          // This affects token program ordering at positions 9-10
-          const isAtoB = inputMint.toBase58() === dammV2MintA.toBase58();
-          
-          // CRITICAL: Token programs must be in SWAP DIRECTION order, not native order!
-          // The on-chain CP-AMM constraint validates that:
-          // - Position 2 (input ATA) uses the token program at position 9
-          // - Position 3 (output ATA) uses the token program at position 10
-          // For A→B: input=A, output=B → positions 9,10 = programA, programB
-          // For B→A: input=B, output=A → positions 9,10 = programB, programA
-          const inputTokenProgram = isAtoB ? tokenProgramA : tokenProgramB;
-          const outputTokenProgram = isAtoB ? tokenProgramB : tokenProgramA;
-          
           logger.debug('routerTx.meteoraDamm.v2.accounts', {
             cat: 'tx',
             poolId: hop.poolId,
             variant: 'damm_v2',
             wasSwapped,
-            isAtoB,
             nativeMintA: stat?.native_mint_a || 'missing',
             nativeMintB: stat?.native_mint_b || 'missing',
             nativeAccountA: stat?.native_account_a || 'missing',
             nativeAccountB: stat?.native_account_b || 'missing',
             vaultA: dammV2VaultA || 'missing',
             vaultB: dammV2VaultB || 'missing',
-            inputTokenProgram: inputTokenProgram.toBase58(),
-            outputTokenProgram: outputTokenProgram.toBase58(),
+            tokenProgramA: tokenProgramA.toBase58(),
+            tokenProgramB: tokenProgramB.toBase58(),
             eventAuthority: eventAuthority.toBase58(),
           });
           
@@ -3347,8 +3360,8 @@ async function extractDexAccounts(
             dammV2MintA,                                                       // 6: Token A Mint (NATIVE order)
             dammV2MintB,                                                       // 7: Token B Mint (NATIVE order)
             wallet,                                                            // 8: Payer (signer)
-            inputTokenProgram,                                                 // 9: Input Token Program (SWAP DIRECTION order)
-            outputTokenProgram,                                                // 10: Output Token Program (SWAP DIRECTION order)
+            tokenProgramA,                                                     // 9: Token A Program (NATIVE order)
+            tokenProgramB,                                                     // 10: Token B Program (NATIVE order)
             programIdKey,                                                      // 11: Referral Token Account (program ID = "None" sentinel)
             eventAuthority,                                                    // 12: Event Authority (PDA)
             programIdKey,                                                      // 13: Program (for CPI)

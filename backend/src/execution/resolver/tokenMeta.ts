@@ -14,22 +14,69 @@ export async function getTokenMeta(mintStr: string): Promise<{ decimals: number;
   try { mint = new PublicKey(mintStr); } catch (e) { logCatchError('resolver.tokenMeta', e); }
   let program: 'spl-token'|'token-2022' = 'spl-token';
   let decimals: number | undefined;
+  let rpcSucceeded = false;  // Track if we got valid RPC response
+  
   try {
     const [acc, jmap] = await Promise.all([
-      mint ? withRpcLimit(() => conn.getAccountInfo(mint)).catch(() => null) : Promise.resolve(null),
+      mint ? withRpcLimit(() => conn.getAccountInfo(mint)).catch((e) => {
+        // Log RPC failure for debugging
+        try {
+          const { logger } = require('../../utils/logger.js');
+          logger.warn('tokenMeta.rpc.failed', {
+            cat: 'tx',
+            mint: mintStr.slice(0, 8) + '...',
+            error: String(e?.message || e).slice(0, 100),
+          });
+        } catch (_) {}
+        return null;
+      }) : Promise.resolve(null),
       loadJupiterTokenMap().catch(() => ({} as any)),
     ]);
+    
     const owner = acc?.owner?.toBase58?.();
-    if (owner === TOKEN_2022_PROGRAM_ID.toBase58()) program = 'token-2022';
+    if (owner) {
+      // We got a valid account - mark RPC as successful
+      rpcSucceeded = true;
+      if (owner === TOKEN_2022_PROGRAM_ID.toBase58()) {
+        program = 'token-2022';
+      } else if (owner === TOKEN_PROGRAM_ID.toBase58()) {
+        program = 'spl-token';
+      }
+    }
+    
     const j = Number((jmap as any)?.[mintStr]?.decimals);
     if (Number.isFinite(j)) decimals = j;
   } catch (e) { logCatchError('resolver.tokenMeta', e); }
+  
   if (!Number.isFinite(decimals as any) && mint) {
-    try { decimals = Number((await getMint(conn, mint)).decimals); } catch (e) { logCatchError('resolver.tokenMeta', e); }
+    try { 
+      // getMint can also tell us the program type via commitment
+      const mintInfo = await getMint(conn, mint, 'confirmed', TOKEN_2022_PROGRAM_ID).catch(() => null);
+      if (mintInfo) {
+        decimals = Number(mintInfo.decimals);
+        program = 'token-2022';
+        rpcSucceeded = true;
+      } else {
+        // Try standard token program
+        const mintInfoStd = await getMint(conn, mint, 'confirmed', TOKEN_PROGRAM_ID).catch(() => null);
+        if (mintInfoStd) {
+          decimals = Number(mintInfoStd.decimals);
+          program = 'spl-token';
+          rpcSucceeded = true;
+        }
+      }
+    } catch (e) { logCatchError('resolver.tokenMeta', e); }
   }
+  
   if (!Number.isFinite(decimals as any)) decimals = 9;
   const meta = { decimals: Math.min(12, Math.max(0, Number(decimals ?? 9))), program };
-  executionCache.setTokenMeta(mintStr, meta);
+  
+  // CRITICAL: Only cache if RPC succeeded, otherwise we might cache incorrect program type
+  // A temporary RPC failure shouldn't permanently mark a Token-2022 mint as spl-token
+  if (rpcSucceeded) {
+    executionCache.setTokenMeta(mintStr, meta);
+  }
+  
   return meta;
 }
 
