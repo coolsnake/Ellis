@@ -69,13 +69,12 @@ export async function resolveMeteoraDamm(hop: DirectHop): Promise<DirectHop> {
         }
       );
       
-      // Populate vault addresses in CANONICAL order (A/B), not swap direction (INPUT/OUTPUT)
-      // The on-chain DAMM v2 program expects vaults paired with their corresponding mints:
-      // - Token A Vault must have mint == Token A Mint
-      // - Token B Vault must have mint == Token B Mint
-      // Swap direction is handled by userSourceAta/userDestAta (positions 2-3) in routerTx
-      hop.vaultA = String((p as any)?.account_a || '');
-      hop.vaultB = String((p as any)?.account_b || '');
+      // Populate vault addresses in NATIVE order for DAMM v2
+      // The on-chain CP-AMM program uses has_one constraints that validate against
+      // pool's stored order (native), not canonical order.
+      // Prefer native fields, fallback to canonical (which may be wrong if was_swapped)
+      hop.vaultA = String((p as any)?.native_account_a || (p as any)?.account_a || '');
+      hop.vaultB = String((p as any)?.native_account_b || (p as any)?.account_b || '');
       
       // Store pool address for swap instruction
       (hop as any).poolAddress = String((p as any)?.id || id);

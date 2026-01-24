@@ -3246,15 +3246,31 @@ async function extractDexAccounts(
           // v2 (CP-AMM) swap2 account layout (14 accounts) - matches @meteora-ag/cp-amm-sdk
           // Fixed pool authority from SDK IDL
           const METEORA_CPAMM_POOL_AUTHORITY = new PublicKey('HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC');
-          const dammV2MintA = poolMintA ? new PublicKey(poolMintA) : inputMint;
-          const dammV2MintB = poolMintB ? new PublicKey(poolMintB) : outputMint;
-          const dammV2VaultA = hop.vaultA || poolAccountA;
-          const dammV2VaultB = hop.vaultB || poolAccountB;
+          
+          // CRITICAL: Use NATIVE ordering for DAMM v2 - the on-chain program validates against
+          // pool's stored order using has_one constraints, NOT canonical order.
+          // When was_swapped=true, canonical order is reversed from native on-chain order.
+          const wasSwapped = stat?.was_swapped === true;
+          
+          // Prefer native fields, fallback to canonical (with swap correction if needed)
+          const dammV2MintA = stat?.native_mint_a 
+            ? new PublicKey(stat.native_mint_a) 
+            : (poolMintA ? new PublicKey(poolMintA) : inputMint);
+          const dammV2MintB = stat?.native_mint_b 
+            ? new PublicKey(stat.native_mint_b) 
+            : (poolMintB ? new PublicKey(poolMintB) : outputMint);
+          const dammV2VaultA = stat?.native_account_a || hop.vaultA || poolAccountA;
+          const dammV2VaultB = stat?.native_account_b || hop.vaultB || poolAccountB;
           
           // Determine token programs for each token (support Token-2022)
-          // Use tokenProgramLabelToKey to convert labels ('spl-token', 'token-2022') to PublicKey
-          const tokenProgramA = tokenProgramLabelToKey((hop as any).tokenProgramA);
-          const tokenProgramB = tokenProgramLabelToKey((hop as any).tokenProgramB);
+          // Token programs must also be in NATIVE order to match vault mints
+          // When was_swapped=true, canonical token_program_a corresponds to native token_program_b
+          const tokenProgramA = wasSwapped 
+            ? tokenProgramLabelToKey(stat?.token_program_b)
+            : tokenProgramLabelToKey(stat?.token_program_a || (hop as any).tokenProgramA);
+          const tokenProgramB = wasSwapped 
+            ? tokenProgramLabelToKey(stat?.token_program_a)
+            : tokenProgramLabelToKey(stat?.token_program_b || (hop as any).tokenProgramB);
           
           // Derive Event Authority PDA: seeds = ["__event_authority"]
           const [eventAuthority] = PublicKey.findProgramAddressSync(
@@ -3266,8 +3282,11 @@ async function extractDexAccounts(
             cat: 'tx',
             poolId: hop.poolId,
             variant: 'damm_v2',
-            poolMintA: poolMintA || 'missing',
-            poolMintB: poolMintB || 'missing',
+            wasSwapped,
+            nativeMintA: stat?.native_mint_a || 'missing',
+            nativeMintB: stat?.native_mint_b || 'missing',
+            nativeAccountA: stat?.native_account_a || 'missing',
+            nativeAccountB: stat?.native_account_b || 'missing',
             vaultA: dammV2VaultA || 'missing',
             vaultB: dammV2VaultB || 'missing',
             eventAuthority: eventAuthority.toBase58(),
@@ -3278,13 +3297,13 @@ async function extractDexAccounts(
             poolId,                                                            // 1: Pool
             userSourceAta,                                                     // 2: Input Token Account
             userDestAta,                                                       // 3: Output Token Account
-            new PublicKey(dammV2VaultA),                                      // 4: Token A Vault (canonical)
-            new PublicKey(dammV2VaultB),                                      // 5: Token B Vault (canonical)
-            dammV2MintA,                                                       // 6: Token A Mint (canonical)
-            dammV2MintB,                                                       // 7: Token B Mint (canonical)
+            new PublicKey(dammV2VaultA),                                      // 4: Token A Vault (NATIVE order)
+            new PublicKey(dammV2VaultB),                                      // 5: Token B Vault (NATIVE order)
+            dammV2MintA,                                                       // 6: Token A Mint (NATIVE order)
+            dammV2MintB,                                                       // 7: Token B Mint (NATIVE order)
             wallet,                                                            // 8: Payer (signer)
-            tokenProgramA,                                                     // 9: Token A Program
-            tokenProgramB,                                                     // 10: Token B Program
+            tokenProgramA,                                                     // 9: Token A Program (NATIVE order)
+            tokenProgramB,                                                     // 10: Token B Program (NATIVE order)
             programIdKey,                                                      // 11: Referral Token Account (program ID = "None" sentinel)
             eventAuthority,                                                    // 12: Event Authority (PDA)
             programIdKey,                                                      // 13: Program (for CPI)
