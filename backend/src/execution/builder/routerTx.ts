@@ -3307,17 +3307,33 @@ async function extractDexAccounts(
             programIdKey
           );
           
+          // Determine swap direction: A→B or B→A (based on native mints)
+          // This affects token program ordering at positions 9-10
+          const isAtoB = inputMint.toBase58() === dammV2MintA.toBase58();
+          
+          // CRITICAL: Token programs must be in SWAP DIRECTION order, not native order!
+          // The on-chain CP-AMM constraint validates that:
+          // - Position 2 (input ATA) uses the token program at position 9
+          // - Position 3 (output ATA) uses the token program at position 10
+          // For A→B: input=A, output=B → positions 9,10 = programA, programB
+          // For B→A: input=B, output=A → positions 9,10 = programB, programA
+          const inputTokenProgram = isAtoB ? tokenProgramA : tokenProgramB;
+          const outputTokenProgram = isAtoB ? tokenProgramB : tokenProgramA;
+          
           logger.debug('routerTx.meteoraDamm.v2.accounts', {
             cat: 'tx',
             poolId: hop.poolId,
             variant: 'damm_v2',
             wasSwapped,
+            isAtoB,
             nativeMintA: stat?.native_mint_a || 'missing',
             nativeMintB: stat?.native_mint_b || 'missing',
             nativeAccountA: stat?.native_account_a || 'missing',
             nativeAccountB: stat?.native_account_b || 'missing',
             vaultA: dammV2VaultA || 'missing',
             vaultB: dammV2VaultB || 'missing',
+            inputTokenProgram: inputTokenProgram.toBase58(),
+            outputTokenProgram: outputTokenProgram.toBase58(),
             eventAuthority: eventAuthority.toBase58(),
           });
           
@@ -3331,8 +3347,8 @@ async function extractDexAccounts(
             dammV2MintA,                                                       // 6: Token A Mint (NATIVE order)
             dammV2MintB,                                                       // 7: Token B Mint (NATIVE order)
             wallet,                                                            // 8: Payer (signer)
-            tokenProgramA,                                                     // 9: Token A Program (NATIVE order)
-            tokenProgramB,                                                     // 10: Token B Program (NATIVE order)
+            inputTokenProgram,                                                 // 9: Input Token Program (SWAP DIRECTION order)
+            outputTokenProgram,                                                // 10: Output Token Program (SWAP DIRECTION order)
             programIdKey,                                                      // 11: Referral Token Account (program ID = "None" sentinel)
             eventAuthority,                                                    // 12: Event Authority (PDA)
             programIdKey,                                                      // 13: Program (for CPI)

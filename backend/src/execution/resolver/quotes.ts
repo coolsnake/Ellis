@@ -433,7 +433,10 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
               const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
               if (Number.isFinite(amtIn)) {
                 // Use actual swap direction for price calculation
-                const outWhole = (actualIsRev ? amtIn * px : amtIn / px) * fee;
+                // price_a_per_b = how many B tokens per 1 A token
+                // A→B (NOT actualIsRev): output B = input A * price_a_per_b → MULTIPLY
+                // B→A (actualIsRev): output A = input B / price_a_per_b → DIVIDE
+                const outWhole = (actualIsRev ? amtIn / px : amtIn * px) * fee;
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
                 
                 try {
@@ -447,7 +450,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                       outWhole,
                       outRaw: outRaw.toString(),
                       success: outRaw > 0n,
-                      formula: actualIsRev ? 'amtIn * px * fee' : '(amtIn / px) * fee',
+                      formula: actualIsRev ? '(amtIn / px) * fee' : 'amtIn * px * fee',
                       // Canonical direction (matches price_a_per_b ordering)
                       swappingAtoB,
                       swappingBtoA,
