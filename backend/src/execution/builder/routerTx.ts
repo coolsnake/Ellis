@@ -3265,12 +3265,41 @@ async function extractDexAccounts(
           // Determine token programs for each token (support Token-2022)
           // Token programs must also be in NATIVE order to match vault mints
           // When was_swapped=true, canonical token_program_a corresponds to native token_program_b
-          const tokenProgramA = wasSwapped 
-            ? tokenProgramLabelToKey(stat?.token_program_b)
-            : tokenProgramLabelToKey(stat?.token_program_a || (hop as any).tokenProgramA);
-          const tokenProgramB = wasSwapped 
-            ? tokenProgramLabelToKey(stat?.token_program_a)
-            : tokenProgramLabelToKey(stat?.token_program_b || (hop as any).tokenProgramB);
+          // If token_program not cached, detect from mint owner via getTokenMeta
+          let tokenProgramA: PublicKey;
+          let tokenProgramB: PublicKey;
+          
+          // Get cached token programs (respecting native ordering)
+          const cachedProgramA = wasSwapped ? stat?.token_program_b : stat?.token_program_a;
+          const cachedProgramB = wasSwapped ? stat?.token_program_a : stat?.token_program_b;
+          
+          if (cachedProgramA) {
+            tokenProgramA = tokenProgramLabelToKey(cachedProgramA);
+          } else {
+            // Detect from mint owner - getTokenMeta checks if mint is owned by Token-2022 program
+            const mintAStr = dammV2MintA.toBase58();
+            const metaA = await getTokenMeta(mintAStr);
+            tokenProgramA = metaA.program === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+            logger.debug('routerTx.meteoraDamm.v2.tokenProgramA.detected', {
+              cat: 'tx',
+              mint: mintAStr.slice(0, 8) + '...',
+              program: metaA.program,
+            });
+          }
+          
+          if (cachedProgramB) {
+            tokenProgramB = tokenProgramLabelToKey(cachedProgramB);
+          } else {
+            // Detect from mint owner - getTokenMeta checks if mint is owned by Token-2022 program
+            const mintBStr = dammV2MintB.toBase58();
+            const metaB = await getTokenMeta(mintBStr);
+            tokenProgramB = metaB.program === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+            logger.debug('routerTx.meteoraDamm.v2.tokenProgramB.detected', {
+              cat: 'tx',
+              mint: mintBStr.slice(0, 8) + '...',
+              program: metaB.program,
+            });
+          }
           
           // Derive Event Authority PDA: seeds = ["__event_authority"]
           const [eventAuthority] = PublicKey.findProgramAddressSync(
