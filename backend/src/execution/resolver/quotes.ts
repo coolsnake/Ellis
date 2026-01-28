@@ -121,7 +121,10 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
             }
             const px = Number((p as any)?.price_a_per_b || 0);
             if (px > 0 && Number.isFinite(amtIn)) {
-              const rate = isRev ? px : (1 / px);
+              // FIX: Rate was inverted. price_a_per_b = B per A (how many B for 1 A)
+              // A→B (isRev=false): out = in × price (multiply by price)
+              // B→A (isRev=true): out = in / price (divide by price)
+              const rate = isRev ? (1 / px) : px;
               if (rate > 0) {
                 const outWhole = amtIn * rate * fee;
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
@@ -175,7 +178,10 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
               // Fallback to price-based calculation
               const px = Number((p as any)?.price_a_per_b || 0);
               if (px > 0 && Number.isFinite(amtIn)) {
-                const rate = isRev ? px : (1 / px);
+                // FIX: Rate was inverted. price_a_per_b = B per A (how many B for 1 A)
+                // A→B (isRev=false): out = in × price (multiply by price)
+                // B→A (isRev=true): out = in / price (divide by price)
+                const rate = isRev ? (1 / px) : px;
                 if (rate > 0) {
                   const outWhole = amtIn * rate * fee;
                   const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
@@ -671,8 +677,23 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
       return 0n;
     }
     
-    const decIn = hop.inputDecimals ?? 0;
-    const decOut = hop.outputDecimals ?? 0;
+    // FIX: Add fallback to pool cache decimals if hop decimals are missing
+    // Using 0 as default is catastrophic for price calculations
+    let decIn = hop.inputDecimals;
+    let decOut = hop.outputDecimals;
+    
+    // Fallback to staticData (pool cache) decimals based on direction
+    if (!Number.isFinite(decIn) || decIn === 0) {
+      decIn = aToB 
+        ? (staticData?.decimals_a ?? staticData?.native_decimals_a)
+        : (staticData?.decimals_b ?? staticData?.native_decimals_b);
+    }
+    if (!Number.isFinite(decOut) || decOut === 0) {
+      decOut = aToB
+        ? (staticData?.decimals_b ?? staticData?.native_decimals_b)
+        : (staticData?.decimals_a ?? staticData?.native_decimals_a);
+    }
+    
     if (!Number.isFinite(decIn) || !Number.isFinite(decOut)) return 0n;
     
     // Apply fee
@@ -1023,8 +1044,10 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
   const feeNumerator = 10_000n - feeBpsBig;
   const feeDenominator = 10_000n;
 
-  const numerator = amountInRaw * priceDenominator * scaleOut * feeNumerator;
-  const denominator = scaleIn * priceNumerator * feeDenominator;
+  // FIX: Price ratio was inverted. For A→B swap, we multiply by price (priceNumerator/priceDenominator)
+  // Formula: out = in × (priceNum/priceDenom) × (scaleOut/scaleIn) × fee
+  const numerator = amountInRaw * priceNumerator * scaleOut * feeNumerator;
+  const denominator = scaleIn * priceDenominator * feeDenominator;
   
   if (!(denominator > 0n)) {
     try {
