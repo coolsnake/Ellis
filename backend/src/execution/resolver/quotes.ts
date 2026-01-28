@@ -619,6 +619,8 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
               decimals_b: (pool as any).decimals_b,
               native_mint_a: (pool as any).native_mint_a,
               native_mint_b: (pool as any).native_mint_b,
+              native_decimals_a: (pool as any).native_decimals_a,
+              native_decimals_b: (pool as any).native_decimals_b,
               tick_spacing: (pool as any).tick_spacing,
             };
             
