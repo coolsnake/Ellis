@@ -684,23 +684,22 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
       return 0n;
     }
     
-    // FIX: Add fallback to pool cache decimals if hop decimals are missing
-    // Using 0 as default is catastrophic for price calculations
+    // FIX: ALWAYS prefer pool cache decimals when available
+    // Pool cache decimals come from on-chain data and are authoritative
+    // hop.inputDecimals/outputDecimals can be wrong (e.g., defaulting to 9 for all tokens)
     // Use native decimals to match native direction
-    let decIn = hop.inputDecimals;
-    let decOut = hop.outputDecimals;
     
-    // Fallback to staticData decimals based on NATIVE direction
-    if (!Number.isFinite(decIn) || decIn === 0) {
-      decIn = nativeAtoB 
-        ? ((staticData as any)?.native_decimals_a ?? staticData?.decimals_a)
-        : ((staticData as any)?.native_decimals_b ?? staticData?.decimals_b);
-    }
-    if (!Number.isFinite(decOut) || decOut === 0) {
-      decOut = nativeAtoB
-        ? ((staticData as any)?.native_decimals_b ?? staticData?.decimals_b)
-        : ((staticData as any)?.native_decimals_a ?? staticData?.decimals_a);
-    }
+    // Get pool cache decimals based on NATIVE direction
+    const poolDecIn = nativeAtoB 
+      ? ((staticData as any)?.native_decimals_a ?? staticData?.decimals_a)
+      : ((staticData as any)?.native_decimals_b ?? staticData?.decimals_b);
+    const poolDecOut = nativeAtoB
+      ? ((staticData as any)?.native_decimals_b ?? staticData?.decimals_b)
+      : ((staticData as any)?.native_decimals_a ?? staticData?.decimals_a);
+    
+    // Prefer pool cache decimals, fall back to hop decimals only if pool cache unavailable
+    const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
+    const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
     
     if (!Number.isFinite(decIn) || !Number.isFinite(decOut)) return 0n;
     
