@@ -2400,33 +2400,66 @@ async function extractDexAccounts(
         const hotCache = executionCache.getHot(meteoraPoolIdStr) as any;
         const activeId = hop.activeId ?? hotCache?.activeId;
         
-        // Derive bitmap extension PDA if needed but not provided
-        // The bitmap extension is required when activeId is outside the default internal bitmap range
-        // Default range is ±512 * BIN_ARRAY_SIZE (70) = ±35,840
-        const BIN_ARRAY_SIZE = 70;
-        const DEFAULT_BITMAP_RANGE = 512 * BIN_ARRAY_SIZE; // 35,840
+        // Check if bitmap extension needs to be resolved
+        // CRITICAL: If hop.bitmapExtension is the program ID (used as "not needed" placeholder),
+        // we must verify on-chain whether the bitmap extension PDA actually exists.
+        // The Meteora program requires the bitmap extension if it EXISTS, regardless of activeId.
+        const METEORA_PROGRAM_ID_STR = programIdKey.toBase58();
+        const hasBitmapPlaceholder = !hop.bitmapExtension || hop.bitmapExtension === METEORA_PROGRAM_ID_STR;
         
-        if (!hop.bitmapExtension && typeof activeId === 'number' && Math.abs(activeId) > DEFAULT_BITMAP_RANGE) {
+        if (hasBitmapPlaceholder) {
           try {
-            // Derive bitmap extension PDA: seeds = ["bitmap", lb_pair]
+            // Derive the bitmap extension PDA
             const meteoraPoolPk = new PublicKey(meteoraPoolIdStr);
             const [bitmapPda] = PublicKey.findProgramAddressSync(
               [Buffer.from('bitmap'), meteoraPoolPk.toBuffer()],
               programIdKey
             );
-            hop.bitmapExtension = bitmapPda.toBase58();
+            const derivedPdaStr = bitmapPda.toBase58();
             
-            logger.debug('routerTx.meteora.bitmapExtension.derived', {
-              cat: 'tx',
-              ctx: {
-                poolId: meteoraPoolIdStr.slice(0, 8) + '...',
-                activeId,
-                threshold: DEFAULT_BITMAP_RANGE,
-                bitmapExtension: hop.bitmapExtension.slice(0, 8) + '...',
-              },
-            });
+            // Check if the bitmap extension PDA exists on-chain
+            // This is the source of truth - if it exists, we MUST provide it
+            const { getConnection } = await import('../../wallet/wallet.js');
+            const conn = getConnection();
+            const info = await conn.getAccountInfo(bitmapPda);
+            const pdaExistsOnChain = !!info && info.owner.equals(programIdKey);
+            
+            if (pdaExistsOnChain) {
+              hop.bitmapExtension = derivedPdaStr;
+              
+              // Also update the execution cache so future transactions don't need RPC check
+              const stat = executionCache.getStatic(meteoraPoolIdStr);
+              if (stat) {
+                executionCache.setStatic(meteoraPoolIdStr, {
+                  ...stat,
+                  bin_array_bitmap_extension: derivedPdaStr,
+                });
+              }
+              
+              logger.info('routerTx.meteora.bitmapExtension.resolved', {
+                cat: 'tx',
+                ctx: {
+                  poolId: meteoraPoolIdStr.slice(0, 8) + '...',
+                  activeId,
+                  bitmapExtension: derivedPdaStr.slice(0, 8) + '...',
+                  wasPlaceholder: true,
+                  cacheUpdated: !!stat,
+                },
+              });
+            } else {
+              // PDA doesn't exist - program ID placeholder is correct
+              logger.debug('routerTx.meteora.bitmapExtension.not_needed', {
+                cat: 'tx',
+                ctx: {
+                  poolId: meteoraPoolIdStr.slice(0, 8) + '...',
+                  activeId,
+                  derivedPda: derivedPdaStr.slice(0, 8) + '...',
+                  reason: 'PDA does not exist on-chain',
+                },
+              });
+            }
           } catch (e) {
-            logger.warn('routerTx.meteora.bitmapExtension.derivation_failed', {
+            logger.warn('routerTx.meteora.bitmapExtension.check_failed', {
               cat: 'tx',
               ctx: {
                 poolId: meteoraPoolIdStr.slice(0, 8) + '...',

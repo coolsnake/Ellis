@@ -1986,38 +1986,83 @@ async function getMeteoraSdkQuote(
     // Get vaults from pool data if available
     let vaultA: string | undefined;
     let vaultB: string | undefined;
+    let bitmapExtension: string | undefined;
+    
     if (dlmmPool?.lbPair) {
       const lbPair = dlmmPool.lbPair;
       vaultA = lbPair?.reserveX?.toBase58?.() || lbPair?.reserve_x?.toBase58?.();
       vaultB = lbPair?.reserveY?.toBase58?.() || lbPair?.reserve_y?.toBase58?.();
+      
+      // CRITICAL: Extract bitmap extension from SDK's pool data
+      // The on-chain LbPair account stores the actual binArrayBitmapExtension PDA if one exists.
+      // This is the source of truth - NOT the activeId threshold check.
+      // If the bitmap extension PDA exists on-chain for this pool, it MUST be provided
+      // to the swap instruction, regardless of the current activeId position.
+      const bitmapExtPk = lbPair?.binArrayBitmapExtension || lbPair?.bin_array_bitmap_extension;
+      if (bitmapExtPk) {
+        // Handle both PublicKey objects and already-stringified addresses
+        const bitmapExtStr = typeof bitmapExtPk === 'string' 
+          ? bitmapExtPk 
+          : (typeof bitmapExtPk.toBase58 === 'function' ? bitmapExtPk.toBase58() : String(bitmapExtPk));
+        
+        // Only use it if it's not the default/null PublicKey (all zeros)
+        // The Meteora program uses PublicKey.default when no bitmap extension exists
+        const isDefaultPubkey = bitmapExtStr === '11111111111111111111111111111111' || 
+                                bitmapExtStr === PublicKey.default.toBase58();
+        
+        if (!isDefaultPubkey && bitmapExtStr.length >= 32) {
+          bitmapExtension = bitmapExtStr;
+          
+          logger.debug('sdkQuoteBuilder.meteora.bitmapExtension.from_sdk', {
+            cat: 'tx',
+            ctx: {
+              poolId: poolId.slice(0, 8) + '...',
+              activeId,
+              bitmapExtension: bitmapExtension.slice(0, 8) + '...',
+              source: 'lbPair.binArrayBitmapExtension',
+            },
+          });
+        }
+      }
     }
-
-    // Derive bitmap extension PDA if needed
-    // The bitmap extension is required when activeId is outside the default internal bitmap range
-    // Default range is ±512 * BIN_ARRAY_SIZE (70) = ±35,840
-    const DEFAULT_BITMAP_RANGE = 512 * BIN_ARRAY_SIZE; // 35,840
-    let bitmapExtension: string | undefined;
     
-    if (Math.abs(activeId) > DEFAULT_BITMAP_RANGE) {
+    // Fallback: If SDK didn't provide bitmap extension, check on-chain if the PDA exists
+    // This handles cases where the SDK pool object didn't include the field
+    if (!bitmapExtension) {
       try {
-        // Derive bitmap extension PDA: seeds = ["bitmap", lb_pair]
+        // Derive the bitmap extension PDA
         const [bitmapPda] = PublicKey.findProgramAddressSync(
           [Buffer.from('bitmap'), poolPk.toBuffer()],
           METEORA_DLMM_PROGRAM
         );
-        bitmapExtension = bitmapPda.toBase58();
         
-        logger.debug('sdkQuoteBuilder.meteora.bitmapExtension.derived', {
-          cat: 'tx',
-          ctx: {
-            poolId: poolId.slice(0, 8) + '...',
-            activeId,
-            threshold: DEFAULT_BITMAP_RANGE,
-            bitmapExtension: bitmapExtension.slice(0, 8) + '...',
-          },
-        });
+        // Check if the PDA exists on-chain - this is the definitive check
+        const bitmapInfo = await connection.getAccountInfo(bitmapPda);
+        if (bitmapInfo && bitmapInfo.owner.equals(METEORA_DLMM_PROGRAM)) {
+          bitmapExtension = bitmapPda.toBase58();
+          
+          logger.info('sdkQuoteBuilder.meteora.bitmapExtension.verified_onchain', {
+            cat: 'tx',
+            ctx: {
+              poolId: poolId.slice(0, 8) + '...',
+              activeId,
+              bitmapExtension: bitmapExtension.slice(0, 8) + '...',
+              source: 'rpc_verification',
+            },
+          });
+        } else {
+          logger.debug('sdkQuoteBuilder.meteora.bitmapExtension.not_needed', {
+            cat: 'tx',
+            ctx: {
+              poolId: poolId.slice(0, 8) + '...',
+              activeId,
+              derivedPda: bitmapPda.toBase58().slice(0, 8) + '...',
+              reason: 'PDA does not exist on-chain',
+            },
+          });
+        }
       } catch (e) {
-        logger.warn('sdkQuoteBuilder.meteora.bitmapExtension.derivation_failed', {
+        logger.warn('sdkQuoteBuilder.meteora.bitmapExtension.check_failed', {
           cat: 'tx',
           ctx: {
             poolId: poolId.slice(0, 8) + '...',

@@ -801,6 +801,8 @@ export async function handleOrcaUpdate(
         // Preserve native orientation for reference
         native_mint_a: mintA,
         native_mint_b: mintB,
+        native_decimals_a: decA,
+        native_decimals_b: decB,
         // Store vaults with BOTH field names for compatibility:
         // - native_account_a/b: standard field name used by routerTx.ts and most of codebase
         // - native_vault_a/b: kept for backward compatibility

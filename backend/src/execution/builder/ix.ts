@@ -2816,11 +2816,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       let binArrayUpper: PublicKey | undefined = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
       let binArrayMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> | null = null;
       
-      // NOTE: Bitmap extension is NOT needed - the Meteora SDK handles it automatically
-      // We previously derived bin_array_bitmap_extension ourselves, but this is unnecessary.
-      // The SDK includes the correct bitmap extension PDA when building swap instructions.
-      // Just providing the program ID is sufficient, which aligns with best practices
-      // observed in other Meteora integrations.
+      // NOTE: Bitmap extension handling
+      // The bitmap extension PDA is extracted from the SDK's pool data (lbPair.binArrayBitmapExtension)
+      // during quote building and cached. When using the Anchor program path below, we pass
+      // hop.bitmapExtension which should contain the correct value from cache.
+      // IMPORTANT: If the bitmap extension PDA exists on-chain for a pool, it MUST be provided
+      // to the swap instruction - using the program ID as a placeholder will fail with error 6036.
       
       try {
       const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
