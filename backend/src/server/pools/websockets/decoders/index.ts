@@ -87,6 +87,29 @@ export type {
   DecodeFunction,
 } from './types.js';
 
+// Per-pool staleness tracking (monitoring/alerting only, no auto-resubscription)
+export {
+  recordPoolActivity,
+  registerPoolSubscription,
+  unregisterPool,
+  unregisterPools,
+  clearPoolActivityTracking,
+  checkPoolStaleness,
+  setResubscribeCallback,
+  startStalenessMonitor,
+  stopStalenessMonitor,
+  isStalenessMonitorRunning,
+  getStalenessStatus,
+  getPoolActivityAge,
+  getTrackedPoolIds,
+  getPoolsExceedingAge,
+} from '../staleness.js';
+
+export type {
+  PoolActivityState,
+  StalenessCheckResult,
+} from '../staleness.js';
+
 /**
  * Route WebSocket account update to the appropriate decoder based on program owner
  */

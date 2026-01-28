@@ -22,6 +22,8 @@ import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { CONFIG } from '../../../../utils/config.js';
 // Import pool activation tracking for lazy activation mode
 import { tryActivatePool } from '../../../pools.activation.js';
+// Import per-pool staleness tracking
+import { recordPoolActivity } from '../staleness.js';
 // Import PumpSwap SDK for reliable buffer decoding via Anchor IDL
 import { PUMP_AMM_SDK } from '@pump-fun/pump-swap-sdk';
 import { PublicKey } from '@solana/web3.js';
@@ -577,6 +579,9 @@ export async function handlePumpswapPoolAccountUpdate(
     );
     tryActivatePool(poolId, 'pumpswap', hasValidPrice);
 
+    // Track successful activity for staleness monitoring
+    recordPoolActivity(poolId, 'pumpswap', poolId);
+
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {
     wsDecodeStats.pumpswap.failures += 1;
@@ -870,6 +875,9 @@ export async function handlePumpswapVaultUpdate(
       processedPrice.priceForward > 0
     );
     tryActivatePool(poolId, 'pumpswap', hasValidPriceVault);
+
+    // Track successful activity for staleness monitoring (track the actual pool, not vault)
+    recordPoolActivity(poolId, 'pumpswap', vaultAddress);
 
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {

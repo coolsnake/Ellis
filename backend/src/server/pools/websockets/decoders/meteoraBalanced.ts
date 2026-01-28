@@ -23,6 +23,8 @@ import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { CONFIG } from '../../../../utils/config.js';
 // Import pool activation tracking for lazy activation mode
 import { tryActivatePool } from '../../../pools.activation.js';
+// Import per-pool staleness tracking
+import { recordPoolActivity } from '../staleness.js';
 import { PublicKey } from '@solana/web3.js';
 import type { 
   DecodedPool, 
@@ -731,6 +733,9 @@ export async function handleMeteoraBalancedVaultUpdate(
     );
     tryActivatePool(poolId, 'meteora_damm_v2', hasValidPrice);
 
+    // Track successful activity for staleness monitoring (track the actual pool, not vault)
+    recordPoolActivity(poolId, 'meteora_damm_v2', vaultAddress);
+
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {
     wsDecodeStats.meteora_damm_v2.failures += 1;
@@ -1050,6 +1055,9 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     );
     tryActivatePool(poolId, 'meteora_damm_v1', hasValidPrice);
     
+    // Track successful activity for staleness monitoring
+    recordPoolActivity(poolId, 'meteora_damm_v1', poolId);
+
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {
     wsDecodeStats.meteora_damm_v1.failures += 1;

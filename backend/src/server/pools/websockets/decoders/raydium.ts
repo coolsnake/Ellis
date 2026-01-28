@@ -23,6 +23,8 @@ import { ensureOrientationConsistency } from '../../orientationValidation.js';
 import { onPoolTickUpdate } from '../../../pools.websockets.js';
 // Import pool activation tracking for lazy activation mode
 import { tryActivatePool } from '../../../pools.activation.js';
+// Import per-pool staleness tracking
+import { recordPoolActivity } from '../staleness.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -1091,13 +1093,23 @@ export async function handleRaydiumUpdate(
     // Try CLMM decode first
     const clmmDecoded = await decodeRaydiumClmmPool(data, poolId, derivedAccountToPool);
     if (clmmDecoded) {
-      return handleClmmUpdate(info, poolId, derivedAccountToPool, owner);
+      const result = await handleClmmUpdate(info, poolId, derivedAccountToPool, owner);
+      // Track successful activity for staleness monitoring
+      if (result.success) {
+        recordPoolActivity(poolId, 'raydium', poolId);
+      }
+      return result;
     }
 
     // Try AMM decode
     const ammDecoded = await decodeRaydiumAmmPool(data, poolId, derivedAccountToPool);
     if (ammDecoded) {
-      return handleAmmUpdate(info, poolId, derivedAccountToPool);
+      const result = await handleAmmUpdate(info, poolId, derivedAccountToPool);
+      // Track successful activity for staleness monitoring
+      if (result.success) {
+        recordPoolActivity(poolId, 'raydium', poolId);
+      }
+      return result;
     }
 
     // Neither decoder succeeded - track as unknown type failure

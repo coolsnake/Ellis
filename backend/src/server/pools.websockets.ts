@@ -49,6 +49,15 @@ import {
 // Lazy activation support - clear state when retargeting in lazy mode
 import { isLazyActivationEnabled, clearActivationState } from './pools.activation.js';
 import { clearGraphCache } from './graph.js';
+// Per-pool staleness monitoring - detect and resubscribe silently dropped subscriptions
+import {
+  startStalenessMonitor,
+  stopStalenessMonitor,
+  setResubscribeCallback,
+  clearPoolActivityTracking,
+  registerPoolSubscription,
+  getStalenessStatus,
+} from './pools/websockets/staleness.js';
 
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const METEORA_BIN_BITMAP_SIZE = 512;
@@ -5816,6 +5825,49 @@ function runWebsocketRefreshLoop(): void {
           });
         } catch {}
 
+        // Per-pool staleness monitoring: detect silently dropped subscriptions
+        // Callback is purely for logging/alerting - no automatic retarget
+        // Most "stale" pools are simply inactive (low liquidity pairs that don't trade often)
+        try {
+          setResubscribeCallback(async (stalePools) => {
+            const staleCount = stalePools.length;
+            const totalAttached = attachedOrcaPools + attachedRaydiumPools + attachedMeteoraPools + attachedPumpswapPools + attachedMeteoraBalancedPools;
+            
+            // Group stale pools by DEX for cleaner logging
+            const byDex: Record<string, number> = {};
+            for (const p of stalePools) {
+              byDex[p.dex] = (byDex[p.dex] || 0) + 1;
+            }
+            
+            // Log for visibility - no automatic action taken
+            // Individual stale pools are likely just inactive, not dropped subscriptions
+            logger.info('pools.staleness.detected', {
+              staleCount,
+              totalAttached,
+              stalePercent: totalAttached > 0 ? ((staleCount / totalAttached) * 100).toFixed(1) + '%' : '0%',
+              byDex,
+              sample: stalePools.slice(0, 5).map(p => ({ id: p.poolId.slice(0, 8) + '…', dex: p.dex, ageMs: p.ageMs })),
+              cat: 'pools'
+            });
+            
+            // Emit for UI visibility
+            emit('pool-staleness', {
+              staleCount,
+              totalAttached,
+              byDex,
+              timestamp: new Date().toISOString(),
+            });
+          });
+          
+          // Start the staleness monitor
+          startStalenessMonitor();
+        } catch (stalenessErr) {
+          logger.warn('pools.staleness.setup_failed', {
+            error: String((stalenessErr as Error)?.message || stalenessErr),
+            cat: 'pools'
+          });
+        }
+
         // Health monitor: if no WS events for timeoutMs, trigger periodic refresh as fallback
         const timeoutMs = Math.max(5000, Number((CONFIG.system as any)?.wsHealthTimeoutMs || 15000));
         if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
@@ -6032,6 +6084,12 @@ export function enablePoolWebsocketRefreshes(): void {
 
 export function disablePoolWebsocketRefreshes(): void {
   try {
+    // Stop per-pool staleness monitor
+    try {
+      stopStalenessMonitor();
+      clearPoolActivityTracking();
+    } catch {}
+    
     // Shutdown gRPC adapter if running
     try {
       shutdownGrpcAdapter().catch(() => {});
@@ -6074,6 +6132,13 @@ export function getPoolWsStatus(): {
     subscriptionCount: number;
     eventCount: number;
   };
+  staleness?: {
+    monitorRunning: boolean;
+    trackedPools: number;
+    lastCheckMs: number;
+    oldestActivityMs: number;
+    newestActivityMs: number;
+  };
 } {
   const enabled = !!((CONFIG.system as any)?.enablePoolWs) && wsAllowed;
   const mode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
@@ -6090,12 +6155,26 @@ export function getPoolWsStatus(): {
     };
   } catch {}
   
+  // Get staleness monitoring status
+  let stalenessInfo: { monitorRunning: boolean; trackedPools: number; lastCheckMs: number; oldestActivityMs: number; newestActivityMs: number } | undefined;
+  try {
+    const stalenessStatus = getStalenessStatus();
+    stalenessInfo = {
+      monitorRunning: stalenessStatus.monitorRunning,
+      trackedPools: stalenessStatus.trackedPools,
+      lastCheckMs: stalenessStatus.lastCheckMs,
+      oldestActivityMs: stalenessStatus.oldestActivityMs,
+      newestActivityMs: stalenessStatus.newestActivityMs,
+    };
+  } catch {}
+  
   return { 
     enabled, 
     healthy: mode === 'grpc' ? (grpcInfo?.connected ?? false) : !!wsHealthy, 
     lastEventMs: mode === 'grpc' ? (getGrpcStatus().lastEventMs || 0) : (lastWsEventMs || 0),
     mode: mode as 'wss' | 'grpc' | 'disabled',
     grpc: grpcInfo,
+    staleness: stalenessInfo,
   };
 }
 

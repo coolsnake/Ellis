@@ -33,6 +33,8 @@ import { CONFIG } from '../../../../utils/config.js';
 import { onPoolTickUpdate } from '../../../pools.websockets.js';
 // Import pool activation tracking for lazy activation mode
 import { tryActivatePool } from '../../../pools.activation.js';
+// Import per-pool staleness tracking
+import { recordPoolActivity } from '../staleness.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -1078,6 +1080,9 @@ export async function handleOrcaUpdate(
       processedPrice.priceForward > 0
     );
     tryActivatePool(poolId, 'orca', hasValidPrice);
+
+    // Track successful activity for staleness monitoring
+    recordPoolActivity(poolId, 'orca', poolId);
 
     return { success: true, pool: clmmItem as DecodedPool, delta };
   } catch (e) {

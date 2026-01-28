@@ -19,6 +19,8 @@ import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools
 import { validateDecodedPool, validatePriceDelta } from '../validation.js';
 import { ensureOrientationConsistency } from '../../orientationValidation.js';
 import { tryActivatePool } from '../../../pools.activation.js';
+// Import per-pool staleness tracking
+import { recordPoolActivity } from '../staleness.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -678,13 +680,23 @@ export async function handleRaydiumCpmmUpdate(
     // Check if this is a vault update
     const derivedMeta = derivedAccountToPool.get(poolId);
     if (derivedMeta?.accountType === 'vault') {
-      return handleCpmmVaultUpdate(info, poolId, derivedMeta.poolId);
+      const result = await handleCpmmVaultUpdate(info, poolId, derivedMeta.poolId);
+      // Track successful activity for staleness monitoring (track the actual pool, not vault)
+      if (result.success) {
+        recordPoolActivity(derivedMeta.poolId, 'raydium-cpmm', poolId);
+      }
+      return result;
     }
 
     // Try to decode as CPMM pool
     const decoded = await decodeRaydiumCpmmPool(data, poolId, derivedAccountToPool);
     if (decoded) {
-      return handleCpmmUpdate(info, poolId, derivedAccountToPool, owner);
+      const result = await handleCpmmUpdate(info, poolId, derivedAccountToPool, owner);
+      // Track successful activity for staleness monitoring
+      if (result.success) {
+        recordPoolActivity(poolId, 'raydium-cpmm', poolId);
+      }
+      return result;
     }
 
     // Decode failed
