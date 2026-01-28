@@ -22,6 +22,7 @@ import {
   buildFlashRepayIx,
   buildRouteSwapIx,
   buildExecuteIx,
+  buildExecuteCompactIx,
   deriveVaultPda,
   fetchVault,
   calculateRepayAmount,
@@ -30,6 +31,9 @@ import {
   DexType,
   ExecutionMode,
   RouteStep,
+  RouteStepCompact,
+  ExecuteCompactParams,
+  packDexAndFlags,
 } from '../../router/index.js';
 import { loadRouterConfig, isFlashLoanAvailable } from '../../server/routerConfigStore.js';
 import { getSdkQuoteAccountsForPlan, type SdkProvidedAccounts } from './sdkQuoteBuilder.js';
@@ -167,6 +171,12 @@ export interface RouterTxConfig {
   minProfit?: bigint;
   /** Enable verbose logging on-chain (for simulation/debugging only) */
   verbose?: boolean;
+  /** 
+   * Use compact instruction format for smaller transaction size.
+   * When true (or undefined with 3+ hops), uses execute_compact which saves ~75 bytes.
+   * Default: auto (true for 3+ hops, false otherwise)
+   */
+  useCompactInstruction?: boolean;
 }
 
 export interface RouterTxResult {
@@ -182,6 +192,93 @@ export interface RouterTxResult {
   repayAmount?: bigint;
   /** Error message if failed */
   error?: string;
+}
+
+// ============================================================================
+// Compact Instruction Helpers
+// ============================================================================
+
+/**
+ * Convert standard RouteStep array to compact format
+ */
+function toCompactSteps(steps: RouteStep[]): RouteStepCompact[] {
+  return steps.map(step => ({
+    dexAndFlags: packDexAndFlags(step.dexType, step.aToB),
+    amountIn: step.amountIn,
+  }));
+}
+
+/**
+ * Build execute instruction - uses compact format for 3+ hops to reduce tx size
+ * 
+ * @param user - User's wallet public key
+ * @param userTokenAccount - User's token account for the input token
+ * @param steps - Route steps (standard format)
+ * @param dexAccounts - All DEX accounts for all steps
+ * @param accountsPerStep - Optional per-step account counts
+ * @param minProfit - Minimum profit required
+ * @param initialBalances - Pre-existing balances to exclude
+ * @param verbose - Enable verbose logging (only for standard execute)
+ * @param useCompact - Force compact mode (undefined = auto based on hop count)
+ * @param programId - Program ID to use
+ * @returns TransactionInstruction for execute or execute_compact
+ */
+function buildExecuteInstruction(
+  user: PublicKey,
+  userTokenAccount: PublicKey,
+  steps: RouteStep[],
+  dexAccounts: PublicKey[],
+  accountsPerStep: number[],
+  minProfit: bigint,
+  initialBalances: bigint[],
+  verbose: boolean,
+  useCompact: boolean | undefined,
+  programId: PublicKey
+): TransactionInstruction {
+  // Auto-determine compact mode: use compact for 3+ hops unless explicitly disabled
+  const shouldUseCompact = useCompact ?? (steps.length >= 3);
+  
+  if (shouldUseCompact) {
+    // Use compact instruction - no per-hop slippage, but still includes verbose logging
+    const compactSteps = toCompactSteps(steps);
+    const compactParams: ExecuteCompactParams = {
+      steps: compactSteps,
+      accountsPerStep,
+      minProfit,
+      initialBalances,
+      verbose,
+    };
+    
+    logger.debug('routerTx.buildExecuteInstruction.compact', {
+      cat: 'tx',
+      ctx: {
+        hopCount: steps.length,
+        useCompact: true,
+        verbose,
+        stepsBytes: 4 + (steps.length * 9), // vec len + 9 bytes per compact step
+      },
+    });
+    
+    return buildExecuteCompactIx(user, userTokenAccount, compactParams, dexAccounts, programId);
+  } else {
+    // Use standard instruction with per-hop slippage and verbose
+    logger.debug('routerTx.buildExecuteInstruction.standard', {
+      cat: 'tx',
+      ctx: {
+        hopCount: steps.length,
+        useCompact: false,
+        stepsBytes: 4 + (steps.length * 18), // vec len + 18 bytes per standard step
+      },
+    });
+    
+    return buildExecuteIx(
+      user,
+      userTokenAccount,
+      { steps, accountsPerStep, minProfit, initialBalances, verbose },
+      dexAccounts,
+      programId
+    );
+  }
 }
 
 // ============================================================================
@@ -237,19 +334,22 @@ export async function buildRouterTransaction(
 
     // Extract verbose flag (for simulation logging)
     const verbose = config?.verbose ?? false;
+    
+    // Extract compact instruction flag (undefined = auto based on hop count)
+    const useCompactInstruction = config?.useCompactInstruction;
 
     // SDK Quote mode: use DEX SDKs to get accurate tick/bin arrays
     if (mode === ExecutionMode.SdkQuote) {
-      return buildSdkQuoteRouterTx(plan, wallet, programId, minProfit, verbose);
+      return buildSdkQuoteRouterTx(plan, wallet, programId, minProfit, verbose, useCompactInstruction);
     }
 
     // Determine if we should use flash loan
     const shouldUseFlashLoan = await shouldUseFlashLoanMode(mode, plan, routerConfig);
 
     if (shouldUseFlashLoan) {
-      return buildFlashLoanArbTx(plan, wallet, programId, routerConfig.vaultOwner!, minProfit, verbose);
+      return buildFlashLoanArbTx(plan, wallet, programId, routerConfig.vaultOwner!, minProfit, verbose, useCompactInstruction);
     } else {
-      return buildDirectRouterTx(plan, wallet, programId, minProfit, verbose);
+      return buildDirectRouterTx(plan, wallet, programId, minProfit, verbose, useCompactInstruction);
     }
   } catch (err: any) {
     logCatchError('routerTx.build', err);
@@ -339,7 +439,8 @@ async function buildFlashLoanArbTx(
   programId: PublicKey,
   vaultOwnerStr: string,
   minProfit: bigint,
-  verbose: boolean
+  verbose: boolean,
+  useCompactInstruction?: boolean
 ): Promise<RouterTxResult> {
   const instructions: TransactionInstruction[] = [];
   
@@ -504,7 +605,7 @@ async function buildFlashLoanArbTx(
     // 2. Execute swaps (using execute instruction for multi-hop, now with validated accounts)
     const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteSteps(plan.hops, wallet.publicKey);
     
-    // DIAGNOSTIC: Log the exact values being passed to buildExecuteIx
+    // DIAGNOSTIC: Log the exact values being passed to buildExecuteInstruction
     logger.debug('routerTx.flashLoan.execute.params', {
       cat: 'tx',
       ctx: {
@@ -512,14 +613,20 @@ async function buildFlashLoanArbTx(
         userTokenAccount: userTokenAccount.toBase58(),
         stepsCount: steps.length,
         dexAccountsCount: dexAccounts.length,
+        useCompact: useCompactInstruction ?? (steps.length >= 3),
       },
     });
     
-    const executeIx = buildExecuteIx(
+    const executeIx = buildExecuteInstruction(
       wallet.publicKey,
       userTokenAccount,
-      { steps, accountsPerStep, minProfit, initialBalances, verbose },
+      steps,
       dexAccounts,
+      accountsPerStep,
+      minProfit,
+      initialBalances,
+      verbose,
+      useCompactInstruction,
       programId
     );
     
@@ -586,7 +693,8 @@ async function buildDirectRouterTx(
   wallet: { publicKey: PublicKey },
   programId: PublicKey,
   minProfit: bigint,
-  verbose: boolean
+  verbose: boolean,
+  useCompactInstruction?: boolean
 ): Promise<RouterTxResult> {
   const instructions: TransactionInstruction[] = [];
 
@@ -877,7 +985,7 @@ async function buildDirectRouterTx(
       // Multi-hop: execute supports dynamic amount propagation across steps
       const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteSteps(plan.hops, wallet.publicKey);
       
-      // DIAGNOSTIC: Log the exact values being passed to buildExecuteIx
+      // DIAGNOSTIC: Log the exact values being passed to buildExecuteInstruction
       // CRITICAL: Verify wallet.publicKey !== userTokenAccount (they must be different)
       const walletPubkey = wallet.publicKey.toBase58();
       const userTokenPubkey = userTokenAccount.toBase58();
@@ -892,6 +1000,7 @@ async function buildDirectRouterTx(
           stepsCount: steps.length,
           dexAccountsCount: dexAccounts.length,
           programId: programId.toBase58(),
+          useCompact: useCompactInstruction ?? (steps.length >= 3),
         },
       });
       
@@ -904,11 +1013,16 @@ async function buildDirectRouterTx(
         });
       }
       
-      const executeIx = buildExecuteIx(
+      const executeIx = buildExecuteInstruction(
         wallet.publicKey,
         userTokenAccount,
-        { steps, accountsPerStep, minProfit, initialBalances, verbose },
+        steps,
         dexAccounts,
+        accountsPerStep,
+        minProfit,
+        initialBalances,
+        verbose,
+        useCompactInstruction,
         programId
       );
       
@@ -1003,7 +1117,8 @@ async function buildSdkQuoteRouterTx(
   wallet: { publicKey: PublicKey },
   programId: PublicKey,
   minProfit: bigint,
-  verbose: boolean
+  verbose: boolean,
+  useCompactInstruction?: boolean
 ): Promise<RouterTxResult> {
   const instructions: TransactionInstruction[] = [];
 
@@ -1152,12 +1267,17 @@ async function buildSdkQuoteRouterTx(
       sdkResult.results.map(r => r.accounts)
     );
 
-    // Build execute instruction
-    const executeIx = buildExecuteIx(
+    // Build execute instruction (use compact for 3+ hops to reduce tx size)
+    const executeIx = buildExecuteInstruction(
       wallet.publicKey,
       userTokenAccount,
-      { steps, accountsPerStep, minProfit, initialBalances, verbose },
+      steps,
       dexAccounts,
+      accountsPerStep,
+      minProfit,
+      initialBalances,
+      verbose,
+      useCompactInstruction,
       programId
     );
     instructions.push(executeIx);

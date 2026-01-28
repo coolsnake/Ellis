@@ -50,7 +50,12 @@ type ExecutionResult = {
   };
   simulationDetails?: {
     swapsExecuted: Array<{ step: number; dex: string; amountIn: string; minOut: string }>;
+    /** Actual hop outputs from VERBOSE logs (real in/out per hop) */
+    hopActualOutputs?: Array<{ hop: number; amountIn: string; amountOut: string; dex: string }>;
     profitValue?: string;
+    minProfitRequired?: string;
+    initialBalance?: string;
+    finalBalance?: string;
     errorCode?: number;
     errorMessage?: string;
   };
@@ -482,43 +487,63 @@ export function OpportunityList(
                         <div className="mt-1 p-1.5 bg-black/20 rounded">
                           <div className="font-semibold text-[10px] opacity-70 mb-1">Profit Check Details:</div>
                           
-                          {/* Show expected hop outputs from opportunity data */}
-                          {op.hop_outs && op.hop_outs.length > 0 && (
+                          {/* Show actual hop outputs from VERBOSE logs if available (most useful) */}
+                          {latest.simulationDetails?.hopActualOutputs && 
+                           latest.simulationDetails.hopActualOutputs.length > 0 ? (
                             <div className="space-y-0.5 mb-2">
-                              <div className="text-[10px] text-gray-400">Expected hop sequence:</div>
-                              {op.hop_outs.map((hopOut, i) => (
+                              <div className="text-[10px] text-gray-400">Actual hop execution (from verbose logs):</div>
+                              {latest.simulationDetails.hopActualOutputs.map((hop, i) => (
                                 <div key={i} className="text-[10px] opacity-80 font-mono flex gap-2">
-                                  <span className="text-gray-400">{i + 1}.</span>
-                                  <span className={op.hop_dexes?.[i] === 'Orca' ? 'text-yellow-300' : op.hop_dexes?.[i]?.includes('Raydium') ? 'text-green-400' : 'text-blue-300'}>
-                                    {op.hop_dexes?.[i] || 'Unknown'}
+                                  <span className="text-gray-400">{hop.hop + 1}.</span>
+                                  <span className={hop.dex === 'Orca' ? 'text-yellow-300' : hop.dex.includes('Raydium') ? 'text-green-400' : 'text-blue-300'}>
+                                    {hop.dex}
                                   </span>
-                                  <span>→ {fmt(hopOut, 4)}</span>
-                                  {op.hop_rates?.[i] && <span className="opacity-60">(@{op.hop_rates[i].toFixed(6)})</span>}
+                                  <span>{fmt(Number(hop.amountIn), 0)} →</span>
+                                  <span className="text-cyan-300">{fmt(Number(hop.amountOut), 0)}</span>
+                                  {op.hop_outs?.[i] && (
+                                    <span className="opacity-50">(exp: {fmt(op.hop_outs[i], 0)})</span>
+                                  )}
                                 </div>
                               ))}
                             </div>
+                          ) : (
+                            /* Fallback: Show expected hop outputs from opportunity data */
+                            op.hop_outs && op.hop_outs.length > 0 && (
+                              <div className="space-y-0.5 mb-2">
+                                <div className="text-[10px] text-gray-400">Expected hop sequence (no verbose logs):</div>
+                                {op.hop_outs.map((hopOut, i) => (
+                                  <div key={i} className="text-[10px] opacity-80 font-mono flex gap-2">
+                                    <span className="text-gray-400">{i + 1}.</span>
+                                    <span className={op.hop_dexes?.[i] === 'Orca' ? 'text-yellow-300' : op.hop_dexes?.[i]?.includes('Raydium') ? 'text-green-400' : 'text-blue-300'}>
+                                      {op.hop_dexes?.[i] || 'Unknown'}
+                                    </span>
+                                    <span>→ {fmt(hopOut, 4)}</span>
+                                    {op.hop_rates?.[i] && <span className="opacity-60">(@{op.hop_rates[i].toFixed(6)})</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            )
                           )}
 
-                          {/* Show actual simulation swap details if available */}
-                          {latest.simulationDetails?.swapsExecuted && 
-                           latest.simulationDetails.swapsExecuted.length > 0 && (
-                            <div className="space-y-0.5 mb-2">
-                              <div className="text-[10px] text-gray-400">Actual swap execution:</div>
-                              {latest.simulationDetails.swapsExecuted.map((swap, i) => (
-                                <div key={i} className="text-[10px] opacity-80 font-mono flex gap-2">
-                                  <span className="text-gray-400">{i + 1}.</span>
-                                  <span className={swap.dex === 'Orca' ? 'text-yellow-300' : swap.dex === 'Raydium' ? 'text-green-400' : 'text-blue-300'}>
-                                    {swap.dex}
-                                  </span>
-                                  <span>In: {fmt(Number(swap.amountIn), 0)}</span>
-                                  <span>MinOut: {fmt(Number(swap.minOut), 0)}</span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Profit summary */}
+                          {/* Profit summary with initial/final from VERBOSE logs */}
                           <div className="border-t border-gray-700 pt-1 mt-1">
+                            {/* Show initial → final → profit from VERBOSE logs if available */}
+                            {latest.simulationDetails?.initialBalance && latest.simulationDetails?.finalBalance && (
+                              <div className="text-[10px] font-mono mb-1">
+                                <span className="text-gray-400">Initial:</span>{' '}
+                                <span>{fmt(Number(latest.simulationDetails.initialBalance), 0)}</span>
+                                <span className="text-gray-500 mx-1">→</span>
+                                <span className="text-gray-400">Final:</span>{' '}
+                                <span className="text-cyan-300">{fmt(Number(latest.simulationDetails.finalBalance), 0)}</span>
+                                <span className="text-gray-500 mx-1">=</span>
+                                <span className={Number(latest.simulationDetails.profitValue || 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                  {Number(latest.simulationDetails.profitValue || 0) >= 0 ? '+' : ''}{fmt(Number(latest.simulationDetails.profitValue || 0), 0)}
+                                </span>
+                                {latest.simulationDetails.minProfitRequired && (
+                                  <span className="opacity-50 ml-2">(min required: {latest.simulationDetails.minProfitRequired})</span>
+                                )}
+                              </div>
+                            )}
                             <div className="text-[10px] font-semibold flex flex-wrap gap-3">
                               <span className="text-gray-400">
                                 Expected: <span className="text-green-400">+{op.profit_bps} bps</span>
@@ -526,9 +551,10 @@ export function OpportunityList(
                                   <span className="opacity-70"> (net: +{op.net_bps} bps)</span>
                                 )}
                               </span>
-                              {latest.simulationDetails?.profitValue !== undefined && (
-                                <span className="text-yellow-300">
-                                  Actual: {Number(latest.simulationDetails.profitValue) >= 0 ? '+' : ''}{latest.simulationDetails.profitValue} raw
+                              {latest.simulationDetails?.profitValue !== undefined && 
+                               latest.simulationDetails?.initialBalance && (
+                                <span className={Number(latest.simulationDetails.profitValue) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                  Actual: {(Number(latest.simulationDetails.profitValue) / Number(latest.simulationDetails.initialBalance) * 10000).toFixed(0)} bps
                                 </span>
                               )}
                             </div>

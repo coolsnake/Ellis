@@ -1393,7 +1393,18 @@ export class ArbExecutor {
                 amountIn: s.amountIn.toString(),
                 minOut: s.minAmountOut.toString(),
               })),
+              // Actual hop outputs from VERBOSE logs (real in/out per hop)
+              hopActualOutputs: simAnalysis.hopActualOutputs?.map(h => ({
+                hop: h.hop,
+                amountIn: h.amountIn.toString(),
+                amountOut: h.amountOut.toString(),
+                dex: h.dex,
+              })),
+              // Profit check details from VERBOSE logs
               profitValue: simAnalysis.profitValue?.toString(),
+              minProfitRequired: simAnalysis.minProfitRequired?.toString(),
+              initialBalance: simAnalysis.initialBalance?.toString(),
+              finalBalance: simAnalysis.finalBalance?.toString(),
               errorCode: simAnalysis.errorCode,
               errorMessage: simAnalysis.errorMessage,
             },
@@ -1670,7 +1681,18 @@ export class ArbExecutor {
                 amountIn: s.amountIn.toString(),
                 minOut: s.minAmountOut.toString(),
               })),
+              // Actual hop outputs from VERBOSE logs (real in/out per hop)
+              hopActualOutputs: lastSimAnalysis!.hopActualOutputs?.map(h => ({
+                hop: h.hop,
+                amountIn: h.amountIn.toString(),
+                amountOut: h.amountOut.toString(),
+                dex: h.dex,
+              })),
+              // Profit check details from VERBOSE logs
               profitValue: lastSimAnalysis!.profitValue?.toString(),
+              minProfitRequired: lastSimAnalysis!.minProfitRequired?.toString(),
+              initialBalance: lastSimAnalysis!.initialBalance?.toString(),
+              finalBalance: lastSimAnalysis!.finalBalance?.toString(),
               errorCode: lastSimAnalysis!.errorCode,
               errorMessage: lastSimAnalysis!.errorMessage,
             },

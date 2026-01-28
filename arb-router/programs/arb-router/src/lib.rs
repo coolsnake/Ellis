@@ -403,6 +403,158 @@ pub mod arb_router {
         msg!("Route executed successfully. Profit: {}", profit);
         Ok(())
     }
+
+    /// Execute a multi-hop arbitrage route with compact encoding (smaller tx size)
+    /// 
+    /// This is a size-optimized version of `execute` that reduces transaction size
+    /// by ~50% per step. It achieves this by:
+    /// - Removing per-hop min_amount_out (relies on final min_profit check)
+    /// - Packing dex_type and a_to_b into a single byte
+    /// 
+    /// Use this for routes with 3+ hops where transaction size is a concern.
+    /// 
+    /// ## Byte savings
+    /// - Standard RouteStep: 18 bytes (dex: 1, amount_in: 8, min_out: 8, a_to_b: 1)
+    /// - Compact RouteStep: 9 bytes (dex_and_flags: 1, amount_in: 8)
+    /// - For 4 hops: saves 36 bytes on steps alone
+    pub fn execute_compact<'info>(
+        ctx: Context<'_, '_, '_, 'info, Execute<'info>>,
+        params: ExecuteCompactParams,
+    ) -> Result<()> {
+        require!(!params.steps.is_empty(), ArbRouterError::EmptyRoute);
+        require!(params.steps.len() <= MAX_ROUTE_STEPS, ArbRouterError::TooManyRouteSteps);
+        
+        // Validate accounts_per_step if provided
+        let use_variable_accounts = !params.accounts_per_step.is_empty();
+        if use_variable_accounts {
+            require!(
+                params.accounts_per_step.len() == params.steps.len(),
+                ArbRouterError::InvalidAccount
+            );
+        }
+
+        // Get initial balance
+        let initial_balance = ctx.accounts.user_token_account.amount;
+
+        // Execute each step
+        let mut account_offset = 0;
+        
+        for (i, step) in params.steps.iter().enumerate() {
+            // Unpack dex_type and a_to_b from the compact encoding
+            let dex_type = step.dex_type();
+            let a_to_b = step.a_to_b();
+            
+            msg!("Executing compact step {} on DEX {:?}", i, dex_type as u8);
+            
+            // Use per-step account count if provided, otherwise fall back to fixed DEX defaults
+            let accounts_needed = if use_variable_accounts {
+                params.accounts_per_step[i] as usize
+            } else {
+                get_accounts_needed_for_dex(&dex_type)
+            };
+            
+            // Validate we have enough accounts
+            require!(
+                account_offset + accounts_needed <= ctx.remaining_accounts.len(),
+                ArbRouterError::InvalidAccount
+            );
+            
+            let step_accounts = &ctx.remaining_accounts[account_offset..account_offset + accounts_needed];
+            
+            // Determine actual amount to swap
+            // If amount_in == 0, read the current balance of the input token account
+            let actual_amount_in = if step.amount_in == 0 {
+                let input_token_idx = get_user_token_in_index(&dex_type, a_to_b, accounts_needed);
+                let input_token_account = &step_accounts[input_token_idx];
+                let balance = read_token_account_balance(input_token_account)?;
+                
+                // Subtract pre-existing balance to avoid swapping at-rest funds
+                let initial_bal = params.initial_balances.get(i).copied().unwrap_or(0);
+                let swap_amount = balance.saturating_sub(initial_bal);
+                
+                if params.verbose {
+                    msg!("Step {}: balance={}, initial={}, swap_amount={} (idx: {})", 
+                        i, balance, initial_bal, swap_amount, input_token_idx);
+                }
+                swap_amount
+            } else {
+                step.amount_in
+            };
+            
+            require!(actual_amount_in > 0, ArbRouterError::InsufficientFunds);
+            
+            // COMPACT: No per-hop slippage - pass min_amount_out = 1 to all DEX CPIs
+            // The value 1 is used instead of 0 because:
+            // - PumpSwap buy interprets min_amount_out as base_amount_out (requested tokens)
+            // - Passing 0 would request 0 tokens, which fails
+            // - Passing 1 is the minimum safe value that allows any swap to proceed
+            // Protection is provided by the final min_profit check instead
+            let min_amount_out: u64 = 1;
+            
+            // Verbose: capture output token balance BEFORE swap
+            let output_balance_before = if params.verbose {
+                let output_token_idx = get_user_token_out_index(&dex_type, a_to_b, accounts_needed);
+                let output_token_account = &step_accounts[output_token_idx];
+                read_token_account_balance(output_token_account).unwrap_or(0)
+            } else {
+                0
+            };
+            
+            match dex_type {
+                DexType::Raydium => {
+                    dex::raydium::swap(step_accounts, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+                DexType::Meteora => {
+                    dex::meteora::swap(step_accounts, actual_amount_in, min_amount_out)?;
+                }
+                DexType::Orca => {
+                    dex::orca::swap(step_accounts, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+                DexType::PumpSwap => {
+                    dex::pumpswap::swap(step_accounts, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+                DexType::RaydiumAmm => {
+                    dex::raydium_amm::swap(step_accounts, actual_amount_in, min_amount_out)?;
+                }
+                DexType::MeteoraDAMM => {
+                    dex::meteora_damm::swap(step_accounts, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+                DexType::RaydiumCpmm => {
+                    dex::raydium_cpmm::swap(step_accounts, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+            }
+            
+            // Verbose: capture output balance AFTER swap and log delta
+            if params.verbose {
+                let output_token_idx = get_user_token_out_index(&dex_type, a_to_b, accounts_needed);
+                let output_token_account = &step_accounts[output_token_idx];
+                let output_balance_after = read_token_account_balance(output_token_account).unwrap_or(0);
+                let amount_out = output_balance_after.saturating_sub(output_balance_before);
+                msg!("VERBOSE hop[{}]: in={} out={} dex={:?}", i, actual_amount_in, amount_out, dex_type);
+            }
+            
+            account_offset += accounts_needed;
+        }
+
+        // Reload token account to check final balance
+        ctx.accounts.user_token_account.reload()?;
+        let final_balance = ctx.accounts.user_token_account.amount;
+
+        // Verify profit - this is the ONLY slippage protection in compact mode
+        let profit: i64 = (final_balance as i64).checked_sub(initial_balance as i64)
+            .ok_or(ArbRouterError::MathOverflow)?;
+        
+        // Verbose: log detailed profit check info before the require
+        if params.verbose {
+            msg!("VERBOSE profit_check: initial={} final={} profit={} min_required={}", 
+                initial_balance, final_balance, profit, params.min_profit);
+        }
+        
+        require!(profit >= params.min_profit, ArbRouterError::NoProfitFromRoute);
+
+        msg!("Compact route executed successfully. Profit: {}", profit);
+        Ok(())
+    }
 }
 
 // ============================================================================

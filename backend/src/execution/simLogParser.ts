@@ -13,6 +13,14 @@ export interface ParsedSwapLog {
   stepIndex?: number;
 }
 
+/** Actual hop execution data from VERBOSE logs */
+export interface HopActualOutput {
+  hop: number;
+  amountIn: bigint;
+  amountOut: bigint;
+  dex: string;
+}
+
 export interface SimulationAnalysis {
   swapsExecuted: ParsedSwapLog[];
   profitCheckFailed: boolean;
@@ -21,6 +29,12 @@ export interface SimulationAnalysis {
   errorCode?: number;
   errorMessage?: string;
   lastSuccessfulStep?: number;
+  /** Actual hop outputs from VERBOSE logs (in/out amounts per hop) */
+  hopActualOutputs?: HopActualOutput[];
+  /** Initial token balance before route execution (from VERBOSE profit_check) */
+  initialBalance?: bigint;
+  /** Final token balance after route execution (from VERBOSE profit_check) */
+  finalBalance?: bigint;
 }
 
 /**
@@ -98,6 +112,12 @@ export function parseSimulationLogs(logs: string[] | undefined, simErr?: any): S
   const profitPattern = /Route executed successfully\.\s*Profit:\s*(-?\d+)/i;
   const noProfitPattern = /NoProfitFromRoute|Route execution failed - no profit/i;
 
+  // VERBOSE log patterns (arb-router verbose mode)
+  // Format: "VERBOSE hop[0]: in=1000000 out=3242186 dex=Orca"
+  const verboseHopPattern = /VERBOSE hop\[(\d+)\]: in=(\d+) out=(\d+) dex=(\w+)/i;
+  // Format: "VERBOSE profit_check: initial=1000000 final=999800 profit=-200 min_required=100"
+  const verboseProfitCheckPattern = /VERBOSE profit_check: initial=(\d+) final=(\d+) profit=(-?\d+) min_required=(-?\d+)/i;
+
   let currentStep = -1;
 
   for (const log of logs) {
@@ -105,6 +125,31 @@ export function parseSimulationLogs(logs: string[] | undefined, simErr?: any): S
     const stepMatch = log.match(stepPattern);
     if (stepMatch) {
       currentStep = parseInt(stepMatch[1], 10);
+      continue;
+    }
+
+    // Check for VERBOSE hop output (actual in/out amounts per hop)
+    const verboseHopMatch = log.match(verboseHopPattern);
+    if (verboseHopMatch) {
+      if (!result.hopActualOutputs) {
+        result.hopActualOutputs = [];
+      }
+      result.hopActualOutputs.push({
+        hop: parseInt(verboseHopMatch[1], 10),
+        amountIn: BigInt(verboseHopMatch[2]),
+        amountOut: BigInt(verboseHopMatch[3]),
+        dex: verboseHopMatch[4],
+      });
+      continue;
+    }
+
+    // Check for VERBOSE profit_check (initial/final balance details)
+    const verboseProfitMatch = log.match(verboseProfitCheckPattern);
+    if (verboseProfitMatch) {
+      result.initialBalance = BigInt(verboseProfitMatch[1]);
+      result.finalBalance = BigInt(verboseProfitMatch[2]);
+      result.profitValue = BigInt(verboseProfitMatch[3]);
+      result.minProfitRequired = BigInt(verboseProfitMatch[4]);
       continue;
     }
 
@@ -125,10 +170,13 @@ export function parseSimulationLogs(logs: string[] | undefined, simErr?: any): S
       }
     }
 
-    // Check for profit result
+    // Check for profit result (non-verbose format)
     const profitMatch = log.match(profitPattern);
     if (profitMatch) {
-      result.profitValue = BigInt(profitMatch[1]);
+      // Only set if not already set by verbose log
+      if (result.profitValue === undefined) {
+        result.profitValue = BigInt(profitMatch[1]);
+      }
     }
 
     // Check for no profit error
@@ -264,6 +312,9 @@ export function buildSimulationReport(
       lastSuccessfulStep: simAnalysis.lastSuccessfulStep,
       profitCheckFailed: simAnalysis.profitCheckFailed,
       profitValue: simAnalysis.profitValue?.toString(),
+      minProfitRequired: simAnalysis.minProfitRequired?.toString(),
+      initialBalance: simAnalysis.initialBalance?.toString(),
+      finalBalance: simAnalysis.finalBalance?.toString(),
       errorCode: simAnalysis.errorCode,
       errorMessage: simAnalysis.errorMessage,
       swapDetails: simAnalysis.swapsExecuted.map(s => ({
@@ -272,6 +323,13 @@ export function buildSimulationReport(
         amountIn: s.amountIn.toString(),
         minOut: s.minAmountOut.toString(),
         aToB: s.aToB,
+      })),
+      // Actual hop outputs from VERBOSE logs (shows real in/out per hop)
+      hopActualOutputs: simAnalysis.hopActualOutputs?.map(h => ({
+        hop: h.hop,
+        amountIn: h.amountIn.toString(),
+        amountOut: h.amountOut.toString(),
+        dex: h.dex,
       })),
     },
     

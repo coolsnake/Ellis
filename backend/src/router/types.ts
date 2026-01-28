@@ -178,6 +178,115 @@ export interface FlashRepayParams {
 }
 
 // ============================================================================
+// Compact Instruction Types (for reduced transaction size)
+// ============================================================================
+
+/**
+ * Compact route step - no per-hop slippage (9 bytes vs 18 bytes)
+ * 
+ * Uses packed encoding: dexAndFlags contains both DEX type (bits 0-3) and
+ * swap direction (bit 4). Removes min_amount_out entirely - relies on
+ * final min_profit check for slippage protection.
+ */
+export interface RouteStepCompact {
+  /** Packed: bits 0-3 = dex_type (0-15), bit 4 = a_to_b, bits 5-7 = reserved */
+  dexAndFlags: number;
+  /** Amount to swap (0 = use all from previous step) */
+  amountIn: bigint;
+}
+
+/**
+ * Parameters for execute_compact instruction
+ * 
+ * Size-optimized version of ExecuteParams:
+ * - No per-hop min_amount_out (saves 8 bytes per step)
+ * - Packed dex+direction (saves 1 byte per step)
+ * 
+ * Total savings for 4-hop route: ~74 bytes
+ */
+export interface ExecuteCompactParams {
+  /** Compact route steps to execute */
+  steps: RouteStepCompact[];
+  /** 
+   * Number of accounts for each step (enables variable bin arrays per hop).
+   * If empty/undefined, falls back to fixed account counts per DEX type.
+   */
+  accountsPerStep?: number[];
+  /** Minimum profit required - the ONLY slippage protection in compact mode */
+  minProfit: bigint;
+  /**
+   * Pre-existing wallet balances for intermediate token accounts.
+   * Used to exclude at-rest balances from dynamic amount propagation.
+   */
+  initialBalances?: bigint[];
+  /**
+   * Enable verbose logging on-chain (for simulation/debugging).
+   * When true, logs detailed input/output amounts for each hop.
+   */
+  verbose?: boolean;
+}
+
+/**
+ * Pack DEX type and swap direction into a single byte
+ * 
+ * @param dexType - DEX enum value (0-15)
+ * @param aToB - Swap direction: true = A to B, false = B to A
+ * @returns Packed byte: bits 0-3 = dex_type, bit 4 = a_to_b
+ */
+export function packDexAndFlags(dexType: DexType, aToB: boolean): number {
+  return (dexType & 0x0F) | (aToB ? 0x10 : 0x00);
+}
+
+/**
+ * Unpack DEX type from packed byte
+ * 
+ * @param packed - Packed dexAndFlags byte
+ * @returns DEX type (bits 0-3)
+ */
+export function unpackDexType(packed: number): DexType {
+  return (packed & 0x0F) as DexType;
+}
+
+/**
+ * Unpack swap direction from packed byte
+ * 
+ * @param packed - Packed dexAndFlags byte
+ * @returns true if A to B, false if B to A
+ */
+export function unpackAToB(packed: number): boolean {
+  return (packed & 0x10) !== 0;
+}
+
+/**
+ * Convert a standard RouteStep to a compact RouteStepCompact
+ * 
+ * @param step - Standard route step with per-hop slippage
+ * @returns Compact route step without slippage
+ */
+export function toCompactStep(step: RouteStep): RouteStepCompact {
+  return {
+    dexAndFlags: packDexAndFlags(step.dexType, step.aToB),
+    amountIn: step.amountIn,
+  };
+}
+
+/**
+ * Convert standard ExecuteParams to compact ExecuteCompactParams
+ * 
+ * @param params - Standard execute parameters
+ * @returns Compact execute parameters (drops per-hop slippage)
+ */
+export function toCompactParams(params: ExecuteParams): ExecuteCompactParams {
+  return {
+    steps: params.steps.map(toCompactStep),
+    accountsPerStep: params.accountsPerStep,
+    minProfit: params.minProfit,
+    initialBalances: params.initialBalances,
+    verbose: params.verbose,
+  };
+}
+
+// ============================================================================
 // Router Configuration
 // ============================================================================
 

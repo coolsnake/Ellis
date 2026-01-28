@@ -27,6 +27,7 @@ export {
   buildFlashRepayIx,
   buildRouteSwapIx,
   buildExecuteIx,
+  buildExecuteCompactIx,
   
   // Utilities
   calculateFlashLoanFee,
