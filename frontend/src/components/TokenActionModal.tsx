@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ROUTES } from '../utils/routes';
 
+interface TokenInfo {
+  mint: string;
+  symbol: string;
+  balance: number;
+}
+
 interface TokenActionModalProps {
-  token: {
-    mint: string;
-    symbol: string;
-    balance: number;
-  };
+  tokens: TokenInfo[];
+  initialToken?: TokenInfo;
   prices: Record<string, { usdc: number | null; sol: number | null }>;
   onClose: () => void;
   apiBase: string;
@@ -17,12 +20,17 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export const TokenActionModal: React.FC<TokenActionModalProps> = ({
-  token,
+  tokens,
+  initialToken,
   prices,
   onClose,
   apiBase,
   onSuccess,
 }) => {
+  const [selectedTokenMint, setSelectedTokenMint] = useState<string>(initialToken?.mint || tokens[0]?.mint || '');
+  
+  // Get the currently selected token
+  const token = tokens.find(t => t.mint === selectedTokenMint) || tokens[0];
   const [tab, setTab] = useState<'send' | 'swap'>('swap');
   const [amount, setAmount] = useState('');
   const [percentage, setPercentage] = useState<number | null>(null);
@@ -162,9 +170,26 @@ export const TokenActionModal: React.FC<TokenActionModalProps> = ({
     }
   };
 
+  // Reset amount when token changes
+  useEffect(() => {
+    setAmount('');
+    setPercentage(null);
+  }, [selectedTokenMint]);
+
   // Get token USD value
-  const tokenUsdValue = prices[token.mint]?.usdc;
+  const tokenUsdValue = token ? prices[token.mint]?.usdc : null;
   const amountUsdValue = tokenUsdValue && amount ? Number(amount) * tokenUsdValue : null;
+
+  if (!token) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+        <div className="bg-gray-900 rounded-lg shadow-xl w-full max-w-md mx-4 p-6" onClick={(e) => e.stopPropagation()}>
+          <p className="text-gray-400">No tokens available to manage.</p>
+          <button onClick={onClose} className="mt-4 px-4 py-2 bg-gray-700 text-white rounded">Close</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
@@ -175,11 +200,7 @@ export const TokenActionModal: React.FC<TokenActionModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
           <div>
-            <h2 className="text-lg font-semibold text-white">Manage {token.symbol}</h2>
-            <div className="text-sm text-gray-400">
-              Balance: {token.balance.toFixed(6)} {token.symbol}
-              {tokenUsdValue && <span className="ml-2">(${(token.balance * tokenUsdValue).toFixed(2)})</span>}
-            </div>
+            <h2 className="text-lg font-semibold text-white">Manage Tokens</h2>
           </div>
           <button
             onClick={onClose}
@@ -189,6 +210,26 @@ export const TokenActionModal: React.FC<TokenActionModalProps> = ({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
+        </div>
+
+        {/* Token Selector */}
+        <div className="p-4 border-b border-gray-700">
+          <label className="block text-sm font-medium text-gray-300 mb-2">Select Token</label>
+          <select
+            value={selectedTokenMint}
+            onChange={(e) => setSelectedTokenMint(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+          >
+            {tokens.map((t) => (
+              <option key={t.mint} value={t.mint}>
+                {t.symbol} - {t.balance.toFixed(6)} {prices[t.mint]?.usdc ? `($${(t.balance * prices[t.mint]!.usdc!).toFixed(2)})` : ''}
+              </option>
+            ))}
+          </select>
+          <div className="mt-2 text-sm text-gray-400">
+            Balance: {token.balance.toFixed(6)} {token.symbol}
+            {tokenUsdValue && <span className="ml-2">(${(token.balance * tokenUsdValue).toFixed(2)})</span>}
+          </div>
         </div>
 
         {/* Tab Switcher */}

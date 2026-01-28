@@ -82,7 +82,7 @@ export const App: React.FC = () => {
   const [showOpportunityConfig, setShowOpportunityConfig] = useState(false);
   const [showAltModal, setShowAltModal] = useState(false);
   const [showWsolModal, setShowWsolModal] = useState(false);
-  const [selectedToken, setSelectedToken] = useState<{ mint: string; symbol: string; balance: number } | null>(null);
+  const [showTokenManageModal, setShowTokenManageModal] = useState(false);
   const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
   const [showRouterPanel, setShowRouterPanel] = useState(false);
@@ -2110,7 +2110,16 @@ export const App: React.FC = () => {
           />
           </div>
           <section className="bg-gray-900 rounded p-4">
-            <h2 className="text-2xl font-semibold mb-3">Wallet</h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-2xl font-semibold">Wallet</h2>
+              <button
+                onClick={() => setShowTokenManageModal(true)}
+                className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded"
+                title="Send or Swap tokens"
+              >
+                Manage Tokens
+              </button>
+            </div>
             <div className="text-base break-all">{wallet?.address}</div>
             {(() => {
               // Combine native SOL and wSOL for display
@@ -2133,13 +2142,6 @@ export const App: React.FC = () => {
                       title="Manage WSOL (wrap/unwrap)"
                     >
                       WSOL
-                    </button>
-                    <button
-                      onClick={() => setSelectedToken({ mint: SOL_MINT, symbol: 'SOL', balance: combinedSol })}
-                      className="px-2 py-0.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded"
-                      title="Send or Swap SOL"
-                    >
-                      Manage
                     </button>
                   </div>
                 </div>
@@ -2181,19 +2183,7 @@ export const App: React.FC = () => {
                   return tokenEntries.map(([mint, amount]) => {
                     const alias = walletTokens.find((t) => t.id === mint);
                     const label = wallet?.aliases?.[mint] || alias?.symbol || mint.slice(0, 4);
-                    const balance = Number(amount);
-                    return (
-                      <li key={mint} className="flex items-center justify-between">
-                        <span>{label}: {balance.toFixed(6)}</span>
-                        <button
-                          onClick={() => setSelectedToken({ mint, symbol: label, balance })}
-                          className="ml-2 px-2 py-0.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded"
-                          title="Send or Swap"
-                        >
-                          Manage
-                        </button>
-                      </li>
-                    );
+                    return <li key={mint}>{label}: {Number(amount).toFixed(6)}</li>;
                   });
                 })()}
               </ul>
@@ -3092,11 +3082,29 @@ export const App: React.FC = () => {
       {showWsolModal && (
         <WsolManagementModal onClose={() => setShowWsolModal(false)} apiBase={apiBase} />
       )}
-      {selectedToken && (
+      {showTokenManageModal && (
         <TokenActionModal
-          token={selectedToken}
+          tokens={(() => {
+            const SOL_MINT = 'So11111111111111111111111111111111111111112';
+            const nativeSol = Number(wallet?.balances?.sol || 0);
+            const wsolBalance = Number(wallet?.balances?.tokens?.[SOL_MINT] || 0);
+            const combinedSol = nativeSol + wsolBalance;
+            const tokenList: Array<{ mint: string; symbol: string; balance: number }> = [];
+            // Add SOL first
+            if (combinedSol > 0) {
+              tokenList.push({ mint: SOL_MINT, symbol: 'SOL', balance: combinedSol });
+            }
+            // Add other SPL tokens (excluding wSOL since it's combined with SOL)
+            for (const [mint, amount] of Object.entries(wallet?.balances?.tokens || {})) {
+              if (mint === SOL_MINT) continue;
+              const alias = walletTokens.find((t: any) => t.id === mint);
+              const symbol = wallet?.aliases?.[mint] || alias?.symbol || mint.slice(0, 4);
+              tokenList.push({ mint, symbol, balance: Number(amount) });
+            }
+            return tokenList;
+          })()}
           prices={prices}
-          onClose={() => setSelectedToken(null)}
+          onClose={() => setShowTokenManageModal(false)}
           apiBase={apiBase}
           onSuccess={async () => {
             // Refresh wallet balances after successful action
