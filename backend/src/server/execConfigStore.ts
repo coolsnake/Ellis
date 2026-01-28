@@ -14,6 +14,10 @@ export type ExecConfig = {
   wrapSolInTx?: boolean;
   // New: optional Address Lookup Tables to include when assembling
   lookupTableAddresses?: string[];
+  // Transaction resend settings
+  resendEnabled?: boolean; // Enable resend-until-confirmed loop (default: true)
+  maxResendAttempts?: number; // Max resend attempts (default: 10)
+  maxConfirmTimeMs?: number; // Max time to wait for confirmation (default: 30000)
 };
 
 const file = resolve(CONFIG.cacheDir, 'exec-config.json');
@@ -30,6 +34,10 @@ const defaults: ExecConfig = {
   wrapSolInTx: true,
   // ALT addresses are now managed via altConfig.json and DexAltManager
   lookupTableAddresses: [],
+  // Transaction resend settings
+  resendEnabled: true, // Enable by default for better tx landing
+  maxResendAttempts: 10,
+  maxConfirmTimeMs: 30000,
 };
 
 export async function loadExecConfig(): Promise<ExecConfig> {

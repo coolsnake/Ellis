@@ -30,6 +30,10 @@ export type SendOptions = {
     enabled: boolean;
     sendToBlockEngine?: (wireBase64: string) => Promise<string>;
   };
+  // Transaction resend settings
+  resendEnabled?: boolean; // Enable resend-until-confirmed loop (default: true)
+  maxResendAttempts?: number; // Max resend attempts (default: 10)
+  maxConfirmTimeMs?: number; // Max time to wait for confirmation (default: 30000)
 };
 function detectDexesFromPrograms(programIds: string[]): Array<'raydium' | 'orca' | 'meteora'> {
   const set = new Set<'raydium' | 'orca' | 'meteora'>();
@@ -1285,88 +1289,101 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   
   // === RESEND-UNTIL-CONFIRMED LOOP ===
   // Aggressively resend transaction until confirmed or blockhash expires
-  const maxResendAttempts = 10;
+  // Can be disabled via config for faster return (fire-and-forget mode)
+  const resendEnabled = opts?.resendEnabled !== false; // Default: true
+  const maxResendAttempts = opts?.maxResendAttempts ?? 10;
   const confirmPollIntervalMs = 500; // Check every 500ms
-  const maxConfirmTimeMs = 30000; // Total max time to wait (30s)
-  const resendStart = Date.now();
-  let confirmed = false;
-  let resendAttempt = 0;
+  const maxConfirmTimeMs = opts?.maxConfirmTimeMs ?? 30000; // Total max time to wait (30s)
+  
+  if (resendEnabled) {
+    const resendStart = Date.now();
+    let confirmed = false;
+    let resendAttempt = 0;
 
-  while (!confirmed && Date.now() - resendStart < maxConfirmTimeMs) {
-    // Check confirmation status (non-blocking poll)
-    try {
-      const statuses = await connection.getSignatureStatuses([sig]);
-      const status = statuses?.value?.[0];
-      
-      if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
-        confirmed = true;
-        try {
-          logger.info('tx.resend.confirmed', {
-            cat: 'tx',
-            ctx: { txId, signature: sig.slice(0, 16), attempts: resendAttempt, ms: Date.now() - resendStart } as any,
-          });
-        } catch {}
-        break;
-      }
-      
-      // Check if transaction failed on-chain
-      if (status?.err) {
-        try {
-          logger.warn('tx.resend.failed_on_chain', {
-            cat: 'tx',
-            ctx: { txId, signature: sig.slice(0, 16), err: JSON.stringify(status.err) } as any,
-          });
-        } catch {}
-        break; // Don't resend a failed tx
-      }
-    } catch (pollErr) {
-      // Ignore poll errors, continue loop
-    }
-    
-    // Not confirmed yet - wait a bit then resend
-    await new Promise(r => setTimeout(r, confirmPollIntervalMs));
-    
-    if (!confirmed && resendAttempt < maxResendAttempts && Date.now() - resendStart < maxConfirmTimeMs - 1000) {
-      resendAttempt++;
+    while (!confirmed && Date.now() - resendStart < maxConfirmTimeMs) {
+      // Check confirmation status (non-blocking poll)
       try {
-        // Resend the same serialized transaction
-        await connection.sendTransaction(tx, { 
-          skipPreflight: true, 
-          preflightCommitment: 'processed',
-          maxRetries: 0 
-        });
+        const statuses = await connection.getSignatureStatuses([sig]);
+        const status = statuses?.value?.[0];
         
-        try {
-          logger.info('tx.resend.attempt', {
-            cat: 'tx',
-            ctx: { txId, signature: sig.slice(0, 16), attempt: resendAttempt } as any,
-          });
-        } catch {}
-        
-        // DON'T resend to Jito - it already has the tx in its mempool and will retry internally.
-        // Resending to Jito just burns rate limits (1 tx/sec per endpoint, 2 min backoff).
-      } catch (resendErr) {
-        // Check if blockhash expired
-        const errMsg = String((resendErr as any)?.message || resendErr);
-        if (/BlockhashNotFound|TransactionExpired/i.test(errMsg)) {
+        if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+          confirmed = true;
           try {
-            logger.warn('tx.resend.blockhash_expired', {
+            logger.info('tx.resend.confirmed', {
+              cat: 'tx',
+              ctx: { txId, signature: sig.slice(0, 16), attempts: resendAttempt, ms: Date.now() - resendStart } as any,
+            });
+          } catch {}
+          break;
+        }
+        
+        // Check if transaction failed on-chain
+        if (status?.err) {
+          try {
+            logger.warn('tx.resend.failed_on_chain', {
+              cat: 'tx',
+              ctx: { txId, signature: sig.slice(0, 16), err: JSON.stringify(status.err) } as any,
+            });
+          } catch {}
+          break; // Don't resend a failed tx
+        }
+      } catch (pollErr) {
+        // Ignore poll errors, continue loop
+      }
+      
+      // Not confirmed yet - wait a bit then resend
+      await new Promise(r => setTimeout(r, confirmPollIntervalMs));
+      
+      if (!confirmed && resendAttempt < maxResendAttempts && Date.now() - resendStart < maxConfirmTimeMs - 1000) {
+        resendAttempt++;
+        try {
+          // Resend the same serialized transaction
+          await connection.sendTransaction(tx, { 
+            skipPreflight: true, 
+            preflightCommitment: 'processed',
+            maxRetries: 0 
+          });
+          
+          try {
+            logger.info('tx.resend.attempt', {
               cat: 'tx',
               ctx: { txId, signature: sig.slice(0, 16), attempt: resendAttempt } as any,
             });
           } catch {}
-          break; // Stop resending - blockhash is dead
+          
+          // DON'T resend to Jito - it already has the tx in its mempool and will retry internally.
+          // Resending to Jito just burns rate limits (1 tx/sec per endpoint, 2 min backoff).
+        } catch (resendErr) {
+          // Check if blockhash expired
+          const errMsg = String((resendErr as any)?.message || resendErr);
+          if (/BlockhashNotFound|TransactionExpired/i.test(errMsg)) {
+            try {
+              logger.warn('tx.resend.blockhash_expired', {
+                cat: 'tx',
+                ctx: { txId, signature: sig.slice(0, 16), attempt: resendAttempt } as any,
+              });
+            } catch {}
+            break; // Stop resending - blockhash is dead
+          }
         }
       }
     }
-  }
 
-  // Log final status if not confirmed
-  if (!confirmed) {
+    // Log final status if not confirmed
+    if (!confirmed) {
+      try {
+        logger.warn('tx.resend.not_confirmed', {
+          cat: 'tx',
+          ctx: { txId, signature: sig.slice(0, 16), attempts: resendAttempt, ms: Date.now() - resendStart } as any,
+        });
+      } catch {}
+    }
+  } else {
+    // Resend disabled - fire and forget mode
     try {
-      logger.warn('tx.resend.not_confirmed', {
+      logger.info('tx.resend.disabled', {
         cat: 'tx',
-        ctx: { txId, signature: sig.slice(0, 16), attempts: resendAttempt, ms: Date.now() - resendStart } as any,
+        ctx: { txId, signature: sig.slice(0, 16), note: 'Resend loop skipped (resendEnabled=false)' } as any,
       });
     } catch {}
   }

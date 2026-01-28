@@ -27,6 +27,7 @@ import { GraphView } from '../components/GraphView';
 import { CollapsibleSection } from '../components/CollapsibleSection';
 import { AltManagementModal } from '../components/AltManagementModal';
 import { WsolManagementModal } from '../components/WsolManagementModal';
+import { TokenActionModal } from '../components/TokenActionModal';
 import { RouterPanel } from '../components/RouterPanel';
 import { VaultManager } from '../components/VaultManager';
 import { RouterConfig } from '../components/RouterConfig';
@@ -81,6 +82,7 @@ export const App: React.FC = () => {
   const [showOpportunityConfig, setShowOpportunityConfig] = useState(false);
   const [showAltModal, setShowAltModal] = useState(false);
   const [showWsolModal, setShowWsolModal] = useState(false);
+  const [selectedToken, setSelectedToken] = useState<{ mint: string; symbol: string; balance: number } | null>(null);
   const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
   const [showRouterPanel, setShowRouterPanel] = useState(false);
@@ -2132,6 +2134,13 @@ export const App: React.FC = () => {
                     >
                       WSOL
                     </button>
+                    <button
+                      onClick={() => setSelectedToken({ mint: SOL_MINT, symbol: 'SOL', balance: combinedSol })}
+                      className="px-2 py-0.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded"
+                      title="Send or Swap SOL"
+                    >
+                      Manage
+                    </button>
                   </div>
                 </div>
               );
@@ -2172,7 +2181,19 @@ export const App: React.FC = () => {
                   return tokenEntries.map(([mint, amount]) => {
                     const alias = walletTokens.find((t) => t.id === mint);
                     const label = wallet?.aliases?.[mint] || alias?.symbol || mint.slice(0, 4);
-                    return <li key={mint}>{label}: {Number(amount).toFixed(6)}</li>;
+                    const balance = Number(amount);
+                    return (
+                      <li key={mint} className="flex items-center justify-between">
+                        <span>{label}: {balance.toFixed(6)}</span>
+                        <button
+                          onClick={() => setSelectedToken({ mint, symbol: label, balance })}
+                          className="ml-2 px-2 py-0.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded"
+                          title="Send or Swap"
+                        >
+                          Manage
+                        </button>
+                      </li>
+                    );
                   });
                 })()}
               </ul>
@@ -3070,6 +3091,24 @@ export const App: React.FC = () => {
       )}
       {showWsolModal && (
         <WsolManagementModal onClose={() => setShowWsolModal(false)} apiBase={apiBase} />
+      )}
+      {selectedToken && (
+        <TokenActionModal
+          token={selectedToken}
+          prices={prices}
+          onClose={() => setSelectedToken(null)}
+          apiBase={apiBase}
+          onSuccess={async () => {
+            // Refresh wallet balances after successful action
+            try {
+              const resp = await fetch(`${apiBase}${ROUTES.wallet.refresh}`, { method: 'POST' });
+              if (resp.ok) {
+                const data = await resp.json();
+                setWallet(data);
+              }
+            } catch {}
+          }}
+        />
       )}
       {showRouterPanel && (
         <RouterPanel apiBase={apiBase} onClose={() => setShowRouterPanel(false)} />

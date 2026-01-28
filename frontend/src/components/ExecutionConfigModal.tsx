@@ -17,6 +17,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
   // Persist UI preferences AND form values to localStorage
   const [uiPrefs, updateUiPrefs] = useModalConfig('executionConfig', {
     expandedSections: {
+      txSend: true,
       jito: true,
       rpcSend: true,
       drift: true,
@@ -26,6 +27,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
   });
   
   const [form, setForm] = useState<any>(uiPrefs.lastValues || {
+    txSend: { resendEnabled: true, maxResendAttempts: 10, maxConfirmTimeMs: 30000 },
     jito: { enabled: false, blockEngineUrl: '', tipPayerKeypath: '', bundleTimeoutMs: 1200, tipMode: 'dynamic', fixedTipLamports: 10000, tipShare: 0.3, useDontFrontAccount: false, tipAccount: '' },
     rpcSend: { secondaryRpcUrls: '', sendTimeoutMs: 1200 },
     drift: {
@@ -39,6 +41,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
   // Save form values to localStorage when they change (excluding sensitive fields)
   useEffect(() => {
     const sanitized = {
+      txSend: form.txSend,
       jito: {
         ...form.jito,
         tipPayerKeypath: '', // Don't persist keypaths
@@ -65,6 +68,11 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
         })();
         const secondaryRpcUrls = Array.isArray(rpcSend?.secondaryRpcUrls) ? (rpcSend.secondaryRpcUrls as string[]).join('\n') : (rpcSend?.secondaryRpcUrls || '');
         setForm({
+          txSend: {
+            resendEnabled: cfg?.resendEnabled !== false, // Default: true
+            maxResendAttempts: Number.isFinite(Number(cfg?.maxResendAttempts)) ? Number(cfg.maxResendAttempts) : 10,
+            maxConfirmTimeMs: Number.isFinite(Number(cfg?.maxConfirmTimeMs)) ? Number(cfg.maxConfirmTimeMs) : 30000,
+          },
           jito: {
             enabled: !!jito.enabled,
             blockEngineUrl: String(jito.blockEngineUrl || ''),
@@ -113,6 +121,10 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
         .map((s) => s.trim())
         .filter(Boolean);
       const body: any = {
+        // Transaction send settings (stored at top level of exec config)
+        resendEnabled: !!form.txSend.resendEnabled,
+        maxResendAttempts: Math.max(0, Math.min(50, Number(form.txSend.maxResendAttempts || 10))),
+        maxConfirmTimeMs: Math.max(5000, Math.min(120000, Number(form.txSend.maxConfirmTimeMs || 30000))),
         jito: {
           enabled: !!form.jito.enabled,
           blockEngineUrl: String(form.jito.blockEngineUrl || ''),
@@ -146,7 +158,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
     }
   };
 
-  const toggleSection = (section: 'jito' | 'rpcSend' | 'drift') => {
+  const toggleSection = (section: 'txSend' | 'jito' | 'rpcSend' | 'drift') => {
     updateUiPrefs({
       expandedSections: {
         ...uiPrefs.expandedSections,
@@ -166,6 +178,43 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
         {error && <div className="mb-4 p-3 rounded bg-red-900 text-red-200 text-sm">{error}</div>}
 
         <div className="space-y-4">
+          {/* Transaction Send */}
+          <div className="border border-gray-700 rounded">
+            <div 
+              className="md:col-span-2 bg-gray-700 px-4 py-2 text-gray-200 font-semibold cursor-pointer flex items-center justify-between"
+              onClick={() => toggleSection('txSend')}
+            >
+              <span>Transaction Send</span>
+              <span className="text-lg">{uiPrefs.expandedSections.txSend ? '▼' : '▶'}</span>
+            </div>
+            {uiPrefs.expandedSections.txSend && (
+              <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <label className="flex items-center gap-2 md:col-span-2">
+                  <input type="checkbox" className="h-4 w-4" checked={!!form.txSend?.resendEnabled}
+                    onChange={(e) => setForm((p: any) => ({ ...p, txSend: { ...p.txSend, resendEnabled: e.target.checked } }))} />
+                  <span className="text-gray-300">Enable Resend Until Confirmed</span>
+                  <span className="text-gray-500 text-xs">(Aggressively resend transaction until confirmed or blockhash expires)</span>
+                </label>
+                <div>
+                  <div className="text-gray-400 mb-1">Max Resend Attempts</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" 
+                    value={form.txSend?.maxResendAttempts ?? 10}
+                    disabled={!form.txSend?.resendEnabled}
+                    onChange={(e) => setForm((p: any) => ({ ...p, txSend: { ...p.txSend, maxResendAttempts: Number(e.target.value) } }))} />
+                  <div className="text-gray-500 text-xs mt-1">Number of times to resend tx (0-50)</div>
+                </div>
+                <div>
+                  <div className="text-gray-400 mb-1">Max Confirm Time (ms)</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" 
+                    value={form.txSend?.maxConfirmTimeMs ?? 30000}
+                    disabled={!form.txSend?.resendEnabled}
+                    onChange={(e) => setForm((p: any) => ({ ...p, txSend: { ...p.txSend, maxConfirmTimeMs: Number(e.target.value) } }))} />
+                  <div className="text-gray-500 text-xs mt-1">Total time to wait for confirmation (5000-120000ms)</div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Jito */}
           <div className="border border-gray-700 rounded">
             <div 

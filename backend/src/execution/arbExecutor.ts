@@ -1328,6 +1328,9 @@ export class ArbExecutor {
               computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
               lookupTableAddresses: altAddresses,
               traceId,
+              resendEnabled: execCfg.resendEnabled,
+              maxResendAttempts: execCfg.maxResendAttempts,
+              maxConfirmTimeMs: execCfg.maxConfirmTimeMs,
             });
             signature = sendResult?.signature || null;
             
@@ -1649,6 +1652,9 @@ export class ArbExecutor {
             computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
             lookupTableAddresses: altAddresses,
             traceId,
+            resendEnabled: execCfg.resendEnabled,
+            maxResendAttempts: execCfg.maxResendAttempts,
+            maxConfirmTimeMs: execCfg.maxConfirmTimeMs,
             jito: jitoEnabled ? {
               enabled: true,
               sendToBlockEngine: async (wireBase64: string) => {
@@ -2254,6 +2260,9 @@ export class ArbExecutor {
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
           traceId,
+          resendEnabled: execCfg.resendEnabled,
+          maxResendAttempts: execCfg.maxResendAttempts,
+          maxConfirmTimeMs: execCfg.maxConfirmTimeMs,
           jito: jitoEnabled ? {
             enabled: true,
             sendToBlockEngine: async (wireBase64: string) => {
@@ -2360,6 +2369,9 @@ export class ArbExecutor {
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
           traceId,
+          resendEnabled: execCfg.resendEnabled,
+          maxResendAttempts: execCfg.maxResendAttempts,
+          maxConfirmTimeMs: execCfg.maxConfirmTimeMs,
           // Send to Jito in parallel with RPC when Jito is enabled
           jito: jitoEnabled ? {
             enabled: true,
