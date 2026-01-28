@@ -2,7 +2,7 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload, SummaryPool } from './types.js';
-import { resolveManyDecimals } from './decimals.js';
+import { resolveManyDecimals, getDecimalsFromCache } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
@@ -1677,13 +1677,14 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
       
       if (!mint_a || !mint_b) continue;
       
-      // Get decimals with fallback
+      // Get decimals with centralized cache as final fallback (checks ANCHOR_DECIMALS, KNOWN_TOKEN_DECIMALS)
+      // Priority: API response → decimalsMap (resolved) → centralized cache → 9
       const decA = isClmm 
-        ? (pool.mintDecimals0 ?? decimalsMap.get(mint_a) ?? 9)
-        : (pool.baseDecimal ?? decimalsMap.get(mint_a) ?? 9);
+        ? (pool.mintDecimals0 ?? decimalsMap.get(mint_a) ?? getDecimalsFromCache(mint_a) ?? 9)
+        : (pool.baseDecimal ?? decimalsMap.get(mint_a) ?? getDecimalsFromCache(mint_a) ?? 9);
       const decB = isClmm
-        ? (pool.mintDecimals1 ?? decimalsMap.get(mint_b) ?? 9)
-        : (pool.quoteDecimal ?? decimalsMap.get(mint_b) ?? 9);
+        ? (pool.mintDecimals1 ?? decimalsMap.get(mint_b) ?? getDecimalsFromCache(mint_b) ?? 9)
+        : (pool.quoteDecimal ?? decimalsMap.get(mint_b) ?? getDecimalsFromCache(mint_b) ?? 9);
       
       // Parse fee based on pool type
       let fee_bps = 25; // Default

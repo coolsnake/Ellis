@@ -90,6 +90,44 @@ let jupMapCacheTime = 0;
 const JUP_MAP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // ============================================
+// SYNCHRONOUS DECIMALS LOOKUP
+// ============================================
+// Fast sync lookup for quoting - no async/await overhead
+// Uses: 1) Anchor decimals 2) Known tokens 3) Resolve cache
+
+/**
+ * Get decimals for a mint from cache (synchronous)
+ * This is the primary entry point for quoting functions.
+ * Returns undefined if not in cache - caller should fall back to other sources.
+ * 
+ * Priority:
+ * 1. ANCHOR_DECIMALS (hardcoded, always correct)
+ * 2. KNOWN_TOKEN_DECIMALS (well-known tokens)
+ * 3. resolveCache (previously resolved via RPC/Jupiter)
+ */
+export function getDecimalsFromCache(mint: string): number | undefined {
+  if (!mint || mint.length < 32) return undefined;
+  
+  // 1. Anchor decimals (highest priority, always correct)
+  if (ANCHOR_DECIMALS.has(mint)) {
+    return ANCHOR_DECIMALS.get(mint);
+  }
+  
+  // 2. Known token decimals
+  const known = KNOWN_TOKEN_DECIMALS[mint];
+  if (known) {
+    return known.decimals;
+  }
+  
+  // 3. In-memory cache (from previous RPC/Jupiter resolution)
+  if (resolveCache.has(mint)) {
+    return resolveCache.get(mint);
+  }
+  
+  return undefined;
+}
+
+// ============================================
 // PERSISTENT DECIMALS STORE
 // ============================================
 // Persists RPC-resolved decimals to disk so they survive restarts

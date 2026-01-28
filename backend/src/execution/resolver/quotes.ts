@@ -2,6 +2,7 @@ import type { DirectHop } from '../types.js';
 import { CONFIG } from '../../utils/config.js';
 import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 import { logCatchError } from '../../utils/errorHandler.js';
+import { getDecimalsFromCache } from '../../server/pools/decimals.js';
 
 export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?: string): Promise<bigint> {
   // Get traceId from hop if not passed directly (set by resolver)
@@ -94,11 +95,14 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         const p = (ray.amm || []).find((x: any) => String(x?.id || '') === id);
         if (p) {
           const feeBps = Number((p as any)?.fee_bps || (hop as any)?.fee_bps || 0);
-          // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+          // FIX: Use centralized decimals cache as primary source (by mint address)
+          // Fallback chain: centralized cache → pool decimals → hop decimals → 9
+          const cacheDecIn = getDecimalsFromCache(hop.inputMint);
+          const cacheDecOut = getDecimalsFromCache(hop.outputMint);
           const poolDecIn = Number(isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
           const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
-          const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
-          const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
+          const decIn = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
+          const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
             const reserveInWhole = Number(
@@ -145,11 +149,13 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           
           if (p) {
             const feeBps = Number((p as any)?.fee_bps || 25);
-            // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+            // FIX: Use centralized decimals cache as primary source (by mint address)
+            const cacheDecIn = getDecimalsFromCache(hop.inputMint);
+            const cacheDecOut = getDecimalsFromCache(hop.outputMint);
             const poolDecIn = Number(isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
             const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
-            const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
-            const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
+            const decIn = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
+            const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
             const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
             
             if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
@@ -206,11 +212,13 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         if (p) {
           // PumpSwap uses 25 bps total fee (20 bps LP + 5 bps protocol)
           const feeBps = Number((p as any)?.fee_bps || 25);
-          // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+          // FIX: Use centralized decimals cache as primary source (by mint address)
+          const cacheDecIn = getDecimalsFromCache(hop.inputMint);
+          const cacheDecOut = getDecimalsFromCache(hop.outputMint);
           const poolDecIn = Number(isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
           const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
-          const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
-          const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
+          const decIn = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
+          const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
@@ -252,11 +260,13 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         if (p) {
           // Get fee from pool (typically 10-30 bps for DAMM)
           const feeBps = Number((p as any)?.fee_bps || 10);
-          // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+          // FIX: Use centralized decimals cache as primary source (by mint address)
+          const cacheDecIn = getDecimalsFromCache(hop.inputMint);
+          const cacheDecOut = getDecimalsFromCache(hop.outputMint);
           const poolDecIn = Number(isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
           const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
-          const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
-          const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
+          const decIn = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
+          const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
@@ -364,11 +374,13 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           const actualIsRev = swappingBtoA;
           
           const feeBps = Number((p as any)?.fee_bps || 0);
-          // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+          // FIX: Use centralized decimals cache as primary source (by mint address)
+          const cacheDecIn = getDecimalsFromCache(hop.inputMint);
+          const cacheDecOut = getDecimalsFromCache(hop.outputMint);
           const poolDecIn = Number(actualIsRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
           const poolDecOut = Number(actualIsRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
-          const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
-          const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
+          const decIn = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
+          const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           let px = Number((p as any)?.price_a_per_b || 0);
           
@@ -687,17 +699,18 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
       return 0n;
     }
     
-    // FIX: ALWAYS prefer pool cache decimals when available
-    // Pool cache decimals come from on-chain data and are authoritative
-    // hop.inputDecimals/outputDecimals can be wrong (e.g., defaulting to 9 for all tokens)
-    // Use native decimals to match native direction
+    // FIX: Use CENTRALIZED DECIMALS CACHE as the primary source (by mint address)
+    // This is the most reliable source - it checks ANCHOR_DECIMALS, KNOWN_TOKEN_DECIMALS, and resolveCache
+    // Fallback chain: centralized cache → pool native decimals → pool canonical decimals → hop decimals → 9
+    const cacheDecIn = getDecimalsFromCache(hop.inputMint);
+    const cacheDecOut = getDecimalsFromCache(hop.outputMint);
     
     // CRITICAL: When was_swapped=true, canonical decimals_a/b are FLIPPED from native order
     // canonical mint_a = native mint_b, so canonical decimals_a = native decimals_b
     // We must account for this when falling back from native_decimals to canonical decimals
     const wasSwapped = (staticData as any)?.was_swapped === true;
     
-    // Get pool cache decimals based on NATIVE direction
+    // Get pool cache decimals based on NATIVE direction (only used as fallback)
     // When native_decimals are missing, use canonical decimals with swap correction
     const poolDecIn = nativeAtoB 
       ? ((staticData as any)?.native_decimals_a ?? (wasSwapped ? staticData?.decimals_b : staticData?.decimals_a))
@@ -706,9 +719,9 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
       ? ((staticData as any)?.native_decimals_b ?? (wasSwapped ? staticData?.decimals_a : staticData?.decimals_b))
       : ((staticData as any)?.native_decimals_a ?? (wasSwapped ? staticData?.decimals_b : staticData?.decimals_a));
     
-    // Prefer pool cache decimals, fall back to hop decimals only if pool cache unavailable
-    const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
-    const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
+    // Priority: centralized cache → pool decimals → hop decimals → 9
+    const decIn = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
+    const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
     
     if (!Number.isFinite(decIn) || !Number.isFinite(decOut)) return 0n;
     
@@ -1000,10 +1013,13 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
   }
   const { numerator: priceNumerator, denominator: priceDenominator } = ratio;
 
-  // FIX: PREFER pool decimals over hop decimals (same pattern as Orca fix)
-  // Pool decimals are authoritative; hop decimals can be wrong from upstream bugs
-  // For decimals: if swapping A->B, input is A decimals, output is B decimals
-  // If swapping B->A (isRev), input is B decimals, output is A decimals
+  // FIX: Use CENTRALIZED DECIMALS CACHE as the primary source (by mint address)
+  // This is the most reliable source - it checks ANCHOR_DECIMALS, KNOWN_TOKEN_DECIMALS, and resolveCache
+  // Fallback chain: centralized cache → pool decimals → hop decimals → 9
+  const cacheDecIn = getDecimalsFromCache(hop.inputMint);
+  const cacheDecOut = getDecimalsFromCache(hop.outputMint);
+  
+  // Pool decimals as fallback (if swapping A->B, input is A decimals, output is B decimals)
   const poolDecIn = isRev
     ? Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB)
     : Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA);
@@ -1011,9 +1027,9 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
     ? Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA)
     : Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB);
   
-  // Prefer pool decimals, fall back to hop decimals only if pool decimals unavailable
-  const decInCandidate = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
-  const decOutCandidate = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
+  // Priority: centralized cache → pool decimals → hop decimals → 9
+  const decInCandidate = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
+  const decOutCandidate = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
           
   try {
     import('../../utils/logger.js').then(({ logger }) => {
