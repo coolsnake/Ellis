@@ -666,32 +666,40 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
     const sqrtPriceX64 = cached.sqrtPriceX64;
     const feeBps = cached.feeRate || 30; // Default 30 bps
     
-    // Determine direction from MINTS (authoritative), not pool ID suffix
-    const mintA = staticData?.mint_a || '';
-    const mintB = staticData?.mint_b || '';
-    const aToB = hop.inputMint === mintA && hop.outputMint === mintB;
-    const bToA = hop.inputMint === mintB && hop.outputMint === mintA;
+    // CRITICAL FIX: sqrtPriceX64 is in NATIVE on-chain orientation (token0 → token1)
+    // We MUST use native mints for direction detection, not canonical mints!
+    // When was_swapped=true, canonical mint_a/mint_b are flipped from native, 
+    // which would give wrong direction for native sqrtPriceX64.
     
-    if (!aToB && !bToA) {
+    // Use native mints if available, otherwise fall back to canonical
+    const nativeMintA = (staticData as any)?.native_mint_a || staticData?.mint_a || '';
+    const nativeMintB = (staticData as any)?.native_mint_b || staticData?.mint_b || '';
+    
+    // Direction in NATIVE terms (matches sqrtPriceX64 orientation)
+    const nativeAtoB = hop.inputMint === nativeMintA && hop.outputMint === nativeMintB;
+    const nativeBtoA = hop.inputMint === nativeMintB && hop.outputMint === nativeMintA;
+    
+    if (!nativeAtoB && !nativeBtoA) {
       // Mint mismatch - cannot determine direction
       return 0n;
     }
     
     // FIX: Add fallback to pool cache decimals if hop decimals are missing
     // Using 0 as default is catastrophic for price calculations
+    // Use native decimals to match native direction
     let decIn = hop.inputDecimals;
     let decOut = hop.outputDecimals;
     
-    // Fallback to staticData (pool cache) decimals based on direction
+    // Fallback to staticData decimals based on NATIVE direction
     if (!Number.isFinite(decIn) || decIn === 0) {
-      decIn = aToB 
-        ? (staticData?.decimals_a ?? staticData?.native_decimals_a)
-        : (staticData?.decimals_b ?? staticData?.native_decimals_b);
+      decIn = nativeAtoB 
+        ? ((staticData as any)?.native_decimals_a ?? staticData?.decimals_a)
+        : ((staticData as any)?.native_decimals_b ?? staticData?.decimals_b);
     }
     if (!Number.isFinite(decOut) || decOut === 0) {
-      decOut = aToB
-        ? (staticData?.decimals_b ?? staticData?.native_decimals_b)
-        : (staticData?.decimals_a ?? staticData?.native_decimals_a);
+      decOut = nativeAtoB
+        ? ((staticData as any)?.native_decimals_b ?? staticData?.decimals_b)
+        : ((staticData as any)?.native_decimals_a ?? staticData?.decimals_a);
     }
     
     if (!Number.isFinite(decIn) || !Number.isFinite(decOut)) return 0n;
@@ -700,14 +708,15 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
     const amountInAfterFee = (amountInRaw * BigInt(10000 - feeBps)) / 10000n;
     
     // CLMM price formula: price = (sqrtPriceX64 / 2^64)^2
-    // For A->B: outB = inA * price
-    // For B->A: outA = inB / price
+    // sqrtPriceX64 is in NATIVE orientation, so we use nativeAtoB for direction
+    // For native A->B: outB = inA * price
+    // For native B->A: outA = inB / price
     const Q64 = 1n << 64n;
     const sqrtPrice = sqrtPriceX64;
     
     let outRaw: bigint;
-    if (aToB) {
-      // A -> B: multiply by price
+    if (nativeAtoB) {
+      // Native A -> B: multiply by price
       // out = in * (sqrtPrice^2 / Q64^2) * 10^(decOut-decIn)
       const decimalShift = decOut - decIn;
       if (decimalShift >= 0) {
@@ -716,7 +725,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
         outRaw = (amountInAfterFee * sqrtPrice * sqrtPrice) / (Q64 * Q64 * BigInt(10 ** (-decimalShift)));
       }
     } else {
-      // B -> A: divide by price
+      // Native B -> A: divide by price
       // out = in * (Q64^2 / sqrtPrice^2) * 10^(decOut-decIn)
       if (sqrtPrice === 0n) return 0n;
       const decimalShift = decOut - decIn;
@@ -737,7 +746,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
             amountIn: amountInRaw.toString(),
             amountOut: outRaw.toString(),
             feeBps,
-            direction: aToB ? 'AtoB' : 'BtoA',
+            direction: nativeAtoB ? 'NativeAtoB' : 'NativeBtoA',
             sqrtPriceX64: sqrtPriceX64.toString()
           }
         });
