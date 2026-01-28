@@ -92,6 +92,10 @@ struct ArbConfig {
     // When edge combinations exceed max_edge_combinations, keep only top-K edges per hop
     #[serde(default = "default_top_k_edges_per_hop")]
     top_k_edges_per_hop: usize,
+    // WebSocket broadcast interval in milliseconds (lower = faster opportunity delivery)
+    // CRITICAL: This directly impacts execution latency - lower values push opportunities faster
+    #[serde(default = "default_ws_broadcast_interval_ms")]
+    ws_broadcast_interval_ms: u64,
 }
 
 fn default_start_mint_mode() -> String {
@@ -104,6 +108,12 @@ fn default_max_edge_combinations() -> usize {
 
 fn default_top_k_edges_per_hop() -> usize {
     5
+}
+
+fn default_ws_broadcast_interval_ms() -> u64 {
+    // Default 100ms for fast opportunity delivery (was 1500ms)
+    // Can be overridden via ARB_WS_BROADCAST_INTERVAL_MS environment variable
+    100
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -4434,8 +4444,13 @@ async fn ws_opportunities(
 
             // Use tokio::select! to handle incoming messages (ping/pong) while sleeping
             // This prevents WebSocket timeouts when no data changes occur
+            // PERF: Use configurable broadcast interval (default 100ms, was 1500ms)
+            let broadcast_interval_ms = {
+                let s = state.read().await;
+                s.config.ws_broadcast_interval_ms
+            };
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(1500)) => {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(broadcast_interval_ms)) => {
                     // Normal sleep expired, continue to next iteration
                 }
                 msg = socket.recv() => {
@@ -4526,6 +4541,8 @@ struct ConfigReq {
     // NEW: String-based start mint mode: "any", "sol_usdc", or "anchors"
     start_mint_mode: Option<String>,
     anchor_mints: Option<Vec<String>>,
+    // WebSocket broadcast interval in milliseconds (CRITICAL for execution latency)
+    ws_broadcast_interval_ms: Option<u64>,
 }
 
 async fn set_config(
@@ -4580,6 +4597,9 @@ async fn set_config(
         }
         if cfg.near_miss_epsilon.is_some() {
             keys.push("near_miss_epsilon");
+        }
+        if cfg.ws_broadcast_interval_ms.is_some() {
+            keys.push("ws_broadcast_interval_ms");
         }
         let keys_str = keys.join(",");
         tracing::info!(
@@ -4689,6 +4709,16 @@ async fn set_config(
     }
     if let Some(v) = cfg.anchor_mints {
         s.config.anchor_mints = Some(v);
+    }
+    // WebSocket broadcast interval - CRITICAL for execution latency
+    if let Some(v) = cfg.ws_broadcast_interval_ms {
+        // Clamp to reasonable range: 10ms minimum (avoid CPU spin), 5000ms maximum
+        let clamped = v.clamp(10, 5000);
+        if clamped != v {
+            tracing::warn!(target = "arb_rs", "ws_broadcast_interval_ms clamped from {} to {}", v, clamped);
+        }
+        s.config.ws_broadcast_interval_ms = clamped;
+        tracing::info!(target = "arb_rs", ws_broadcast_interval_ms = clamped, "arb.config.ws_interval_updated");
     }
     // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
     // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
@@ -4820,6 +4850,12 @@ fn default_config() -> ArbConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(5),
+        // WebSocket broadcast interval - CRITICAL for execution latency
+        // Default 100ms (was 1500ms) - configurable via ARB_WS_BROADCAST_INTERVAL_MS
+        ws_broadcast_interval_ms: std::env::var("ARB_WS_BROADCAST_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100), // 100ms default for fast opportunity delivery
     }
 }
 
