@@ -6,12 +6,13 @@ import { getDecimalsFromCache } from '../../server/pools/decimals.js';
 
 /**
  * Sanity check for decimal mismatch detection and auto-correction.
- * Detects when a quote is off by exactly 10^3 or 10^6 (typical decimal errors).
+ * Detects when a quote is off by powers of 10 (typical decimal errors).
+ * Catches: 10x, 100x, 1000x, 10000x, 100000x, 1000000x deviations
  * 
  * @param quotedOut - The raw output from the quote calculation
  * @param hop - The hop being quoted (contains rate and decimals)
  * @param amountInRaw - The raw input amount
- * @returns Corrected output if a 1000x deviation detected, otherwise original
+ * @returns Corrected output if a deviation detected, otherwise original
  */
 function sanityCheckAndCorrectQuote(quotedOut: bigint, hop: DirectHop, amountInRaw: bigint): bigint {
   if (quotedOut <= 0n) return quotedOut;
@@ -37,39 +38,32 @@ function sanityCheckAndCorrectQuote(quotedOut: bigint, hop: DirectHop, amountInR
   const quotedNum = Number(quotedOut);
   const ratio = quotedNum / expectedOutRaw;
   
-  // Check for common decimal mismatches (1000x = 10^3, 1000000x = 10^6)
-  // Allow 10% tolerance for normal price fluctuations
-  const isOff1000xHigh = ratio > 900 && ratio < 1100;      // quoted ~1000x too high
-  const isOff1000xLow = ratio > 0.0009 && ratio < 0.0011;  // quoted ~1000x too low
-  const isOff1MxHigh = ratio > 900000 && ratio < 1100000;  // quoted ~1M too high
-  const isOff1MxLow = ratio > 0.0000009 && ratio < 0.0000011; // quoted ~1M too low
+  // Define all power-of-10 factors to check (1-6 decimal places)
+  // Each entry: [factor, lowRatioMin, lowRatioMax, highRatioMin, highRatioMax]
+  // Allow 15% tolerance for price fluctuations
+  const factors: Array<[number, number, number, number, number]> = [
+    [10,      0.085, 0.115,    8.5,    11.5],      // 10x (1 decimal)
+    [100,     0.0085, 0.0115,  85,     115],       // 100x (2 decimals)
+    [1000,    0.00085, 0.00115, 850,   1150],      // 1000x (3 decimals)
+    [10000,   0.000085, 0.000115, 8500, 11500],    // 10000x (4 decimals)
+    [100000,  0.0000085, 0.0000115, 85000, 115000], // 100000x (5 decimals)
+    [1000000, 0.00000085, 0.00000115, 850000, 1150000], // 1000000x (6 decimals)
+  ];
   
-  if (isOff1000xHigh) {
-    // Quote is 1000x too high - divide by 1000
-    const corrected = quotedOut / 1000n;
-    logDecimalCorrection(hop, 'high', 1000, quotedOut, corrected, expectedOutRaw);
-    return corrected;
-  }
-  
-  if (isOff1000xLow) {
-    // Quote is 1000x too low - multiply by 1000
-    const corrected = quotedOut * 1000n;
-    logDecimalCorrection(hop, 'low', 1000, quotedOut, corrected, expectedOutRaw);
-    return corrected;
-  }
-  
-  if (isOff1MxHigh) {
-    // Quote is 1M too high - divide by 1M
-    const corrected = quotedOut / 1000000n;
-    logDecimalCorrection(hop, 'high', 1000000, quotedOut, corrected, expectedOutRaw);
-    return corrected;
-  }
-  
-  if (isOff1MxLow) {
-    // Quote is 1M too low - multiply by 1M
-    const corrected = quotedOut * 1000000n;
-    logDecimalCorrection(hop, 'low', 1000000, quotedOut, corrected, expectedOutRaw);
-    return corrected;
+  for (const [factor, lowMin, lowMax, highMin, highMax] of factors) {
+    // Check if quote is too LOW (need to multiply to fix)
+    if (ratio >= lowMin && ratio <= lowMax) {
+      const corrected = quotedOut * BigInt(factor);
+      logDecimalCorrection(hop, 'low', factor, quotedOut, corrected, expectedOutRaw);
+      return corrected;
+    }
+    
+    // Check if quote is too HIGH (need to divide to fix)
+    if (ratio >= highMin && ratio <= highMax) {
+      const corrected = quotedOut / BigInt(factor);
+      logDecimalCorrection(hop, 'high', factor, quotedOut, corrected, expectedOutRaw);
+      return corrected;
+    }
   }
   
   return quotedOut;
