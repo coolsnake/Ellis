@@ -1503,6 +1503,8 @@ export function createArbRouter(io: SocketIOServer): Router {
         try { execStats.preflightOk += 1; } catch {}
       } else {
         // Require successful preflight before sending
+        // Capture logFile for linking in UI (declared outside inner try block for proper scope)
+        let simLogFile: string | undefined;
         try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
         try {
           // Use ALT addresses from built transaction, fallback to exec config
@@ -1512,8 +1514,6 @@ export function createArbRouter(io: SocketIOServer): Router {
             computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
             lookupTableAddresses: altAddresses,
           } as any);
-          // Capture logFile for linking in UI
-          let simLogFile: string | undefined;
           try {
             const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
             const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
@@ -1624,6 +1624,8 @@ export function createArbRouter(io: SocketIOServer): Router {
       }
 
       // Proceed to send (no chunking)
+      // Capture logFile for linking in UI (declared outside try block for proper scope)
+      let execLogFile: string | undefined;
       try {
         const tSend0 = Date.now();
         // Use ALT addresses from built transaction, fallback to exec config
@@ -1633,8 +1635,6 @@ export function createArbRouter(io: SocketIOServer): Router {
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
         } as any);
-        // Capture logFile for linking in UI
-        let execLogFile: string | undefined;
         try {
           const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
           // Capture logs from a wider window to include preflight logs too
