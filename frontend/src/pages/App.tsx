@@ -2259,7 +2259,7 @@ export const App: React.FC = () => {
             </>
           )}
         >
-          <ArbitrageSection apiBase={apiBase} showGraph={showGraph} onToggleGraph={()=>setShowGraph(v=>!v)} paused={showArbConfig || showSystemConfig || showFeeConfig} onOpenAltModal={() => setShowAltModal(true)} />
+          <ArbitrageSection apiBase={apiBase} showGraph={showGraph} onToggleGraph={()=>setShowGraph(v=>!v)} paused={showArbConfig || showSystemConfig || showFeeConfig} onOpenAltModal={() => setShowAltModal(true)} onOpenExecConfig={() => setShowExecConfig(true)} />
           
           {/* UI Preferences Export/Import Panel */}
           {showModalConfigManager && (

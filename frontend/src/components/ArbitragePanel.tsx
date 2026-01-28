@@ -68,7 +68,7 @@ type OpportunitiesSummary = {
   rejected_opportunities?: RejectedOpportunity[];
 };
 
-export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph: boolean; onToggleGraph: () => void }> = ({ apiBase, socket, showGraph, onToggleGraph }) => {
+export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph: boolean; onToggleGraph: () => void; onOpenExecConfig?: () => void }> = ({ apiBase, socket, showGraph, onToggleGraph, onOpenExecConfig }) => {
   const { socket: ctxSocket } = useSocket();
   const effectiveSocket = socket ?? ctxSocket;
   const [items, setItems] = useState<Opportunity[]>([]);
@@ -387,6 +387,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         <h3 className="text-lg font-semibold">Arbitrage Opportunities</h3>
         <div className="flex items-center gap-2">
           <button className="px-2 py-1 border rounded" onClick={()=>{ try { (window as any).dispatchEvent(new CustomEvent('open-graph-config')); } catch {} }}>Graph Config</button>
+          {onOpenExecConfig && <button className="px-2 py-1 border rounded" onClick={onOpenExecConfig}>Exec Config</button>}
           <button className="px-2 py-1 border rounded" onClick={async()=>{
             try { await fetch(`${apiBase}${ROUTES.arb.metricsJson}`, { headers: { 'accept': 'application/json' } }); } catch {}
             // Best-effort also refresh opportunities snapshot

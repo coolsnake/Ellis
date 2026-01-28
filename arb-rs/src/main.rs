@@ -111,9 +111,10 @@ fn default_top_k_edges_per_hop() -> usize {
 }
 
 fn default_ws_broadcast_interval_ms() -> u64 {
-    // Default 100ms for fast opportunity delivery (was 1500ms)
+    // Default 25ms for minimal latency opportunity delivery (was 1500ms)
+    // Detection loop can run faster than 100ms, so we match that cadence
     // Can be overridden via ARB_WS_BROADCAST_INTERVAL_MS environment variable
-    100
+    25
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -4851,11 +4852,12 @@ fn default_config() -> ArbConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(5),
         // WebSocket broadcast interval - CRITICAL for execution latency
-        // Default 100ms (was 1500ms) - configurable via ARB_WS_BROADCAST_INTERVAL_MS
+        // Default 25ms (was 1500ms) - minimal latency to match detection loop cadence
+        // Configurable via ARB_WS_BROADCAST_INTERVAL_MS environment variable
         ws_broadcast_interval_ms: std::env::var("ARB_WS_BROADCAST_INTERVAL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(100), // 100ms default for fast opportunity delivery
+            .unwrap_or(25), // 25ms default for minimal latency
     }
 }
 
