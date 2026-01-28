@@ -40,7 +40,8 @@ import { useArb } from '../app/contexts/arb';
 import { useAuth } from '../app/contexts/auth';
 // Login page is now routed at /login; main app assumes authenticated state
 
-const LogsColumn = React.lazy(() => import('../features/logs/LogsColumn'));
+const LogsDrawer = React.lazy(() => import('../features/logs/LogsDrawer'));
+import { RpcMonitor } from '../components/RpcMonitor';
 
 // maskRpcUrl moved to ../utils/mask
 
@@ -1915,8 +1916,14 @@ export const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen p-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div className="lg:col-span-2 space-y-4">
+    <div className="min-h-screen flex flex-col">
+      {/* RPC Monitor - Full Width at Top */}
+      <div className="p-4 pb-0">
+        <RpcMonitor />
+      </div>
+      
+      {/* Main Content - Full Width */}
+      <div className="flex-1 p-4 space-y-4">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="flex flex-col h-full">
           <section className="bg-gray-900 rounded p-4">
@@ -2872,8 +2879,10 @@ export const App: React.FC = () => {
         </CollapsibleSection>
         
       </div>
-      <Suspense fallback={<div className="space-y-4"><div className="text-sm text-gray-400">Loading logs...</div></div>}>
-        <LogsColumn />
+      
+      {/* Logs Drawer - Full Width at Bottom */}
+      <Suspense fallback={<div className="p-4 bg-gray-900 border-t border-gray-700"><div className="text-sm text-gray-400">Loading logs...</div></div>}>
+        <LogsDrawer />
       </Suspense>
       
       {/* Grid Strategy Configuration Modal */}

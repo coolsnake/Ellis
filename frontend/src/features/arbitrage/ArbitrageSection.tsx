@@ -12,9 +12,14 @@ export const ArbitrageSection: React.FC<{
 }> = ({ apiBase, showGraph, onToggleGraph, paused, onOpenAltModal }) => {
   return (
     <>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ArbitragePanel apiBase={apiBase} showGraph={showGraph} onToggleGraph={onToggleGraph} />
-        <ArbitrageMetrics apiBase={apiBase} paused={paused} onOpenAltModal={onOpenAltModal} />
+      {/* Full-width layout: ArbitragePanel takes 2/3, ArbitrageMetrics takes 1/3 on large screens */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2">
+          <ArbitragePanel apiBase={apiBase} showGraph={showGraph} onToggleGraph={onToggleGraph} />
+        </div>
+        <div className="lg:col-span-1">
+          <ArbitrageMetrics apiBase={apiBase} paused={paused} onOpenAltModal={onOpenAltModal} />
+        </div>
       </div>
       {showGraph ? (
         <div className="mt-4">
