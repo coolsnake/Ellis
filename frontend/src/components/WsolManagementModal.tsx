@@ -49,8 +49,8 @@ export const WsolManagementModal: React.FC<{ onClose: () => void; apiBase: strin
       
       if (balancesRes.ok) {
         const data = await balancesRes.json();
-        setSolBalance(data.sol || 0);
-        setWsolBalance(data.tokens?.[WSOL_MINT] || 0);
+        setSolBalance(data.balances?.sol || 0);
+        setWsolBalance(data.balances?.tokens?.[WSOL_MINT] || 0);
       }
       
       if (wsolModeRes.ok) {
