@@ -361,6 +361,13 @@ export interface RouterConfig {
    * Use /wallet/unwrap to convert back to native SOL when desired.
    */
   keepWsolAfterExecution?: boolean;
+  /**
+   * Instruction format mode for execute instructions.
+   * - 'auto': Use compact V2 for 3+ hops, standard for 1-2 hops (default)
+   * - 'standard': Always use standard execute instruction (per-hop slippage)
+   * - 'compact_v2': Always use compact V2 instruction (index-based deduplication)
+   */
+  instructionMode?: 'auto' | 'standard' | 'compact_v2';
 }
 
 /**
@@ -376,6 +383,7 @@ export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
   enabled: false,
   usePreWrappedWsol: false,
   keepWsolAfterExecution: false,
+  instructionMode: 'auto',
 };
 
 // ============================================================================

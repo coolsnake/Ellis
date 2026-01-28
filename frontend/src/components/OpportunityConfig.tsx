@@ -193,6 +193,14 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           if (typeof j.fixedTipLamports === 'number') set('jito_fixed_tip_lamports', j.fixedTipLamports);
         }
       } catch {}
+      // Load router instruction mode
+      try {
+        const r = await fetch(`${apiBase}${ROUTES.router.instructionMode}`);
+        if (r.ok) {
+          const j = await r.json();
+          if (j.instructionMode) set('instruction_mode', j.instructionMode);
+        }
+      } catch {}
     })();
   }, [apiBase]);
 
@@ -252,7 +260,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     };
     try {
       console.log('[OpportunityConfig] Saving arb config:', body);
-      const [r1, r2, r3, r4] = await Promise.all([
+      const [r1, r2, r3, r4, r5] = await Promise.all([
         fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
         fetch(`${apiBase}${ROUTES.exec.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: execMode }) }),
         fetch(`${apiBase}/arb/executor/config`, { 
@@ -360,6 +368,14 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             fixedTipLamports: toNum(det.jito_fixed_tip_lamports) || 10000,
           }),
         }),
+        // Save router instruction mode
+        fetch(`${apiBase}${ROUTES.router.instructionMode}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            mode: det.instruction_mode || 'auto',
+          }),
+        }),
       ]);
       // Check each response and build detailed error message
       const errors: string[] = [];
@@ -378,6 +394,10 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       if (!r4.ok) {
         const txt = await r4.text().catch(() => '');
         errors.push(`jito/config: ${r4.status} ${txt.slice(0, 100)}`);
+      }
+      if (!r5.ok) {
+        const txt = await r5.text().catch(() => '');
+        errors.push(`router/instruction-mode: ${r5.status} ${txt.slice(0, 100)}`);
       }
       if (errors.length > 0) throw new Error(errors.join('; '));
       onClose();
@@ -767,6 +787,41 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                     SDK Quote mode calls DEX SDKs to get accurate tick/bin arrays. Slower but more reliable for complex swaps.
                   </p>
                 )}
+              </div>
+            )}
+
+            {/* Instruction Format Mode - only shown when router is enabled */}
+            {det.use_router && (
+              <div className="mt-4">
+                <label className="block mb-2 text-gray-300 text-sm font-medium">Instruction Format</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { value: 'auto', label: 'Auto', desc: 'V2 for 3+ hops' },
+                    { value: 'standard', label: 'Standard', desc: 'Per-hop slippage' },
+                    { value: 'compact_v2', label: 'Compact V2', desc: 'Deduplicated, smaller' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => set('instruction_mode', opt.value)}
+                      className={`p-2 rounded border text-sm transition-all ${
+                        (det.instruction_mode || 'auto') === opt.value
+                          ? 'bg-indigo-600/30 border-indigo-500 text-indigo-300'
+                          : 'bg-gray-600 border-gray-500 text-gray-300 hover:border-gray-400'
+                      }`}
+                    >
+                      <div className="font-medium">{opt.label}</div>
+                      <div className="text-xs text-gray-400">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-gray-400">
+                  {(det.instruction_mode || 'auto') === 'auto' && 
+                    'Auto mode uses Compact V2 for routes with 3+ hops, standard for simpler routes.'}
+                  {det.instruction_mode === 'standard' && 
+                    'Standard mode includes per-hop slippage protection. Larger transaction size.'}
+                  {det.instruction_mode === 'compact_v2' && 
+                    'Compact V2 uses index-based deduplication to reduce transaction size. Best for 4+ hop routes.'}
+                </p>
               </div>
             )}
           </div>

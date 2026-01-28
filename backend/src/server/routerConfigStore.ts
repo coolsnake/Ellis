@@ -110,6 +110,16 @@ export async function setWsolMode(
 }
 
 /**
+ * Set instruction mode for execute instructions
+ * @param instructionMode - 'auto' | 'standard' | 'compact_v2'
+ */
+export async function setInstructionMode(
+  instructionMode: 'auto' | 'standard' | 'compact_v2'
+): Promise<RouterConfig> {
+  return saveRouterConfig({ instructionMode });
+}
+
+/**
  * Check if router is configured and enabled
  */
 export async function isRouterReady(): Promise<boolean> {

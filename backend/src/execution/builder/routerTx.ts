@@ -289,69 +289,35 @@ function buildExecuteInstruction(
   if (shouldUseCompact) {
     const compactSteps = toCompactSteps(steps);
     
-    // Try deduplication for V2 - check if it saves enough to be worthwhile
+    // Always use V2 with index-based deduplication for compact mode
     const { uniqueAccounts, accountIndices, indicesPerStep } = deduplicateAccounts(dexAccounts, accountsPerStep);
     const savedAccounts = dexAccounts.length - uniqueAccounts.length;
     
-    // V2 overhead: accountIndices array adds 1 byte per index (plus 4-byte length prefix)
-    // Savings: each deduplicated account saves 1 byte (with ALT) or 32 bytes (without ALT)
-    // Use V2 if we save at least 2 accounts (conservative threshold)
-    const useV2 = savedAccounts >= 2;
+    const v2Params: ExecuteCompactParamsV2 = {
+      steps: compactSteps,
+      accountIndices,
+      indicesPerStep,
+      minProfit,
+      initialBalances,
+      verbose,
+    };
     
-    if (useV2) {
-      // Use V2 with index-based deduplication
-      const v2Params: ExecuteCompactParamsV2 = {
-        steps: compactSteps,
-        accountIndices,
-        indicesPerStep,
-        minProfit,
-        initialBalances,
+    logger.debug('routerTx.buildExecuteInstruction.compactV2', {
+      cat: 'tx',
+      ctx: {
+        traceId,
+        hopCount: steps.length,
+        useCompact: true,
         verbose,
-      };
-      
-      logger.debug('routerTx.buildExecuteInstruction.compactV2', {
-        cat: 'tx',
-        ctx: {
-          traceId,
-          hopCount: steps.length,
-          useCompact: true,
-          useV2: true,
-          verbose,
-          originalAccounts: dexAccounts.length,
-          uniqueAccounts: uniqueAccounts.length,
-          savedAccounts,
-          indicesCount: accountIndices.length,
-          stepsBytes: 4 + (steps.length * 9), // vec len + 9 bytes per compact step
-        },
-      });
-      
-      return buildExecuteCompactV2Ix(user, userTokenAccount, v2Params, uniqueAccounts, programId);
-    } else {
-      // Fall back to V1 compact - deduplication doesn't save enough
-      const compactParams: ExecuteCompactParams = {
-        steps: compactSteps,
-        accountsPerStep,
-        minProfit,
-        initialBalances,
-        verbose,
-      };
-      
-      logger.debug('routerTx.buildExecuteInstruction.compact', {
-        cat: 'tx',
-        ctx: {
-          traceId,
-          hopCount: steps.length,
-          useCompact: true,
-          useV2: false,
-          verbose,
-          totalAccounts: dexAccounts.length,
-          wouldSave: savedAccounts,
-          stepsBytes: 4 + (steps.length * 9), // vec len + 9 bytes per compact step
-        },
-      });
-      
-      return buildExecuteCompactIx(user, userTokenAccount, compactParams, dexAccounts, programId);
-    }
+        originalAccounts: dexAccounts.length,
+        uniqueAccounts: uniqueAccounts.length,
+        savedAccounts,
+        indicesCount: accountIndices.length,
+        stepsBytes: 4 + (steps.length * 9), // vec len + 9 bytes per compact step
+      },
+    });
+    
+    return buildExecuteCompactV2Ix(user, userTokenAccount, v2Params, uniqueAccounts, programId);
   } else {
     // Use standard instruction with per-hop slippage and verbose
     logger.debug('routerTx.buildExecuteInstruction.standard', {
@@ -428,8 +394,31 @@ export async function buildRouterTransaction(
     // Extract verbose flag (for simulation logging)
     const verbose = config?.verbose ?? false;
     
-    // Extract compact instruction flag (undefined = auto based on hop count)
-    const useCompactInstruction = config?.useCompactInstruction;
+    // Determine instruction mode from config
+    // Priority: explicit useCompactInstruction > routerConfig.instructionMode > auto
+    let useCompactInstruction: boolean | undefined = config?.useCompactInstruction;
+    if (useCompactInstruction === undefined && routerConfig.instructionMode) {
+      switch (routerConfig.instructionMode) {
+        case 'standard':
+          useCompactInstruction = false;
+          break;
+        case 'compact_v2':
+          useCompactInstruction = true;
+          break;
+        case 'auto':
+        default:
+          useCompactInstruction = undefined; // Let buildExecuteInstruction decide based on hop count
+          break;
+      }
+      logger.debug('routerTx.instructionMode.resolved', {
+        cat: 'tx',
+        ctx: {
+          configMode: routerConfig.instructionMode,
+          resolvedUseCompact: useCompactInstruction,
+          traceId: plan.traceId,
+        },
+      });
+    }
 
     // SDK Quote mode: use DEX SDKs to get accurate tick/bin arrays
     if (mode === ExecutionMode.SdkQuote) {

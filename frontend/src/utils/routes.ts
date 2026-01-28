@@ -127,6 +127,7 @@ export const ROUTES = {
     configMode: '/router/config/mode',
     configEnabled: '/router/config/enabled',
     wsolMode: '/router/config/wsol-mode',
+    instructionMode: '/router/config/instruction-mode',
     build: '/router/build',
     deploy: '/router/deploy',
     upgrade: '/router/upgrade',

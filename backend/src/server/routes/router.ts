@@ -20,6 +20,7 @@ import {
   setVaultOwner,
   setRouterEnabled,
   setWsolMode,
+  setInstructionMode,
   isRouterReady,
   isFlashLoanAvailable,
   getRouterConnection,
@@ -321,6 +322,66 @@ export function createRouterRouter(io: SocketIOServer): Router {
       });
     } catch (err: any) {
       logger.error('router.config.wsol-mode.get.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /router/config/instruction-mode - Set instruction format mode
+   * 
+   * Modes:
+   * - 'auto': Use compact V2 for 3+ hops, standard for 1-2 hops (default)
+   * - 'standard': Always use standard execute instruction (per-hop slippage)
+   * - 'compact_v2': Always use compact V2 instruction (index-based deduplication)
+   */
+  api.post('/router/config/instruction-mode', async (req: Request, res: Response) => {
+    try {
+      const { mode } = req.body;
+      const validModes = ['auto', 'standard', 'compact_v2'];
+      if (!validModes.includes(mode)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: `Invalid mode. Must be one of: ${validModes.join(', ')}` 
+        });
+      }
+      
+      const config = await setInstructionMode(mode);
+      emit('router:config', config);
+      
+      logger.info('router.config.instruction-mode.updated', {
+        cat: 'router',
+        ctx: { instructionMode: config.instructionMode },
+      });
+      
+      res.json({ 
+        success: true, 
+        config,
+        instructionMode: config.instructionMode,
+        message: `Instruction mode set to: ${mode}`,
+      });
+    } catch (err: any) {
+      logger.error('router.config.instruction-mode.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * GET /router/config/instruction-mode - Get current instruction mode
+   */
+  api.get('/router/config/instruction-mode', async (_req: Request, res: Response) => {
+    try {
+      const config = await loadRouterConfig();
+      res.json({
+        success: true,
+        instructionMode: config.instructionMode ?? 'auto',
+        description: {
+          auto: 'Use compact V2 for 3+ hops, standard for 1-2 hops (default)',
+          standard: 'Always use standard execute instruction (per-hop slippage)',
+          compact_v2: 'Always use compact V2 instruction (index-based deduplication, smaller tx size)',
+        },
+      });
+    } catch (err: any) {
+      logger.error('router.config.instruction-mode.get.error', { cat: 'router', error: err.message });
       res.status(500).json({ success: false, error: err.message });
     }
   });
