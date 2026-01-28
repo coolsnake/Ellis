@@ -4,6 +4,109 @@ import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getDecimalsFromCache } from '../../server/pools/decimals.js';
 
+/**
+ * Sanity check for decimal mismatch detection and auto-correction.
+ * Detects when a quote is off by exactly 10^3 or 10^6 (typical decimal errors).
+ * 
+ * @param quotedOut - The raw output from the quote calculation
+ * @param hop - The hop being quoted (contains rate and decimals)
+ * @param amountInRaw - The raw input amount
+ * @returns Corrected output if a 1000x deviation detected, otherwise original
+ */
+function sanityCheckAndCorrectQuote(quotedOut: bigint, hop: DirectHop, amountInRaw: bigint): bigint {
+  if (quotedOut <= 0n) return quotedOut;
+  
+  // Get the rate from the hop (this is the price in whole units)
+  const rate = (hop as any).rate || (hop as any).price;
+  if (!rate || !Number.isFinite(rate) || rate <= 0) return quotedOut;
+  
+  // Get decimals - prefer centralized cache
+  const decIn = getDecimalsFromCache(hop.inputMint) ?? hop.inputDecimals ?? 9;
+  const decOut = getDecimalsFromCache(hop.outputMint) ?? hop.outputDecimals ?? 9;
+  
+  // Calculate expected output based on rate
+  // rate = outputWhole / inputWhole
+  // expectedOutWhole = inputWhole * rate
+  // expectedOutRaw = expectedOutWhole * 10^decOut
+  const inputWhole = Number(amountInRaw) / Math.pow(10, decIn);
+  const expectedOutWhole = inputWhole * rate;
+  const expectedOutRaw = expectedOutWhole * Math.pow(10, decOut);
+  
+  if (expectedOutRaw <= 0 || !Number.isFinite(expectedOutRaw)) return quotedOut;
+  
+  const quotedNum = Number(quotedOut);
+  const ratio = quotedNum / expectedOutRaw;
+  
+  // Check for common decimal mismatches (1000x = 10^3, 1000000x = 10^6)
+  // Allow 10% tolerance for normal price fluctuations
+  const isOff1000xHigh = ratio > 900 && ratio < 1100;      // quoted ~1000x too high
+  const isOff1000xLow = ratio > 0.0009 && ratio < 0.0011;  // quoted ~1000x too low
+  const isOff1MxHigh = ratio > 900000 && ratio < 1100000;  // quoted ~1M too high
+  const isOff1MxLow = ratio > 0.0000009 && ratio < 0.0000011; // quoted ~1M too low
+  
+  if (isOff1000xHigh) {
+    // Quote is 1000x too high - divide by 1000
+    const corrected = quotedOut / 1000n;
+    logDecimalCorrection(hop, 'high', 1000, quotedOut, corrected, expectedOutRaw);
+    return corrected;
+  }
+  
+  if (isOff1000xLow) {
+    // Quote is 1000x too low - multiply by 1000
+    const corrected = quotedOut * 1000n;
+    logDecimalCorrection(hop, 'low', 1000, quotedOut, corrected, expectedOutRaw);
+    return corrected;
+  }
+  
+  if (isOff1MxHigh) {
+    // Quote is 1M too high - divide by 1M
+    const corrected = quotedOut / 1000000n;
+    logDecimalCorrection(hop, 'high', 1000000, quotedOut, corrected, expectedOutRaw);
+    return corrected;
+  }
+  
+  if (isOff1MxLow) {
+    // Quote is 1M too low - multiply by 1M
+    const corrected = quotedOut * 1000000n;
+    logDecimalCorrection(hop, 'low', 1000000, quotedOut, corrected, expectedOutRaw);
+    return corrected;
+  }
+  
+  return quotedOut;
+}
+
+function logDecimalCorrection(
+  hop: DirectHop, 
+  direction: 'high' | 'low', 
+  factor: number, 
+  original: bigint, 
+  corrected: bigint, 
+  expected: number
+): void {
+  try {
+    import('../../utils/logger.js').then(({ logger }) => {
+      logger.warn('quote.decimal_correction_applied', {
+        cat: 'tx',
+        ctx: {
+          dex: hop.dex,
+          poolId: hop.poolId?.slice(0, 12),
+          inputMint: hop.inputMint?.slice(0, 8),
+          outputMint: hop.outputMint?.slice(0, 8),
+          direction,
+          factor,
+          original: original.toString(),
+          corrected: corrected.toString(),
+          expectedFromRate: Math.floor(expected).toString(),
+          hopInputDec: hop.inputDecimals,
+          hopOutputDec: hop.outputDecimals,
+          cacheInputDec: getDecimalsFromCache(hop.inputMint),
+          cacheOutputDec: getDecimalsFromCache(hop.outputMint),
+        }
+      });
+    }).catch(() => {});
+  } catch { /* ignore */ }
+}
+
 export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?: string): Promise<bigint> {
   // Get traceId from hop if not passed directly (set by resolver)
   const effectiveTraceId = traceId || (hop as any)._traceId;
@@ -14,7 +117,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
       // Pool cache fallback is built into quoteOrcaClmmLocal, so if this fails,
       // the opportunity is stale and should be skipped
       const localQuote = await quoteOrcaClmmLocal(hop, amountInRaw, effectiveTraceId);
-      if (localQuote > 0n) return localQuote;
+      if (localQuote > 0n) return sanityCheckAndCorrectQuote(localQuote, hop, amountInRaw);
       
       // Log cache miss - this means pool data is not available anywhere
       try {
@@ -86,7 +189,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           });
         } catch (e) { logCatchError('resolver.quotes', e); }
         
-        if (clmmOut > 0n) return clmmOut;
+        if (clmmOut > 0n) return sanityCheckAndCorrectQuote(clmmOut, hop, amountInRaw);
       }
 
       if (minimalMathAllowed && ray) {
@@ -120,7 +223,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
               const amtInAfterFee = amtIn * fee;
               const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
               const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-              if (outRaw > 0n) return outRaw;
+              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
             }
             const px = Number((p as any)?.price_a_per_b || 0);
             if (px > 0 && Number.isFinite(amtIn)) {
@@ -131,7 +234,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
               if (rate > 0) {
                 const outWhole = amtIn * rate * fee;
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-                if (outRaw > 0n) return outRaw;
+                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
               }
             }
           }
@@ -176,7 +279,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 const amtInAfterFee = amtIn * fee;
                 const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-                if (outRaw > 0n) return outRaw;
+                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
               }
               
               // Fallback to price-based calculation
@@ -189,7 +292,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 if (rate > 0) {
                   const outWhole = amtIn * rate * fee;
                   const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-                  if (outRaw > 0n) return outRaw;
+                  if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
                 }
               }
             }
@@ -239,7 +342,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
               const amtInAfterFee = amtIn * fee;
               const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
               const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-              if (outRaw > 0n) return outRaw;
+              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
             }
           }
         }
@@ -287,7 +390,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
               const amtInAfterFee = amtIn * fee;
               const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
               const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-              if (outRaw > 0n) return outRaw;
+              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
             }
           }
         }
@@ -480,7 +583,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                   });
                 } catch (e) { logCatchError('resolver.quotes', e); }
                 
-                if (outRaw > 0n) return outRaw;
+                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
               } else {
                 try {
                   const { logger } = await import('../../utils/logger.js');
