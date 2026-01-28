@@ -586,12 +586,8 @@ export class ArbExecutor {
       
       if (canUseSkipSimThreshold) {
         // Check if all pools are validated (required for skip simulation)
-        const allValidated = validatedPoolsCache.allPoolsValidated(
-          opp.hop_pool_ids.map((poolId, i) => ({
-            poolId,
-            dex: opp.hop_dexes?.[i] || opp.dexes?.[i] || 'unknown',
-            variant: 'unknown', // Variant not critical for validation check
-          }))
+        const allValidated = opp.hop_pool_ids.every(poolId => 
+          validatedPoolsCache.isPoolValidated(poolId)
         );
         
         if (!allValidated) {
@@ -3616,14 +3612,11 @@ export class ArbExecutor {
       if (balances) {
         const balance = startToken === SOL_MINT ? balances.sol : (balances.tokens[startToken] ?? 0);
         // Get price to convert to USD (rough estimate)
-        try {
-          const { getTokenPriceUsd } = await import('./cache.js');
-          const price = await getTokenPriceUsd(startToken);
-          if (price && price > 0) {
-            const walletBalanceUsd = balance * price;
-            testSizeUsd = Math.min(testSizeUsd, walletBalanceUsd * 0.95); // Leave 5% buffer
-          }
-        } catch {
+        const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+        if (price && price > 0) {
+          const walletBalanceUsd = balance * price;
+          testSizeUsd = Math.min(testSizeUsd, walletBalanceUsd * 0.95); // Leave 5% buffer
+        } else {
           // Can't verify balance - skip upward retry
           return;
         }
