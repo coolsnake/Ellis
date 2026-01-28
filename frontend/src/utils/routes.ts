@@ -126,6 +126,7 @@ export const ROUTES = {
     config: '/router/config',
     configMode: '/router/config/mode',
     configEnabled: '/router/config/enabled',
+    wsolMode: '/router/config/wsol-mode',
     build: '/router/build',
     deploy: '/router/deploy',
     upgrade: '/router/upgrade',
@@ -193,10 +194,6 @@ export const ROUTES = {
     unwrap: '/wallet/unwrap',
     tokens: '/wallet/tokens',
     tokenAccounts: '/wallet/token-accounts',
-  },
-  router: {
-    config: '/router/config',
-    wsolMode: '/router/config/wsol-mode',
   },
   watchlist: '/watchlist',
   swap: '/swap',
