@@ -1668,8 +1668,8 @@ export class ArbExecutor {
             });
           }
           
-          // Skip the normal simulation flow
-          return signature;
+          // Skip the normal simulation flow - execution complete
+          return;
         }
         
         // Adaptive sizing: try progressively smaller sizes on profit check failures

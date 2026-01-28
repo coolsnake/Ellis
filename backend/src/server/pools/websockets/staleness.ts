@@ -309,7 +309,6 @@ export function startStalenessMonitor(): void {
   logger.info('pool.staleness.monitor.started', {
     thresholdMs: config.staleThresholdMs,
     checkIntervalMs: config.checkIntervalMs,
-    maxRetries: config.maxResubscribeAttempts,
     cat: 'pools'
   });
   

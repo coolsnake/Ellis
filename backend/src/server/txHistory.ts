@@ -14,6 +14,7 @@ export type TxRecord = {
   error?: string;
   confirmedAt?: number;
   confirmationSlot?: number;
+  skipSimulation?: boolean;
 };
 
 const capacity = 200;
