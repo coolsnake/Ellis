@@ -1765,13 +1765,15 @@ export class ArbExecutor {
                   
                   try {
                     // Re-resolve with modified pools
-                    const altPlan = await resolveDirectPlan(
-                      opp.path || [],
-                      modifiedHopPoolIds,
-                      modifiedHopDexes,
-                      { sizeUsd: currentSizeUsd, minProfitBps: execCfg.minProfitBps ?? 1 },
-                      traceId
-                    );
+                    const altPlan = await resolveDirectPlan({
+                      path: executionPath,
+                      hopPoolIds: modifiedHopPoolIds,
+                      dexes: modifiedHopDexes,
+                      sizeUsd: currentSizeUsd,
+                      slippageBps: this.config.slippageBps,
+                      traceId,
+                      minProfitBps: execCfg.minProfitBps ?? 1,
+                    }, {} as any);
                     
                     if (!altPlan) {
                       logger.debug('arb.executor.altpool.resolve_failed', {
@@ -1784,11 +1786,18 @@ export class ArbExecutor {
                     }
                     
                     // Build transaction with alternative pool
-                    const kp = await ensureWallet(CONFIG.walletPath);
-                    const altBuilt = await buildRouterTransaction(altPlan, kp, traceId);
+                    const altBuilt = await buildTransactionSummary(altPlan, undefined, {
+                      useRouter: this.config.useRouter,
+                      routerExecutionMode: this.config.routerExecutionMode,
+                    }, traceId);
                     
                     // Simulate
-                    const altSimResult = await assembleAndSimulate(altBuilt, kp, traceId);
+                    const altSimResult = await assembleAndSimulate(altBuilt.instructions, {
+                      computeUnitLimit: execCfg.computeUnitLimit,
+                      computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+                      lookupTableAddresses: altAddresses,
+                      traceId,
+                    });
                     const altSimAnalysis = parseSimulationLogs(altSimResult?.logs, altSimResult?.err);
                     
                     if (!altSimResult.err) {
