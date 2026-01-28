@@ -26,6 +26,7 @@ import { SystemConfig } from '../components/SystemConfig';
 import { GraphView } from '../components/GraphView';
 import { CollapsibleSection } from '../components/CollapsibleSection';
 import { AltManagementModal } from '../components/AltManagementModal';
+import { WsolManagementModal } from '../components/WsolManagementModal';
 import { RouterPanel } from '../components/RouterPanel';
 import { VaultManager } from '../components/VaultManager';
 import { RouterConfig } from '../components/RouterConfig';
@@ -79,6 +80,7 @@ export const App: React.FC = () => {
   const [showEngineConfig, setShowEngineConfig] = useState(false);
   const [showOpportunityConfig, setShowOpportunityConfig] = useState(false);
   const [showAltModal, setShowAltModal] = useState(false);
+  const [showWsolModal, setShowWsolModal] = useState(false);
   const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
   const [showRouterPanel, setShowRouterPanel] = useState(false);
@@ -747,7 +749,44 @@ export const App: React.FC = () => {
           }
           return;
         }
-        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet commands: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap (unwraps all wSOL)' }) });
+        // WSOL mode management: wallet wsol-mode [enable|disable|status]
+        if (action === 'wsol-mode' || action === 'wsolmode' || action === 'wsol') {
+          const subAction = (parts[2] || '').toLowerCase();
+          try {
+            if (subAction === 'enable' || subAction === 'on') {
+              const resp = await fetch(`${apiBase}${ROUTES.router.wsolMode}`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ usePreWrappedWsol: true, keepWsolAfterExecution: true }) 
+              });
+              const json = await resp.json();
+              if (!resp.ok) throw new Error(json?.error || 'failed');
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: WSOL mode ENABLED - use pre-wrapped WSOL, keep WSOL after execution` }) });
+            } else if (subAction === 'disable' || subAction === 'off') {
+              const resp = await fetch(`${apiBase}${ROUTES.router.wsolMode}`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ usePreWrappedWsol: false, keepWsolAfterExecution: false }) 
+              });
+              const json = await resp.json();
+              if (!resp.ok) throw new Error(json?.error || 'failed');
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: WSOL mode DISABLED - wrap fresh SOL, auto-unwrap after execution` }) });
+            } else if (subAction === 'status' || subAction === '' || !subAction) {
+              const resp = await fetch(`${apiBase}${ROUTES.router.wsolMode}`);
+              const json = await resp.json();
+              if (!resp.ok) throw new Error(json?.error || 'failed');
+              const usePreWrapped = json.usePreWrappedWsol ? 'ON' : 'OFF';
+              const keepWsol = json.keepWsolAfterExecution ? 'ON' : 'OFF';
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: WSOL mode: usePreWrappedWsol=${usePreWrapped}, keepWsolAfterExecution=${keepWsol}` }) });
+            } else {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet wsol-mode [enable|disable|status]' }) });
+            }
+          } catch (e: any) {
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet wsol-mode failed: ${String(e?.message || e)}` }) });
+          }
+          return;
+        }
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet commands: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap | wsol-mode [enable|disable|status]' }) });
         return;
       }
       if (ns === 'watchlist') {
@@ -1772,7 +1811,7 @@ export const App: React.FC = () => {
       if (ns === 'help') {
         const lines = [
           'Help — Commands',
-          'wallet: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap',
+          'wallet: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap | wsol-mode [enable|disable|status]',
           'watchlist: add QUERY|MINT | remove SYMBOL|MINT | list',
           'strategies are now configured via the UI panels (no terminal commands)',
           'bot: start | stop',
@@ -2079,12 +2118,21 @@ export const App: React.FC = () => {
               const combinedSol = nativeSol + wsolBalance;
               return (
                 <div className="mt-2 text-base">
-                  SOL: {combinedSol.toFixed(6)}
-                  {wsolBalance > 0 && (
-                    <span className="text-gray-500 text-sm ml-2">
-                      ({nativeSol.toFixed(4)} native + {wsolBalance.toFixed(4)} wSOL)
-                    </span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <span>SOL: {combinedSol.toFixed(6)}</span>
+                    {wsolBalance > 0 && (
+                      <span className="text-gray-500 text-sm">
+                        ({nativeSol.toFixed(4)} native + {wsolBalance.toFixed(4)} wSOL)
+                      </span>
+                    )}
+                    <button
+                      onClick={() => setShowWsolModal(true)}
+                      className="ml-2 px-2 py-0.5 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded"
+                      title="Manage WSOL (wrap/unwrap)"
+                    >
+                      WSOL
+                    </button>
+                  </div>
                 </div>
               );
             })()}
@@ -3019,6 +3067,9 @@ export const App: React.FC = () => {
       )}
       {showAltModal && (
         <AltManagementModal onClose={() => setShowAltModal(false)} apiBase={apiBase} />
+      )}
+      {showWsolModal && (
+        <WsolManagementModal onClose={() => setShowWsolModal(false)} apiBase={apiBase} />
       )}
       {showRouterPanel && (
         <RouterPanel apiBase={apiBase} onClose={() => setShowRouterPanel(false)} />

@@ -194,6 +194,10 @@ export const ROUTES = {
     tokens: '/wallet/tokens',
     tokenAccounts: '/wallet/token-accounts',
   },
+  router: {
+    config: '/router/config',
+    wsolMode: '/router/config/wsol-mode',
+  },
   watchlist: '/watchlist',
   swap: '/swap',
   // Legacy control endpoints retained by backend for now
