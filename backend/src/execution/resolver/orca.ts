@@ -155,8 +155,48 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
           ...updates
         });
       }
+      
+      // OPTIMIZATION: Set hop.aToB based on pool mint orientation
+      // This enables SDK account caching to work on first call (no warm-up required)
+      // Without this, direction resolution in sdkQuoteBuilder would fail on first call
+      // because static cache might not be populated yet
+      if (hop.aToB === undefined) {
+        // Prefer native_mint_a (authoritative), fallback to canonical mint_a with was_swapped
+        const poolMintANative = nativeMintA || ((p as any)?.was_swapped ? poolMintB : poolMintA);
+        if (poolMintANative) {
+          hop.aToB = hop.inputMint === poolMintANative;
+          try {
+            logger.debug('orca.resolver.direction_resolved', {
+              cat: 'tx',
+              traceId,
+              ctx: {
+                pool: hop.poolId,
+                inputMint: hop.inputMint?.slice(0, 8) + '…',
+                poolMintA: poolMintANative?.slice(0, 8) + '…',
+                aToB: hop.aToB,
+              }
+            });
+          } catch (e) { logCatchError('resolver.orca', e); }
+        }
+      }
     }
   } catch (e) { logCatchError('resolver.orca', e); }
+  
+  // FALLBACK: Try to set aToB from static cache if pool lookup failed
+  // This handles cases where peekOrcaPools() doesn't have the pool but cache does
+  if (hop.aToB === undefined) {
+    const statAfter = executionCache.getStatic(poolIdBase);
+    let poolMintA: string | undefined;
+    if (statAfter?.native_mint_a) {
+      poolMintA = statAfter.native_mint_a;
+    } else if (statAfter?.mint_a) {
+      const wasSwapped = statAfter?.was_swapped === true;
+      poolMintA = wasSwapped ? statAfter?.mint_b : statAfter?.mint_a;
+    }
+    if (poolMintA) {
+      hop.aToB = hop.inputMint === poolMintA;
+    }
+  }
   
   // WARNING: Do NOT blindly derive tick arrays - derived PDAs may not exist on-chain!
   // Tick arrays should come from validated sources (pool fetch, websocket updates, or cacheValidator).

@@ -148,6 +148,14 @@ function getOrcaDirectionCacheKey(poolId: string, aToB: boolean): string {
 }
 
 function resolveOrcaDirection(hop: DirectHop): boolean | null {
+  // OPTIMIZATION: Check hop.aToB FIRST - resolver may have already set it
+  // This ensures we use the direction computed by the resolver (which has pool data)
+  // without requiring another cache lookup
+  if (typeof hop.aToB === 'boolean') {
+    return hop.aToB;
+  }
+  
+  // Fallback to cache lookup if hop.aToB not set
   const cleanPoolId = hop.poolId.replace(/[#-]rev$/, '');
   const stat = executionCache.getStatic(cleanPoolId);
   let poolMintA: string | undefined;
@@ -159,9 +167,6 @@ function resolveOrcaDirection(hop: DirectHop): boolean | null {
   }
   if (poolMintA) {
     return hop.inputMint === poolMintA;
-  }
-  if (typeof hop.aToB === 'boolean') {
-    return hop.aToB;
   }
   return null;
 }
@@ -657,6 +662,159 @@ function cachePumpswapAccounts(poolId: string, accounts: SdkProvidedAccounts): v
   if (Object.keys(staticUpdates).length > 0) {
     const existing = executionCache.getStatic(cleanPoolId) || {};
     executionCache.setStatic(cleanPoolId, { ...existing, ...staticUpdates });
+  }
+}
+
+// ============================================================================
+// Full Cache Hit Detection - Skip SDK calls entirely when cached
+// ============================================================================
+
+/**
+ * Check if a hop has FULL cache coverage (all required accounts for execution)
+ * This enables skipping SDK quote calls entirely for warm caches
+ */
+function hasFullCacheHit(hop: DirectHop): boolean {
+  const dex = hop.dex?.toLowerCase();
+  const variant = hop.variant?.toLowerCase();
+  const poolId = hop.poolId.replace(/[#-]rev$/, '');
+  
+  switch (dex) {
+    case 'orca': {
+      // Orca needs direction-specific tick arrays + oracle
+      const aToB = resolveOrcaDirection(hop);
+      if (aToB === null) return false;
+      const directional = tryGetCachedOrcaDirectionalTickArrays(poolId, aToB);
+      const staticAccounts = tryGetCachedOrcaAccounts(poolId);
+      // Full cache = tick arrays + oracle
+      return !!(directional?.tickArray0 && directional?.tickArray1 && directional?.tickArray2 && staticAccounts?.oracle);
+    }
+    
+    case 'raydium': {
+      if (variant === 'cpmm') {
+        // CPMM is constant product - doesn't need SDK quote, always "cached"
+        return true;
+      }
+      if (variant === 'amm' || variant === 'amm_v4') {
+        const cached = tryGetCachedRaydiumAmmAccounts(poolId);
+        // Full cache = market accounts (marketId, bids, asks)
+        return !!(cached?.marketId && cached?.serumBids && cached?.serumAsks);
+      }
+      // CLMM - need tick arrays + observationState
+      const cached = tryGetCachedRaydiumClmmAccounts(poolId);
+      return !!(cached?.tickArrayCenter && (cached?.ammConfig || cached?.observationState));
+    }
+    
+    case 'meteora': {
+      if (variant === 'damm_v1' || variant === 'damm' || variant === 'balanced') {
+        const cached = tryGetCachedMeteoraDammV1Accounts(poolId);
+        // DAMM v1 needs vault accounts
+        return !!(cached?.aVault && cached?.bVault);
+      }
+      if (variant === 'damm_v2' || variant === 'cpamm') {
+        const cached = tryGetCachedMeteoraDammV2Accounts(poolId);
+        return !!(cached?.vaultA && cached?.vaultB);
+      }
+      // DLMM - need bin arrays
+      const cached = tryGetCachedMeteoraDlmmAccounts(poolId);
+      return !!(cached?.binArrays && cached.binArrays.length > 0);
+    }
+    
+    case 'meteora_balanced': {
+      if (variant === 'damm_v2') {
+        const cached = tryGetCachedMeteoraDammV2Accounts(poolId);
+        return !!(cached?.vaultA && cached?.vaultB);
+      }
+      const cached = tryGetCachedMeteoraDammV1Accounts(poolId);
+      return !!(cached?.aVault && cached?.bVault);
+    }
+    
+    case 'pumpswap': {
+      const cached = tryGetCachedPumpswapAccounts(poolId);
+      return !!(cached?.protocolFeeRecipient);
+    }
+    
+    default:
+      return false;
+  }
+}
+
+/**
+ * Get accounts from cache only (no SDK calls)
+ * Returns null if cache is incomplete - caller should fall back to SDK
+ */
+function getCacheOnlyAccounts(hop: DirectHop): SdkQuoteResult | null {
+  const dex = hop.dex?.toLowerCase();
+  const variant = hop.variant?.toLowerCase();
+  const poolId = hop.poolId.replace(/[#-]rev$/, '');
+  
+  switch (dex) {
+    case 'orca': {
+      const aToB = resolveOrcaDirection(hop);
+      if (aToB === null) return null;
+      const directional = tryGetCachedOrcaDirectionalTickArrays(poolId, aToB);
+      const staticAccounts = tryGetCachedOrcaAccounts(poolId);
+      if (!directional?.tickArray0 || !directional?.tickArray1 || !directional?.tickArray2) return null;
+      return {
+        success: true,
+        fromCache: true,
+        accounts: {
+          ...directional,
+          oracle: staticAccounts?.oracle,
+          vaultA: staticAccounts?.vaultA,
+          vaultB: staticAccounts?.vaultB,
+        },
+      };
+    }
+    
+    case 'raydium': {
+      if (variant === 'cpmm') {
+        return { success: true, fromCache: true, accounts: {} };
+      }
+      if (variant === 'amm' || variant === 'amm_v4') {
+        const cached = tryGetCachedRaydiumAmmAccounts(poolId);
+        if (!cached?.marketId || !cached?.serumBids || !cached?.serumAsks) return null;
+        return { success: true, fromCache: true, accounts: cached };
+      }
+      const cached = tryGetCachedRaydiumClmmAccounts(poolId);
+      if (!cached?.tickArrayCenter) return null;
+      return { success: true, fromCache: true, accounts: cached };
+    }
+    
+    case 'meteora': {
+      if (variant === 'damm_v1' || variant === 'damm' || variant === 'balanced') {
+        const cached = tryGetCachedMeteoraDammV1Accounts(poolId);
+        if (!cached?.aVault || !cached?.bVault) return null;
+        return { success: true, fromCache: true, accounts: cached };
+      }
+      if (variant === 'damm_v2' || variant === 'cpamm') {
+        const cached = tryGetCachedMeteoraDammV2Accounts(poolId);
+        if (!cached?.vaultA || !cached?.vaultB) return null;
+        return { success: true, fromCache: true, accounts: cached };
+      }
+      const cached = tryGetCachedMeteoraDlmmAccounts(poolId);
+      if (!cached?.binArrays || cached.binArrays.length === 0) return null;
+      return { success: true, fromCache: true, accounts: cached };
+    }
+    
+    case 'meteora_balanced': {
+      if (variant === 'damm_v2') {
+        const cached = tryGetCachedMeteoraDammV2Accounts(poolId);
+        if (!cached?.vaultA || !cached?.vaultB) return null;
+        return { success: true, fromCache: true, accounts: cached };
+      }
+      const cached = tryGetCachedMeteoraDammV1Accounts(poolId);
+      if (!cached?.aVault || !cached?.bVault) return null;
+      return { success: true, fromCache: true, accounts: cached };
+    }
+    
+    case 'pumpswap': {
+      const cached = tryGetCachedPumpswapAccounts(poolId);
+      if (!cached?.protocolFeeRecipient) return null;
+      return { success: true, fromCache: true, accounts: cached };
+    }
+    
+    default:
+      return null;
   }
 }
 
@@ -1277,17 +1435,39 @@ async function getOrcaSdkQuote(
     cacheOrcaAccounts(poolId, accounts);
     
     // Cache direction-specific tick arrays to avoid repeated SDK calls
-    if (aToB !== null && accounts.tickArray0 && accounts.tickArray1 && accounts.tickArray2) {
-      const directionKey = getOrcaDirectionCacheKey(poolId, aToB);
-      executionCache.setHot(directionKey, {
-        tickArrays: {
-          center: accounts.tickArray0,
-          lower: accounts.tickArray1,
-          upper: accounts.tickArray2,
-        },
-        needsTickArrayValidation: false,
-        tickArraysValidatedAt: Date.now(),
-      });
+    if (accounts.tickArray0 && accounts.tickArray1 && accounts.tickArray2) {
+      if (aToB !== null) {
+        const directionKey = getOrcaDirectionCacheKey(poolId, aToB);
+        executionCache.setHot(directionKey, {
+          tickArrays: {
+            center: accounts.tickArray0,
+            lower: accounts.tickArray1,
+            upper: accounts.tickArray2,
+          },
+          needsTickArrayValidation: false,
+          tickArraysValidatedAt: Date.now(),
+        });
+        
+        logger.debug('sdkQuoteBuilder.orca.cache.stored', {
+          cat: 'tx',
+          ctx: {
+            poolId: poolId.slice(0, 8) + '...',
+            direction: aToB ? 'AtoB' : 'BtoA',
+            tickArray0: accounts.tickArray0?.slice(0, 8) + '...',
+          },
+        });
+      } else {
+        // Direction unknown - this indicates resolver didn't set hop.aToB
+        // Log warning so we can track if this is still happening after Fix 1
+        logger.warn('sdkQuoteBuilder.orca.cache.direction_unknown', {
+          cat: 'tx',
+          ctx: {
+            poolId: poolId.slice(0, 8) + '...',
+            hint: 'Tick arrays not cached because direction unknown. Check resolver.',
+            hasTickArrays: true,
+          },
+        });
+      }
     }
 
     // Merge with any cached static accounts (oracle, vaults) in case SDK extraction missed them
@@ -3129,17 +3309,73 @@ export async function getSdkQuoteAccounts(hop: DirectHop): Promise<SdkQuoteResul
 
 /**
  * Get SDK-provided accounts for all hops in an execution plan
- * Runs all hop quotes in parallel for reduced latency
+ * 
+ * OPTIMIZATION: First tries cache-only path to skip SDK calls entirely.
+ * Only calls SDK for hops that don't have full cache coverage.
+ * This significantly reduces latency for warm caches.
  */
 export async function getSdkQuoteAccountsForPlan(
   hops: DirectHop[]
 ): Promise<{ success: boolean; results: SdkQuoteResult[]; error?: string }> {
   const startMs = Date.now();
   
-  // Run all hop SDK quotes in parallel
-  const results = await Promise.all(
-    hops.map(hop => getSdkQuoteAccounts(hop))
-  );
+  // FAST PATH: Try cache-only first for ALL hops
+  // If all hops have full cache, we skip SDK calls entirely
+  const cacheOnlyResults: (SdkQuoteResult | null)[] = hops.map(hop => getCacheOnlyAccounts(hop));
+  const allCached = cacheOnlyResults.every(r => r !== null);
+  
+  if (allCached) {
+    // ALL hops have full cache - skip SDK calls entirely!
+    const results = cacheOnlyResults as SdkQuoteResult[];
+    const elapsedMs = Date.now() - startMs;
+    
+    logger.debug('sdkQuoteBuilder.plan.complete', {
+      cat: 'tx',
+      ctx: {
+        hopCount: hops.length,
+        cacheHits: hops.length,
+        cacheMisses: 0,
+        elapsedMs,
+        avgMsPerHop: hops.length > 0 ? Math.round(elapsedMs / hops.length) : 0,
+        fastPath: true, // Indicates SDK was skipped entirely
+        pools: hops.map((h) => ({
+          dex: h.dex,
+          poolId: h.poolId.slice(0, 8),
+          fromCache: true,
+        })),
+      },
+    });
+    
+    return {
+      success: true,
+      results,
+    };
+  }
+  
+  // SLOW PATH: Some hops need SDK calls
+  // Only call SDK for hops that don't have full cache
+  const results: SdkQuoteResult[] = [];
+  const sdkPromises: Promise<{ index: number; result: SdkQuoteResult }>[] = [];
+  
+  for (let i = 0; i < hops.length; i++) {
+    if (cacheOnlyResults[i] !== null) {
+      // Use cached result
+      results[i] = cacheOnlyResults[i]!;
+    } else {
+      // Need SDK call - queue it
+      sdkPromises.push(
+        getSdkQuoteAccounts(hops[i]).then(result => ({ index: i, result }))
+      );
+    }
+  }
+  
+  // Run SDK calls in parallel for hops that need them
+  if (sdkPromises.length > 0) {
+    const sdkResults = await Promise.all(sdkPromises);
+    for (const { index, result } of sdkResults) {
+      results[index] = result;
+    }
+  }
 
   // Check for any failures and return first error found
   for (let i = 0; i < results.length; i++) {
@@ -3153,7 +3389,7 @@ export async function getSdkQuoteAccountsForPlan(
     }
   }
 
-  // OPTIMIZATION: Log cache hit/miss summary for performance tracking
+  // Log cache hit/miss summary for performance tracking
   const cacheHits = results.filter(r => r.fromCache).length;
   const cacheMisses = results.length - cacheHits;
   const elapsedMs = Date.now() - startMs;
@@ -3165,7 +3401,8 @@ export async function getSdkQuoteAccountsForPlan(
       cacheHits,
       cacheMisses,
       elapsedMs,
-      avgMsPerHop: Math.round(elapsedMs / hops.length),
+      avgMsPerHop: hops.length > 0 ? Math.round(elapsedMs / hops.length) : 0,
+      fastPath: false,
       pools: hops.map((h, i) => ({
         dex: h.dex,
         poolId: h.poolId.slice(0, 8),

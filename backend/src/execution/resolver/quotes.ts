@@ -94,12 +94,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         const p = (ray.amm || []).find((x: any) => String(x?.id || '') === id);
         if (p) {
           const feeBps = Number((p as any)?.fee_bps || (hop as any)?.fee_bps || 0);
-          const decIn = Number(
-            hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0,
-          );
-          const decOut = Number(
-            hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0,
-          );
+          // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+          const poolDecIn = Number(isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
+          const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
+          const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
+          const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
             const reserveInWhole = Number(
@@ -146,12 +145,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           
           if (p) {
             const feeBps = Number((p as any)?.fee_bps || 25);
-            const decIn = Number(
-              hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0,
-            );
-            const decOut = Number(
-              hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0,
-            );
+            // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+            const poolDecIn = Number(isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
+            const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
+            const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
+            const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
             const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
             
             if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
@@ -208,12 +206,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         if (p) {
           // PumpSwap uses 25 bps total fee (20 bps LP + 5 bps protocol)
           const feeBps = Number((p as any)?.fee_bps || 25);
-          const decIn = Number(
-            hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0,
-          );
-          const decOut = Number(
-            hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0,
-          );
+          // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+          const poolDecIn = Number(isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
+          const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
+          const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
+          const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
@@ -255,12 +252,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         if (p) {
           // Get fee from pool (typically 10-30 bps for DAMM)
           const feeBps = Number((p as any)?.fee_bps || 10);
-          const decIn = Number(
-            hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0,
-          );
-          const decOut = Number(
-            hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0,
-          );
+          // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+          const poolDecIn = Number(isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
+          const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
+          const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
+          const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
@@ -368,8 +364,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           const actualIsRev = swappingBtoA;
           
           const feeBps = Number((p as any)?.fee_bps || 0);
-          const decIn = Number(hop.inputDecimals ?? (actualIsRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0);
-          const decOut = Number(hop.outputDecimals ?? (actualIsRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0);
+          // FIX: Prefer pool decimals over hop decimals (pool decimals are authoritative)
+          const poolDecIn = Number(actualIsRev ? (p as any)?.decimals_b : (p as any)?.decimals_a);
+          const poolDecOut = Number(actualIsRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
+          const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
+          const decOut = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           let px = Number((p as any)?.price_a_per_b || 0);
           
@@ -622,6 +621,8 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
               native_decimals_a: (pool as any).native_decimals_a,
               native_decimals_b: (pool as any).native_decimals_b,
               tick_spacing: (pool as any).tick_spacing,
+              // CRITICAL: Include was_swapped for proper decimal fallback in quoting
+              was_swapped: (pool as any).was_swapped,
             };
             
             // Also populate execution cache for future use
