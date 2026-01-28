@@ -26,6 +26,12 @@ type ExecutorStatus = {
     };
     // Router
     useRouter?: boolean;
+    // Skip simulation for validated pools
+    skipSimulation?: {
+      enabled: boolean;
+      poolValidityMs?: number;
+      minValidations?: number;
+    };
   };
   state?: {
     inFlight: number;
@@ -322,15 +328,6 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
           </div>
         </div>
       )}
-      
-      {/* Validated Pools Cache (Skip-Simulation Optimization) */}
-      {status?.validatedPoolsCache && status.validatedPoolsCache.validatedPools > 0 && (
-        <div className="text-xs mb-2 px-1.5 py-1 bg-purple-900/20 rounded border border-purple-700/30">
-          <span className="opacity-70">⚡ Direct-Execution Pools: </span>
-          <span className="text-purple-300 font-semibold">{status.validatedPoolsCache.validatedPools}</span>
-          <span className="opacity-50"> / {status.validatedPoolsCache.totalPools} tracked</span>
-        </div>
-      )}
 
       {/* Expanded Details */}
       {expanded && status?.running && (
@@ -348,6 +345,9 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
             </span>
             <span className={`px-2 py-0.5 rounded text-xs ${status.config.useRouter ? 'bg-purple-600/30 text-purple-300' : 'bg-gray-700 text-gray-500'}`}>
               Router {status.config.useRouter ? '✓' : '✗'}
+            </span>
+            <span className={`px-2 py-0.5 rounded text-xs ${status.config.skipSimulation?.enabled ? 'bg-yellow-600/30 text-yellow-300' : 'bg-gray-700 text-gray-500'}`}>
+              ⚡ Skip Sim {status.config.skipSimulation?.enabled ? '✓' : '✗'}
             </span>
           </div>
 
@@ -450,6 +450,86 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
               )}
             </div>
           )}
+
+          {/* Skip Simulation Config */}
+          <div className="mt-2 p-2 bg-yellow-900/20 border border-yellow-700/30 rounded">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-yellow-400 font-medium">⚡ Skip Simulation</span>
+              <button
+                className={`px-2 py-0.5 rounded text-xs ${
+                  status.config.skipSimulation?.enabled 
+                    ? 'bg-yellow-600 text-white' 
+                    : 'bg-gray-700 text-gray-400'
+                }`}
+                onClick={() => updateConfig({ 
+                  skipSimulation: { 
+                    ...status.config.skipSimulation,
+                    enabled: !status.config.skipSimulation?.enabled 
+                  } 
+                })}
+                disabled={saving}
+              >
+                {status.config.skipSimulation?.enabled ? 'Enabled' : 'Disabled'}
+              </button>
+            </div>
+            {status.config.skipSimulation?.enabled && (
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <label className="block opacity-70 mb-1">Validity (seconds)</label>
+                  <input
+                    type="number"
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                    value={Math.round((status.config.skipSimulation?.poolValidityMs ?? 300000) / 1000)}
+                    onChange={(e) => {
+                      const ms = Number(e.target.value) * 1000;
+                      updateConfig({ 
+                        skipSimulation: { 
+                          ...status.config.skipSimulation,
+                          enabled: true,
+                          poolValidityMs: ms 
+                        } 
+                      });
+                    }}
+                    disabled={saving}
+                    min={10}
+                    max={3600}
+                  />
+                  <div className="text-gray-500 mt-0.5">How long pools stay validated</div>
+                </div>
+                <div>
+                  <label className="block opacity-70 mb-1">Min Validations</label>
+                  <input
+                    type="number"
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                    value={status.config.skipSimulation?.minValidations ?? 1}
+                    onChange={(e) => {
+                      updateConfig({ 
+                        skipSimulation: { 
+                          ...status.config.skipSimulation,
+                          enabled: true,
+                          minValidations: Number(e.target.value) 
+                        } 
+                      });
+                    }}
+                    disabled={saving}
+                    min={1}
+                    max={10}
+                  />
+                  <div className="text-gray-500 mt-0.5">Successes before trusting</div>
+                </div>
+              </div>
+            )}
+            {status.validatedPoolsCache && status.validatedPoolsCache.totalPools > 0 && (
+              <div className="mt-2 pt-2 border-t border-yellow-700/30 text-xs">
+                <span className="opacity-70">Cache: </span>
+                <span className="text-yellow-300">{status.validatedPoolsCache.validatedPools}</span>
+                <span className="opacity-50"> validated / </span>
+                <span>{status.validatedPoolsCache.totalPools}</span>
+                <span className="opacity-50"> tracked</span>
+                <span className="opacity-50 ml-2">({status.validatedPoolsCache.totalValidations} total validations)</span>
+              </div>
+            )}
+          </div>
 
           {status.state && (
             <>

@@ -31,7 +31,7 @@ export interface SkipSimulationConfig {
   maxRecentOutcomes?: number;   // Keep last N outcomes per pool (default: 10)
 }
 
-const DEFAULT_VALIDITY_MS = 60_000;  // 1 minute
+const DEFAULT_VALIDITY_MS = 300_000;  // 5 minutes - pools stay validated longer for better hit rate
 const DEFAULT_MIN_VALIDATIONS = 1;
 const DEFAULT_MAX_RECENT_OUTCOMES = 10;
 
