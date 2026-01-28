@@ -196,7 +196,7 @@ export function OpportunityList(
         <span className="text-xs opacity-70">{showAll ? `Showing ${items.length}` : `Showing ${Math.min(10, items.length)} of ${items.length}`}</span>
         <button className="px-2 py-1 border rounded" onClick={()=> setShowAll(!showAll)}>{showAll ? 'Show Top 10' : 'Show All'}</button>
       </div>
-      <div className="max-h-[600px] overflow-y-auto">
+      <div className="max-h-[1200px] overflow-y-auto">
         <div className="space-y-2">
         {visible.map((op) => {
           const key = `${(op.path||[]).join('>')}|${(op.dexes||[]).join('>')}`;
