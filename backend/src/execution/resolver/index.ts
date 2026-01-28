@@ -21,6 +21,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   const path = Array.isArray(input.path) ? input.path : [];
   const hopPoolIds = Array.isArray(input.hopPoolIds) ? input.hopPoolIds : [];
   const dexes = Array.isArray(input.dexes) ? input.dexes : [];
+  const hopRates = Array.isArray(input.hopRates) ? input.hopRates : [];
   // Use provided traceId or generate one for log correlation
   const traceId = input.traceId || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   
@@ -207,6 +208,8 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       userDestAta: '',
       amountInRaw: 0n,
       minOutRaw: 0n,
+      // Rate from opportunity data (used for quote sanity checking)
+      rate: hopRates[i],
     };
     // Populate common per-DEX account fields opportunistically from cache
     const stat = executionCache.getStatic(poolId);

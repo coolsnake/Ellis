@@ -1069,6 +1069,7 @@ export class ArbExecutor {
           slippageBps: this.config.slippageBps,
           traceId,
           minProfitBps: this.config.minProfitBps || 0,  // Enforce profitability for arb cycles
+          hopRates: opp.hop_rates,  // Pass rates for quote sanity checking
         };
         
         // If we have raw balance fallback (no price data), convert to raw atoms and pass as `size`

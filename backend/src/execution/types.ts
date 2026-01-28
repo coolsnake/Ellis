@@ -32,6 +32,9 @@ export type DirectHop = {
   // Multihop exact amount tracking
   quotedOutputRaw?: bigint; // Exact output from quote, used for multihop propagation
   useExactAmount?: boolean; // Flag to prevent re-quote adjustments in instruction building
+  
+  // Rate from opportunity data (used for quote sanity checking)
+  rate?: number;
 
   // Common vaults
   vaultA?: string;
@@ -107,6 +110,7 @@ export type ResolveDirectInput = {
   slippageBps?: number;
   traceId?: string;  // Unified trace ID for correlating all logs across the execution lifecycle
   minProfitBps?: number;  // For arb cycles: minimum profit required (final minOutRaw >= initial input * (1 + minProfitBps/10000))
+  hopRates?: number[];  // Per-hop rates from opportunity data, used for quote sanity checking
 };
 
 
