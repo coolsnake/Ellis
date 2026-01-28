@@ -29,6 +29,7 @@ export interface SkipSimulationConfig {
   poolValidityMs?: number;      // How long a pool stays validated (default: 60000 = 1 min)
   minValidations?: number;      // Require N validations before trusting (default: 1)
   maxRecentOutcomes?: number;   // Keep last N outcomes per pool (default: 10)
+  minProfitBps?: number;        // Lower profit threshold for skip simulation (allows executing lower-margin opps on validated pools)
 }
 
 const DEFAULT_VALIDITY_MS = 300_000;  // 5 minutes - pools stay validated longer for better hit rate

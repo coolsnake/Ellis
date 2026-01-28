@@ -25,6 +25,14 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     createAtasInTx: true,
     dynamicCompute: true,
     maxTxSizeBytes: 1200,
+    cooldownMs: 5000,
+    // Skip simulation settings
+    skipSimulationMinProfitBps: 25,
+    // Adaptive sizing / upward retry
+    upwardRetryEnabled: false,
+    upwardFactor: 1.5,
+    // Size randomness
+    sizeRandomnessFactor: 0.1,
     near_miss_enable: true,
     debug_top_n: 5,
     edge_allow: {
@@ -50,9 +58,19 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         const ex = await fetch(`${apiBase}${ROUTES.exec.config}`).then(r => r.ok ? r.json() : null).catch(() => null);
         // Load detector config (arb-rs)
         const det = await fetch(`${apiBase}${ROUTES.arb.config}`).then(r => r.ok ? r.json() : null).catch(() => null);
+        // Load executor config (for cooldownMs)
+        const execCfg = await fetch(`${apiBase}${ROUTES.arb.executorConfig}`).then(r => r.ok ? r.json() : null).catch(() => null);
         setCfg((p: any) => ({
           ...p,
           ...(ex || {}),
+          cooldownMs: execCfg?.cooldownMs ?? p.cooldownMs,
+          // Skip simulation settings
+          skipSimulationMinProfitBps: execCfg?.skipSimulation?.minProfitBps ?? p.skipSimulationMinProfitBps,
+          // Adaptive sizing / upward retry
+          upwardRetryEnabled: execCfg?.adaptiveSizing?.upwardRetryEnabled ?? p.upwardRetryEnabled,
+          upwardFactor: execCfg?.adaptiveSizing?.upwardFactor ?? p.upwardFactor,
+          // Size randomness
+          sizeRandomnessFactor: execCfg?.dynamicSizing?.sizeRandomnessFactor ?? p.sizeRandomnessFactor,
           near_miss_enable: (det?.near_miss_enable ?? p.near_miss_enable),
           debug_top_n: (det?.debug_top_n ?? p.debug_top_n),
           edge_allow: {
@@ -102,12 +120,29 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       dynamicCompute: !!cfg.dynamicCompute,
       maxTxSizeBytes: Number(cfg.maxTxSizeBytes || 0) || undefined,
     };
+    const executorBody = {
+      cooldownMs: Math.max(0, Number(cfg.cooldownMs) || 5000),
+      // Skip simulation settings
+      skipSimulation: {
+        minProfitBps: Number(cfg.skipSimulationMinProfitBps) || undefined,
+      },
+      // Adaptive sizing / upward retry
+      adaptiveSizing: {
+        upwardRetryEnabled: !!cfg.upwardRetryEnabled,
+        upwardFactor: Math.max(1.0, Number(cfg.upwardFactor) || 1.5),
+      },
+      // Size randomness (in dynamicSizing)
+      dynamicSizing: {
+        sizeRandomnessFactor: Math.max(0, Math.min(0.5, Number(cfg.sizeRandomnessFactor) || 0.1)),
+      },
+    };
     try {
-      const [r1, r2] = await Promise.all([
+      const [r1, r2, r3] = await Promise.all([
         fetch(`${apiBase}${ROUTES.exec.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(execBody) }),
         fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ near_miss_enable: !!cfg.near_miss_enable, debug_top_n: Number(cfg.debug_top_n || 0), edge_allow: cfg.edge_allow }) }),
+        fetch(`${apiBase}${ROUTES.arb.executorConfig}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(executorBody) }),
       ]);
-      if (!r1.ok || !r2.ok) throw new Error('Failed to save');
+      if (!r1.ok || !r2.ok || !r3.ok) throw new Error('Failed to save');
       onClose();
     } catch (e: any) {
       setError(String(e?.message || e));
@@ -150,6 +185,11 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.createAtasInTx} onChange={(e)=>set('createAtasInTx', e.target.checked)} />Create ATAs in transaction</label>
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.dynamicCompute} onChange={(e)=>set('dynamicCompute', e.target.checked)} />Dynamic Compute</label>
               <div><label className="block text-sm mb-1">Max Tx Size (bytes)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.maxTxSizeBytes ?? ''} onChange={(e)=>set('maxTxSizeBytes', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Route Cooldown (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.cooldownMs ?? 5000} onChange={(e)=>set('cooldownMs', Number(e.target.value)||0)} /><div className="text-xs text-gray-400 mt-1">Prevents executing the same route (pool IDs) within this time</div></div>
+              <div><label className="block text-sm mb-1">Skip Sim Min Profit (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.skipSimulationMinProfitBps ?? 25} onChange={(e)=>set('skipSimulationMinProfitBps', Number(e.target.value)||0)} /><div className="text-xs text-gray-400 mt-1">Lower threshold for skip simulation on validated pools</div></div>
+              <div><label className="block text-sm mb-1">Size Randomness</label><input type="number" step="0.05" min="0" max="0.5" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.sizeRandomnessFactor ?? 0.1} onChange={(e)=>set('sizeRandomnessFactor', Number(e.target.value)||0)} /><div className="text-xs text-gray-400 mt-1">Variance factor (0.1 = ±10%)</div></div>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.upwardRetryEnabled} onChange={(e)=>set('upwardRetryEnabled', e.target.checked)} />Enable Upward Retry</label>
+              <div><label className="block text-sm mb-1">Upward Size Factor</label><input type="number" step="0.1" min="1.0" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.upwardFactor ?? 1.5} onChange={(e)=>set('upwardFactor', Number(e.target.value)||1.5)} disabled={!cfg.upwardRetryEnabled} /><div className="text-xs text-gray-400 mt-1">Test larger sizes to recalibrate (1.5 = +50%)</div></div>
               <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.near_miss_enable} onChange={(e)=>set('near_miss_enable', e.target.checked)} />Enable near-miss output (arb-rs)</label>
               <div><label className="block text-sm mb-1">Debug Top-N Near Misses</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.debug_top_n} onChange={(e)=>set('debug_top_n', Number(e.target.value)||0)} /></div>
             </div>

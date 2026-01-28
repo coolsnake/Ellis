@@ -178,6 +178,10 @@ export interface ExecutorConfig {
       // Safety margin on optimal (0.9 = use 90% of calculated optimal)
       safetyFactor: number;              // Default 0.85
     };
+    
+    // Size randomness for MEV protection (default: 0.1 = ±10%)
+    // Set to 0 to disable randomness
+    sizeRandomnessFactor?: number;
   };
   // Flashloan settings - use flashloans when optimal size > wallet balance
   flashloanSettings?: {
@@ -212,6 +216,11 @@ export interface ExecutorConfig {
     reductionFactor: number;      // Size multiplier per retry (default: 0.5 = halve each time)
     minSizeUsd: number;           // Don't retry below this size (default: 5)
     timeoutMs: number;            // Total timeout for all retries (default: 500ms)
+    // Upward retry - test larger sizes after success to recalibrate capacity
+    upwardRetryEnabled?: boolean;      // Enable testing larger sizes after successful execution
+    upwardFactor?: number;             // Multiplier for larger size (default: 1.5 = +50%)
+    upwardRetryIntervalMs?: number;    // Min time between upward tests per route (default: 300000 = 5min)
+    maxUpwardSizeUsd?: number;         // Cap for upward testing (default: use dynamicSizing.maxSizeUsd)
   };
   // Alternative pool exploration - try different pools for problematic hops
   alternativePoolExploration?: {
@@ -247,6 +256,7 @@ interface ExecutionState {
   totalExecutions: number;
   successfulExecutions: number;
   failedExecutions: number;
+  lastUpwardRetry: Map<string, number>; // oppKey -> last upward retry timestamp
 }
 
 // PERF: Balance cache to avoid RPC calls on every opportunity check
@@ -280,6 +290,7 @@ export class ArbExecutor {
       totalExecutions: 0,
       successfulExecutions: 0,
       failedExecutions: 0,
+      lastUpwardRetry: new Map(),
     };
   }
 
@@ -559,15 +570,60 @@ export class ArbExecutor {
     }
 
     // Check profit threshold
+    // Two thresholds: normal minProfitBps and optional lower skipSimulation.minProfitBps
+    // Lower threshold only applies if skip simulation is enabled AND all pools are validated
+    const skipSimCfg = this.config.skipSimulation;
+    const skipSimMinProfit = skipSimCfg?.minProfitBps;
+    
     if (profitBps < this.config.minProfitBps) {
-      logger.debug('arb.executor.filtered', {
-        cat: 'arb',
-        reason: 'low_profit',
-        path: pathStr,
-        profitBps,
-        threshold: this.config.minProfitBps,
-      });
-      return false;
+      // Doesn't meet normal threshold - check if qualifies for skip simulation threshold
+      const canUseSkipSimThreshold = 
+        skipSimCfg?.enabled && 
+        skipSimMinProfit !== undefined && 
+        profitBps >= skipSimMinProfit &&
+        opp.hop_pool_ids && 
+        opp.hop_pool_ids.length > 0;
+      
+      if (canUseSkipSimThreshold) {
+        // Check if all pools are validated (required for skip simulation)
+        const allValidated = validatedPoolsCache.allPoolsValidated(
+          opp.hop_pool_ids.map((poolId, i) => ({
+            poolId,
+            dex: opp.hop_dexes?.[i] || opp.dexes?.[i] || 'unknown',
+            variant: 'unknown', // Variant not critical for validation check
+          }))
+        );
+        
+        if (!allValidated) {
+          logger.debug('arb.executor.filtered', {
+            cat: 'arb',
+            reason: 'low_profit_pools_not_validated',
+            path: pathStr,
+            profitBps,
+            normalThreshold: this.config.minProfitBps,
+            skipSimThreshold: skipSimMinProfit,
+          });
+          return false;
+        }
+        
+        // Qualifies for skip simulation - allow through
+        logger.debug('arb.executor.skip_sim_threshold_passed', {
+          cat: 'arb',
+          path: pathStr,
+          profitBps,
+          normalThreshold: this.config.minProfitBps,
+          skipSimThreshold: skipSimMinProfit,
+        });
+      } else {
+        logger.debug('arb.executor.filtered', {
+          cat: 'arb',
+          reason: 'low_profit',
+          path: pathStr,
+          profitBps,
+          threshold: this.config.minProfitBps,
+        });
+        return false;
+      }
     }
 
     // Check hop count
@@ -1660,6 +1716,9 @@ export class ArbExecutor {
                 skipSimulation: true,
               },
             });
+            
+            // Non-blocking: attempt upward retry simulation to test larger sizes
+            void this.attemptUpwardRetrySimulation(opp, effectiveSizeUsd, plan, traceId);
           } else {
             logger.warn('arb.executor.skip_simulation.no_signature', {
               cat: 'arb',
@@ -2261,6 +2320,9 @@ export class ArbExecutor {
               durationMs: Date.now() - startTime,
             },
           });
+          
+          // Non-blocking: attempt upward retry simulation to test larger sizes
+          void this.attemptUpwardRetrySimulation(opp, currentSizeUsd, plan, traceId);
         }
       } else {
         // Calculate Jito tip based on expected profit
@@ -2476,6 +2538,9 @@ export class ArbExecutor {
               usedFlashloan: useFlashloan,
             },
           });
+          
+          // Non-blocking: attempt upward retry simulation to test larger sizes
+          void this.attemptUpwardRetrySimulation(opp, effectiveSizeUsd, plan, traceId);
         }
       }
 
@@ -2995,6 +3060,23 @@ export class ArbExecutor {
       sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
     }
     
+    // Apply randomness to avoid predictable patterns (MEV protection)
+    const randomnessFactor = dynamicCfg.sizeRandomnessFactor ?? 0.1; // Default ±10%
+    let randomMultiplier = 1.0;
+    if (randomnessFactor > 0) {
+      // Random multiplier: e.g., 0.1 factor = range [0.9, 1.1]
+      randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
+      const sizeBeforeRandom = sizeUsd;
+      sizeUsd = sizeUsd * randomMultiplier;
+      
+      // Re-enforce bounds after randomness
+      sizeUsd = Math.max(minSize, sizeUsd);
+      if (!isFlashloanable || !flashloanEnabled) {
+        sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
+      }
+      sizeUsd = Math.min(maxSize, sizeUsd);
+    }
+    
     logger.debug('arb.executor.sizing.final', {
       cat: 'arb',
       path: opp.path.join('->'),
@@ -3003,6 +3085,7 @@ export class ArbExecutor {
       walletBalanceUsd: walletBalanceUsd === Infinity ? 'unlimited' : walletBalanceUsd,
       finalSize: sizeUsd,
       cappedByWallet: sizeUsd < originalSize,
+      randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
       isFlashloanable,
       flashloanEnabled,
       bottleneckUsd,
@@ -3098,19 +3181,31 @@ export class ArbExecutor {
     // If we have no curve, fall back to simple heuristic
     if (!bottleneckCurve) {
       const bottleneckUsd = opp.est_capacity ?? opp.min_edge_liquidity ?? 1000;
-      const sizeUsd = Math.max(
+      let sizeUsd = Math.max(
         config.minSizeUsd,
         Math.min(config.maxSizeUsd, bottleneckUsd * 0.02 * config.aggressiveness)
       );
+      sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
+      
+      // Apply randomness
+      const randomnessFactor = this.config.dynamicSizing?.sizeRandomnessFactor ?? 0.1;
+      let randomMultiplier = 1.0;
+      if (randomnessFactor > 0) {
+        randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
+        sizeUsd = sizeUsd * randomMultiplier;
+        sizeUsd = Math.max(config.minSizeUsd, Math.min(config.maxSizeUsd, sizeUsd));
+        sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
+      }
       
       logger.debug('arb.executor.capacity_sizing.fallback', {
         cat: 'arb',
         path: opp.path.join('->'),
         bottleneckUsd,
         sizeUsd,
+        randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
       });
       
-      return Math.min(sizeUsd, walletBalanceUsd);
+      return sizeUsd;
     }
     
     // Calculate optimal size from the bottleneck curve
@@ -3124,6 +3219,21 @@ export class ArbExecutor {
     // Extract calibration info if present
     const calibrationInfo = bottleneckCurve.metadata?.calibration;
     
+    // Apply randomness to avoid predictable patterns (MEV protection)
+    // Use dynamicSizing config for randomness factor
+    const randomnessFactor = this.config.dynamicSizing?.sizeRandomnessFactor ?? 0.1;
+    let finalSize = result.sizeUsd;
+    let randomMultiplier = 1.0;
+    if (randomnessFactor > 0) {
+      randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
+      finalSize = result.sizeUsd * randomMultiplier;
+      
+      // Re-enforce bounds
+      finalSize = Math.max(config.minSizeUsd, finalSize);
+      finalSize = Math.min(config.maxSizeUsd, finalSize);
+      finalSize = Math.min(finalSize, walletBalanceUsd);
+    }
+    
     logger.debug('arb.executor.capacity_sizing.computed', {
       cat: 'arb',
       path: opp.path.join('->'),
@@ -3132,6 +3242,8 @@ export class ArbExecutor {
       breakEvenSizeUsd: bottleneckCurve.breakEvenSizeUsd.toFixed(2),
       confidence: bottleneckCurve.confidence,
       computedSizeUsd: result.sizeUsd.toFixed(2),
+      finalSizeUsd: finalSize.toFixed(2),
+      randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
       expectedSlippageBps: result.expectedSlippageBps,
       constrainedBy: result.constrainedBy ?? 'none',
       profitBps,
@@ -3142,7 +3254,7 @@ export class ArbExecutor {
       calibrationConfidence: calibrationInfo?.confidence?.toFixed(2),
     });
     
-    return result.sizeUsd;
+    return finalSize;
   }
 
   /**
@@ -3453,6 +3565,158 @@ export class ArbExecutor {
       logger.warn('arb.executor.tracker_update_failed', { 
         cat: 'arb', 
         error: String((e as any)?.message || e) 
+      });
+    }
+  }
+
+  /**
+   * Attempt an upward retry simulation to test if larger trade sizes are viable.
+   * This helps recalibrate capacity estimates by testing larger amounts after successful trades.
+   * Non-blocking: fires simulation without execution, records feedback to calibration store.
+   */
+  private async attemptUpwardRetrySimulation(
+    opp: Opportunity,
+    successfulSizeUsd: number,
+    plan: any,
+    traceId: string
+  ): Promise<void> {
+    const adaptiveCfg = this.config.adaptiveSizing;
+    if (!adaptiveCfg?.upwardRetryEnabled) return;
+    
+    const oppKey = this.getOpportunityKey(opp);
+    const now = Date.now();
+    const intervalMs = adaptiveCfg.upwardRetryIntervalMs ?? 300_000; // Default 5 minutes
+    
+    // Check if enough time has passed since last upward retry for this route
+    const lastRetry = this.state.lastUpwardRetry.get(oppKey);
+    if (lastRetry && (now - lastRetry) < intervalMs) {
+      return;
+    }
+    
+    // Calculate larger test size
+    const upwardFactor = adaptiveCfg.upwardFactor ?? 1.5;
+    const maxSizeUsd = adaptiveCfg.maxUpwardSizeUsd ?? this.config.dynamicSizing?.maxSizeUsd ?? 500;
+    let testSizeUsd = successfulSizeUsd * upwardFactor;
+    testSizeUsd = Math.min(testSizeUsd, maxSizeUsd);
+    
+    // Don't bother if test size isn't meaningfully larger
+    if (testSizeUsd <= successfulSizeUsd * 1.1) {
+      return;
+    }
+    
+    // Cap to wallet balance for non-flashloanable tokens
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const startToken = opp.path[0];
+    const isFlashloanable = startToken === SOL_MINT || startToken === USDC_MINT;
+    const flashloanEnabled = this.config.flashloanSettings?.enabled ?? false;
+    
+    if (!isFlashloanable || !flashloanEnabled) {
+      const balances = await this.getCachedBalances();
+      if (balances) {
+        const balance = startToken === SOL_MINT ? balances.sol : (balances.tokens[startToken] ?? 0);
+        // Get price to convert to USD (rough estimate)
+        try {
+          const { getTokenPriceUsd } = await import('./cache.js');
+          const price = await getTokenPriceUsd(startToken);
+          if (price && price > 0) {
+            const walletBalanceUsd = balance * price;
+            testSizeUsd = Math.min(testSizeUsd, walletBalanceUsd * 0.95); // Leave 5% buffer
+          }
+        } catch {
+          // Can't verify balance - skip upward retry
+          return;
+        }
+      }
+    }
+    
+    // Mark retry timestamp before attempting
+    this.state.lastUpwardRetry.set(oppKey, now);
+    
+    logger.debug('arb.executor.upward_retry.attempting', {
+      cat: 'arb',
+      traceId,
+      path: opp.path.join('->'),
+      successfulSizeUsd,
+      testSizeUsd,
+      upwardFactor,
+    });
+    
+    try {
+      // Re-resolve plan with larger size
+      const testPlan = await resolveDirectPlan({
+        path: opp.path,
+        hopPoolIds: opp.hop_pool_ids || [],
+        dexes: opp.hop_dexes || opp.dexes || [],
+        sizeUsd: testSizeUsd,
+        slippageBps: this.config.slippageBps,
+        traceId: `${traceId}-upward`,
+        minProfitBps: this.config.minProfitBps || 0,
+      }, {} as any);
+      
+      // Build transaction for simulation
+      const testBuilt = await buildTransactionSummary(testPlan, undefined, {
+        useRouter: this.config.useRouter,
+        routerExecutionMode: this.config.routerExecutionMode,
+      }, `${traceId}-upward`);
+      
+      // Get ALT addresses
+      const altAddresses = plan.altAddresses || [];
+      
+      // Simulate only (no execution)
+      const simResult = await assembleAndSimulate(testBuilt.instructions, {
+        computeUnitLimit: this.config.dynamicSizing?.optimalSettings?.iterativeMaxIterations ?? 1_400_000,
+        computeUnitPriceMicroLamports: 1000,
+        lookupTableAddresses: altAddresses,
+        traceId: `${traceId}-upward`,
+      });
+      
+      const simAnalysis = parseSimulationLogs(simResult.logs, simResult.err);
+      
+      if (!simResult.err) {
+        // Success! Larger size works - record feedback to update capacity curves
+        try {
+          const simReport = buildSimulationReport(opp, testPlan, simAnalysis);
+          recordSlippageFeedback(simReport, 'success', testSizeUsd);
+          
+          logger.info('arb.executor.upward_retry.success', {
+            cat: 'arb',
+            traceId,
+            path: opp.path.join('->'),
+            testSizeUsd,
+            previousSizeUsd: successfulSizeUsd,
+            improvement: `+${((testSizeUsd / successfulSizeUsd - 1) * 100).toFixed(0)}%`,
+          });
+        } catch (feedbackErr) {
+          logger.debug('arb.executor.upward_retry.feedback_error', {
+            cat: 'arb',
+            error: String(feedbackErr),
+          });
+        }
+      } else {
+        // Simulation failed - current calibration is correct
+        logger.debug('arb.executor.upward_retry.failed', {
+          cat: 'arb',
+          traceId,
+          path: opp.path.join('->'),
+          testSizeUsd,
+          errorCode: simAnalysis.errorCode,
+          profitCheckFailed: simAnalysis.profitCheckFailed,
+        });
+        
+        // If it was a 6007 (profit check failed), still record as useful feedback
+        if (simAnalysis.profitCheckFailed) {
+          try {
+            const simReport = buildSimulationReport(opp, testPlan, simAnalysis);
+            recordSlippageFeedback(simReport, '6007', testSizeUsd);
+          } catch {}
+        }
+      }
+    } catch (e: any) {
+      logger.debug('arb.executor.upward_retry.error', {
+        cat: 'arb',
+        traceId,
+        error: String(e?.message || e),
       });
     }
   }
