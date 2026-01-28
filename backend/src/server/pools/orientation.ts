@@ -67,13 +67,13 @@ export function determineSwapOrientation(
   const poolVaultInput = inputIsA ? pool.account_a : pool.account_b;
   const poolVaultOutput = outputIsB ? pool.account_b : pool.account_a;
   
-  // Decimals
+  // Decimals - FIX: fallback should always use hop.inputDecimals for input, hop.outputDecimals for output
   const decimalsInput = inputIsA 
     ? (pool.decimals_a ?? hop.inputDecimals ?? 6)
-    : (pool.decimals_b ?? hop.outputDecimals ?? 6);
+    : (pool.decimals_b ?? hop.inputDecimals ?? 6);  // FIX: was hop.outputDecimals
   const decimalsOutput = outputIsB
     ? (pool.decimals_b ?? hop.outputDecimals ?? 6)
-    : (pool.decimals_a ?? hop.inputDecimals ?? 6);
+    : (pool.decimals_a ?? hop.outputDecimals ?? 6);  // FIX: was hop.inputDecimals
   
   return {
     direction,

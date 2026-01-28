@@ -999,20 +999,20 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
   }
   const { numerator: priceNumerator, denominator: priceDenominator } = ratio;
 
+  // FIX: PREFER pool decimals over hop decimals (same pattern as Orca fix)
+  // Pool decimals are authoritative; hop decimals can be wrong from upstream bugs
   // For decimals: if swapping A->B, input is A decimals, output is B decimals
   // If swapping B->A (isRev), input is B decimals, output is A decimals
-  const decInCandidate =
-    typeof hop.inputDecimals === 'number' && Number.isFinite(hop.inputDecimals)
-      ? hop.inputDecimals
-      : (isRev
-          ? Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB)
-          : Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA));
-  const decOutCandidate =
-    typeof hop.outputDecimals === 'number' && Number.isFinite(hop.outputDecimals)
-      ? hop.outputDecimals
-      : (isRev
-          ? Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA)
-          : Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB));
+  const poolDecIn = isRev
+    ? Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB)
+    : Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA);
+  const poolDecOut = isRev
+    ? Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA)
+    : Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB);
+  
+  // Prefer pool decimals, fall back to hop decimals only if pool decimals unavailable
+  const decInCandidate = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
+  const decOutCandidate = Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9);
           
   try {
     import('../../utils/logger.js').then(({ logger }) => {

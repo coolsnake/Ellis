@@ -803,6 +803,8 @@ export async function handleOrcaUpdate(
         native_mint_b: mintB,
         native_decimals_a: decA,
         native_decimals_b: decB,
+        // Store was_swapped for proper decimal fallback in quoting
+        was_swapped: processedPrice.wasSwapped,
         // Store vaults with BOTH field names for compatibility:
         // - native_account_a/b: standard field name used by routerTx.ts and most of codebase
         // - native_vault_a/b: kept for backward compatibility
