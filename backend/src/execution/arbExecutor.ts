@@ -1668,6 +1668,12 @@ export class ArbExecutor {
             });
           }
           
+          // Update execution tracking (must happen before return to prevent duplicate executions)
+          // This sets the cooldown for this specific route (pool IDs)
+          this.state.recentExecutions.set(oppKey, Date.now());
+          const count = (this.state.executionCounts.get(oppKey) || 0) + 1;
+          this.state.executionCounts.set(oppKey, count);
+          
           // Skip the normal simulation flow - execution complete
           return;
         }
@@ -3280,7 +3286,18 @@ export class ArbExecutor {
     }
   }
 
+  /**
+   * Generate a unique key for an opportunity based on its exact route (pool IDs).
+   * This ensures cooldowns and in-flight tracking apply to specific routes,
+   * not just token/dex combinations. Different pools for the same tokens = different key.
+   */
   private getOpportunityKey(opp: Opportunity): string {
+    // Use exact route (pool IDs) if available - this allows different pools
+    // for the same token path to execute independently
+    if (opp.hop_pool_ids && opp.hop_pool_ids.length > 0) {
+      return opp.hop_pool_ids.join('->');
+    }
+    // Fallback for opportunities without pool IDs (shouldn't happen in normal flow)
     const sortedDexes = [...opp.dexes].sort();
     return `${opp.path.join('->')}|${sortedDexes.join(',')}`;
   }
