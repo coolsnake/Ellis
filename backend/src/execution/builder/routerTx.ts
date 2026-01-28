@@ -23,6 +23,7 @@ import {
   buildRouteSwapIx,
   buildExecuteIx,
   buildExecuteCompactIx,
+  buildExecuteCompactV2Ix,
   deriveVaultPda,
   fetchVault,
   calculateRepayAmount,
@@ -33,6 +34,7 @@ import {
   RouteStep,
   RouteStepCompact,
   ExecuteCompactParams,
+  ExecuteCompactParamsV2,
   packDexAndFlags,
 } from '../../router/index.js';
 import { loadRouterConfig, isFlashLoanAvailable } from '../../server/routerConfigStore.js';
@@ -209,6 +211,50 @@ function toCompactSteps(steps: RouteStep[]): RouteStepCompact[] {
 }
 
 /**
+ * Deduplicate accounts across hops for V2 index-based referencing
+ * 
+ * Takes the flat array of all DEX accounts (with duplicates) and returns:
+ * - uniqueAccounts: Deduplicated list of accounts
+ * - accountIndices: Flattened indices into uniqueAccounts for each hop's accounts
+ * - indicesPerStep: Number of indices per hop
+ * 
+ * @param allAccounts - Flat array of all accounts from all hops (may contain duplicates)
+ * @param accountsPerStep - Number of accounts per hop
+ * @returns Deduplicated accounts and index mappings
+ */
+function deduplicateAccounts(
+  allAccounts: PublicKey[],
+  accountsPerStep: number[]
+): { uniqueAccounts: PublicKey[]; accountIndices: number[]; indicesPerStep: number[] } {
+  const addressToIndex = new Map<string, number>();
+  const uniqueAccounts: PublicKey[] = [];
+  const accountIndices: number[] = [];
+  const indicesPerStep: number[] = [];
+  
+  let offset = 0;
+  for (const count of accountsPerStep) {
+    let hopIndexCount = 0;
+    for (let i = 0; i < count; i++) {
+      const account = allAccounts[offset + i];
+      const addr = account.toBase58();
+      
+      let idx = addressToIndex.get(addr);
+      if (idx === undefined) {
+        idx = uniqueAccounts.length;
+        uniqueAccounts.push(account);
+        addressToIndex.set(addr, idx);
+      }
+      accountIndices.push(idx);
+      hopIndexCount++;
+    }
+    indicesPerStep.push(hopIndexCount);
+    offset += count;
+  }
+  
+  return { uniqueAccounts, accountIndices, indicesPerStep };
+}
+
+/**
  * Build execute instruction - uses compact format for 3+ hops to reduce tx size
  * 
  * @param user - User's wallet public key
@@ -239,27 +285,69 @@ function buildExecuteInstruction(
   const shouldUseCompact = useCompact ?? (steps.length >= 3);
   
   if (shouldUseCompact) {
-    // Use compact instruction - no per-hop slippage, but still includes verbose logging
     const compactSteps = toCompactSteps(steps);
-    const compactParams: ExecuteCompactParams = {
-      steps: compactSteps,
-      accountsPerStep,
-      minProfit,
-      initialBalances,
-      verbose,
-    };
     
-    logger.debug('routerTx.buildExecuteInstruction.compact', {
-      cat: 'tx',
-      ctx: {
-        hopCount: steps.length,
-        useCompact: true,
+    // Try deduplication for V2 - check if it saves enough to be worthwhile
+    const { uniqueAccounts, accountIndices, indicesPerStep } = deduplicateAccounts(dexAccounts, accountsPerStep);
+    const savedAccounts = dexAccounts.length - uniqueAccounts.length;
+    
+    // V2 overhead: accountIndices array adds 1 byte per index (plus 4-byte length prefix)
+    // Savings: each deduplicated account saves 1 byte (with ALT) or 32 bytes (without ALT)
+    // Use V2 if we save at least 2 accounts (conservative threshold)
+    const useV2 = savedAccounts >= 2;
+    
+    if (useV2) {
+      // Use V2 with index-based deduplication
+      const v2Params: ExecuteCompactParamsV2 = {
+        steps: compactSteps,
+        accountIndices,
+        indicesPerStep,
+        minProfit,
+        initialBalances,
         verbose,
-        stepsBytes: 4 + (steps.length * 9), // vec len + 9 bytes per compact step
-      },
-    });
-    
-    return buildExecuteCompactIx(user, userTokenAccount, compactParams, dexAccounts, programId);
+      };
+      
+      logger.debug('routerTx.buildExecuteInstruction.compactV2', {
+        cat: 'tx',
+        ctx: {
+          hopCount: steps.length,
+          useCompact: true,
+          useV2: true,
+          verbose,
+          originalAccounts: dexAccounts.length,
+          uniqueAccounts: uniqueAccounts.length,
+          savedAccounts,
+          indicesCount: accountIndices.length,
+          stepsBytes: 4 + (steps.length * 9), // vec len + 9 bytes per compact step
+        },
+      });
+      
+      return buildExecuteCompactV2Ix(user, userTokenAccount, v2Params, uniqueAccounts, programId);
+    } else {
+      // Fall back to V1 compact - deduplication doesn't save enough
+      const compactParams: ExecuteCompactParams = {
+        steps: compactSteps,
+        accountsPerStep,
+        minProfit,
+        initialBalances,
+        verbose,
+      };
+      
+      logger.debug('routerTx.buildExecuteInstruction.compact', {
+        cat: 'tx',
+        ctx: {
+          hopCount: steps.length,
+          useCompact: true,
+          useV2: false,
+          verbose,
+          totalAccounts: dexAccounts.length,
+          wouldSave: savedAccounts,
+          stepsBytes: 4 + (steps.length * 9), // vec len + 9 bytes per compact step
+        },
+      });
+      
+      return buildExecuteCompactIx(user, userTokenAccount, compactParams, dexAccounts, programId);
+    }
   } else {
     // Use standard instruction with per-hop slippage and verbose
     logger.debug('routerTx.buildExecuteInstruction.standard', {
@@ -1844,8 +1932,9 @@ async function extractDexAccounts(
     // NATIVE ordering - critical for on-chain direction flag
     let nativeMintA = stat?.native_mint_a;  // On-chain token_mint_0
     let nativeMintB = stat?.native_mint_b;  // On-chain token_mint_1
-    const nativeAccountA = stat?.native_account_a;  // On-chain vault for token_mint_0
-    const nativeAccountB = stat?.native_account_b;  // On-chain vault for token_mint_1
+    // Check both field names: native_account_a/b (standard) and native_vault_a/b (Orca WS decoder)
+    const nativeAccountA = stat?.native_account_a || stat?.native_vault_a;  // On-chain vault for token_mint_0
+    const nativeAccountB = stat?.native_account_b || stat?.native_vault_b;  // On-chain vault for token_mint_1
     
     // FALLBACK: If native_mint_a is missing but we have rawAccountData, derive it
     // This handles the case where pools were loaded from persistence or lazy mode without native_mint_a
@@ -2382,9 +2471,10 @@ async function extractDexAccounts(
         const binStep = (hop as any).binStep ?? (stat as any)?.bin_step ?? hotCache?.binStep;
         const binStepNum = typeof binStep === 'string' ? parseInt(binStep, 10) : (binStep ?? 10);
         
-        // Use 5 bin arrays for fine-grained pools (binStep <= 5), 3 for others
-        // This prevents error 3005 "Not enough account keys" when swap traverses multiple bin arrays
-        const neededBinArrayCount = binStepNum <= 5 ? 5 : 3;
+        // Always use 3 bin arrays (matches Jupiter behavior, sufficient for most swaps)
+        // This reduces transaction size while still providing adequate bin coverage
+        // Previous: binStepNum <= 5 ? 5 : 3 (conservative for fine-grained pools)
+        const neededBinArrayCount = 3;
 
         let directionalBinArrays: PublicKey[] = [];
 
@@ -4289,8 +4379,9 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
     }
     
     // Common: Check vaults
+    // Check multiple field names: native_account_a/b (standard), native_vault_a/b (Orca WS), vaults.a/b, etc.
     if (!hop.vaultA) {
-      const vaultA = stat?.native_account_a || stat?.account_a || stat?.vaults?.a || stat?.vault_a;
+      const vaultA = stat?.native_account_a || stat?.native_vault_a || stat?.account_a || stat?.vaults?.a || stat?.vault_a;
       if (vaultA) {
         hop.vaultA = vaultA;
         derivedAccounts.vaultA = vaultA;
@@ -4299,7 +4390,7 @@ async function validateAndPopulateHopAccounts(hop: DirectHop, dexType: DexType):
       }
     }
     if (!hop.vaultB) {
-      const vaultB = stat?.native_account_b || stat?.account_b || stat?.vaults?.b || stat?.vault_b;
+      const vaultB = stat?.native_account_b || stat?.native_vault_b || stat?.account_b || stat?.vaults?.b || stat?.vault_b;
       if (vaultB) {
         hop.vaultB = vaultB;
         derivedAccounts.vaultB = vaultB;

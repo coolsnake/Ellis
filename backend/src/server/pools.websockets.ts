@@ -2914,6 +2914,11 @@ function runWebsocketRefreshLoop(): void {
                       // Preserve native orientation for reference
                       native_mint_a: mintA,
                       native_mint_b: mintB,
+                      // Store vaults with BOTH field names for compatibility:
+                      // - native_account_a/b: standard field name used by routerTx.ts and most of codebase
+                      // - native_vault_a/b: kept for backward compatibility
+                      native_account_a: nativeVaultA,
+                      native_account_b: nativeVaultB,
                       native_vault_a: nativeVaultA,
                       native_vault_b: nativeVaultB,
                       // Store raw account data for local parsing during tx building

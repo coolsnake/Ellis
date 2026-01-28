@@ -26,6 +26,7 @@ import {
   SwapParams,
   RouteStepCompact,
   ExecuteCompactParams,
+  ExecuteCompactParamsV2,
 } from './types.js';
 
 // ============================================================================
@@ -46,6 +47,7 @@ export const DISCRIMINATORS = {
   routeSwap: Buffer.from([114, 150, 13, 192, 140, 252, 221, 31]),     // route_swap from IDL (THIS WAS THE ISSUE!)
   execute: Buffer.from([130, 221, 242, 154, 13, 193, 189, 29]),       // execute from IDL
   executeCompact: Buffer.from([58, 237, 107, 32, 113, 3, 87, 120]),   // execute_compact - sha256("global:execute_compact")[0..8]
+  executeCompactV2: Buffer.from([214, 113, 68, 113, 212, 239, 0, 31]), // execute_compact_v2 - sha256("global:execute_compact_v2")[0..8]
 } as const;
 
 // ============================================================================
@@ -620,6 +622,127 @@ export function buildExecuteCompactIx(
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     // Add all DEX accounts
     ...allDexAccounts.map((pubkey) => ({
+      pubkey,
+      isSigner: false,
+      isWritable: !READ_ONLY_PROGRAMS.has(pubkey.toBase58()),
+    })),
+  ];
+
+  return new TransactionInstruction({
+    programId,
+    keys,
+    data,
+  });
+}
+
+/**
+ * Build execute_compact_v2 instruction with index-based account deduplication
+ * 
+ * V2 enables account deduplication across hops by using indices instead of
+ * contiguous slicing. This allows shared accounts (TOKEN_PROGRAM_ID, wallet,
+ * DEX programs) to be included only once in remaining_accounts.
+ * 
+ * @param user - User's wallet (signer)
+ * @param userTokenAccount - User's token account for the route's start/end token
+ * @param params - V2 parameters with account indices
+ * @param uniqueDexAccounts - DEDUPLICATED array of DEX accounts (not the original with duplicates)
+ * @param programId - Program ID (default: ARB_ROUTER_PROGRAM_ID)
+ */
+export function buildExecuteCompactV2Ix(
+  user: PublicKey,
+  userTokenAccount: PublicKey,
+  params: ExecuteCompactParamsV2,
+  uniqueDexAccounts: PublicKey[],
+  programId: PublicKey = ARB_ROUTER_PROGRAM_ID
+): TransactionInstruction {
+  // Serialize ExecuteCompactParamsV2
+  // Each RouteStepCompact: dex_and_flags (1 byte) + amount_in (8 bytes) = 9 bytes
+  const stepsData = params.steps.map((step) =>
+    Buffer.concat([
+      Buffer.from([step.dexAndFlags]),
+      new BN(step.amountIn.toString()).toArrayLike(Buffer, 'le', 8),
+    ])
+  );
+
+  // Vec<RouteStepCompact> is serialized as: length (4 bytes LE) + concatenated steps
+  const stepsVec = Buffer.concat([
+    new BN(params.steps.length).toArrayLike(Buffer, 'le', 4),
+    ...stepsData,
+  ]);
+
+  // Serialize account_indices as Vec<u8>
+  const accountIndicesVec = Buffer.concat([
+    new BN(params.accountIndices.length).toArrayLike(Buffer, 'le', 4),
+    Buffer.from(params.accountIndices.map(n => n & 0xFF)),
+  ]);
+
+  // Serialize indices_per_step as Vec<u8>
+  const indicesPerStepVec = Buffer.concat([
+    new BN(params.indicesPerStep.length).toArrayLike(Buffer, 'le', 4),
+    Buffer.from(params.indicesPerStep.map(n => n & 0xFF)),
+  ]);
+
+  // Serialize min_profit as signed i64
+  const minProfitBn = new BN(params.minProfit.toString());
+  const minProfitBuffer = minProfitBn.isNeg()
+    ? Buffer.from(minProfitBn.toTwos(64).toArrayLike(Buffer, 'le', 8))
+    : Buffer.from(minProfitBn.toArrayLike(Buffer, 'le', 8));
+
+  // Serialize initial_balances as Vec<u64>
+  const initialBalances = params.initialBalances ?? [];
+  const initialBalancesData = initialBalances.map(bal => 
+    new BN(bal.toString()).toArrayLike(Buffer, 'le', 8)
+  );
+  const initialBalancesVec = Buffer.concat([
+    new BN(initialBalances.length).toArrayLike(Buffer, 'le', 4),
+    ...initialBalancesData,
+  ]);
+
+  // Serialize verbose as bool (1 byte)
+  const verboseBuffer = Buffer.from([params.verbose ? 1 : 0]);
+
+  // Match Rust ExecuteCompactParamsV2 field order:
+  // steps, account_indices, indices_per_step, min_profit, initial_balances, verbose
+  const data = Buffer.concat([
+    DISCRIMINATORS.executeCompactV2,
+    stepsVec,
+    accountIndicesVec,
+    indicesPerStepVec,
+    minProfitBuffer,
+    initialBalancesVec,
+    verboseBuffer,
+  ]);
+
+  // Program accounts that should NOT be marked as writable
+  const READ_ONLY_PROGRAMS = new Set([
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',  // SPL Token
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',  // Token-2022
+    '11111111111111111111111111111111',              // System Program
+    'SysvarRent111111111111111111111111111111111',   // Rent
+    'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',  // Memo
+    'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo',  // Memo (old)
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', // Associated Token
+    // DEX Programs (read-only for CPI)
+    'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK', // Raydium CLMM
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM v4
+    'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C', // Raydium CPMM
+    'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', // Meteora DLMM
+    'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB', // Meteora DAMM v1
+    'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG', // Meteora DAMM v2
+    'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', // Orca Whirlpool
+    '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', // PumpSwap Bonding Curve
+    'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', // PumpSwap AMM
+    'pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ', // Pump Fee Program
+    'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX', // Serum/OpenBook
+    'opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EQBh8x', // OpenBook v2
+  ]);
+
+  const keys = [
+    { pubkey: user, isSigner: true, isWritable: false },
+    { pubkey: userTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    // Add all UNIQUE DEX accounts (deduplicated)
+    ...uniqueDexAccounts.map((pubkey) => ({
       pubkey,
       isSigner: false,
       isWritable: !READ_ONLY_PROGRAMS.has(pubkey.toBase58()),

@@ -227,6 +227,46 @@ export interface ExecuteCompactParams {
 }
 
 /**
+ * Parameters for execute_compact_v2 instruction (index-based deduplication)
+ * 
+ * V2 enables account deduplication across hops by using indices instead of
+ * contiguous slicing. This allows shared accounts (TOKEN_PROGRAM_ID, wallet,
+ * DEX programs) to be included only once in remaining_accounts, reducing
+ * transaction size for multi-hop same-DEX routes.
+ * 
+ * Example savings for 4-hop Meteora route:
+ * - V1: ~74 accounts (duplicates TOKEN_PROGRAM_ID 4x, wallet 4x, etc.)
+ * - V2: ~50 unique accounts + 74 byte indices = net savings when not fully ALT-covered
+ */
+export interface ExecuteCompactParamsV2 {
+  /** Compact route steps to execute */
+  steps: RouteStepCompact[];
+  /** 
+   * Flattened account indices into remaining_accounts.
+   * Each hop's indices are concatenated: [hop0_indices..., hop1_indices..., ...]
+   * Max 255 unique accounts (u8 indices).
+   */
+  accountIndices: number[];
+  /** 
+   * Number of indices for each step (to know where each hop's indices start).
+   * Sum of indicesPerStep must equal accountIndices.length.
+   */
+  indicesPerStep: number[];
+  /** Minimum profit required - the ONLY slippage protection in compact mode */
+  minProfit: bigint;
+  /**
+   * Pre-existing wallet balances for intermediate token accounts.
+   * Used to exclude at-rest balances from dynamic amount propagation.
+   */
+  initialBalances?: bigint[];
+  /**
+   * Enable verbose logging on-chain (for simulation/debugging).
+   * When true, logs detailed input/output amounts for each hop.
+   */
+  verbose?: boolean;
+}
+
+/**
  * Pack DEX type and swap direction into a single byte
  * 
  * @param dexType - DEX enum value (0-15)

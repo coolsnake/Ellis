@@ -555,6 +555,170 @@ pub mod arb_router {
         msg!("Compact route executed successfully. Profit: {}", profit);
         Ok(())
     }
+
+    /// Execute a multi-hop arbitrage route with index-based account deduplication (V2)
+    /// 
+    /// This is an enhanced version of `execute_compact` that enables account deduplication
+    /// across hops. Instead of slicing remaining_accounts by contiguous ranges, V2 uses
+    /// indices to reference accounts, allowing the same account (e.g., TOKEN_PROGRAM_ID)
+    /// to be used by multiple hops without duplication.
+    /// 
+    /// ## Benefits
+    /// - Reduces unique account count by deduplicating shared accounts (wallet, programs, mints)
+    /// - Enables fitting larger routes within transaction size limits
+    /// - Particularly effective for multi-hop same-DEX routes (e.g., 4-hop Meteora)
+    /// 
+    /// ## Account referencing
+    /// - `account_indices`: Flattened array of u8 indices into remaining_accounts
+    /// - `indices_per_step`: Number of indices for each hop (sum must equal account_indices.len())
+    /// - Each hop's accounts are resolved by looking up remaining_accounts[index] for each index
+    pub fn execute_compact_v2<'info>(
+        ctx: Context<'_, '_, '_, 'info, Execute<'info>>,
+        params: ExecuteCompactParamsV2,
+    ) -> Result<()> {
+        require!(!params.steps.is_empty(), ArbRouterError::EmptyRoute);
+        require!(params.steps.len() <= MAX_ROUTE_STEPS, ArbRouterError::TooManyRouteSteps);
+        
+        // Validate indices_per_step matches steps count
+        require!(
+            params.indices_per_step.len() == params.steps.len(),
+            ArbRouterError::InvalidAccount
+        );
+        
+        // Validate total indices count matches
+        let total_indices: usize = params.indices_per_step.iter().map(|&x| x as usize).sum();
+        require!(
+            params.account_indices.len() == total_indices,
+            ArbRouterError::InvalidAccount
+        );
+        
+        // Validate all indices are within bounds
+        let remaining_len = ctx.remaining_accounts.len();
+        for &idx in &params.account_indices {
+            require!(
+                (idx as usize) < remaining_len,
+                ArbRouterError::InvalidAccount
+            );
+        }
+
+        // Get initial balance
+        let initial_balance = ctx.accounts.user_token_account.amount;
+
+        // Execute each step
+        let mut idx_offset = 0;
+        
+        for (i, step) in params.steps.iter().enumerate() {
+            // Unpack dex_type and a_to_b from the compact encoding
+            let dex_type = step.dex_type();
+            let a_to_b = step.a_to_b();
+            
+            msg!("Executing compact_v2 step {} on DEX {:?}", i, dex_type as u8);
+            
+            // Get the indices for this hop
+            let num_indices = params.indices_per_step[i] as usize;
+            let hop_indices = &params.account_indices[idx_offset..idx_offset + num_indices];
+            
+            // Build step_accounts by indexing into remaining_accounts
+            // This allows the same account to appear in multiple hops without duplication
+            let step_accounts: Vec<AccountInfo<'info>> = hop_indices
+                .iter()
+                .map(|&idx| ctx.remaining_accounts[idx as usize].clone())
+                .collect();
+            
+            let accounts_needed = step_accounts.len();
+            
+            // Determine actual amount to swap
+            // If amount_in == 0, read the current balance of the input token account
+            let actual_amount_in = if step.amount_in == 0 {
+                let input_token_idx = get_user_token_in_index(&dex_type, a_to_b, accounts_needed);
+                let input_token_account = &step_accounts[input_token_idx];
+                let balance = read_token_account_balance(input_token_account)?;
+                
+                // Subtract pre-existing balance to avoid swapping at-rest funds
+                let initial_bal = params.initial_balances.get(i).copied().unwrap_or(0);
+                let swap_amount = balance.saturating_sub(initial_bal);
+                
+                if params.verbose {
+                    msg!("Step {}: balance={}, initial={}, swap_amount={} (idx: {})", 
+                        i, balance, initial_bal, swap_amount, input_token_idx);
+                }
+                swap_amount
+            } else {
+                step.amount_in
+            };
+            
+            require!(actual_amount_in > 0, ArbRouterError::InsufficientFunds);
+            
+            // COMPACT: No per-hop slippage - pass min_amount_out = 1 to all DEX CPIs
+            let min_amount_out: u64 = 1;
+            
+            // Verbose: capture output token balance BEFORE swap
+            let output_balance_before = if params.verbose {
+                let output_token_idx = get_user_token_out_index(&dex_type, a_to_b, accounts_needed);
+                let output_token_account = &step_accounts[output_token_idx];
+                read_token_account_balance(output_token_account).unwrap_or(0)
+            } else {
+                0
+            };
+            
+            // Convert Vec to slice for DEX swap functions
+            let step_accounts_slice = step_accounts.as_slice();
+            
+            match dex_type {
+                DexType::Raydium => {
+                    dex::raydium::swap(step_accounts_slice, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+                DexType::Meteora => {
+                    dex::meteora::swap(step_accounts_slice, actual_amount_in, min_amount_out)?;
+                }
+                DexType::Orca => {
+                    dex::orca::swap(step_accounts_slice, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+                DexType::PumpSwap => {
+                    dex::pumpswap::swap(step_accounts_slice, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+                DexType::RaydiumAmm => {
+                    dex::raydium_amm::swap(step_accounts_slice, actual_amount_in, min_amount_out)?;
+                }
+                DexType::MeteoraDAMM => {
+                    dex::meteora_damm::swap(step_accounts_slice, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+                DexType::RaydiumCpmm => {
+                    dex::raydium_cpmm::swap(step_accounts_slice, actual_amount_in, min_amount_out, a_to_b)?;
+                }
+            }
+            
+            // Verbose: capture output balance AFTER swap and log delta
+            if params.verbose {
+                let output_token_idx = get_user_token_out_index(&dex_type, a_to_b, accounts_needed);
+                let output_token_account = &step_accounts[output_token_idx];
+                let output_balance_after = read_token_account_balance(output_token_account).unwrap_or(0);
+                let amount_out = output_balance_after.saturating_sub(output_balance_before);
+                msg!("VERBOSE hop[{}]: in={} out={} dex={:?}", i, actual_amount_in, amount_out, dex_type);
+            }
+            
+            idx_offset += num_indices;
+        }
+
+        // Reload token account to check final balance
+        ctx.accounts.user_token_account.reload()?;
+        let final_balance = ctx.accounts.user_token_account.amount;
+
+        // Verify profit - this is the ONLY slippage protection in compact mode
+        let profit: i64 = (final_balance as i64).checked_sub(initial_balance as i64)
+            .ok_or(ArbRouterError::MathOverflow)?;
+        
+        // Verbose: log detailed profit check info before the require
+        if params.verbose {
+            msg!("VERBOSE profit_check: initial={} final={} profit={} min_required={}", 
+                initial_balance, final_balance, profit, params.min_profit);
+        }
+        
+        require!(profit >= params.min_profit, ArbRouterError::NoProfitFromRoute);
+
+        msg!("Compact V2 route executed successfully. Profit: {}", profit);
+        Ok(())
+    }
 }
 
 // ============================================================================

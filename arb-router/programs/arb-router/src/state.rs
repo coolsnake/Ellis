@@ -242,6 +242,43 @@ pub struct ExecuteCompactParams {
     pub verbose: bool,
 }
 
+/// V2 Parameters with index-based account referencing
+/// 
+/// Enables account deduplication across hops for smaller transactions.
+/// Instead of slicing remaining_accounts by contiguous ranges, V2 uses
+/// indices to reference accounts, allowing the same account to be used
+/// by multiple hops without duplication.
+/// 
+/// Example savings for 4-hop Meteora route:
+/// - V1: ~74 accounts (with duplicates like TOKEN_PROGRAM_ID 4x)
+/// - V2: ~50 unique accounts + ~74 byte indices = net savings
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct ExecuteCompactParamsV2 {
+    /// The compact route steps to execute
+    pub steps: Vec<RouteStepCompact>,
+    
+    /// Flattened account indices into remaining_accounts
+    /// Each hop's indices are concatenated: [hop0_indices..., hop1_indices..., ...]
+    /// Max 255 unique accounts (u8 indices)
+    pub account_indices: Vec<u8>,
+    
+    /// Number of indices per step (to know where each hop's indices start)
+    /// Sum of indices_per_step must equal account_indices.len()
+    pub indices_per_step: Vec<u8>,
+    
+    /// Minimum profit required (in output token)
+    /// This is the ONLY slippage protection - no per-hop min_amount_out
+    pub min_profit: i64,
+    
+    /// Pre-existing wallet balances for intermediate token accounts.
+    /// Used to exclude at-rest balances from dynamic amount propagation.
+    pub initial_balances: Vec<u64>,
+    
+    /// Enable verbose logging (for simulation/debugging).
+    /// When true, logs detailed input/output amounts for each hop.
+    pub verbose: bool,
+}
+
 /// Flash loan borrow parameters
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct FlashBorrowParams {
