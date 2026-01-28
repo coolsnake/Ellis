@@ -61,6 +61,7 @@ import {
 import { deriveVaultPda, fetchVault } from '../router/sdk.js';
 import { PublicKey } from '@solana/web3.js';
 import { resolveDecimals } from '../server/pools/decimals.js';
+import { validatedPoolsCache, type SkipSimulationConfig } from './validatedPoolsCache.js';
 
 /**
  * Serialize simulation error to a readable string.
@@ -228,6 +229,9 @@ export interface ExecutorConfig {
     expireTtlMs: number;          // Remove after this time (default: 30 min)
     persistToDisk: boolean;       // Persist substitutions to disk (default: true)
   };
+  // Skip simulation for validated pools - execute immediately when pools are known-good
+  // Pools are validated when swaps execute successfully (including 6007 profit check failures)
+  skipSimulation?: SkipSimulationConfig;
   // NEW: Capacity-based sizing configuration (replaces dynamicSizing when enabled)
   // This system pre-computes capacity curves and provides instant size lookups
   sizingConfig?: SizingConfig;
@@ -1411,9 +1415,13 @@ export class ArbExecutor {
           if (simAnalysis.profitCheckFailed) {
             // 6007/NoProfitFromRoute - slippage was worse than expected
             recordSlippageFeedback(simReport, '6007', effectiveSizeUsd);
+            // OPTIMIZATION: Mark pools as validated - 6007 means all swaps executed successfully
+            validatedPoolsCache.markAllValidated(plan.hops, '6007');
           } else if (!simResult.err) {
             // Successful simulation - validates current calibration
             recordSlippageFeedback(simReport, 'success', effectiveSizeUsd);
+            // OPTIMIZATION: Mark pools as validated for skip-simulation optimization
+            validatedPoolsCache.markAllValidated(plan.hops, 'success');
           }
           // Note: other errors (non-6007) are not used for calibration
         } catch (feedbackErr) {
@@ -1540,6 +1548,130 @@ export class ArbExecutor {
         }
         this.state.successfulExecutions++;
       } else if (mode === 'simulate_then_execute') {
+        // OPTIMIZATION: Skip simulation if all pools are validated
+        // This provides significant latency improvement for known-good pools
+        const skipSimCfg = this.config.skipSimulation;
+        const canSkipSimulation = skipSimCfg?.enabled && 
+          validatedPoolsCache.allPoolsValidated(plan.hops);
+        
+        if (canSkipSimulation) {
+          logger.info('arb.executor.skip_simulation', {
+            cat: 'arb',
+            traceId,
+            path: pathStr,
+            reason: 'all_pools_validated',
+            poolIds: plan.hops.map((h: any) => h.poolId.slice(0, 8)),
+            cacheStats: validatedPoolsCache.getStats(),
+          });
+          
+          // Skip directly to execution - same flow as post-simulation execution
+          let tipResult: TipResult | null = null;
+          const firstHop = plan.hops[0];
+          if (firstHop && opp.profit_bps > 0) {
+            try {
+              const kp = await ensureWallet(CONFIG.walletPath);
+              tipResult = await calculateProfitBasedTip(kp.publicKey, {
+                inputMint: firstHop.inputMint,
+                inputAmountRaw: firstHop.amountInRaw,
+                inputDecimals: firstHop.inputDecimals ?? 6,
+                profitBps: opp.profit_bps,
+              });
+            } catch (tipErr: any) {
+              logger.warn('arb.executor.tip_calc_failed', { 
+                cat: 'arb', 
+                traceId,
+                error: String(tipErr?.message || tipErr) 
+              });
+            }
+          }
+
+          const instructionsWithTip = tipResult?.tipIx 
+            ? [...built.instructions, tipResult.tipIx] 
+            : built.instructions;
+
+          const jitoCfg = await loadJitoConfig();
+          const jitoEnabled = jitoCfg.enabled;
+
+          const sendResult = await assembleAndSend(instructionsWithTip, {
+            computeUnitLimit: execCfg.computeUnitLimit,
+            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+            lookupTableAddresses: altAddresses,
+            traceId,
+            jito: jitoEnabled ? {
+              enabled: true,
+              sendToBlockEngine: async (wireBase64: string) => {
+                const sig = await sendToBlockEngine(wireBase64);
+                logger.info('arb.jito.skip_sim.sent', { 
+                  cat: 'tx', 
+                  traceId,
+                  signature: sig.slice(0, 16),
+                  tipLamports: tipResult?.tipLamports ?? 0,
+                  hasTip: !!tipResult,
+                });
+                return sig;
+              },
+            } : undefined,
+          });
+          signature = sendResult?.signature || null;
+
+          if (signature) {
+            logger.info('arb.executor.skip_simulation.executed', {
+              cat: 'arb',
+              traceId,
+              path: pathStr,
+              signature,
+              durationMs: Date.now() - startTime,
+              skipSimulation: true,
+            });
+
+            this.state.successfulExecutions++;
+            await this.notifyExecuted(opp);
+
+            await addTxRecord({
+              id: signature.slice(0, 8),
+              timeMs: Date.now(),
+              path: plan.path,
+              hops: plan.hops.map((h: any) => ({
+                dex: h.dex,
+                variant: h.variant,
+                poolId: h.poolId,
+              })),
+              ixCount: built.ixCount,
+              txSizeBytes: built.sizeBytes,
+              signature,
+              status: 'send_ok',
+              skipSimulation: true,
+            });
+
+            emit('arb:execution', {
+              path: pathStr,
+              signature,
+              profitBps: opp.profit_bps,
+              netBps: opp.net_bps,
+              timestamp: Date.now(),
+              pathMints: opp.path,
+              hopPoolIds: opp.hop_pool_ids,
+              hopDexes: opp.hop_dexes,
+              traceId,
+              executionContext: {
+                sizeUsd: effectiveSizeUsd,
+                adaptiveAttempts: 0,
+                durationMs: Date.now() - startTime,
+                skipSimulation: true,
+              },
+            });
+          } else {
+            logger.warn('arb.executor.skip_simulation.no_signature', {
+              cat: 'arb',
+              traceId,
+              path: pathStr,
+            });
+          }
+          
+          // Skip the normal simulation flow
+          return signature;
+        }
+        
         // Adaptive sizing: try progressively smaller sizes on profit check failures
         const adaptiveCfg = this.config.adaptiveSizing;
         const adaptiveEnabled = adaptiveCfg?.enabled ?? false;
@@ -1643,6 +1775,8 @@ export class ArbExecutor {
             try {
               const successSimReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
               recordSlippageFeedback(successSimReport, 'success', currentSizeUsd);
+              // OPTIMIZATION: Mark pools as validated for skip-simulation optimization
+              validatedPoolsCache.markAllValidated(currentPlan.hops, 'success');
             } catch (feedbackErr) {
               logger.debug('capacity.feedback.error', {
                 cat: 'sizing',
@@ -1658,6 +1792,11 @@ export class ArbExecutor {
           
           // Check if this is a retryable error (profit check failed)
           const isRetryable = adaptiveEnabled && lastSimAnalysis.profitCheckFailed;
+          
+          // OPTIMIZATION: Even on 6007, mark pools as validated (swaps worked)
+          if (lastSimAnalysis.profitCheckFailed) {
+            validatedPoolsCache.markAllValidated(currentPlan.hops, '6007');
+          }
           
           if (!isRetryable) {
             // Not a profit check failure, don't retry
@@ -2486,6 +2625,8 @@ export class ArbExecutor {
                 analysis.errorMessage || errorMsg,
                 traceId
               );
+              // Also invalidate from skip-simulation cache - real failure means pool may be problematic
+              validatedPoolsCache.invalidate(analysis.failingPool.poolId);
             }
           } else {
             // Fallback: if we can't identify the specific pool, record failure for all pools
@@ -2500,6 +2641,8 @@ export class ArbExecutor {
                 errorMsg,
                 traceId
               );
+              // Also invalidate from skip-simulation cache
+              validatedPoolsCache.invalidate(opp.hop_pool_ids[0]);
             }
           }
         }
@@ -3265,6 +3408,10 @@ export class ArbExecutor {
       sizingConfig: updates.sizingConfig !== undefined
         ? { ...DEFAULT_SIZING_CONFIG, ...this.config.sizingConfig, ...updates.sizingConfig }
         : this.config.sizingConfig,
+      // Deep merge skipSimulation config
+      skipSimulation: updates.skipSimulation !== undefined
+        ? { ...this.config.skipSimulation, ...updates.skipSimulation }
+        : this.config.skipSimulation,
     };
     logger.info('arb.executor.config_updated', { cat: 'arb', config: this.config });
     
@@ -3280,6 +3427,10 @@ export class ArbExecutor {
       // Pass sizing config to execution cache for capacity curve computation
       if (updates.sizingConfig && this.config.sizingConfig) {
         executionCache.setSizingConfig(this.config.sizingConfig);
+      }
+      // Update validated pools cache configuration
+      if (updates.skipSimulation && this.config.skipSimulation) {
+        validatedPoolsCache.setConfig(this.config.skipSimulation);
       }
     } catch (e) {
       logger.warn('arb.executor.tracker_update_failed', { 
@@ -3306,6 +3457,8 @@ export class ArbExecutor {
           ? (this.state.successfulExecutions / this.state.totalExecutions * 100).toFixed(1) + '%'
           : '0%',
       },
+      // Validated pools cache stats for monitoring skip-simulation optimization
+      validatedPoolsCache: validatedPoolsCache.getStats(),
     };
   }
 }

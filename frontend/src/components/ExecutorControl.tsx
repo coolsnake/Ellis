@@ -35,6 +35,11 @@ type ExecutorStatus = {
     successRate: string;
     executionsThisMinute: number;
   };
+  validatedPoolsCache?: {
+    totalPools: number;
+    validatedPools: number;
+    totalValidations: number;
+  };
   error?: string;
 };
 
@@ -315,6 +320,15 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
             <div className="opacity-70">In Flight</div>
             <div className="font-semibold">{status.state.inFlight}</div>
           </div>
+        </div>
+      )}
+      
+      {/* Validated Pools Cache (Skip-Simulation Optimization) */}
+      {status?.validatedPoolsCache && status.validatedPoolsCache.validatedPools > 0 && (
+        <div className="text-xs mb-2 px-1.5 py-1 bg-purple-900/20 rounded border border-purple-700/30">
+          <span className="opacity-70">⚡ Direct-Execution Pools: </span>
+          <span className="text-purple-300 font-semibold">{status.validatedPoolsCache.validatedPools}</span>
+          <span className="opacity-50"> / {status.validatedPoolsCache.totalPools} tracked</span>
         </div>
       )}
 

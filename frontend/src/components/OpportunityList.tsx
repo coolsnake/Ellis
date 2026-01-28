@@ -66,6 +66,7 @@ type ExecutionResult = {
     adaptiveAttempts?: number;
     durationMs?: number;
     usedFlashloan?: boolean;
+    skipSimulation?: boolean;
   };
 };
 
@@ -428,9 +429,19 @@ export function OpportunityList(
                     <span className={`font-semibold ${statusColor}`}>
                       {statusIcon} {statusLabel}
                     </span>
+                    {latest.executionContext?.skipSimulation && (
+                      <span className="px-1 rounded bg-purple-900/50 text-purple-300 text-[10px]" title="Simulation was skipped - pools were pre-validated">
+                        ⚡ DIRECT
+                      </span>
+                    )}
                     {latest.executionContext?.sizeUsd !== undefined && (
                       <span className="px-1 rounded bg-blue-900/40 text-blue-300">
                         ${latest.executionContext.sizeUsd.toFixed(2)}
+                      </span>
+                    )}
+                    {latest.executionContext?.durationMs !== undefined && (
+                      <span className="opacity-60 text-[10px]">
+                        {latest.executionContext.durationMs}ms
                       </span>
                     )}
                     <span className="opacity-70">{agoSec}s ago</span>
