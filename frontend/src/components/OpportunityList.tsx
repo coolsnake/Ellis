@@ -52,6 +52,8 @@ type ExecutionResult = {
     swapsExecuted: Array<{ step: number; dex: string; amountIn: string; minOut: string }>;
     /** Actual hop outputs from VERBOSE logs (real in/out per hop) */
     hopActualOutputs?: Array<{ hop: number; amountIn: string; amountOut: string; dex: string }>;
+    /** Expected hop outputs from resolver quotes (in raw units, actual execution size) */
+    hopQuotedOutputs?: Array<{ quotedOutputRaw?: string; amountInRaw?: string; dex: string; poolId: string }>;
     profitValue?: string;
     minProfitRequired?: string;
     initialBalance?: string;
@@ -492,19 +494,40 @@ export function OpportunityList(
                            latest.simulationDetails.hopActualOutputs.length > 0 ? (
                             <div className="space-y-0.5 mb-2">
                               <div className="text-[10px] text-gray-400">Actual hop execution (from verbose logs):</div>
-                              {latest.simulationDetails.hopActualOutputs.map((hop, i) => (
-                                <div key={i} className="text-[10px] opacity-80 font-mono flex gap-2">
-                                  <span className="text-gray-400">{hop.hop + 1}.</span>
-                                  <span className={hop.dex === 'Orca' ? 'text-yellow-300' : hop.dex.includes('Raydium') ? 'text-green-400' : 'text-blue-300'}>
-                                    {hop.dex}
-                                  </span>
-                                  <span>{fmt(Number(hop.amountIn), 0)} →</span>
-                                  <span className="text-cyan-300">{fmt(Number(hop.amountOut), 0)}</span>
-                                  {op.hop_outs?.[i] && (
-                                    <span className="opacity-50">(exp: {fmt(op.hop_outs[i], 0)})</span>
-                                  )}
-                                </div>
-                              ))}
+                              {latest.simulationDetails.hopActualOutputs.map((hop, i) => {
+                                // Get expected output from resolver quotes (correct units!)
+                                const quoted = latest.simulationDetails?.hopQuotedOutputs?.[i];
+                                const expectedRaw = quoted?.quotedOutputRaw ? Number(quoted.quotedOutputRaw) : null;
+                                const actualRaw = Number(hop.amountOut);
+                                
+                                // Calculate slippage in bps (negative = worse than expected)
+                                let slippageBps: number | null = null;
+                                if (expectedRaw && expectedRaw > 0) {
+                                  slippageBps = Math.round(((actualRaw - expectedRaw) / expectedRaw) * 10000);
+                                }
+                                
+                                // Highlight problematic hops (>50bps worse than expected)
+                                const isProblematic = slippageBps !== null && slippageBps < -50;
+                                
+                                return (
+                                  <div key={i} className={`text-[10px] opacity-80 font-mono flex gap-2 ${isProblematic ? 'bg-red-900/30 -mx-1 px-1 rounded' : ''}`}>
+                                    <span className="text-gray-400">{hop.hop + 1}.</span>
+                                    <span className={hop.dex === 'Orca' ? 'text-yellow-300' : hop.dex.includes('Raydium') ? 'text-green-400' : 'text-blue-300'}>
+                                      {hop.dex}
+                                    </span>
+                                    <span>{fmt(Number(hop.amountIn), 0)} →</span>
+                                    <span className="text-cyan-300">{fmt(actualRaw, 0)}</span>
+                                    {expectedRaw !== null && (
+                                      <span className="opacity-50">(exp: {fmt(expectedRaw, 0)})</span>
+                                    )}
+                                    {slippageBps !== null && (
+                                      <span className={slippageBps < -50 ? 'text-red-400 font-semibold' : slippageBps < 0 ? 'text-orange-400' : 'text-green-400'}>
+                                        {slippageBps >= 0 ? '+' : ''}{slippageBps}bp
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           ) : (
                             /* Fallback: Show expected hop outputs from opportunity data */

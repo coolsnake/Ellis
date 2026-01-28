@@ -2771,6 +2771,72 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
 
   // ============================================================================
+  // Pool Substitution Learning APIs
+  // ============================================================================
+
+  // Get pool substitution stats and all learned substitutions
+  api.get('/arb/poolsub/status', async (_req: Request, res: Response) => {
+    try {
+      const { 
+        getSubstitutionStats, 
+        getAllSubstitutions,
+        getPoolSubstitutionConfig,
+      } = await import('../../execution/poolSubstitutionStore.js');
+      
+      const stats = getSubstitutionStats();
+      const config = getPoolSubstitutionConfig();
+      const substitutions = getAllSubstitutions();
+      
+      res.json({ 
+        config,
+        stats,
+        substitutions: substitutions.map(s => ({
+          originalPool: s.originalPoolId,
+          originalDex: s.originalDex,
+          alternativePool: s.alternativePoolId,
+          alternativeDex: s.alternativeDex,
+          inputMint: s.inputMint,
+          outputMint: s.outputMint,
+          successCount: s.successCount,
+          failureCount: s.failureCount,
+          originalFailCount: s.originalFailCount,
+          avgSlippageImprovementBps: s.avgSlippageImprovementBps,
+          firstLearnedMs: s.firstLearnedMs,
+          lastSuccessMs: s.lastSuccessMs,
+          ageMs: Date.now() - s.lastSuccessMs,
+        })),
+      });
+    } catch (e: any) {
+      logger.error('arb.poolsub.api.status_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Clear all learned substitutions
+  api.post('/arb/poolsub/clear', async (_req: Request, res: Response) => {
+    try {
+      const { clearSubstitutions } = await import('../../execution/poolSubstitutionStore.js');
+      clearSubstitutions();
+      res.json({ success: true });
+    } catch (e: any) {
+      logger.error('arb.poolsub.api.clear_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Prune expired substitutions
+  api.post('/arb/poolsub/prune', async (_req: Request, res: Response) => {
+    try {
+      const { pruneExpired } = await import('../../execution/poolSubstitutionStore.js');
+      const pruned = pruneExpired();
+      res.json({ success: true, pruned });
+    } catch (e: any) {
+      logger.error('arb.poolsub.api.prune_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // ============================================================================
   // ALT (Address Lookup Table) Management APIs
   // ============================================================================
 

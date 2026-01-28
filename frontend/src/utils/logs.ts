@@ -17,11 +17,13 @@ export type WindowId =
   | 'user'
   | 'trade'
   | 'arbitrage'
+  | 'execution'
   | 'graph'
   | 'pools'
   | 'rust'
   | 'drift'
   | 'strategy'
+  | 'router'
   | 'api'
   | 'system';
 
@@ -33,27 +35,31 @@ export type LogWindowConfig = {
 };
 
 export const LOG_WINDOWS: LogWindowConfig[] = [
-  { id: 'user', title: 'User', cats: ['wallet', 'auth', 'terminal'], storageKey: 'logwin:user:collapsed' },
-  { id: 'trade', title: 'Trade', cats: ['pretrade', 'trade', 'jupiter', 'price', 'tx'], storageKey: 'logwin:trade:collapsed' },
-  { id: 'arbitrage', title: 'Arbitrage', cats: ['arb', 'opportunity'], storageKey: 'logwin:arbitrage:collapsed' },
+  { id: 'user', title: 'User', cats: ['wallet', 'auth', 'terminal', 'tokens'], storageKey: 'logwin:user:collapsed' },
+  { id: 'trade', title: 'Trade', cats: ['pretrade', 'trade', 'jupiter', 'price', 'tx', 'jito'], storageKey: 'logwin:trade:collapsed' },
+  { id: 'arbitrage', title: 'Arbitrage', cats: ['arb', 'opportunity', 'sizing'], storageKey: 'logwin:arbitrage:collapsed' },
+  { id: 'execution', title: 'Execution', cats: ['execution', 'cache', 'marginfi'], storageKey: 'logwin:execution:collapsed' },
   { id: 'graph', title: 'Graph', cats: ['graph'], storageKey: 'logwin:graph:collapsed' },
-  { id: 'pools', title: 'Pools', cats: ['raydium', 'orca', 'meteora', 'pools'], storageKey: 'logwin:pools:collapsed' },
+  { id: 'pools', title: 'Pools', cats: ['raydium', 'orca', 'meteora', 'pools', 'pumpswap', 'grpc', 'shyft'], storageKey: 'logwin:pools:collapsed' },
   { id: 'rust', title: 'Rust', cats: ['rust'], storageKey: 'logwin:rust:collapsed' },
-  { id: 'drift', title: 'Drift', cats: ['drift'], storageKey: 'logwin:drift:collapsed' },
+  { id: 'drift', title: 'Drift', cats: ['drift', 'ws'], storageKey: 'logwin:drift:collapsed' },
   { id: 'strategy', title: 'Strategy', cats: ['strategy'], storageKey: 'logwin:strategy:collapsed' },
-  { id: 'api', title: 'API', cats: ['api'], storageKey: 'logwin:api:collapsed' },
-  { id: 'system', title: 'System', cats: ['server', 'system', 'other'], storageKey: 'logwin:system:collapsed' },
+  { id: 'router', title: 'Router', cats: ['router'], storageKey: 'logwin:router:collapsed' },
+  { id: 'api', title: 'API', cats: ['api', 'http'], storageKey: 'logwin:api:collapsed' },
+  { id: 'system', title: 'System', cats: ['server', 'system', 'other', 'rpc'], storageKey: 'logwin:system:collapsed' },
 ];
 
 export const WINDOW_ORDER: WindowId[] = [
   'user',
   'trade',
   'arbitrage',
+  'execution',
   'graph',
   'pools',
   'rust',
   'drift',
   'strategy',
+  'router',
   'api',
   'system',
 ];

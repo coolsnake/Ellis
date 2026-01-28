@@ -41,6 +41,23 @@ import {
 import type { SizingConfig, PoolType } from './capacity/types.js';
 import { recordSlippageFeedback } from './capacity/feedbackCollector.js';
 import { executionCache } from './cache.js';
+import {
+  exploreAlternativePools,
+  shouldExploreAlternatives,
+  type HopQuotedOutput,
+  type AlternativePool,
+} from './alternativePoolExplorer.js';
+import {
+  initPoolSubstitutionStore,
+  applySubstitutions,
+  recordSubstitutionSuccess,
+  recordSubstitutionFailure,
+  recordOriginalPoolFailure,
+  lookupSubstitution,
+  startPruneTimer,
+  getSubstitutionStats,
+  type PoolSubstitutionConfig,
+} from './poolSubstitutionStore.js';
 import { deriveVaultPda, fetchVault } from '../router/sdk.js';
 import { PublicKey } from '@solana/web3.js';
 import { resolveDecimals } from '../server/pools/decimals.js';
@@ -195,6 +212,22 @@ export interface ExecutorConfig {
     minSizeUsd: number;           // Don't retry below this size (default: 5)
     timeoutMs: number;            // Total timeout for all retries (default: 500ms)
   };
+  // Alternative pool exploration - try different pools for problematic hops
+  alternativePoolExploration?: {
+    enabled: boolean;
+    maxAlternatives: number;      // Max alternative pools to try per hop (default: 2)
+    minSlippageBps: number;       // Only explore if slippage > this threshold (default: 50 = 0.5%)
+    minLiquidity: number;         // Min liquidity for alternative pools (default: 1000)
+  };
+  // Pool substitution learning - persist successful alternatives across opportunities
+  poolSubstitution?: {
+    enabled: boolean;
+    minSuccessCount: number;      // Min successes before trusting substitution (default: 2)
+    maxFailureRate: number;       // Max failure rate before disabling (default: 0.3)
+    staleTtlMs: number;           // Re-evaluate after this time (default: 5 min)
+    expireTtlMs: number;          // Remove after this time (default: 30 min)
+    persistToDisk: boolean;       // Persist substitutions to disk (default: true)
+  };
   // NEW: Capacity-based sizing configuration (replaces dynamicSizing when enabled)
   // This system pre-computes capacity curves and provides instant size lookups
   sizingConfig?: SizingConfig;
@@ -289,6 +322,20 @@ export class ArbExecutor {
       );
     } catch (e) {
       logger.warn('arb.executor.tracker_init_failed', { cat: 'arb', error: String((e as any)?.message || e) });
+    }
+
+    // Initialize pool substitution store (for learning better pool alternatives)
+    try {
+      initPoolSubstitutionStore(this.config.poolSubstitution);
+      if (this.config.poolSubstitution?.enabled) {
+        startPruneTimer(60_000); // Prune expired substitutions every minute
+        logger.info('arb.executor.poolsub_init', {
+          cat: 'arb',
+          config: this.config.poolSubstitution,
+        });
+      }
+    } catch (e) {
+      logger.warn('arb.executor.poolsub_init_failed', { cat: 'arb', error: String((e as any)?.message || e) });
     }
 
     // Connect to arb-rs opportunity stream
@@ -828,7 +875,45 @@ export class ArbExecutor {
       // CRITICAL: Use hop_dexes (per-hop array), not dexes (deduplicated set)
       // dexes = ["Meteora"] (unique set)
       // hop_dexes = ["Meteora", "Meteora"] (per-hop, matches hop_pool_ids length)
-      const executionDexes = opp.hop_dexes || opp.dexes || [];
+      let executionDexes = opp.hop_dexes || opp.dexes || [];
+      let executionPoolIds = opp.hop_pool_ids || [];
+      
+      // Apply learned pool substitutions (proactively use better alternatives)
+      let substitutionsMade: Array<{
+        hopIndex: number;
+        originalPoolId: string;
+        originalDex: string;
+        newPoolId: string;
+        newDex: string;
+      }> = [];
+      
+      if (this.config.poolSubstitution?.enabled && executionPoolIds.length > 0) {
+        const subResult = applySubstitutions(
+          executionPath,
+          executionPoolIds,
+          executionDexes
+        );
+        
+        if (subResult.substitutionsMade.length > 0) {
+          executionPoolIds = subResult.modifiedPoolIds;
+          executionDexes = subResult.modifiedDexes;
+          substitutionsMade = subResult.substitutionsMade;
+          
+          logger.info('arb.executor.poolsub.proactive', {
+            cat: 'arb',
+            traceId,
+            path: pathStr,
+            substitutionCount: substitutionsMade.length,
+            substitutions: substitutionsMade.map(s => ({
+              hop: s.hopIndex,
+              from: s.originalPoolId.slice(0, 12) + '...',
+              fromDex: s.originalDex,
+              to: s.newPoolId.slice(0, 12) + '...',
+              toDex: s.newDex,
+            })),
+          });
+        }
+      }
 
       // Resolve execution plan and build transaction - wrap in try-catch to log failures
       let plan: any;
@@ -978,7 +1063,7 @@ export class ArbExecutor {
         // Check if we need to use raw size instead of USD size (when price data unavailable)
         let resolverInput: any = {
           path: executionPath,
-          hopPoolIds: opp.hop_pool_ids || [],
+          hopPoolIds: executionPoolIds,  // Use substituted pools if any
           dexes: executionDexes,
           sizeUsd: effectiveSizeUsd,
           slippageBps: this.config.slippageBps,
@@ -1400,6 +1485,13 @@ export class ArbExecutor {
                 amountOut: h.amountOut.toString(),
                 dex: h.dex,
               })),
+              // Expected hop outputs from resolver quotes (in raw units, actual execution size)
+              hopQuotedOutputs: plan.hops.map((h: any) => ({
+                quotedOutputRaw: h.quotedOutputRaw?.toString(),
+                amountInRaw: h.amountInRaw?.toString(),
+                dex: h.dex,
+                poolId: h.poolId,
+              })),
               // Profit check details from VERBOSE logs
               profitValue: simAnalysis.profitValue?.toString(),
               minProfitRequired: simAnalysis.minProfitRequired?.toString(),
@@ -1601,6 +1693,175 @@ export class ArbExecutor {
           attempt++;
         }
         
+        // Phase 2: Alternative pool exploration (if adaptive sizing failed)
+        // Try swapping the problematic hop's pool with an alternative
+        const altPoolCfg = this.config.alternativePoolExploration;
+        const altPoolEnabled = altPoolCfg?.enabled ?? false;
+        
+        if (altPoolEnabled && lastSimResult?.err && lastSimAnalysis?.profitCheckFailed) {
+          // Build hopQuotedOutputs from current plan
+          const hopQuotedOutputs: HopQuotedOutput[] = currentPlan.hops.map((h: any) => ({
+            quotedOutputRaw: h.quotedOutputRaw?.toString(),
+            amountInRaw: h.amountInRaw?.toString(),
+            dex: h.dex,
+            poolId: h.poolId,
+          }));
+          
+          // Check if we have the data needed for analysis
+          if (shouldExploreAlternatives(lastSimAnalysis, hopQuotedOutputs, lastSimAnalysis.hopActualOutputs)) {
+            try {
+              // Dynamic import to avoid circular dependencies
+              const { getGraphSnapshot } = await import('../server/graph.js');
+              
+              const altResult = await exploreAlternativePools(
+                lastSimAnalysis,
+                hopQuotedOutputs,
+                opp.path || [],
+                () => getGraphSnapshot(false),
+                {
+                  minSlippageThresholdBps: altPoolCfg?.minSlippageBps ?? 50,
+                  minLiquidity: altPoolCfg?.minLiquidity ?? 1000,
+                  maxAlternatives: altPoolCfg?.maxAlternatives ?? 2,
+                }
+              );
+              
+              if (altResult.found && altResult.problematicHop && altResult.alternatives.length > 0) {
+                logger.info('arb.executor.altpool.trying_alternatives', {
+                  cat: 'arb',
+                  traceId,
+                  path: pathStr,
+                  problematicHopIndex: altResult.problematicHop.hopIndex,
+                  originalPool: altResult.problematicHop.poolId.slice(0, 12) + '...',
+                  originalDex: altResult.problematicHop.dex,
+                  slippageBps: altResult.problematicHop.slippageBps,
+                  alternativeCount: altResult.alternatives.length,
+                });
+                
+                // Try each alternative pool
+                for (let altIdx = 0; altIdx < altResult.alternatives.length; altIdx++) {
+                  const altPool = altResult.alternatives[altIdx];
+                  const hopIdx = altResult.problematicHop.hopIndex;
+                  
+                  // Create modified opportunity with swapped pool
+                  const modifiedHopPoolIds = [...(opp.hop_pool_ids || [])];
+                  const modifiedHopDexes = [...(opp.hop_dexes || [])];
+                  
+                  if (hopIdx < modifiedHopPoolIds.length) {
+                    modifiedHopPoolIds[hopIdx] = altPool.poolId;
+                    modifiedHopDexes[hopIdx] = altPool.dex;
+                  }
+                  
+                  logger.debug('arb.executor.altpool.trying', {
+                    cat: 'arb',
+                    traceId,
+                    altIdx,
+                    hopIndex: hopIdx,
+                    originalPool: altResult.problematicHop.poolId.slice(0, 12) + '...',
+                    altPool: altPool.poolId.slice(0, 12) + '...',
+                    altDex: altPool.dex,
+                    altRate: altPool.rateEffective.toFixed(8),
+                    altLiquidity: altPool.liquidity.toFixed(0),
+                  });
+                  
+                  try {
+                    // Re-resolve with modified pools
+                    const altPlan = await resolveDirectPlan(
+                      opp.path || [],
+                      modifiedHopPoolIds,
+                      modifiedHopDexes,
+                      { sizeUsd: currentSizeUsd, minProfitBps: execCfg.minProfitBps ?? 1 },
+                      traceId
+                    );
+                    
+                    if (!altPlan) {
+                      logger.debug('arb.executor.altpool.resolve_failed', {
+                        cat: 'arb',
+                        traceId,
+                        altIdx,
+                        altPool: altPool.poolId.slice(0, 12) + '...',
+                      });
+                      continue;
+                    }
+                    
+                    // Build transaction with alternative pool
+                    const kp = await ensureWallet(CONFIG.walletPath);
+                    const altBuilt = await buildRouterTransaction(altPlan, kp, traceId);
+                    
+                    // Simulate
+                    const altSimResult = await assembleAndSimulate(altBuilt, kp, traceId);
+                    const altSimAnalysis = parseSimulationLogs(altSimResult?.logs, altSimResult?.err);
+                    
+                    if (!altSimResult.err) {
+                      // Success! Alternative pool worked
+                      logger.info('arb.executor.altpool.success', {
+                        cat: 'arb',
+                        traceId,
+                        path: pathStr,
+                        hopIndex: hopIdx,
+                        originalPool: altResult.problematicHop.poolId.slice(0, 12) + '...',
+                        altPool: altPool.poolId.slice(0, 12) + '...',
+                        altDex: altPool.dex,
+                      });
+                      
+                      // Record this successful substitution for future use
+                      const prob = altResult.problematicHop;
+                      recordSubstitutionSuccess(
+                        prob.inputMint,
+                        prob.outputMint,
+                        prob.poolId,
+                        prob.dex,
+                        altPool.poolId,
+                        altPool.dex,
+                        Math.abs(prob.slippageBps)  // Slippage improvement
+                      );
+                      
+                      // Use the alternative as our successful plan
+                      currentPlan = altPlan;
+                      currentBuilt = altBuilt;
+                      lastSimResult = altSimResult;
+                      lastSimAnalysis = altSimAnalysis;
+                      plan = altPlan;
+                      built = altBuilt;
+                      break;
+                    } else {
+                      // Record failed attempt
+                      recordSubstitutionFailure(
+                        altResult.problematicHop.inputMint,
+                        altResult.problematicHop.outputMint,
+                        altResult.problematicHop.poolId,
+                        altPool.poolId
+                      );
+                      
+                      logger.debug('arb.executor.altpool.sim_failed', {
+                        cat: 'arb',
+                        traceId,
+                        altIdx,
+                        altPool: altPool.poolId.slice(0, 12) + '...',
+                        error: serializeSimError(altSimResult.err),
+                        profitCheckFailed: altSimAnalysis.profitCheckFailed,
+                      });
+                    }
+                  } catch (altErr) {
+                    logger.debug('arb.executor.altpool.error', {
+                      cat: 'arb',
+                      traceId,
+                      altIdx,
+                      altPool: altPool.poolId.slice(0, 12) + '...',
+                      error: String(altErr),
+                    });
+                  }
+                }
+              }
+            } catch (exploreErr) {
+              logger.debug('arb.executor.altpool.explore_error', {
+                cat: 'arb',
+                traceId,
+                error: String(exploreErr),
+              });
+            }
+          }
+        }
+        
         // Check if simulation ultimately failed
         if (lastSimResult?.err) {
           // Parse simulation logs for detailed analysis
@@ -1688,6 +1949,13 @@ export class ArbExecutor {
                 amountOut: h.amountOut.toString(),
                 dex: h.dex,
               })),
+              // Expected hop outputs from resolver quotes (in raw units, actual execution size)
+              hopQuotedOutputs: currentPlan.hops.map((h: any) => ({
+                quotedOutputRaw: h.quotedOutputRaw?.toString(),
+                amountInRaw: h.amountInRaw?.toString(),
+                dex: h.dex,
+                poolId: h.poolId,
+              })),
               // Profit check details from VERBOSE logs
               profitValue: lastSimAnalysis!.profitValue?.toString(),
               minProfitRequired: lastSimAnalysis!.minProfitRequired?.toString(),
@@ -1717,8 +1985,31 @@ export class ArbExecutor {
           adaptiveAttempts: attempt,
           finalSizeUsd: currentSizeUsd,
           originalSizeUsd,
+          proactiveSubstitutions: substitutionsMade.length,
           logs: lastSimResult?.logs?.slice(-3),
         });
+        
+        // Reinforce proactive substitutions that led to successful simulation
+        if (substitutionsMade.length > 0) {
+          for (const sub of substitutionsMade) {
+            const inputMint = executionPath[sub.hopIndex];
+            const outputMint = executionPath[sub.hopIndex + 1] || executionPath[0];
+            recordSubstitutionSuccess(
+              inputMint,
+              outputMint,
+              sub.originalPoolId,
+              sub.originalDex,
+              sub.newPoolId,
+              sub.newDex,
+              0  // No slippage improvement to report for proactive subs
+            );
+          }
+          logger.debug('arb.executor.poolsub.proactive.reinforced', {
+            cat: 'arb',
+            traceId,
+            count: substitutionsMade.length,
+          });
+        }
 
         // Simulation passed - proceed with actual execution
         let tipResult: TipResult | null = null;

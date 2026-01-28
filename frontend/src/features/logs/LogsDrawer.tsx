@@ -16,10 +16,24 @@ const configById: Record<WindowId, LogWindowConfig> = (() => {
 
 const LogRow: React.FC<{ l: LogEvent }> = React.memo(({ l }) => {
   const colorByCat: Record<string, string> = {
-    api: 'text-blue-300', jupiter: 'text-blue-300', raydium: 'text-emerald-300', orca: 'text-amber-300', meteora: 'text-teal-300',
-    arb: 'text-indigo-300', strategy: 'text-green-300', pretrade: 'text-purple-300', trade: 'text-cyan-300',
-    terminal: 'text-gray-300', graph: 'text-pink-300', pools: 'text-teal-300', price: 'text-orange-300',
-    wallet: 'text-lime-300', server: 'text-slate-300', auth: 'text-fuchsia-300', system: 'text-zinc-300', other: 'text-gray-300', rust: 'text-red-300', drift: 'text-rose-300'
+    // API & External
+    api: 'text-blue-300', jupiter: 'text-blue-300', http: 'text-blue-200', shyft: 'text-blue-200',
+    // DEXs
+    raydium: 'text-emerald-300', orca: 'text-amber-300', meteora: 'text-teal-300', pumpswap: 'text-violet-300',
+    // Arbitrage & Execution
+    arb: 'text-indigo-300', opportunity: 'text-indigo-200', sizing: 'text-indigo-200',
+    execution: 'text-orange-300', cache: 'text-orange-200', marginfi: 'text-orange-200',
+    // Trading
+    strategy: 'text-green-300', pretrade: 'text-purple-300', trade: 'text-cyan-300', tx: 'text-cyan-200', jito: 'text-cyan-200',
+    // Infrastructure
+    terminal: 'text-gray-300', graph: 'text-pink-300', pools: 'text-teal-300', grpc: 'text-teal-200',
+    price: 'text-orange-300', router: 'text-emerald-200', tokens: 'text-lime-200',
+    // User & Wallet
+    wallet: 'text-lime-300', auth: 'text-fuchsia-300',
+    // System
+    server: 'text-slate-300', system: 'text-zinc-300', other: 'text-gray-300', rpc: 'text-zinc-200',
+    // Protocols
+    rust: 'text-red-300', drift: 'text-rose-300', ws: 'text-rose-200'
   };
   const cat = (l as any).cat as string | undefined;
   const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (cat ? (colorByCat as any)[cat] : null) || 'text-gray-300';
@@ -145,11 +159,13 @@ const LogsDrawerComponent: React.FC<LogsDrawerProps> = ({ className = '' }) => {
       user: 'text-lime-400',
       trade: 'text-cyan-400',
       arbitrage: 'text-indigo-400',
+      execution: 'text-orange-400',
       graph: 'text-pink-400',
       pools: 'text-teal-400',
       rust: 'text-red-400',
       drift: 'text-rose-400',
       strategy: 'text-green-400',
+      router: 'text-emerald-400',
       api: 'text-blue-400',
       system: 'text-zinc-400',
     };

@@ -1917,11 +1917,6 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* RPC Monitor - Full Width at Top */}
-      <div className="p-4 pb-0">
-        <RpcMonitor />
-      </div>
-      
       {/* Main Content - Full Width */}
       <div className="flex-1 p-4 space-y-4">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -2186,6 +2181,10 @@ export const App: React.FC = () => {
             <input value={terminalInput} onChange={(e) => setTerminalInput(e.target.value)} className="w-full bg-gray-800 rounded px-3 py-2 outline-none text-base" placeholder="Type command or type 'help'...." />
           </form>
         </section>
+        
+        {/* RPC Monitor - Full Width */}
+        <RpcMonitor />
+        
         <CollapsibleSection
           title={"Arbitrage"}
           storageKey="panel:arbitrage"

@@ -155,6 +155,29 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           if (Array.isArray(j.manualPoolBlocklist)) {
             set('manual_pool_blocklist_csv', j.manualPoolBlocklist.join(', '));
           }
+          // Load adaptive sizing settings
+          if (j.adaptiveSizing) {
+            set('adaptive_sizing_enabled', !!j.adaptiveSizing.enabled);
+            if (typeof j.adaptiveSizing.maxRetries === 'number') set('adaptive_max_retries', j.adaptiveSizing.maxRetries);
+            if (typeof j.adaptiveSizing.reductionFactor === 'number') set('adaptive_reduction_factor', j.adaptiveSizing.reductionFactor);
+            if (typeof j.adaptiveSizing.minSizeUsd === 'number') set('adaptive_min_size_usd', j.adaptiveSizing.minSizeUsd);
+          }
+          // Load alternative pool exploration settings
+          if (j.alternativePoolExploration) {
+            set('altpool_enabled', !!j.alternativePoolExploration.enabled);
+            if (typeof j.alternativePoolExploration.maxAlternatives === 'number') set('altpool_max_alternatives', j.alternativePoolExploration.maxAlternatives);
+            if (typeof j.alternativePoolExploration.minSlippageBps === 'number') set('altpool_min_slippage_bps', j.alternativePoolExploration.minSlippageBps);
+            if (typeof j.alternativePoolExploration.minLiquidity === 'number') set('altpool_min_liquidity', j.alternativePoolExploration.minLiquidity);
+          }
+          // Load pool substitution settings
+          if (j.poolSubstitution) {
+            set('poolsub_enabled', !!j.poolSubstitution.enabled);
+            if (typeof j.poolSubstitution.minSuccessCount === 'number') set('poolsub_min_success', j.poolSubstitution.minSuccessCount);
+            if (typeof j.poolSubstitution.maxFailureRate === 'number') set('poolsub_max_failure_rate', j.poolSubstitution.maxFailureRate);
+            if (typeof j.poolSubstitution.staleTtlMs === 'number') set('poolsub_stale_ttl_sec', Math.round(j.poolSubstitution.staleTtlMs / 1000));
+            if (typeof j.poolSubstitution.expireTtlMs === 'number') set('poolsub_expire_ttl_sec', Math.round(j.poolSubstitution.expireTtlMs / 1000));
+            if (typeof j.poolSubstitution.persistToDisk === 'boolean') set('poolsub_persist', j.poolSubstitution.persistToDisk);
+          }
         } 
       } catch {}
       // Load Jito config
@@ -298,6 +321,30 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             // Manual pool blocklist
             manualPoolBlocklist: String(det.manual_pool_blocklist_csv || '')
               .split(',').map((s: string) => s.trim()).filter(Boolean),
+            // Adaptive sizing - retry with smaller sizes
+            adaptiveSizing: {
+              enabled: det.adaptive_sizing_enabled !== false,
+              maxRetries: toNum(det.adaptive_max_retries) || 3,
+              reductionFactor: Number(det.adaptive_reduction_factor) || 0.5,
+              minSizeUsd: toNum(det.adaptive_min_size_usd) || 5,
+              timeoutMs: 500,
+            },
+            // Alternative pool exploration
+            alternativePoolExploration: {
+              enabled: !!det.altpool_enabled,
+              maxAlternatives: toNum(det.altpool_max_alternatives) || 2,
+              minSlippageBps: toNum(det.altpool_min_slippage_bps) || 50,
+              minLiquidity: toNum(det.altpool_min_liquidity) || 1000,
+            },
+            // Pool substitution learning
+            poolSubstitution: {
+              enabled: !!det.poolsub_enabled,
+              minSuccessCount: toNum(det.poolsub_min_success) || 2,
+              maxFailureRate: Number(det.poolsub_max_failure_rate) || 0.3,
+              staleTtlMs: (toNum(det.poolsub_stale_ttl_sec) || 300) * 1000,
+              expireTtlMs: (toNum(det.poolsub_expire_ttl_sec) || 1800) * 1000,
+              persistToDisk: det.poolsub_persist !== false,
+            },
           }) 
         }),
         // Save Jito config
@@ -940,6 +987,211 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               {det.manual_pool_blocklist_csv && String(det.manual_pool_blocklist_csv).split(',').filter((s: string) => s.trim()).length > 0 && (
                 <div className="mt-1 text-xs text-orange-400">
                   {String(det.manual_pool_blocklist_csv).split(',').filter((s: string) => s.trim()).length} pool(s) in blocklist
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Adaptive Sizing & Alternative Pool Exploration */}
+          <div className="bg-gray-700 rounded p-4 border-2 border-cyan-500/30">
+            <h3 className="text-lg font-semibold text-white mb-3">Retry Strategies</h3>
+            <p className="text-xs text-gray-400 mb-4">
+              When simulation fails due to slippage, these strategies help recover by trying smaller sizes or alternative pools.
+            </p>
+            
+            {/* Adaptive Sizing */}
+            <div className="mb-4 p-3 bg-gray-800/50 rounded">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-white">Adaptive Sizing</h4>
+                <label className="flex items-center gap-2 text-sm">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4"
+                    checked={det.adaptive_sizing_enabled !== false} 
+                    onChange={e=>set('adaptive_sizing_enabled', e.target.checked)} 
+                  />
+                  <span className="text-cyan-400">Enabled</span>
+                </label>
+              </div>
+              <p className="text-xs text-gray-400 mb-3">
+                Retry with smaller trade sizes when profit check fails.
+              </p>
+              <div className={`grid grid-cols-3 gap-3 ${det.adaptive_sizing_enabled === false ? 'opacity-50' : ''}`}>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Max Retries</label>
+                  <input 
+                    type="number" 
+                    min="1" max="10"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.adaptive_max_retries ?? 3} 
+                    onChange={e=>set('adaptive_max_retries', Number(e.target.value)||3)} 
+                    disabled={det.adaptive_sizing_enabled === false}
+                  />
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Reduction Factor</label>
+                  <input 
+                    type="number" 
+                    step="0.1" min="0.1" max="0.9"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.adaptive_reduction_factor ?? 0.5} 
+                    onChange={e=>set('adaptive_reduction_factor', Number(e.target.value)||0.5)} 
+                    disabled={det.adaptive_sizing_enabled === false}
+                  />
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Min Size ($)</label>
+                  <input 
+                    type="number" 
+                    min="1"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.adaptive_min_size_usd ?? 5} 
+                    onChange={e=>set('adaptive_min_size_usd', Number(e.target.value)||5)} 
+                    disabled={det.adaptive_sizing_enabled === false}
+                  />
+                </div>
+              </div>
+            </div>
+            
+            {/* Alternative Pool Exploration */}
+            <div className="mb-4 p-3 bg-gray-800/50 rounded">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-white">Alternative Pool Exploration</h4>
+                <label className="flex items-center gap-2 text-sm">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4"
+                    checked={!!det.altpool_enabled} 
+                    onChange={e=>set('altpool_enabled', e.target.checked)} 
+                  />
+                  <span className="text-cyan-400">Enabled</span>
+                </label>
+              </div>
+              <p className="text-xs text-gray-400 mb-3">
+                When a hop causes excessive slippage, try alternative pools for that token pair.
+              </p>
+              <div className={`grid grid-cols-3 gap-3 ${!det.altpool_enabled ? 'opacity-50' : ''}`}>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Max Alternatives</label>
+                  <input 
+                    type="number" 
+                    min="1" max="5"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.altpool_max_alternatives ?? 2} 
+                    onChange={e=>set('altpool_max_alternatives', Number(e.target.value)||2)} 
+                    disabled={!det.altpool_enabled}
+                  />
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Min Slippage (bps)</label>
+                  <input 
+                    type="number" 
+                    min="10" step="10"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.altpool_min_slippage_bps ?? 50} 
+                    onChange={e=>set('altpool_min_slippage_bps', Number(e.target.value)||50)} 
+                    disabled={!det.altpool_enabled}
+                  />
+                  <span className="text-xs text-gray-500">Only if slippage exceeds</span>
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Min Liquidity ($)</label>
+                  <input 
+                    type="number" 
+                    min="100" step="100"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.altpool_min_liquidity ?? 1000} 
+                    onChange={e=>set('altpool_min_liquidity', Number(e.target.value)||1000)} 
+                    disabled={!det.altpool_enabled}
+                  />
+                </div>
+              </div>
+            </div>
+            
+            {/* Pool Substitution Learning */}
+            <div className="p-3 bg-gray-800/50 rounded">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-white">Pool Substitution Learning</h4>
+                <label className="flex items-center gap-2 text-sm">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4"
+                    checked={!!det.poolsub_enabled} 
+                    onChange={e=>set('poolsub_enabled', e.target.checked)} 
+                  />
+                  <span className="text-cyan-400">Enabled</span>
+                </label>
+              </div>
+              <p className="text-xs text-gray-400 mb-3">
+                Remember successful pool substitutions and proactively use them for future opportunities.
+              </p>
+              <div className={`grid grid-cols-2 md:grid-cols-4 gap-3 ${!det.poolsub_enabled ? 'opacity-50' : ''}`}>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Min Successes</label>
+                  <input 
+                    type="number" 
+                    min="1" max="10"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.poolsub_min_success ?? 2} 
+                    onChange={e=>set('poolsub_min_success', Number(e.target.value)||2)} 
+                    disabled={!det.poolsub_enabled}
+                  />
+                  <span className="text-xs text-gray-500">before trusting</span>
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Max Failure Rate</label>
+                  <input 
+                    type="number" 
+                    step="0.05" min="0.1" max="0.5"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.poolsub_max_failure_rate ?? 0.3} 
+                    onChange={e=>set('poolsub_max_failure_rate', Number(e.target.value)||0.3)} 
+                    disabled={!det.poolsub_enabled}
+                  />
+                  <span className="text-xs text-gray-500">disable if exceeded</span>
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Stale TTL (sec)</label>
+                  <input 
+                    type="number" 
+                    min="60" step="60"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.poolsub_stale_ttl_sec ?? 300} 
+                    onChange={e=>set('poolsub_stale_ttl_sec', Number(e.target.value)||300)} 
+                    disabled={!det.poolsub_enabled}
+                  />
+                  <span className="text-xs text-gray-500">re-evaluate after</span>
+                </div>
+                <div>
+                  <label className="block mb-1 text-gray-300 text-xs">Expire TTL (sec)</label>
+                  <input 
+                    type="number" 
+                    min="300" step="60"
+                    className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
+                    value={det.poolsub_expire_ttl_sec ?? 1800} 
+                    onChange={e=>set('poolsub_expire_ttl_sec', Number(e.target.value)||1800)} 
+                    disabled={!det.poolsub_enabled}
+                  />
+                  <span className="text-xs text-gray-500">remove after</span>
+                </div>
+              </div>
+              <div className={`mt-3 flex items-center gap-2 ${!det.poolsub_enabled ? 'opacity-50' : ''}`}>
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4"
+                  checked={det.poolsub_persist !== false} 
+                  onChange={e=>set('poolsub_persist', e.target.checked)} 
+                  disabled={!det.poolsub_enabled}
+                />
+                <span className="text-gray-300 text-xs">Persist to disk (survives restarts)</span>
+              </div>
+              
+              {/* Explanation */}
+              {det.altpool_enabled && det.poolsub_enabled && (
+                <div className="mt-4 p-2 bg-cyan-900/20 rounded text-xs text-gray-400 border border-cyan-700/30">
+                  <strong className="text-cyan-300">Learning Flow:</strong> When alternative pool exploration 
+                  finds a working pool, it&apos;s recorded. After {det.poolsub_min_success ?? 2} successes, 
+                  future opportunities will proactively use the better pool <em>before</em> simulation.
                 </div>
               )}
             </div>
