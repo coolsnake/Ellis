@@ -691,13 +691,19 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
     // hop.inputDecimals/outputDecimals can be wrong (e.g., defaulting to 9 for all tokens)
     // Use native decimals to match native direction
     
+    // CRITICAL: When was_swapped=true, canonical decimals_a/b are FLIPPED from native order
+    // canonical mint_a = native mint_b, so canonical decimals_a = native decimals_b
+    // We must account for this when falling back from native_decimals to canonical decimals
+    const wasSwapped = (staticData as any)?.was_swapped === true;
+    
     // Get pool cache decimals based on NATIVE direction
+    // When native_decimals are missing, use canonical decimals with swap correction
     const poolDecIn = nativeAtoB 
-      ? ((staticData as any)?.native_decimals_a ?? staticData?.decimals_a)
-      : ((staticData as any)?.native_decimals_b ?? staticData?.decimals_b);
+      ? ((staticData as any)?.native_decimals_a ?? (wasSwapped ? staticData?.decimals_b : staticData?.decimals_a))
+      : ((staticData as any)?.native_decimals_b ?? (wasSwapped ? staticData?.decimals_a : staticData?.decimals_b));
     const poolDecOut = nativeAtoB
-      ? ((staticData as any)?.native_decimals_b ?? staticData?.decimals_b)
-      : ((staticData as any)?.native_decimals_a ?? staticData?.decimals_a);
+      ? ((staticData as any)?.native_decimals_b ?? (wasSwapped ? staticData?.decimals_a : staticData?.decimals_b))
+      : ((staticData as any)?.native_decimals_a ?? (wasSwapped ? staticData?.decimals_b : staticData?.decimals_a));
     
     // Prefer pool cache decimals, fall back to hop decimals only if pool cache unavailable
     const decIn = Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9);
