@@ -267,6 +267,7 @@ function deduplicateAccounts(
  * @param verbose - Enable verbose logging (only for standard execute)
  * @param useCompact - Force compact mode (undefined = auto based on hop count)
  * @param programId - Program ID to use
+ * @param traceId - Optional trace ID for log correlation
  * @returns TransactionInstruction for execute or execute_compact
  */
 function buildExecuteInstruction(
@@ -279,7 +280,8 @@ function buildExecuteInstruction(
   initialBalances: bigint[],
   verbose: boolean,
   useCompact: boolean | undefined,
-  programId: PublicKey
+  programId: PublicKey,
+  traceId?: string
 ): TransactionInstruction {
   // Auto-determine compact mode: use compact for 3+ hops unless explicitly disabled
   const shouldUseCompact = useCompact ?? (steps.length >= 3);
@@ -310,6 +312,7 @@ function buildExecuteInstruction(
       logger.debug('routerTx.buildExecuteInstruction.compactV2', {
         cat: 'tx',
         ctx: {
+          traceId,
           hopCount: steps.length,
           useCompact: true,
           useV2: true,
@@ -336,6 +339,7 @@ function buildExecuteInstruction(
       logger.debug('routerTx.buildExecuteInstruction.compact', {
         cat: 'tx',
         ctx: {
+          traceId,
           hopCount: steps.length,
           useCompact: true,
           useV2: false,
@@ -353,6 +357,7 @@ function buildExecuteInstruction(
     logger.debug('routerTx.buildExecuteInstruction.standard', {
       cat: 'tx',
       ctx: {
+        traceId,
         hopCount: steps.length,
         useCompact: false,
         stepsBytes: 4 + (steps.length * 18), // vec len + 18 bytes per standard step
@@ -715,7 +720,8 @@ async function buildFlashLoanArbTx(
       initialBalances,
       verbose,
       useCompactInstruction,
-      programId
+      programId,
+      plan.traceId
     );
     
     // DIAGNOSTIC: Verify the instruction keys are in correct order
@@ -1198,7 +1204,8 @@ async function buildDirectRouterTx(
         initialBalances,
         verbose,
         useCompactInstruction,
-        programId
+        programId,
+        plan.traceId
       );
       
       // DIAGNOSTIC: Verify the instruction keys are in correct order
@@ -1548,7 +1555,8 @@ async function buildSdkQuoteRouterTx(
       initialBalances,
       verbose,
       useCompactInstruction,
-      programId
+      programId,
+      plan.traceId
     );
     instructions.push(executeIx);
 
