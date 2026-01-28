@@ -483,17 +483,17 @@ export function OpportunityList(
                           <div className="font-semibold text-[10px] opacity-70 mb-1">Profit Check Details:</div>
                           
                           {/* Show expected hop outputs from opportunity data */}
-                          {o.hop_outs && o.hop_outs.length > 0 && (
+                          {op.hop_outs && op.hop_outs.length > 0 && (
                             <div className="space-y-0.5 mb-2">
                               <div className="text-[10px] text-gray-400">Expected hop sequence:</div>
-                              {o.hop_outs.map((hopOut, i) => (
+                              {op.hop_outs.map((hopOut, i) => (
                                 <div key={i} className="text-[10px] opacity-80 font-mono flex gap-2">
                                   <span className="text-gray-400">{i + 1}.</span>
-                                  <span className={o.hop_dexes?.[i] === 'Orca' ? 'text-yellow-300' : o.hop_dexes?.[i]?.includes('Raydium') ? 'text-green-400' : 'text-blue-300'}>
-                                    {o.hop_dexes?.[i] || 'Unknown'}
+                                  <span className={op.hop_dexes?.[i] === 'Orca' ? 'text-yellow-300' : op.hop_dexes?.[i]?.includes('Raydium') ? 'text-green-400' : 'text-blue-300'}>
+                                    {op.hop_dexes?.[i] || 'Unknown'}
                                   </span>
                                   <span>→ {fmt(hopOut, 4)}</span>
-                                  {o.hop_rates?.[i] && <span className="opacity-60">(@{o.hop_rates[i].toFixed(6)})</span>}
+                                  {op.hop_rates?.[i] && <span className="opacity-60">(@{op.hop_rates[i].toFixed(6)})</span>}
                                 </div>
                               ))}
                             </div>
@@ -521,9 +521,9 @@ export function OpportunityList(
                           <div className="border-t border-gray-700 pt-1 mt-1">
                             <div className="text-[10px] font-semibold flex flex-wrap gap-3">
                               <span className="text-gray-400">
-                                Expected: <span className="text-green-400">+{o.profit_bps} bps</span>
-                                {o.net_bps !== undefined && o.net_bps !== o.profit_bps && (
-                                  <span className="opacity-70"> (net: +{o.net_bps} bps)</span>
+                                Expected: <span className="text-green-400">+{op.profit_bps} bps</span>
+                                {op.net_bps !== undefined && op.net_bps !== op.profit_bps && (
+                                  <span className="opacity-70"> (net: +{op.net_bps} bps)</span>
                                 )}
                               </span>
                               {latest.simulationDetails?.profitValue !== undefined && (
@@ -532,9 +532,9 @@ export function OpportunityList(
                                 </span>
                               )}
                             </div>
-                            {o.est_profit_usd !== undefined && (
+                            {op.est_profit_usd !== undefined && (
                               <div className="text-[10px] opacity-60 mt-0.5">
-                                Est. profit was ${o.est_profit_usd.toFixed(4)}
+                                Est. profit was ${op.est_profit_usd.toFixed(4)}
                               </div>
                             )}
                           </div>
