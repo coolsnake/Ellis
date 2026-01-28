@@ -44,6 +44,34 @@ export function buildWrapSolIxs(owner: PublicKey, payer: PublicKey, lamports: nu
   return { ixs, wsolAta: ata };
 }
 
+/**
+ * Build minimal instructions to top-up an existing WSOL ATA.
+ * Use this when the WSOL ATA already exists but needs more balance.
+ * Saves 1 instruction compared to buildWrapSolIxs (no ATA create).
+ * 
+ * @param owner Owner of the WSOL ATA
+ * @param payer Payer for the transfer
+ * @param lamports Amount to transfer and sync
+ * @returns Instructions and WSOL ATA address
+ */
+export function buildTopUpWsolIxs(owner: PublicKey, payer: PublicKey, lamports: number): { ixs: any[]; wsolAta: PublicKey } {
+  const ata = getAssociatedTokenAddressSync(NATIVE_MINT, owner, false);
+  const ixs = [
+    // Fund WSOL account (ATA already exists)
+    SystemProgram.transfer({ fromPubkey: payer, toPubkey: ata, lamports }),
+    // Sync native balance into token amount
+    createSyncNativeInstruction(ata),
+  ];
+  return { ixs, wsolAta: ata };
+}
+
+/**
+ * Get the WSOL ATA address for an owner
+ */
+export function getWsolAta(owner: PublicKey): PublicKey {
+  return getAssociatedTokenAddressSync(NATIVE_MINT, owner, false);
+}
+
 export function buildScheduleCloseAtaIx(
   owner: PublicKey,
   mint: PublicKey,

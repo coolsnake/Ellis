@@ -348,6 +348,19 @@ export interface RouterConfig {
   flashLoanFeeBps: number;
   /** Whether router is enabled */
   enabled: boolean;
+  /** 
+   * Use pre-wrapped WSOL instead of wrapping fresh SOL for each transaction.
+   * When enabled, transactions will use existing WSOL balance if sufficient,
+   * saving 3 instructions (create ATA + transfer + sync) per SOL-input transaction.
+   * Requires manually wrapping SOL via /wallet/wrap endpoint first.
+   */
+  usePreWrappedWsol?: boolean;
+  /**
+   * Keep WSOL balance after execution instead of auto-unwrapping to native SOL.
+   * When enabled, arb profits accumulate as WSOL in the ATA.
+   * Use /wallet/unwrap to convert back to native SOL when desired.
+   */
+  keepWsolAfterExecution?: boolean;
 }
 
 /**
@@ -361,6 +374,8 @@ export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
   vaultOwner: null,
   flashLoanFeeBps: 9,
   enabled: false,
+  usePreWrappedWsol: false,
+  keepWsolAfterExecution: false,
 };
 
 // ============================================================================

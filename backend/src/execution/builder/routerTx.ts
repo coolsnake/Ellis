@@ -15,7 +15,7 @@ import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection, getBalances } from '../../wallet/wallet.js';
 import { executionCache } from '../cache.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
-import { buildWrapSolIxs, buildUnwrapSolIx, isSolMint } from '../accounts.js';
+import { buildWrapSolIxs, buildTopUpWsolIxs, buildUnwrapSolIx, isSolMint, getWsolAta } from '../accounts.js';
 import { getTokenMeta } from '../resolver/tokenMeta.js';
 import {
   buildFlashBorrowIx,
@@ -844,22 +844,109 @@ async function buildDirectRouterTx(
     const inputIsSol = isSolMint(plan.hops[0].inputMint);
     const outputIsSol = isSolMint(outputMint);
     
+    // Load router config for WSOL mode settings
+    const routerConfig = await loadRouterConfig();
+    const usePreWrappedWsol = routerConfig.usePreWrappedWsol ?? false;
+    const keepWsolAfterExecution = routerConfig.keepWsolAfterExecution ?? false;
+    
     // Wrap SOL → WSOL if input is native SOL
     if (inputIsSol) {
-      const amountToWrap = Number(plan.hops[0].amountInRaw || 0n);
-      if (amountToWrap > 0) {
-        const wrapResult = buildWrapSolIxs(wallet.publicKey, wallet.publicKey, amountToWrap);
-        instructions.push(...wrapResult.ixs);
-        userTokenAccount = wrapResult.wsolAta;
-        // Also update the hop's userSourceAta to point to WSOL ATA
-        plan.hops[0].userSourceAta = wrapResult.wsolAta.toBase58();
+      const amountNeeded = Number(plan.hops[0].amountInRaw || 0n);
+      const wsolAta = getWsolAta(wallet.publicKey);
+      
+      if (amountNeeded > 0) {
+        let wrapInstructions: any[] = [];
+        let skipWrap = false;
         
-        try {
-          logger.debug('routerTx.direct.wrapSol', {
-            cat: 'tx',
-            ctx: { amount: amountToWrap, wsolAta: wrapResult.wsolAta.toBase58() },
-          });
-        } catch {}
+        // Check if we can use pre-wrapped WSOL
+        if (usePreWrappedWsol) {
+          try {
+            // Check existing WSOL balance
+            const balances = await getBalances(wallet.publicKey);
+            const wsolMint = NATIVE_MINT.toBase58();
+            const existingWsolBalance = balances.tokens[wsolMint] ?? 0;
+            const existingWsolLamports = Math.floor(existingWsolBalance * 1e9);
+            
+            if (existingWsolLamports >= amountNeeded) {
+              // Sufficient WSOL balance - skip wrapping entirely!
+              skipWrap = true;
+              logger.debug('routerTx.direct.wrapSol.skipped', {
+                cat: 'tx',
+                ctx: { 
+                  reason: 'sufficient_wsol_balance',
+                  existingBalance: existingWsolLamports,
+                  amountNeeded,
+                  savedInstructions: 3,
+                  wsolAta: wsolAta.toBase58(),
+                },
+              });
+            } else if (existingWsolLamports > 0) {
+              // Partial WSOL balance - only top up the difference
+              const topUpAmount = amountNeeded - existingWsolLamports;
+              const topUpResult = buildTopUpWsolIxs(wallet.publicKey, wallet.publicKey, topUpAmount);
+              wrapInstructions = topUpResult.ixs;
+              
+              logger.debug('routerTx.direct.wrapSol.topUp', {
+                cat: 'tx',
+                ctx: { 
+                  existingBalance: existingWsolLamports,
+                  topUpAmount,
+                  totalNeeded: amountNeeded,
+                  savedInstructions: 1, // Saved the ATA create instruction
+                  wsolAta: wsolAta.toBase58(),
+                },
+              });
+            } else {
+              // No WSOL balance - need full wrap (but WSOL mode expects balance to exist)
+              // Fall back to top-up since WSOL ATA should exist if mode is enabled
+              const topUpResult = buildTopUpWsolIxs(wallet.publicKey, wallet.publicKey, amountNeeded);
+              wrapInstructions = topUpResult.ixs;
+              
+              logger.debug('routerTx.direct.wrapSol.topUp.fullAmount', {
+                cat: 'tx',
+                ctx: { 
+                  reason: 'no_existing_balance',
+                  amountNeeded,
+                  wsolAta: wsolAta.toBase58(),
+                },
+              });
+            }
+          } catch (balanceErr) {
+            // Failed to check balance, fall back to standard wrapping
+            logger.warn('routerTx.direct.wrapSol.balanceCheckFailed', {
+              cat: 'tx',
+              ctx: { error: String((balanceErr as any)?.message || balanceErr) },
+            });
+            const wrapResult = buildWrapSolIxs(wallet.publicKey, wallet.publicKey, amountNeeded);
+            wrapInstructions = wrapResult.ixs;
+          }
+        } else {
+          // Standard wrapping (pre-wrapped mode disabled)
+          const wrapResult = buildWrapSolIxs(wallet.publicKey, wallet.publicKey, amountNeeded);
+          wrapInstructions = wrapResult.ixs;
+        }
+        
+        if (!skipWrap) {
+          instructions.push(...wrapInstructions);
+        }
+        
+        userTokenAccount = wsolAta;
+        // Also update the hop's userSourceAta to point to WSOL ATA
+        plan.hops[0].userSourceAta = wsolAta.toBase58();
+        
+        if (!skipWrap) {
+          try {
+            logger.debug('routerTx.direct.wrapSol', {
+              cat: 'tx',
+              ctx: { 
+                amount: amountNeeded, 
+                wsolAta: wsolAta.toBase58(),
+                instructionCount: wrapInstructions.length,
+                usePreWrappedWsol,
+              },
+            });
+          } catch {}
+        }
       }
     }
     
@@ -1152,8 +1239,8 @@ async function buildDirectRouterTx(
       instructions.push(executeIx);
     }
     
-    // Unwrap WSOL → SOL if output is native SOL
-    if (outputIsSol) {
+    // Unwrap WSOL → SOL if output is native SOL (unless keepWsolAfterExecution is enabled)
+    if (outputIsSol && !keepWsolAfterExecution) {
       const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet.publicKey, false, TOKEN_PROGRAM_ID);
       // Close the WSOL ATA to unwrap remaining balance back to native SOL
       const closeIx = createCloseAccountInstruction(wsolAta, wallet.publicKey, wallet.publicKey);
@@ -1163,6 +1250,16 @@ async function buildDirectRouterTx(
         logger.debug('routerTx.direct.unwrapSol', {
           cat: 'tx',
           ctx: { wsolAta: wsolAta.toBase58() },
+        });
+      } catch {}
+    } else if (outputIsSol && keepWsolAfterExecution) {
+      try {
+        logger.debug('routerTx.direct.unwrapSol.skipped', {
+          cat: 'tx',
+          ctx: { 
+            reason: 'keepWsolAfterExecution',
+            savedInstructions: 1,
+          },
         });
       } catch {}
     }
@@ -1214,17 +1311,19 @@ async function buildSdkQuoteRouterTx(
     logger.debug('routerTx.sdkQuote.start', {
       cat: 'tx',
       ctx: {
+        traceId: plan.traceId,
         hops: plan.hops.length,
         poolIds: plan.hops.map(h => h.poolId.slice(0, 8) + '...'),
       },
     });
 
     // Get SDK-provided accounts for all hops (fail fast if any SDK call fails)
-    const sdkResult = await getSdkQuoteAccountsForPlan(plan.hops);
+    const sdkResult = await getSdkQuoteAccountsForPlan(plan.hops, plan.traceId);
 
     if (!sdkResult.success) {
       logger.error('routerTx.sdkQuote.failed', {
         cat: 'tx',
+        traceId: plan.traceId,
         error: sdkResult.error,
       });
       return {
@@ -1246,6 +1345,7 @@ async function buildSdkQuoteRouterTx(
       logger.debug('routerTx.sdkQuote.hop.enriched', {
         cat: 'tx',
         ctx: {
+          traceId: plan.traceId,
           hopIndex: i,
           dex: hop.dex,
           poolId: hop.poolId.slice(0, 8) + '...',
@@ -1261,11 +1361,92 @@ async function buildSdkQuoteRouterTx(
     const inputIsSol = isSolMint(plan.hops[0].inputMint);
     const outputIsSol = isSolMint(plan.hops[plan.hops.length - 1].outputMint);
 
+    // Load router config for WSOL mode settings
+    const routerConfig = await loadRouterConfig();
+    const usePreWrappedWsol = routerConfig.usePreWrappedWsol ?? false;
+    const keepWsolAfterExecution = routerConfig.keepWsolAfterExecution ?? false;
+
     if (inputIsSol) {
-      const wrapAmount = Number(plan.hops[0].amountInRaw);
-      const { ixs: wrapIxs, wsolAta } = buildWrapSolIxs(wallet.publicKey, wallet.publicKey, wrapAmount);
-      instructions.push(...wrapIxs);
-      plan.hops[0].userSourceAta = wsolAta.toBase58();
+      const amountNeeded = Number(plan.hops[0].amountInRaw);
+      const wsolAta = getWsolAta(wallet.publicKey);
+      
+      if (amountNeeded > 0) {
+        let wrapInstructions: any[] = [];
+        let skipWrap = false;
+        
+        // Check if we can use pre-wrapped WSOL
+        if (usePreWrappedWsol) {
+          try {
+            // Check existing WSOL balance
+            const balances = await getBalances(wallet.publicKey);
+            const wsolMint = NATIVE_MINT.toBase58();
+            const existingWsolBalance = balances.tokens[wsolMint] ?? 0;
+            const existingWsolLamports = Math.floor(existingWsolBalance * 1e9);
+            
+            if (existingWsolLamports >= amountNeeded) {
+              // Sufficient WSOL balance - skip wrapping entirely!
+              skipWrap = true;
+              logger.debug('routerTx.sdkQuote.wrapSol.skipped', {
+                cat: 'tx',
+                ctx: { 
+                  reason: 'sufficient_wsol_balance',
+                  existingBalance: existingWsolLamports,
+                  amountNeeded,
+                  savedInstructions: 3,
+                  wsolAta: wsolAta.toBase58(),
+                },
+              });
+            } else if (existingWsolLamports > 0) {
+              // Partial WSOL balance - only top up the difference
+              const topUpAmount = amountNeeded - existingWsolLamports;
+              const topUpResult = buildTopUpWsolIxs(wallet.publicKey, wallet.publicKey, topUpAmount);
+              wrapInstructions = topUpResult.ixs;
+              
+              logger.debug('routerTx.sdkQuote.wrapSol.topUp', {
+                cat: 'tx',
+                ctx: { 
+                  existingBalance: existingWsolLamports,
+                  topUpAmount,
+                  totalNeeded: amountNeeded,
+                  savedInstructions: 1,
+                  wsolAta: wsolAta.toBase58(),
+                },
+              });
+            } else {
+              // No WSOL balance - use top-up (assumes ATA exists in WSOL mode)
+              const topUpResult = buildTopUpWsolIxs(wallet.publicKey, wallet.publicKey, amountNeeded);
+              wrapInstructions = topUpResult.ixs;
+              
+              logger.debug('routerTx.sdkQuote.wrapSol.topUp.fullAmount', {
+                cat: 'tx',
+                ctx: { 
+                  reason: 'no_existing_balance',
+                  amountNeeded,
+                  wsolAta: wsolAta.toBase58(),
+                },
+              });
+            }
+          } catch (balanceErr) {
+            // Failed to check balance, fall back to standard wrapping
+            logger.warn('routerTx.sdkQuote.wrapSol.balanceCheckFailed', {
+              cat: 'tx',
+              ctx: { error: String((balanceErr as any)?.message || balanceErr) },
+            });
+            const wrapResult = buildWrapSolIxs(wallet.publicKey, wallet.publicKey, amountNeeded);
+            wrapInstructions = wrapResult.ixs;
+          }
+        } else {
+          // Standard wrapping (pre-wrapped mode disabled)
+          const wrapResult = buildWrapSolIxs(wallet.publicKey, wallet.publicKey, amountNeeded);
+          wrapInstructions = wrapResult.ixs;
+        }
+        
+        if (!skipWrap) {
+          instructions.push(...wrapInstructions);
+        }
+        
+        plan.hops[0].userSourceAta = wsolAta.toBase58();
+      }
     }
 
     // Determine user token account for execute instruction
@@ -1352,7 +1533,8 @@ async function buildSdkQuoteRouterTx(
     const { steps, dexAccounts, accountsPerStep, initialBalances } = await buildRouteStepsWithSdkAccounts(
       plan.hops,
       wallet.publicKey,
-      sdkResult.results.map(r => r.accounts)
+      sdkResult.results.map(r => r.accounts),
+      plan.traceId
     );
 
     // Build execute instruction (use compact for 3+ hops to reduce tx size)
@@ -1370,11 +1552,19 @@ async function buildSdkQuoteRouterTx(
     );
     instructions.push(executeIx);
 
-    // Unwrap WSOL if output is SOL
-    if (outputIsSol) {
+    // Unwrap WSOL if output is SOL (unless keepWsolAfterExecution is enabled)
+    if (outputIsSol && !keepWsolAfterExecution) {
       const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet.publicKey, false, TOKEN_PROGRAM_ID);
       const closeIx = createCloseAccountInstruction(wsolAta, wallet.publicKey, wallet.publicKey);
       instructions.push(closeIx);
+    } else if (outputIsSol && keepWsolAfterExecution) {
+      logger.debug('routerTx.sdkQuote.unwrapSol.skipped', {
+        cat: 'tx',
+        ctx: { 
+          reason: 'keepWsolAfterExecution',
+          savedInstructions: 1,
+        },
+      });
     }
 
     logger.debug('routerTx.sdkQuote.built', {
@@ -1568,11 +1758,13 @@ function applysdkAccountsToHop(hop: DirectHop, sdkAccounts: SdkProvidedAccounts)
 /**
  * Build route steps using SDK-provided accounts
  * Similar to buildRouteSteps but uses SDK accounts for tick/bin arrays
+ * @param traceId - Optional trace ID for log correlation
  */
 async function buildRouteStepsWithSdkAccounts(
   hops: DirectHop[],
   wallet: PublicKey,
-  sdkAccountsList: SdkProvidedAccounts[]
+  sdkAccountsList: SdkProvidedAccounts[],
+  traceId?: string
 ): Promise<{
   steps: RouteStep[];
   dexAccounts: PublicKey[];
@@ -1685,13 +1877,14 @@ async function buildRouteStepsWithSdkAccounts(
 
     // Extract DEX accounts using SDK-provided values
     // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
-    const hopAccounts = await extractDexAccountsWithSdk(hop, dexType, wallet, sdkAccounts, aToB);
+    const hopAccounts = await extractDexAccountsWithSdk(hop, dexType, wallet, sdkAccounts, aToB, traceId);
     dexAccounts.push(...hopAccounts);
     accountsPerStep.push(hopAccounts.length);
 
     logger.debug('routerTx.buildRouteStepsWithSdk.step', {
       cat: 'tx',
       ctx: {
+        traceId,
         hopIndex: i,
         dex: hop.dex,
         amountIn: amountIn.toString(),
@@ -1708,20 +1901,22 @@ async function buildRouteStepsWithSdkAccounts(
 /**
  * Extract DEX accounts, preferring SDK-provided values over cache
  * This is a wrapper around extractDexAccounts that applies SDK overrides first
+ * @param traceId - Optional trace ID for log correlation
  */
 async function extractDexAccountsWithSdk(
   hop: DirectHop,
   dexType: DexType,
   wallet: PublicKey,
   sdkAccounts: SdkProvidedAccounts,
-  aToB: boolean
+  aToB: boolean,
+  traceId?: string
 ): Promise<PublicKey[]> {
   // Apply SDK accounts to hop before extraction
   applysdkAccountsToHop(hop, sdkAccounts);
 
   // Use the standard extractDexAccounts which will now use the SDK-provided values
   // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
-  return extractDexAccounts(hop, dexType, wallet, { aToB });
+  return extractDexAccounts(hop, dexType, wallet, { aToB, traceId });
 }
 
 /**
@@ -1893,13 +2088,15 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
 
 /**
  * Extract DEX-specific accounts from a hop in the exact order expected by the router
+ * @param traceId - Optional trace ID for log correlation
  */
 async function extractDexAccounts(
   hop: DirectHop,
   dexType: DexType,
   wallet: PublicKey,
-  opts?: { allowVariableAccounts?: boolean; aToB?: boolean }
+  opts?: { allowVariableAccounts?: boolean; aToB?: boolean; traceId?: string }
 ): Promise<PublicKey[]> {
+  const traceId = opts?.traceId;
   const accounts: PublicKey[] = [];
 
   try {
@@ -2115,6 +2312,7 @@ async function extractDexAccounts(
         // Log the accounts being used for debugging
         logger.debug('routerTx.raydium.accounts', {
           cat: 'tx',
+          traceId,
           poolId: hop.poolId,
           // Swap variant selection
           swapVariant: raydiumNeedsSwapV2 ? 'swap_v2' : 'swap',
@@ -2298,6 +2496,7 @@ async function extractDexAccounts(
           // Debug logging to verify account positions
           logger.debug('routerTx.raydium.finalAccounts', {
             cat: 'tx',
+            traceId,
             poolId: hop.poolId,
             totalAccounts: accounts.length,
             hasExBitmap,
@@ -2754,6 +2953,7 @@ async function extractDexAccounts(
         // Log the accounts being used for debugging with verification
         logger.debug('routerTx.meteora.accounts', {
           cat: 'tx',
+          traceId,
           poolId: hop.poolId,
           // Instruction variant
           variant: needsSwap2 ? 'swap2' : 'swap',
@@ -3073,6 +3273,7 @@ async function extractDexAccounts(
         // Log the accounts being used for debugging with native mint verification
         logger.debug('routerTx.orca.accounts', {
           cat: 'tx',
+          traceId,
           poolId: hop.poolId,
           // Instruction variant
           variant: orcaNeedsSwapV2 ? 'swapV2' : 'swap',

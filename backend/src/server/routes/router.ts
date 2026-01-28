@@ -19,6 +19,7 @@ import {
   setExecutionMode,
   setVaultOwner,
   setRouterEnabled,
+  setWsolMode,
   isRouterReady,
   isFlashLoanAvailable,
   getRouterConnection,
@@ -258,6 +259,68 @@ export function createRouterRouter(io: SocketIOServer): Router {
       res.json({ success: true, config });
     } catch (err: any) {
       logger.error('router.config.enabled.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /router/config/wsol-mode - Configure WSOL mode settings
+   * 
+   * When usePreWrappedWsol is enabled:
+   * - Transactions will use existing WSOL balance if sufficient
+   * - Saves 3 instructions per SOL-input transaction (create ATA + transfer + sync)
+   * - Requires manually wrapping SOL via /wallet/wrap endpoint first
+   * 
+   * When keepWsolAfterExecution is enabled:
+   * - WSOL won't be unwrapped to native SOL after execution
+   * - Arb profits accumulate as WSOL in the ATA
+   * - Use /wallet/unwrap to convert back to native SOL when desired
+   */
+  api.post('/router/config/wsol-mode', async (req: Request, res: Response) => {
+    try {
+      const { usePreWrappedWsol, keepWsolAfterExecution } = req.body;
+      const config = await setWsolMode(
+        usePreWrappedWsol ?? false,
+        keepWsolAfterExecution ?? false
+      );
+      emit('router:config', config);
+      
+      logger.info('router.config.wsol-mode.updated', {
+        cat: 'router',
+        ctx: {
+          usePreWrappedWsol: config.usePreWrappedWsol,
+          keepWsolAfterExecution: config.keepWsolAfterExecution,
+        },
+      });
+      
+      res.json({ 
+        success: true, 
+        config,
+        message: `WSOL mode: ${config.usePreWrappedWsol ? 'use pre-wrapped' : 'wrap fresh'}, ${config.keepWsolAfterExecution ? 'keep WSOL' : 'auto-unwrap'}`,
+      });
+    } catch (err: any) {
+      logger.error('router.config.wsol-mode.error', { cat: 'router', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * GET /router/config/wsol-mode - Get current WSOL mode settings
+   */
+  api.get('/router/config/wsol-mode', async (_req: Request, res: Response) => {
+    try {
+      const config = await loadRouterConfig();
+      res.json({
+        success: true,
+        usePreWrappedWsol: config.usePreWrappedWsol ?? false,
+        keepWsolAfterExecution: config.keepWsolAfterExecution ?? false,
+        description: {
+          usePreWrappedWsol: 'When true, use existing WSOL balance instead of wrapping fresh SOL (saves 3 instructions)',
+          keepWsolAfterExecution: 'When true, keep WSOL after execution instead of auto-unwrapping to native SOL',
+        },
+      });
+    } catch (err: any) {
+      logger.error('router.config.wsol-mode.get.error', { cat: 'router', error: err.message });
       res.status(500).json({ success: false, error: err.message });
     }
   });

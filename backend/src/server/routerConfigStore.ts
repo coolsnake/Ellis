@@ -98,6 +98,18 @@ export async function setRouterEnabled(enabled: boolean): Promise<RouterConfig> 
 }
 
 /**
+ * Configure WSOL mode settings
+ * @param usePreWrappedWsol If true, use existing WSOL balance instead of wrapping fresh SOL
+ * @param keepWsolAfterExecution If true, don't unwrap WSOL to native SOL after execution
+ */
+export async function setWsolMode(
+  usePreWrappedWsol: boolean,
+  keepWsolAfterExecution: boolean
+): Promise<RouterConfig> {
+  return saveRouterConfig({ usePreWrappedWsol, keepWsolAfterExecution });
+}
+
+/**
  * Check if router is configured and enabled
  */
 export async function isRouterReady(): Promise<boolean> {

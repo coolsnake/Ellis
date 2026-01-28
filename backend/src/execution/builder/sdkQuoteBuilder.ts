@@ -3313,9 +3313,13 @@ export async function getSdkQuoteAccounts(hop: DirectHop): Promise<SdkQuoteResul
  * OPTIMIZATION: First tries cache-only path to skip SDK calls entirely.
  * Only calls SDK for hops that don't have full cache coverage.
  * This significantly reduces latency for warm caches.
+ * 
+ * @param hops - Array of DirectHop to get accounts for
+ * @param traceId - Optional trace ID for log correlation
  */
 export async function getSdkQuoteAccountsForPlan(
-  hops: DirectHop[]
+  hops: DirectHop[],
+  traceId?: string
 ): Promise<{ success: boolean; results: SdkQuoteResult[]; error?: string }> {
   const startMs = Date.now();
   
@@ -3332,6 +3336,7 @@ export async function getSdkQuoteAccountsForPlan(
     logger.debug('sdkQuoteBuilder.plan.complete', {
       cat: 'tx',
       ctx: {
+        traceId,
         hopCount: hops.length,
         cacheHits: hops.length,
         cacheMisses: 0,
@@ -3397,6 +3402,7 @@ export async function getSdkQuoteAccountsForPlan(
   logger.debug('sdkQuoteBuilder.plan.complete', {
     cat: 'tx',
     ctx: {
+      traceId,
       hopCount: hops.length,
       cacheHits,
       cacheMisses,
