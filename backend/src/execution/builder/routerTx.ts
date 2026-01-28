@@ -1773,6 +1773,13 @@ async function buildRouteStepsWithSdkAccounts(
   const accountsPerStep: number[] = [];
   const initialBalances: bigint[] = [];
 
+  // Count DLMM hops to determine bin array budget
+  // Routes with 3+ DLMM hops use reduced bin arrays (2 instead of 3) to save tx space
+  const dlmmHopCount = hops.filter(h => {
+    const dt = dexNameToType(h.dex, h.variant);
+    return dt === DexType.Meteora;
+  }).length;
+
   // Fetch cached wallet balances
   let walletBalances: { sol: number; tokens: Record<string, number> } | null = null;
   try {
@@ -1874,7 +1881,8 @@ async function buildRouteStepsWithSdkAccounts(
 
     // Extract DEX accounts using SDK-provided values
     // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
-    const hopAccounts = await extractDexAccountsWithSdk(hop, dexType, wallet, sdkAccounts, aToB, traceId);
+    // Pass dlmmHopCount to allow bin array reduction for multi-DLMM routes
+    const hopAccounts = await extractDexAccountsWithSdk(hop, dexType, wallet, sdkAccounts, aToB, traceId, dlmmHopCount);
     dexAccounts.push(...hopAccounts);
     accountsPerStep.push(hopAccounts.length);
 
@@ -1899,6 +1907,7 @@ async function buildRouteStepsWithSdkAccounts(
  * Extract DEX accounts, preferring SDK-provided values over cache
  * This is a wrapper around extractDexAccounts that applies SDK overrides first
  * @param traceId - Optional trace ID for log correlation
+ * @param dlmmHopCount - Total DLMM hops in route (for bin array budget optimization)
  */
 async function extractDexAccountsWithSdk(
   hop: DirectHop,
@@ -1906,14 +1915,15 @@ async function extractDexAccountsWithSdk(
   wallet: PublicKey,
   sdkAccounts: SdkProvidedAccounts,
   aToB: boolean,
-  traceId?: string
+  traceId?: string,
+  dlmmHopCount?: number
 ): Promise<PublicKey[]> {
   // Apply SDK accounts to hop before extraction
   applysdkAccountsToHop(hop, sdkAccounts);
 
   // Use the standard extractDexAccounts which will now use the SDK-provided values
   // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
-  return extractDexAccounts(hop, dexType, wallet, { aToB, traceId });
+  return extractDexAccounts(hop, dexType, wallet, { aToB, traceId, dlmmHopCount });
 }
 
 /**
@@ -1940,6 +1950,13 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
   const dexAccounts: PublicKey[] = [];
   const accountsPerStep: number[] = [];
   const initialBalances: bigint[] = [];
+
+  // Count DLMM hops to determine bin array budget
+  // Routes with 3+ DLMM hops use reduced bin arrays (2 instead of 3) to save tx space
+  const dlmmHopCount = hops.filter(h => {
+    const dt = dexNameToType(h.dex, h.variant);
+    return dt === DexType.Meteora;
+  }).length;
 
   // Fetch cached wallet balances (no RPC call if cache is fresh)
   // This is used to subtract pre-existing balances from dynamic amount propagation
@@ -2059,7 +2076,8 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
 
     // Collect DEX accounts for this hop - pass wallet and aToB for consistent direction
     // CRITICAL: Pass aToB to ensure account ordering matches the direction flag sent to on-chain program
-    const hopAccounts = await extractDexAccounts(hop, dexType, wallet, { aToB });
+    // Pass dlmmHopCount to allow bin array reduction for multi-DLMM routes
+    const hopAccounts = await extractDexAccounts(hop, dexType, wallet, { aToB, dlmmHopCount });
     dexAccounts.push(...hopAccounts);
     
     // Track actual account count for this hop (enables variable bin arrays for Meteora)
@@ -2086,14 +2104,16 @@ async function buildRouteSteps(hops: DirectHop[], wallet: PublicKey): Promise<{
 /**
  * Extract DEX-specific accounts from a hop in the exact order expected by the router
  * @param traceId - Optional trace ID for log correlation
+ * @param dlmmHopCount - Total DLMM hops in route (for bin array budget optimization)
  */
 async function extractDexAccounts(
   hop: DirectHop,
   dexType: DexType,
   wallet: PublicKey,
-  opts?: { allowVariableAccounts?: boolean; aToB?: boolean; traceId?: string }
+  opts?: { allowVariableAccounts?: boolean; aToB?: boolean; traceId?: string; dlmmHopCount?: number }
 ): Promise<PublicKey[]> {
   const traceId = opts?.traceId;
+  const dlmmHopCount = opts?.dlmmHopCount ?? 1;
   const accounts: PublicKey[] = [];
 
   try {
@@ -2700,10 +2720,24 @@ async function extractDexAccounts(
         const binStep = (hop as any).binStep ?? (stat as any)?.bin_step ?? hotCache?.binStep;
         const binStepNum = typeof binStep === 'string' ? parseInt(binStep, 10) : (binStep ?? 10);
         
-        // Always use 3 bin arrays (matches Jupiter behavior, sufficient for most swaps)
-        // This reduces transaction size while still providing adequate bin coverage
-        // Previous: binStepNum <= 5 ? 5 : 3 (conservative for fine-grained pools)
-        const neededBinArrayCount = 3;
+        // Dynamically adjust bin array count based on route complexity:
+        // - Routes with 3+ DLMM hops: use 2 bin arrays (saves 32 bytes per DLMM pool)
+        // - Routes with 1-2 DLMM hops: use 3 bin arrays (standard coverage)
+        // This is critical for fitting multi-DLMM routes in transaction size limits
+        const neededBinArrayCount = dlmmHopCount >= 3 ? 2 : 3;
+        
+        if (dlmmHopCount >= 3) {
+          logger.debug('routerTx.meteora.binArrayCount.reduced', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              poolId: hop.poolId.slice(0, 8) + '...',
+              dlmmHopCount,
+              neededBinArrayCount,
+              reason: 'multi-dlmm route optimization',
+            },
+          });
+        }
 
         let directionalBinArrays: PublicKey[] = [];
 
