@@ -84,7 +84,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [sendAmount, setSendAmount] = useState<number>(50);
   const isFetchingRef = useRef(false);
   const [firstLoad, setFirstLoad] = useState(true);
-  const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null }>>([]);
+  const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null; logFile?: string }>>([]);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [nmSimLogs, setNmSimLogs] = useState<string[] | null>(null);
   const [nmSimErr, setNmSimErr] = useState<string | null>(null);
@@ -773,6 +773,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                 <th className="py-1 pr-2">Bytes</th>
                 <th className="py-1 pr-2">Status</th>
                 <th className="py-1 pr-2">Sig</th>
+                <th className="py-1 pr-2">Log</th>
               </tr>
             </thead>
             <tbody>
@@ -788,10 +789,11 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                     <td className="py-1 pr-2">{r.txSizeBytes}</td>
                     <td className="py-1 pr-2">{r.status}</td>
                     <td className="py-1 pr-2">{r.signature ? <a className="text-blue-400 underline" href={`https://solscan.io/tx/${r.signature}`} target="_blank" rel="noreferrer">{r.signature.slice(0,6)}…</a> : '—'}</td>
+                    <td className="py-1 pr-2">{r.logFile ? <a className="text-purple-400 hover:text-purple-300 underline" href={`https://files.mccurrach.xyz/files/lockstone-dev/backend/logs/execution-attempts/${r.logFile}`} target="_blank" rel="noreferrer" title={r.logFile}>📋</a> : '—'}</td>
                   </tr>
                   {expandedKey === rowKey && (
                     <tr key={`${rowKey}-exp`} className="bg-black/20">
-                      <td colSpan={7} className="py-2 px-2">
+                      <td colSpan={8} className="py-2 px-2">
                         <div className="text-[11px] grid grid-cols-1 md:grid-cols-2 gap-2">
                           <div>
                             <div className="font-semibold mb-1">Hops</div>
@@ -812,7 +814,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                 </>
               )})}
               {txRows.length === 0 && (
-                <tr><td className="py-2 opacity-70" colSpan={7}>No transactions</td></tr>
+                <tr><td className="py-2 opacity-70" colSpan={8}>No transactions</td></tr>
               )}
             </tbody>
           </table>

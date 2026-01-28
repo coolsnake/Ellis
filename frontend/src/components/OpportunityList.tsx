@@ -37,6 +37,7 @@ type ExecutionResult = {
   type: 'success' | 'sim_failed' | 'exec_failed';
   timestamp: number;
   traceId?: string;
+  logFile?: string; // Execution log filename for linking to hosted logs
   signature?: string;
   error?: string;
   profitBps?: number;
@@ -128,6 +129,7 @@ export function OpportunityList(
             type,
             timestamp: data.timestamp || Date.now(),
             traceId: data.traceId,
+            logFile: data.logFile, // Execution log filename for linking
             signature: data.signature,
             error: data.error,
             profitBps: data.profitBps,
@@ -618,17 +620,27 @@ export function OpportunityList(
                     </>
                   )}
 
-                  {/* Execution context - duration, flashloan, trace */}
+                  {/* Execution context - duration, flashloan, trace/log link */}
                   {latest.executionContext && (
-                    <div className="opacity-60 text-[10px] mt-1">
+                    <div className="opacity-60 text-[10px] mt-1 flex items-center gap-1 flex-wrap">
                       {latest.executionContext.durationMs !== undefined && (
                         <span>Duration: {latest.executionContext.durationMs}ms</span>
                       )}
                       {latest.executionContext.usedFlashloan && (
                         <span> · Flashloan</span>
                       )}
-                      {latest.traceId && (
-                        <span> · trace: {latest.traceId}</span>
+                      {latest.logFile ? (
+                        <a
+                          href={`https://files.mccurrach.xyz/files/lockstone-dev/backend/logs/execution-attempts/${latest.logFile}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-purple-400 hover:text-purple-300 underline"
+                          title={`View execution log: ${latest.logFile}`}
+                        >
+                          · 📋 Log
+                        </a>
+                      ) : latest.traceId && (
+                        <span> · trace: {latest.traceId.slice(0, 8)}…</span>
                       )}
                     </div>
                   )}

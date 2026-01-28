@@ -82,10 +82,11 @@ export async function logTxTrace(kind: TraceKind, entry: Record<string, any>): P
 
 // Consolidated transaction dump (single file per opportunity, includes all phases)
 // Now includes complete trace from opportunity detection through transaction send
+// Returns the filename for linking in the UI
 export async function writeTxFullDump(
   phase: 'preflight' | 'execute', 
   payload: Record<string, any>
-): Promise<void> {
+): Promise<string> {
   // Consolidate all logs into single directory - phase included in filename
   const dir = resolve(LOG_DIR_SAFE, 'execution-attempts');
   if (!existsSync(dir)) {
@@ -217,6 +218,7 @@ export async function writeTxFullDump(
     return value;
   }, 2);
   await writeFile(file, data, { encoding: 'utf8' });
+  return filename;
 }
 
 

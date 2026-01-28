@@ -1388,13 +1388,13 @@ export class ArbExecutor {
         });
         
         // Log full dump with opportunity data
-        // PERF: Use static imports and non-blocking write
+        // Capture logFile for linking in UI
+        let logFile: string | undefined;
         try {
           const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
           const txLogs = getTxRelatedLogs(traceId, Date.now() - 30000, Date.now(), 500);
           
-          // PERF: Non-blocking - don't await the file write
-          void writeTxFullDump('preflight', {
+          logFile = await writeTxFullDump('preflight', {
             id: traceId,
             txId: traceId,
             traceId,
@@ -1525,6 +1525,7 @@ export class ArbExecutor {
             hopPoolIds: opp.hop_pool_ids,
             hopDexes: opp.hop_dexes,
             traceId,
+            logFile, // Execution log filename for linking
             analysis: {
               // When profit check failed, all swaps executed (profit check runs after swaps)
               swapsExecuted: simAnalysis.profitCheckFailed 
@@ -1682,6 +1683,26 @@ export class ArbExecutor {
               skipSimulation: true,
             });
 
+            // Write execution log and capture filename for linking
+            let logFile: string | undefined;
+            try {
+              const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
+              const txLogs = getTxRelatedLogs(traceId, Date.now() - 30000, Date.now(), 500);
+              logFile = await writeTxFullDump('execute', {
+                id: traceId,
+                txId: traceId,
+                traceId,
+                opportunity: { ...opp },
+                plan,
+                dexes,
+                execConfig: execCfg,
+                built,
+                signature,
+                skipSimulation: true,
+                executorLogs: txLogs,
+              });
+            } catch {}
+
             this.state.successfulExecutions++;
             await this.notifyExecuted(opp);
 
@@ -1699,6 +1720,7 @@ export class ArbExecutor {
               signature,
               status: 'send_ok',
               skipSimulation: true,
+              logFile,
             });
 
             emit('arb:execution', {
@@ -1711,6 +1733,7 @@ export class ArbExecutor {
               hopPoolIds: opp.hop_pool_ids,
               hopDexes: opp.hop_dexes,
               traceId,
+              logFile, // Execution log filename for linking
               executionContext: {
                 sizeUsd: effectiveSizeUsd,
                 adaptiveAttempts: 0,
@@ -2098,6 +2121,26 @@ export class ArbExecutor {
             });
           }
           
+          // Write execution log and capture filename for linking
+          let logFile: string | undefined;
+          try {
+            const dexes = Array.from(new Set(currentPlan.hops.map((h: any) => h.dex)));
+            const txLogs = getTxRelatedLogs(traceId, Date.now() - 60000, Date.now(), 500);
+            logFile = await writeTxFullDump('preflight', {
+              id: traceId,
+              txId: traceId,
+              traceId,
+              opportunity: { ...opp },
+              plan: currentPlan,
+              dexes,
+              execConfig: execCfg,
+              built: currentBuilt,
+              sim: lastSimResult,
+              err: { type: 'adaptive_retry_failed', message: lastSimErrStr, attempts: attempt },
+              executorLogs: txLogs,
+            });
+          } catch {}
+
           logger.error('arb.executor.simulate_then_execute.sim_failed', {
             cat: 'arb',
             traceId,
@@ -2140,6 +2183,7 @@ export class ArbExecutor {
             hopPoolIds: opp.hop_pool_ids,
             hopDexes: opp.hop_dexes,
             traceId,
+            logFile, // Execution log filename for linking
             analysis: {
               // When profit check failed, all swaps executed (profit check runs after swaps)
               swapsExecuted: lastSimAnalysis!.profitCheckFailed 
@@ -2289,6 +2333,26 @@ export class ArbExecutor {
             durationMs: Date.now() - startTime,
           });
 
+          // Write execution log and capture filename for linking
+          let logFile: string | undefined;
+          try {
+            const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
+            const txLogs = getTxRelatedLogs(traceId, Date.now() - 60000, Date.now(), 500);
+            logFile = await writeTxFullDump('execute', {
+              id: traceId,
+              txId: traceId,
+              traceId,
+              opportunity: { ...opp },
+              plan,
+              dexes,
+              execConfig: execCfg,
+              built,
+              signature,
+              adaptiveAttempts: attempt,
+              executorLogs: txLogs,
+            });
+          } catch {}
+
           this.state.successfulExecutions++;
           await this.notifyExecuted(opp);
 
@@ -2305,6 +2369,7 @@ export class ArbExecutor {
             txSizeBytes: built.sizeBytes,
             signature,
             status: 'send_ok',
+            logFile,
           });
 
           emit('arb:execution', {
@@ -2318,6 +2383,7 @@ export class ArbExecutor {
             hopPoolIds: opp.hop_pool_ids,
             hopDexes: opp.hop_dexes,
             traceId,
+            logFile, // Execution log filename for linking
             // Execution context
             executionContext: {
               sizeUsd: currentSizeUsd,
@@ -2391,14 +2457,13 @@ export class ArbExecutor {
         });
         signature = sendResult?.signature || null;
 
-        // Log full dump with opportunity data
-        // PERF: Use static imports and non-blocking write
+        // Log full dump with opportunity data and capture filename for linking
+        let logFile: string | undefined;
         try {
           const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
           const txLogs = getTxRelatedLogs(traceId, Date.now() - 60000, Date.now(), 500);
           
-          // PERF: Non-blocking - don't await the file write
-          void writeTxFullDump('execute', {
+          logFile = await writeTxFullDump('execute', {
             id: traceId,
             txId: traceId,
             traceId,
@@ -2525,6 +2590,7 @@ export class ArbExecutor {
             txSizeBytes: built.sizeBytes,
             signature,
             status: 'send_ok',
+            logFile,
           });
 
           // Emit to frontend
@@ -2539,6 +2605,7 @@ export class ArbExecutor {
             hopPoolIds: opp.hop_pool_ids,
             hopDexes: opp.hop_dexes,
             traceId,
+            logFile, // Execution log filename for linking
             // Execution context
             executionContext: {
               sizeUsd: effectiveSizeUsd,
@@ -2563,8 +2630,8 @@ export class ArbExecutor {
       // Better error serialization
       const errorMsg = e?.message || (e instanceof Error ? e.toString() : JSON.stringify(e));
       
-      // Log to execute-attempts even on failure
-      // PERF: Use static imports and non-blocking write
+      // Log to execute-attempts even on failure and capture filename for linking
+      let failureLogFile: string | undefined;
       try {
         const txLogs = getTxRelatedLogs(traceId, Date.now() - 60000, Date.now(), 500);
         
@@ -2574,8 +2641,7 @@ export class ArbExecutor {
         const execCfg = (e as any)?.execCfg || null;
         const executionDexes = opp.hop_dexes || opp.dexes || [];
         
-        // PERF: Non-blocking - don't await the file write
-        void writeTxFullDump('execute', {
+        failureLogFile = await writeTxFullDump('execute', {
           id: traceId,
           txId: traceId,
           traceId,
@@ -2674,6 +2740,7 @@ export class ArbExecutor {
           hopPoolIds: opp.hop_pool_ids,
           hopDexes: opp.hop_dexes,
           traceId,
+          logFile: failureLogFile, // Execution log filename for linking
           // Execution context
           executionContext: {
             durationMs: Date.now() - startTime,

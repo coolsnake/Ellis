@@ -15,6 +15,7 @@ export type TxRecord = {
   confirmedAt?: number;
   confirmationSlot?: number;
   skipSimulation?: boolean;
+  logFile?: string; // Filename of execution log dump for linking
 };
 
 const capacity = 200;

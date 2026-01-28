@@ -1054,12 +1054,14 @@ export function createArbRouter(io: SocketIOServer): Router {
         computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
         lookupTableAddresses: altAddresses,
       } as any);
+      // Capture logFile for linking in UI
+      let logFile: string | undefined;
       try {
         const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
         const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
         const { writeTxFullDump } = await import('../../utils/txTrace.js');
         // Write single consolidated file instead of one per DEX
-        await writeTxFullDump('preflight', {
+        logFile = await writeTxFullDump('preflight', {
           id,
           txId: id,
           path: plan.path,
@@ -1137,6 +1139,7 @@ export function createArbRouter(io: SocketIOServer): Router {
           signature: null,
           status: (sim as any)?.err ? 'sim_err' : 'sim_ok',
           error: (sim as any)?.err ? String((sim as any)?.err) : undefined,
+          logFile,
         });
         try { emit('tx:history.updated', { id, status: (sim as any)?.err ? 'sim_err' : 'sim_ok' }); } catch {}
       } catch {}
@@ -1509,12 +1512,14 @@ export function createArbRouter(io: SocketIOServer): Router {
             computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
             lookupTableAddresses: altAddresses,
           } as any);
+          // Capture logFile for linking in UI
+          let simLogFile: string | undefined;
           try {
             const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
             const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
             const { writeTxFullDump } = await import('../../utils/txTrace.js');
             // Write single consolidated file instead of one per DEX
-            await writeTxFullDump('preflight', {
+            simLogFile = await writeTxFullDump('preflight', {
               id,
               txId: id,
               path: plan.path,
@@ -1580,7 +1585,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         if ((sim as any)?.err) {
           try { execStats.preflightErr += 1; } catch {}
           try {
-            await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_err', error: String((sim as any)?.err) });
+            await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_err', error: String((sim as any)?.err), logFile: simLogFile });
             try { emit('tx:history.updated', { id, status: 'sim_err' }); } catch {}
           } catch {}
           return res.status(400).json({ id, mode, error: 'preflight_failed', logs: (sim as any)?.logs || [], ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
@@ -1628,13 +1633,15 @@ export function createArbRouter(io: SocketIOServer): Router {
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
         } as any);
+        // Capture logFile for linking in UI
+        let execLogFile: string | undefined;
         try {
           const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
           // Capture logs from a wider window to include preflight logs too
           const txLogs = getTxRelatedLogs(id, Date.now() - 60000, Date.now(), 300);
           const { writeTxFullDump } = await import('../../utils/txTrace.js');
           // Write single consolidated file instead of one per DEX
-          await writeTxFullDump('execute', {
+          execLogFile = await writeTxFullDump('execute', {
             id,
             txId: id,
             path: plan.path,
@@ -1688,7 +1695,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         });
         try { logger.info('tx.send.ok', { cat: 'tx', code: LogCode.TX_SEND_OK, ctx: { id, signature, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
         try { emit('tx:history.updated', { id, status: signature ? 'send_ok' : 'send_err' }); } catch {}
-        await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
+        await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err', logFile: execLogFile });
         // Notify arb-rs that this opportunity path has been executed (best-effort)
         try {
           const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
@@ -1706,7 +1713,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         try { execStats.sendErr += 1; } catch {}
         try {
           try { logger.info('tx.send.err', { cat: 'tx', code: LogCode.TX_SEND_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
-          await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'send_err', error: String(e?.message || e) });
+          await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'send_err', error: String(e?.message || e), logFile: execLogFile });
           try { emit('tx:history.updated', { id, status: 'send_err' }); } catch {}
         } catch {}
         return res.status(400).json({ id, mode, error: 'send_failed' });
