@@ -904,13 +904,16 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
   info: AccountInfo,
   poolId: string
 ): Promise<UpdateResult> {
+  // Determine pool version from account owner - do this outside try block for catch access
+  const ownerRaw = info.owner;
+  const ownerStr = typeof ownerRaw === 'string' 
+    ? ownerRaw 
+    : (ownerRaw as any)?.toBase58?.() || String(ownerRaw || '');
+  const isV2 = ownerStr === METEORA_BALANCED_V2_PROGRAM;
+  const statsKey = isV2 ? 'meteora_damm_v2' : 'meteora_damm_v1';
+  
   try {
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
-    
-    // Determine pool version from account owner
-    const ownerStr = info.owner?.toBase58?.() || info.owner?.toString?.() || '';
-    const isV2 = ownerStr === METEORA_BALANCED_V2_PROGRAM;
-    const statsKey = isV2 ? 'meteora_damm_v2' : 'meteora_damm_v1';
     
     wsDecodeStats[statsKey].attempts += 1;
     
