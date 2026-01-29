@@ -26,7 +26,7 @@ import { CONFIG } from '../../../../utils/config.js';
 import { tryActivatePool } from '../../../pools.activation.js';
 // Import per-pool staleness tracking
 import { recordPoolActivity } from '../staleness.js';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, Connection } from '@solana/web3.js';
 import type { 
   DecodedPool, 
   UpdateResult, 
@@ -781,8 +781,48 @@ export async function handleMeteoraBalancedVaultUpdate(
     const isV2Pool = dexName === 'MeteoraBalanced_v2' || dexName.includes('_v2');
     
     // Try to get sqrtPrice from cached pool data for V2 pools
-    const storedSqrtPrice = (existingPool as any)?._sqrtPrice;
+    let storedSqrtPrice = (existingPool as any)?._sqrtPrice;
     let processedPrice: ProcessedPriceResult | undefined;
+    
+    // CRITICAL: On-demand fetch sqrtPrice for V2 pools when missing from cache
+    // This ensures correct concentrated liquidity pricing even if:
+    // - Pool was loaded from old snapshot without sqrtPrice
+    // - HTTP enrichment failed to extract sqrtPrice
+    // - Vault updates arrived before pool account updates
+    if (isV2Pool && !storedSqrtPrice) {
+      try {
+        const conn = new Connection(CONFIG.rpcUrl, 'confirmed');
+        const poolPk = new PublicKey(poolId);
+        const account = await conn.getAccountInfo(poolPk);
+        
+        if (account?.data && account.data.length >= 168) {
+          const data = Buffer.from(account.data);
+          const decodedPool = await decodeDammV2PoolAccount(data);
+          
+          if (decodedPool?.sqrtPrice && decodedPool.sqrtPrice > BigInt(0)) {
+            storedSqrtPrice = decodedPool.sqrtPrice.toString();
+            
+            // Update cache for future vault updates
+            (existingPool as any)._sqrtPrice = storedSqrtPrice;
+            
+            // Also update the pool in metbalCache.data for persistence
+            const cached = metbalCache.data?.amm?.find(p => p.id === poolId);
+            if (cached) {
+              (cached as any)._sqrtPrice = storedSqrtPrice;
+            }
+            
+            logger.info('meteora_balanced.vault.v2.sqrtPrice_fetched', {
+              poolId: poolId.slice(0, 8) + '…',
+              sqrtPrice: storedSqrtPrice.slice(0, 16) + '…',
+              reason: 'on_demand_fetch_for_correct_pricing',
+              cat: 'pools'
+            });
+          }
+        }
+      } catch (fetchErr) {
+        logCatchDebug('meteora_balanced.vault.v2.sqrtPrice_ondemand_fetch', fetchErr);
+      }
+    }
     
     if (isV2Pool && storedSqrtPrice) {
       // V2 (CP-AMM): Use sqrtPrice for pricing - concentrated liquidity
@@ -818,6 +858,17 @@ export async function handleMeteoraBalancedVaultUpdate(
     
     // Fallback to reserve-based pricing (V1 pools, or V2 if sqrtPrice unavailable)
     if (!processedPrice) {
+      // WARN: V2 pools using reserve-based pricing is INCORRECT and will give wrong prices
+      // This should only happen if the on-demand sqrtPrice fetch failed
+      if (isV2Pool) {
+        logger.warn('meteora_balanced.vault.v2.reserve_fallback', {
+          poolId: poolId.slice(0, 8) + '…',
+          warning: 'V2 pool using reserve-based pricing (likely incorrect ~5x error)',
+          hasSqrtPrice: !!storedSqrtPrice,
+          cat: 'pools'
+        });
+      }
+      
       processedPrice = processPriceThroughPipeline({
         mintA,
         mintB,
