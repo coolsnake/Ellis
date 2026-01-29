@@ -16,6 +16,9 @@ export type TxRecord = {
   confirmationSlot?: number;
   skipSimulation?: boolean;
   logFile?: string; // Filename of execution log dump for linking
+  // Skip simulation feedback context
+  sizeUsd?: number;           // Trade size for capacity feedback calculation
+  expectedProfitBps?: number; // Expected profit for slippage delta estimation
 };
 
 const capacity = 200;
@@ -124,6 +127,16 @@ export async function startTxConfirmationTask(io?: any): Promise<void> {
               signature: rec.signature,
             });
           } catch {}
+          
+          // Process skip simulation feedback for learning
+          if (rec.skipSimulation) {
+            try {
+              const { processSkipSimConfirmation } = await import('../execution/skipSimFeedback.js');
+              await processSkipSimConfirmation(rec, result.success ?? false, result.error);
+            } catch (feedbackErr) {
+              // Don't let feedback processing block confirmation updates
+            }
+          }
         }
       }
     } catch {}

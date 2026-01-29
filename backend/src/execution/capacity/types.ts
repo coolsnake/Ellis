@@ -156,7 +156,7 @@ export interface SizingConfig {
  */
 export const DEFAULT_SIZING_CONFIG: SizingConfig = {
   enabled: true,
-  minSizeUsd: 5,
+  minSizeUsd: 0.1,
   maxSizeUsd: 500,
   respectWalletBalance: true,
   aggressiveness: 0.70,

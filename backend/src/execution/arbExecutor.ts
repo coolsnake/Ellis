@@ -1721,6 +1721,9 @@ export class ArbExecutor {
               status: 'send_ok',
               skipSimulation: true,
               logFile,
+              // Context for skip simulation feedback learning
+              sizeUsd: effectiveSizeUsd,
+              expectedProfitBps: opp.profit_bps,
             });
 
             emit('arb:execution', {
@@ -2914,21 +2917,21 @@ export class ArbExecutor {
             }
           }
           // If balance check fails, use minimum safe size
-          return Math.min(fixedSize, 1);
+          return Math.min(fixedSize, 0.1);
         } catch (e) {
           logger.warn('arb.executor.sizing.balance_check_failed_fixed', {
             cat: 'arb',
             path: opp.path.join('->'),
             error: String((e as any)?.message || e),
           });
-          return Math.min(fixedSize, 1);
+          return Math.min(fixedSize, 0.1);
         }
       }
       
       return fixedSize;
     }
     
-    const minSize = dynamicCfg.minSizeUsd || 5;
+    const minSize = dynamicCfg.minSizeUsd || 0.1;
     const maxSize = dynamicCfg.maxSizeUsd || this.config.sizeUsd || 200;
     const method = dynamicCfg.method || 'heuristic';
     
