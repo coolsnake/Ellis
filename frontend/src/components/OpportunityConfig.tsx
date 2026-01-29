@@ -594,9 +594,11 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                   <label className="block mb-1 text-gray-400 text-sm">Minimum ($)</label>
                   <input 
                     type="number" 
+                    step="0.01"
+                    min="0.01"
                     className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
-                    value={det.sizing_min_usd ?? 5} 
-                    onChange={e=>set('sizing_min_usd', Number(e.target.value)||5)} 
+                    value={det.sizing_min_usd ?? 0.1} 
+                    onChange={e=>set('sizing_min_usd', Number(e.target.value)||0.01)} 
                     disabled={!det.sizing_enabled}
                   />
                 </div>
@@ -604,9 +606,11 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                   <label className="block mb-1 text-gray-400 text-sm">Maximum ($)</label>
                   <input 
                     type="number" 
+                    step="0.01"
+                    min="0.01"
                     className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
                     value={det.sizing_max_usd ?? 500} 
-                    onChange={e=>set('sizing_max_usd', Number(e.target.value)||500)} 
+                    onChange={e=>set('sizing_max_usd', Number(e.target.value)||1)} 
                     disabled={!det.sizing_enabled}
                   />
                 </div>
