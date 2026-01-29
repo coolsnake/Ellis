@@ -277,7 +277,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             // Dynamic sizing config (LEGACY - kept for backward compatibility)
             dynamicSizing: {
               enabled: !!det.dynamic_sizing_enabled,
-              minSizeUsd: toNum(det.dynamic_sizing_min_usd) || 5,
+              minSizeUsd: toNum(det.dynamic_sizing_min_usd) || 0.1,
               maxSizeUsd: toNum(det.dynamic_sizing_max_usd) || 200,
               method: det.sizing_method || 'heuristic',
               // Heuristic settings
@@ -296,7 +296,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             // NEW: Capacity-based sizing config
             sizingConfig: {
               enabled: !!det.sizing_enabled,
-              minSizeUsd: toNum(det.sizing_min_usd) || 5,
+              minSizeUsd: toNum(det.sizing_min_usd) || 0.1,
               maxSizeUsd: toNum(det.sizing_max_usd) || 500,
               respectWalletBalance: det.sizing_respect_wallet !== false,
               aggressiveness: Number(det.sizing_aggressiveness) || 0.70,
@@ -334,7 +334,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               enabled: det.adaptive_sizing_enabled !== false,
               maxRetries: toNum(det.adaptive_max_retries) || 3,
               reductionFactor: Number(det.adaptive_reduction_factor) || 0.5,
-              minSizeUsd: toNum(det.adaptive_min_size_usd) || 5,
+              minSizeUsd: toNum(det.adaptive_min_size_usd) || 0.01,
               timeoutMs: 500,
             },
             // Alternative pool exploration
@@ -662,7 +662,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                   const estCapacity = liquidity * 0.015;
                   const aggressiveness = det.sizing_aggressiveness ?? 0.70;
                   const tradeSize = Math.max(
-                    det.sizing_min_usd ?? 5,
+                    det.sizing_min_usd ?? 0.1,
                     Math.min(det.sizing_max_usd ?? 500, estCapacity * aggressiveness)
                   );
                   return (
@@ -1102,10 +1102,11 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                   <label className="block mb-1 text-gray-300 text-xs">Min Size ($)</label>
                   <input 
                     type="number" 
-                    min="1"
+                    step="0.01"
+                    min="0.01"
                     className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" 
-                    value={det.adaptive_min_size_usd ?? 5} 
-                    onChange={e=>set('adaptive_min_size_usd', Number(e.target.value)||5)} 
+                    value={det.adaptive_min_size_usd ?? 0.01} 
+                    onChange={e=>set('adaptive_min_size_usd', Number(e.target.value)||0.01)} 
                     disabled={det.adaptive_sizing_enabled === false}
                   />
                 </div>
