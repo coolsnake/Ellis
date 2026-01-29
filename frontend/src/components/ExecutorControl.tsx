@@ -12,12 +12,11 @@ type ExecutorStatus = {
     maxHops?: number;
     cooldownMs: number;
     maxExecutionsPerMinute?: number;
-    // Dynamic sizing
-    dynamicSizing?: {
+    // Capacity-based sizing
+    sizingConfig?: {
       enabled: boolean;
       minSizeUsd: number;
       maxSizeUsd: number;
-      method: string;
     };
     // Flashloan
     flashloanSettings?: {
@@ -337,8 +336,8 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
             <span className={`px-2 py-0.5 rounded text-xs ${jitoConfig?.enabled ? 'bg-orange-600/30 text-orange-300' : 'bg-gray-700 text-gray-500'}`}>
               Jito {jitoConfig?.enabled ? '✓' : '✗'}
             </span>
-            <span className={`px-2 py-0.5 rounded text-xs ${status.config.dynamicSizing?.enabled ? 'bg-emerald-600/30 text-emerald-300' : 'bg-gray-700 text-gray-500'}`}>
-              Dynamic Size {status.config.dynamicSizing?.enabled ? '✓' : '✗'}
+            <span className={`px-2 py-0.5 rounded text-xs ${status.config.sizingConfig?.enabled ? 'bg-emerald-600/30 text-emerald-300' : 'bg-gray-700 text-gray-500'}`}>
+              Sizing {status.config.sizingConfig?.enabled ? '✓' : '✗'}
             </span>
             <span className={`px-2 py-0.5 rounded text-xs ${status.config.flashloanSettings?.enabled ? 'bg-blue-600/30 text-blue-300' : 'bg-gray-700 text-gray-500'}`}>
               Flashloan {status.config.flashloanSettings?.enabled ? '✓' : '✗'}
@@ -390,24 +389,24 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
             <div>
               <label className="block opacity-70 mb-1">
                 Trade Size ($)
-                {status.config.dynamicSizing?.enabled && <span className="text-emerald-400 ml-1">(dynamic)</span>}
+                {status.config.sizingConfig?.enabled && <span className="text-emerald-400 ml-1">(auto)</span>}
               </label>
               <input
                 type="number"
                 className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                value={editSizeUsd ?? (status.config.sizeUsd ?? 100)}
+                value={editSizeUsd ?? (status.config.sizeUsd ?? 10)}
                 onChange={(e) => setEditSizeUsd(Number(e.target.value))}
                 onBlur={() => {
                   if (editSizeUsd !== null && editSizeUsd !== status.config.sizeUsd) {
                     updateConfig({ sizeUsd: editSizeUsd });
                   }
                 }}
-                disabled={saving || status.config.dynamicSizing?.enabled}
-                title={status.config.dynamicSizing?.enabled ? 'Disabled when dynamic sizing is enabled' : ''}
+                disabled={saving || status.config.sizingConfig?.enabled}
+                title={status.config.sizingConfig?.enabled ? 'Disabled when sizing is enabled' : ''}
               />
-              {status.config.dynamicSizing?.enabled && (
+              {status.config.sizingConfig?.enabled && (
                 <div className="text-emerald-400 mt-0.5">
-                  ${status.config.dynamicSizing.minSizeUsd}-${status.config.dynamicSizing.maxSizeUsd}
+                  ${status.config.sizingConfig.minSizeUsd}-${status.config.sizingConfig.maxSizeUsd}
                 </div>
               )}
             </div>
@@ -429,13 +428,12 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
             </div>
           </div>
 
-          {/* Dynamic Sizing Details */}
-          {status.config.dynamicSizing?.enabled && (
+          {/* Sizing Details */}
+          {status.config.sizingConfig?.enabled && (
             <div className="mt-2 p-2 bg-emerald-900/20 border border-emerald-700/30 rounded">
-              <span className="text-emerald-400 font-medium">Dynamic Sizing:</span>{' '}
-              <span className="text-gray-300">{status.config.dynamicSizing.method}</span>
-              <span className="text-gray-500 ml-2">
-                (${status.config.dynamicSizing.minSizeUsd} - ${status.config.dynamicSizing.maxSizeUsd})
+              <span className="text-emerald-400 font-medium">Capacity Sizing:</span>{' '}
+              <span className="text-gray-500">
+                ${status.config.sizingConfig.minSizeUsd} - ${status.config.sizingConfig.maxSizeUsd}
               </span>
             </div>
           )}

@@ -1,8 +1,8 @@
 /**
  * Config Migration Utilities
  * 
- * Handles backward-compatible migration from the old dynamicSizing config
- * to the new capacity-based sizingConfig.
+ * Ensures sizingConfig exists in executor config.
+ * For backward compatibility, migrates old dynamicSizing configs if found.
  */
 
 import type { SizingConfig } from './types.js';
@@ -78,8 +78,8 @@ export function migrateFromDynamicSizing(legacy: LegacyDynamicSizingConfig): Siz
   
   return {
     enabled: legacy.enabled,
-    minSizeUsd: legacy.minSizeUsd || 5,
-    maxSizeUsd: legacy.maxSizeUsd || 500,
+    minSizeUsd: legacy.minSizeUsd || DEFAULT_SIZING_CONFIG.minSizeUsd,
+    maxSizeUsd: legacy.maxSizeUsd || DEFAULT_SIZING_CONFIG.maxSizeUsd,
     respectWalletBalance: true, // New feature, default to safe behavior
     aggressiveness,
     maxSlippageBps: 500, // Reasonable default

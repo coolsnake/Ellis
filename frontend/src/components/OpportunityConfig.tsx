@@ -70,34 +70,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           if (typeof j.maxExecutionsPerMinute === 'number') {
             set('executor_max_per_minute', j.maxExecutionsPerMinute);
           }
-          // Load dynamic sizing config
-          if (j.dynamicSizing) {
-            set('dynamic_sizing_enabled', !!j.dynamicSizing.enabled);
-            set('sizing_method', j.dynamicSizing.method || 'heuristic');
-            if (typeof j.dynamicSizing.minSizeUsd === 'number') {
-              set('dynamic_sizing_min_usd', j.dynamicSizing.minSizeUsd);
-            }
-            if (typeof j.dynamicSizing.maxSizeUsd === 'number') {
-              set('dynamic_sizing_max_usd', j.dynamicSizing.maxSizeUsd);
-            }
-            if (typeof j.dynamicSizing.bottleneckFraction === 'number') {
-              set('dynamic_sizing_bottleneck_fraction', j.dynamicSizing.bottleneckFraction);
-            }
-            if (typeof j.dynamicSizing.profitScaling === 'boolean') {
-              set('dynamic_sizing_profit_scaling', j.dynamicSizing.profitScaling);
-            }
-            // Load optimal sizing settings
-            if (j.dynamicSizing.optimalSettings) {
-              const os = j.dynamicSizing.optimalSettings;
-              if (typeof os.safetyFactor === 'number') set('optimal_safety_factor', os.safetyFactor);
-              if (typeof os.ammSlippageMultiplier === 'number') set('optimal_amm_multiplier', os.ammSlippageMultiplier);
-              if (typeof os.clmmSlippageMultiplier === 'number') set('optimal_clmm_multiplier', os.clmmSlippageMultiplier);
-              if (typeof os.dlmmSlippageMultiplier === 'number') set('optimal_dlmm_multiplier', os.dlmmSlippageMultiplier);
-              if (typeof os.iterativeMaxIterations === 'number') set('optimal_max_iterations', os.iterativeMaxIterations);
-              if (typeof os.iterativeTolerance === 'number') set('optimal_tolerance', os.iterativeTolerance);
-            }
-          }
-          // Load NEW sizing config (capacity-based system)
+          // Load sizing config (capacity-based system)
           if (j.sizingConfig) {
             set('sizing_enabled', !!j.sizingConfig.enabled);
             if (typeof j.sizingConfig.minSizeUsd === 'number') set('sizing_min_usd', j.sizingConfig.minSizeUsd);
@@ -274,26 +247,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             slippageBps: toOptNum(det.executor_slippage_bps),
             minReservesUsd: toOptNum(det.executor_min_reserves_usd),
             maxExecutionsPerMinute: toOptNum(det.executor_max_per_minute),
-            // Dynamic sizing config (LEGACY - kept for backward compatibility)
-            dynamicSizing: {
-              enabled: !!det.dynamic_sizing_enabled,
-              minSizeUsd: toNum(det.dynamic_sizing_min_usd) || 0.1,
-              maxSizeUsd: toNum(det.dynamic_sizing_max_usd) || 200,
-              method: det.sizing_method || 'heuristic',
-              // Heuristic settings
-              bottleneckFraction: Number(det.dynamic_sizing_bottleneck_fraction) || 0.10,
-              profitScaling: det.dynamic_sizing_profit_scaling !== false,
-              // Optimal sizing settings
-              optimalSettings: {
-                ammSlippageMultiplier: Number(det.optimal_amm_multiplier) || 2.0,
-                clmmSlippageMultiplier: Number(det.optimal_clmm_multiplier) || 3.0,
-                dlmmSlippageMultiplier: Number(det.optimal_dlmm_multiplier) || 1.3,
-                iterativeMaxIterations: toNum(det.optimal_max_iterations) || 15,
-                iterativeTolerance: Number(det.optimal_tolerance) || 1.0,
-                safetyFactor: Number(det.optimal_safety_factor) || 0.85,
-              },
-            },
-            // NEW: Capacity-based sizing config
+            // Capacity-based sizing config
             sizingConfig: {
               enabled: !!det.sizing_enabled,
               minSizeUsd: toNum(det.sizing_min_usd) || 0.1,
@@ -1254,26 +1208,6 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                   future opportunities will proactively use the better pool <em>before</em> simulation.
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* Fixed Trade Size - shown as fallback when dynamic sizing is disabled */}
-          <div className={`bg-gray-700 rounded p-4 ${det.dynamic_sizing_enabled ? 'opacity-50' : ''}`}>
-            <h3 className="text-lg font-semibold text-white mb-2">
-              Fixed Trade Size
-              {det.dynamic_sizing_enabled && <span className="text-xs text-gray-400 ml-2">(ignored when dynamic sizing enabled)</span>}
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block mb-1 text-gray-300">Execution Size (USD)</label>
-                <input 
-                  type="number" 
-                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
-                  value={det.executor_size_usd ?? 100} 
-                  onChange={e=>set('executor_size_usd', Number(e.target.value)||0)} 
-                  disabled={det.dynamic_sizing_enabled}
-                />
-              </div>
             </div>
           </div>
 

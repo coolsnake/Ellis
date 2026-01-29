@@ -62,6 +62,12 @@ export interface ExecEngineConfigPublic {
   createAtasInTx: boolean;
   dynamicCompute: boolean;
   maxTxSizeBytes?: number;
+  // Dynamic CU limits (use simulation CU + buffer instead of fixed limit)
+  dynamicCuLimits?: boolean;
+  dynamicCuBuffer?: number;
+  // Dynamic priority fees (use background-polled network fees)
+  dynamicPriorityFees?: boolean;
+  priorityFeeUrgency?: 'low' | 'medium' | 'high' | 'critical';
 }
 
 export interface ArbDetectorConfigPublic {

@@ -30,7 +30,6 @@ import { warmupSdks } from './builder/sdkQuoteBuilder.js';
 import { ExecutionMode } from '../router/types.js';
 import { loadJitoConfig } from '../server/jitoConfigStore.js';
 import { getPriceByMint } from '../server/priceStore.js';
-import { calculateOptimalSizeFromOpportunity } from './optimalSizing.js';
 import { loadRouterConfig } from '../server/routerConfigStore.js';
 import {
   lookupCapacity,
@@ -151,38 +150,9 @@ export interface ExecutorConfig {
   maxExecutionsPerMinute?: number;
   blacklistedPaths?: string[];
   requireStartBalance?: boolean;
-  // Dynamic sizing - calculates trade size based on liquidity and profit optimization
-  dynamicSizing?: {
-    enabled: boolean;
-    minSizeUsd: number;      // Floor for trade size
-    maxSizeUsd: number;      // Ceiling for trade size
-    
-    // Sizing method: 'heuristic' | 'optimal_analytical' | 'optimal_iterative'
-    method: 'heuristic' | 'optimal_analytical' | 'optimal_iterative';
-    
-    // Heuristic mode settings
-    bottleneckFraction: number; // Fraction of bottleneck liquidity (e.g., 0.10 = 10%)
-    profitScaling: boolean;     // Scale size up with higher profit margins
-    
-    // Optimal mode settings
-    optimalSettings?: {
-      // Slippage model multipliers (1.0 = standard, higher = more conservative)
-      ammSlippageMultiplier: number;     // Default 2.0
-      clmmSlippageMultiplier: number;    // Default 3.0
-      dlmmSlippageMultiplier: number;    // Default 1.3
-      
-      // Iterative search settings
-      iterativeMaxIterations: number;    // Default 15
-      iterativeTolerance: number;        // Default 1.0 (USD)
-      
-      // Safety margin on optimal (0.9 = use 90% of calculated optimal)
-      safetyFactor: number;              // Default 0.85
-    };
-    
-    // Size randomness for MEV protection (default: 0.1 = ±10%)
-    // Set to 0 to disable randomness
-    sizeRandomnessFactor?: number;
-  };
+  // Size randomness for MEV protection (default: 0.1 = ±10%)
+  // Set to 0 to disable randomness
+  sizeRandomnessFactor?: number;
   // Flashloan settings - use flashloans when optimal size > wallet balance
   flashloanSettings?: {
     enabled: boolean;
@@ -220,7 +190,7 @@ export interface ExecutorConfig {
     upwardRetryEnabled?: boolean;      // Enable testing larger sizes after successful execution
     upwardFactor?: number;             // Multiplier for larger size (default: 1.5 = +50%)
     upwardRetryIntervalMs?: number;    // Min time between upward tests per route (default: 300000 = 5min)
-    maxUpwardSizeUsd?: number;         // Cap for upward testing (default: use dynamicSizing.maxSizeUsd)
+    maxUpwardSizeUsd?: number;         // Cap for upward testing (default: use sizingConfig.maxSizeUsd)
   };
   // Alternative pool exploration - try different pools for problematic hops
   alternativePoolExploration?: {
@@ -241,7 +211,7 @@ export interface ExecutorConfig {
   // Skip simulation for validated pools - execute immediately when pools are known-good
   // Pools are validated when swaps execute successfully (including 6007 profit check failures)
   skipSimulation?: SkipSimulationConfig;
-  // NEW: Capacity-based sizing configuration (replaces dynamicSizing when enabled)
+  // Capacity-based sizing configuration
   // This system pre-computes capacity curves and provides instant size lookups
   sizingConfig?: SizingConfig;
 }
@@ -309,6 +279,22 @@ export class ArbExecutor {
       logger.info('arb.executor.jito_tip_feed_started', { cat: 'arb' });
     } catch (e) {
       logger.warn('arb.executor.jito_tip_feed_failed', { cat: 'arb', error: String(e?.message || e) });
+    }
+
+    // Start priority fee feed cache (non-blocking) - for dynamic priority fees
+    try {
+      const execCfg = await loadExecConfig();
+      if (execCfg.dynamicPriorityFees) {
+        const { startPriorityFeeFeed } = await import('./priorityFeeCache.js');
+        startPriorityFeeFeed(execCfg.priorityFeeRefreshMs ?? 10_000);
+        logger.info('arb.executor.priority_fee_feed_started', { 
+          cat: 'arb', 
+          intervalMs: execCfg.priorityFeeRefreshMs ?? 10_000,
+          urgency: execCfg.priorityFeeUrgency ?? 'medium',
+        });
+      }
+    } catch (e) {
+      logger.warn('arb.executor.priority_fee_feed_failed', { cat: 'arb', error: String((e as any)?.message || e) });
     }
 
     // Pre-warm SDK imports (non-blocking) - avoids lazy init overhead on first execution
@@ -1002,7 +988,7 @@ export class ArbExecutor {
           slippageBps: this.config.slippageBps,
           bottleneckUsd: opp.est_capacity ?? opp.min_edge_liquidity,
           profitBps: opp.net_bps ?? opp.profit_bps,
-          dynamicSizingEnabled: !!this.config.dynamicSizing?.enabled,
+          sizingEnabled: !!this.config.sizingConfig?.enabled,
           flashloanNeeded: useFlashloan,
           flashloanAmountUsd,
           walletBalanceUsd: flashloanCheck.walletBalanceUsd,
@@ -1100,7 +1086,7 @@ export class ArbExecutor {
               });
             } else {
               // No balance info at all - use minimum safe size
-              const minSafeSize = this.config.dynamicSizing?.minSizeUsd || 0.1;
+              const minSafeSize = this.config.sizingConfig?.minSizeUsd || DEFAULT_SIZING_CONFIG.minSizeUsd;
               logger.warn('arb.executor.sizing.balance_unknown', {
                 cat: 'arb',
                 traceId,
@@ -1322,10 +1308,23 @@ export class ArbExecutor {
             }
             // Continue with regular execution below
           } else {
+            // Dynamic priority fees for flashloan execution
+            let flashloanPriorityFee = execCfg.computeUnitPriceMicroLamports;
+            if (execCfg.dynamicPriorityFees) {
+              try {
+                const { getRecommendedPriorityFee } = await import('./priorityFeeCache.js');
+                flashloanPriorityFee = getRecommendedPriorityFee(
+                  execCfg.priorityFeeUrgency ?? 'medium',
+                  execCfg.priorityFeeMinFloor ?? 1_000,
+                  execCfg.priorityFeeMaxCap ?? 2_000_000
+                );
+              } catch {}
+            }
+            
             // Execute flashloan transaction
             const sendResult = await assembleAndSend(routerResult.instructions, {
               computeUnitLimit: execCfg.computeUnitLimit,
-              computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+              computeUnitPriceMicroLamports: flashloanPriorityFee,
               lookupTableAddresses: altAddresses,
               traceId,
               resendEnabled: execCfg.resendEnabled,
@@ -1648,9 +1647,22 @@ export class ArbExecutor {
           const jitoCfg = await loadJitoConfig();
           const jitoEnabled = jitoCfg.enabled;
 
+          // Dynamic priority fees for skip-simulation (CU limit stays static - no sim data)
+          let skipSimPriorityFee = execCfg.computeUnitPriceMicroLamports;
+          if (execCfg.dynamicPriorityFees) {
+            try {
+              const { getRecommendedPriorityFee } = await import('./priorityFeeCache.js');
+              skipSimPriorityFee = getRecommendedPriorityFee(
+                execCfg.priorityFeeUrgency ?? 'medium',
+                execCfg.priorityFeeMinFloor ?? 1_000,
+                execCfg.priorityFeeMaxCap ?? 2_000_000
+              );
+            } catch {}
+          }
+
           const sendResult = await assembleAndSend(instructionsWithTip, {
             computeUnitLimit: execCfg.computeUnitLimit,
-            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+            computeUnitPriceMicroLamports: skipSimPriorityFee,
             lookupTableAddresses: altAddresses,
             traceId,
             resendEnabled: execCfg.resendEnabled,
@@ -1770,12 +1782,12 @@ export class ArbExecutor {
         const adaptiveEnabled = adaptiveCfg?.enabled ?? false;
         const maxRetries = adaptiveEnabled ? (adaptiveCfg?.maxRetries ?? 3) : 0;
         const reductionFactor = adaptiveCfg?.reductionFactor ?? 0.5;
-        const adaptiveMinSizeUsd = adaptiveCfg?.minSizeUsd ?? this.config.dynamicSizing?.minSizeUsd ?? 0.1;
+        const adaptiveMinSizeUsd = adaptiveCfg?.minSizeUsd ?? this.config.sizingConfig?.minSizeUsd ?? DEFAULT_SIZING_CONFIG.minSizeUsd;
         const adaptiveTimeoutMs = adaptiveCfg?.timeoutMs ?? 500;
         
         let currentSizeUsd = effectiveSizeUsd;
         let attempt = 0;
-        let lastSimResult: { logs?: string[]; err?: any; wireBase64?: string } | null = null;
+        let lastSimResult: { logs?: string[]; err?: any; wireBase64?: string; unitsConsumed?: number | null } | null = null;
         let lastSimAnalysis: ReturnType<typeof parseSimulationLogs> | null = null;
         let currentPlan = plan;
         let currentBuilt = built;
@@ -2302,9 +2314,51 @@ export class ArbExecutor {
         const jitoCfg = await loadJitoConfig();
         const jitoEnabled = jitoCfg.enabled;
 
+        // Calculate effective CU limit and priority fee (dynamic or static)
+        let effectiveCuLimit = execCfg.computeUnitLimit;
+        let effectivePriorityFee = execCfg.computeUnitPriceMicroLamports;
+        
+        // Dynamic CU limits: use simulation result + buffer
+        if (execCfg.dynamicCuLimits && lastSimResult?.unitsConsumed) {
+          const buffer = execCfg.dynamicCuBuffer ?? 1.15;
+          effectiveCuLimit = Math.ceil(lastSimResult.unitsConsumed * buffer);
+          effectiveCuLimit = Math.max(50_000, Math.min(1_400_000, effectiveCuLimit));
+          logger.debug('arb.executor.dynamic_cu', {
+            cat: 'arb',
+            traceId,
+            simulated: lastSimResult.unitsConsumed,
+            effective: effectiveCuLimit,
+            buffer,
+          });
+        }
+        
+        // Dynamic priority fees: use cached network fees
+        if (execCfg.dynamicPriorityFees) {
+          try {
+            const { getRecommendedPriorityFee } = await import('./priorityFeeCache.js');
+            effectivePriorityFee = getRecommendedPriorityFee(
+              execCfg.priorityFeeUrgency ?? 'medium',
+              execCfg.priorityFeeMinFloor ?? 1_000,
+              execCfg.priorityFeeMaxCap ?? 2_000_000
+            );
+            logger.debug('arb.executor.dynamic_priority_fee', {
+              cat: 'arb',
+              traceId,
+              effective: effectivePriorityFee,
+              urgency: execCfg.priorityFeeUrgency ?? 'medium',
+            });
+          } catch (feeErr) {
+            logger.debug('arb.executor.dynamic_priority_fee.fallback', {
+              cat: 'arb',
+              traceId,
+              error: String((feeErr as any)?.message || feeErr),
+            });
+          }
+        }
+
         const sendResult = await assembleAndSend(instructionsWithTip, {
-          computeUnitLimit: execCfg.computeUnitLimit,
-          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          computeUnitLimit: effectiveCuLimit,
+          computeUnitPriceMicroLamports: effectivePriorityFee,
           lookupTableAddresses: altAddresses,
           traceId,
           resendEnabled: execCfg.resendEnabled,
@@ -2432,10 +2486,23 @@ export class ArbExecutor {
         const jitoCfg = await loadJitoConfig();
         const jitoEnabled = jitoCfg.enabled;
 
+        // Dynamic priority fees for direct execution (no simulation, so no CU data available)
+        let directPriorityFee = execCfg.computeUnitPriceMicroLamports;
+        if (execCfg.dynamicPriorityFees) {
+          try {
+            const { getRecommendedPriorityFee } = await import('./priorityFeeCache.js');
+            directPriorityFee = getRecommendedPriorityFee(
+              execCfg.priorityFeeUrgency ?? 'medium',
+              execCfg.priorityFeeMinFloor ?? 1_000,
+              execCfg.priorityFeeMaxCap ?? 2_000_000
+            );
+          } catch {}
+        }
+
         // Execute on-chain - with Jito parallel sending when enabled - pass traceId
         const sendResult = await assembleAndSend(instructionsWithTip, {
           computeUnitLimit: execCfg.computeUnitLimit,
-          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          computeUnitPriceMicroLamports: directPriorityFee,
           lookupTableAddresses: altAddresses,
           traceId,
           resendEnabled: execCfg.resendEnabled,
@@ -2844,334 +2911,85 @@ export class ArbExecutor {
   }
 
   /**
-   * Calculate dynamic trade size based on opportunity characteristics.
+   * Calculate trade size based on opportunity characteristics.
    * 
-   * Two systems are supported:
+   * Uses the capacity-based sizing system which:
+   * - Pre-computes capacity curves for each pool type
+   * - Provides instant lookups during execution
+   * - Has simple, intuitive configuration
    * 
-   * 1. NEW: Capacity-based system (sizingConfig)
-   *    - Pre-computed capacity curves for each pool type
-   *    - Instant lookups during execution
-   *    - Simple, intuitive configuration
-   * 
-   * 2. LEGACY: Dynamic sizing system (dynamicSizing)
-   *    - Three methods: heuristic, optimal_analytical, optimal_iterative
-   *    - More complex configuration with magic multipliers
-   *    - Kept for backward compatibility
+   * When sizing is disabled, falls back to configured sizeUsd with wallet balance capping.
    */
   private async calculateDynamicSize(opp: Opportunity): Promise<number> {
-    // Common constants used in both paths
     const SOL_MINT = 'So11111111111111111111111111111111111111112';
     const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const startToken = opp.path[0];
     const isFlashloanable = startToken === SOL_MINT || startToken === USDC_MINT;
     const flashloanEnabled = this.config.flashloanSettings?.enabled ?? false;
     
-    // NEW: Capacity-based sizing system
+    // Use capacity-based sizing system
     const sizingCfg = this.config.sizingConfig;
     if (sizingCfg?.enabled) {
       return this.calculateCapacityBasedSize(opp, sizingCfg, startToken, isFlashloanable, flashloanEnabled);
     }
     
-    // LEGACY: Dynamic sizing system
-    const dynamicCfg = this.config.dynamicSizing;
+    // Fallback: use fixed sizeUsd with wallet balance capping
+    const fixedSize = this.config.sizeUsd || DEFAULT_SIZING_CONFIG.minSizeUsd;
     
-    // If dynamic sizing disabled, use fixed config BUT still cap to wallet balance
-    if (!dynamicCfg?.enabled) {
-      const fixedSize = this.config.sizeUsd || 10;
-      
-      // Still need to check wallet balance for non-flashloanable tokens or when flashloan disabled
-      if (!isFlashloanable || !flashloanEnabled) {
-        try {
-          if (this.walletPublicKey) {
-            const balances = await this.getCachedBalances();
-            if (balances) {
-              const balance = startToken === SOL_MINT 
-                ? balances.sol 
-                : (balances.tokens[startToken] || 0);
-              const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
-              const walletBalanceUsd = balance * price;
-              
-              if (walletBalanceUsd <= 0) {
-                logger.warn('arb.executor.sizing.no_balance_fixed', {
-                  cat: 'arb',
-                  path: opp.path.join('->'),
-                  startToken: startToken.slice(0, 8) + '...',
-                  balance,
-                  price,
-                  fixedSize,
-                });
-                return 0; // Cannot trade - no balance
-              }
-              
-              const cappedSize = Math.min(fixedSize, walletBalanceUsd);
-              if (cappedSize < fixedSize) {
-                logger.debug('arb.executor.sizing.fixed_capped_to_wallet', {
-                  cat: 'arb',
-                  path: opp.path.join('->'),
-                  fixedSize,
-                  walletBalanceUsd,
-                  cappedSize,
-                });
-              }
-              return cappedSize;
-            }
-          }
-          // If balance check fails, use minimum safe size
-          return Math.min(fixedSize, 0.1);
-        } catch (e) {
-          logger.warn('arb.executor.sizing.balance_check_failed_fixed', {
-            cat: 'arb',
-            path: opp.path.join('->'),
-            error: String((e as any)?.message || e),
-          });
-          return Math.min(fixedSize, 0.1);
-        }
-      }
-      
-      return fixedSize;
-    }
-    
-    const minSize = dynamicCfg.minSizeUsd || 0.1;
-    const maxSize = dynamicCfg.maxSizeUsd || this.config.sizeUsd || 200;
-    const method = dynamicCfg.method || 'heuristic';
-    
-    // Get wallet balance for non-flashloanable tokens to cap sizing
-    let walletBalanceUsd = Infinity; // Default to no cap
-    let rawBalanceFallback: number | undefined; // For when price is unavailable
+    // For non-flashloanable tokens or when flashloan disabled, cap to wallet balance
     if (!isFlashloanable || !flashloanEnabled) {
       try {
         if (this.walletPublicKey) {
-          // PERF: Use cached balances to avoid RPC calls
           const balances = await this.getCachedBalances();
-          if (!balances) {
-            // Can't determine balance, use minimum size
-            return minSize;
-          }
-          
-          // When starting with SOL, reserve some for ATA rent and transaction fees
-          // - ATA rent: ~0.00203 SOL per new account (reserve for 2-3 intermediate ATAs)
-          // - Transaction fees: ~0.0001 SOL
-          // - Minimum wallet balance: keep ~0.001 SOL to avoid account issues
-          const SOL_RESERVE_FOR_FEES = 0.007; // ~0.007 SOL reserve (covers ~3 ATAs + fees + buffer)
-          
-          const rawBalance = startToken === SOL_MINT 
-            ? balances.sol 
-            : (balances.tokens[startToken] || 0);
-          
-          // For SOL, subtract the reserve; for other tokens, use full balance
-          const balance = startToken === SOL_MINT
-            ? Math.max(0, rawBalance - SOL_RESERVE_FOR_FEES)
-            : rawBalance;
-          
-          // Check if we have any balance at all
-          if (balance <= 0) {
-            const reason = startToken === SOL_MINT && rawBalance > 0 
-              ? 'sol_below_reserve' 
-              : 'zero_balance';
-            logger.warn('arb.executor.sizing.no_wallet_balance', {
-              cat: 'arb',
-              path: opp.path.join('->'),
-              startToken: startToken.slice(0, 8) + '...',
-              balance,
-              rawBalance,
-              solReserve: startToken === SOL_MINT ? SOL_RESERVE_FOR_FEES : 0,
-              reason,
-            });
-            // Truly no balance - can't trade
-            return 0;
-          }
-          
-          const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
-          
-          if (price > 0) {
-            walletBalanceUsd = balance * price;
-            logger.debug('arb.executor.sizing.wallet_constraint', {
-              cat: 'arb',
-              path: opp.path.join('->'),
-              startToken: startToken.slice(0, 8) + '...',
-              walletBalanceUsd,
-              rawBalance,
-              effectiveBalance: balance,
-              solReserveApplied: startToken === SOL_MINT ? SOL_RESERVE_FOR_FEES : 0,
-              isFlashloanable,
-              flashloanEnabled,
-            });
-          } else {
-            // Have balance but no price data - skip USD wallet cap, use raw balance fallback
-            // Store raw balance so we can pass it to resolver as token amount
-            rawBalanceFallback = balance;
-            // Store on opportunity so execution can use raw size instead of USD
-            (opp as any)._rawBalanceFallback = balance;
-            (opp as any)._rawBalanceStartToken = startToken;
-            logger.debug('arb.executor.sizing.no_price_using_raw_balance', {
-              cat: 'arb',
-              path: opp.path.join('->'),
-              startToken: startToken.slice(0, 8) + '...',
-              balance,
-              reason: 'missing_price_data',
-            });
-            // Keep walletBalanceUsd = Infinity (no USD-based cap)
+          if (balances) {
+            // Reserve some SOL for fees
+            const SOL_RESERVE_FOR_FEES = 0.007;
+            const rawBalance = startToken === SOL_MINT 
+              ? balances.sol 
+              : (balances.tokens[startToken] || 0);
+            const balance = startToken === SOL_MINT
+              ? Math.max(0, rawBalance - SOL_RESERVE_FOR_FEES)
+              : rawBalance;
+            
+            if (balance <= 0) {
+              logger.warn('arb.executor.sizing.no_balance', {
+                cat: 'arb',
+                path: opp.path.join('->'),
+                startToken: startToken.slice(0, 8) + '...',
+              });
+              return 0;
+            }
+            
+            const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+            if (price > 0) {
+              const walletBalanceUsd = balance * price;
+              const cappedSize = Math.min(fixedSize, walletBalanceUsd);
+              
+              logger.debug('arb.executor.sizing.fixed', {
+                cat: 'arb',
+                path: opp.path.join('->'),
+                fixedSize,
+                walletBalanceUsd,
+                finalSize: cappedSize,
+              });
+              
+              return cappedSize;
+            }
           }
         }
+        // Balance check failed - use minimum safe size
+        return Math.min(fixedSize, DEFAULT_SIZING_CONFIG.minSizeUsd);
       } catch (e) {
         logger.warn('arb.executor.sizing.balance_check_failed', {
           cat: 'arb',
+          path: opp.path.join('->'),
           error: String((e as any)?.message || e),
         });
-        // Conservative: if we can't check balance, use minimum size
-        walletBalanceUsd = minSize;
+        return Math.min(fixedSize, DEFAULT_SIZING_CONFIG.minSizeUsd);
       }
     }
     
-    // Get bottleneck liquidity (USD)
-    const bottleneckUsd = opp.est_capacity ?? opp.min_edge_liquidity ?? 0;
-    
-    // Calculate uncapped optimal/heuristic size
-    let sizeUsd = 0;
-    
-    // For optimal methods, try to use the analytical/iterative calculator
-    if (method === 'optimal_analytical' || method === 'optimal_iterative') {
-      try {
-        // PERF: Use static import instead of dynamic import
-        const result = await calculateOptimalSizeFromOpportunity(
-          opp as any,
-          minSize,
-          maxSize,
-          method,
-          dynamicCfg.optimalSettings || {}
-        );
-        
-        if (result.optimalSizeUsd > 0 && result.expectedProfitUsd > 0) {
-          sizeUsd = result.optimalSizeUsd;
-          
-          // Log capacity constraint info if present (important for CLMM/DLMM sizing)
-          if (result.capacityInfo?.wasConstrained) {
-            logger.debug('arb.executor.sizing.capacity_constrained', {
-              cat: 'arb',
-              path: opp.path.join('->'),
-              capacityConstraintUsd: result.capacityInfo.capacityConstraintUsd.toFixed(2),
-              finalSizeUsd: result.optimalSizeUsd.toFixed(2),
-              bottleneckHop: result.capacityInfo.bottleneckHop,
-              limitingFactor: result.capacityInfo.limitingFactor,
-              vaultImbalance: result.capacityInfo.vaultImbalance,
-              warnings: result.capacityInfo.warnings,
-            });
-          }
-          
-          logger.debug('arb.executor.sizing.optimal', {
-            cat: 'arb',
-            path: opp.path.join('->'),
-            method: result.method,
-            optimalSizeUsd: result.optimalSizeUsd,
-            expectedProfitUsd: result.expectedProfitUsd,
-            grossProfit: result.breakdown.grossProfitUsd,
-            slippageCost: result.breakdown.slippageCostUsd,
-            capacityConstrained: result.capacityInfo?.wasConstrained ?? false,
-          });
-        } else {
-          // Fall through to heuristic if optimal calculation fails
-          // Check if this was due to capacity constraints
-          if (result.capacityInfo?.wasConstrained) {
-            logger.debug('arb.executor.sizing.capacity_rejection', {
-              cat: 'arb',
-              path: opp.path.join('->'),
-              reason: 'capacity_below_minimum',
-              capacityConstraintUsd: result.capacityInfo.capacityConstraintUsd.toFixed(2),
-              limitingFactor: result.capacityInfo.limitingFactor,
-              vaultImbalance: result.capacityInfo.vaultImbalance,
-              warnings: result.capacityInfo.warnings,
-            });
-          } else {
-            logger.debug('arb.executor.sizing.optimal_fallback', {
-              cat: 'arb',
-              path: opp.path.join('->'),
-              reason: 'zero_size_or_profit',
-            });
-          }
-        }
-      } catch (e: any) {
-        logger.warn('arb.executor.sizing.optimal_error', {
-          cat: 'arb',
-          path: opp.path.join('->'),
-          error: String(e?.message || e),
-        });
-        // Fall through to heuristic
-      }
-    }
-    
-    // Heuristic method (default fallback if optimal didn't produce a result)
-    if (sizeUsd === 0) {
-      const baseFraction = dynamicCfg.bottleneckFraction || 0.10;
-      
-      if (bottleneckUsd <= 0) {
-        // No liquidity info - use minimum safe size
-        logger.debug('arb.executor.sizing.no_liquidity', {
-          cat: 'arb',
-          path: opp.path.join('->'),
-          fallbackSize: minSize,
-        });
-        sizeUsd = minSize;
-      } else {
-        // Base size: fraction of bottleneck liquidity
-        sizeUsd = bottleneckUsd * baseFraction;
-        
-        // Optional: Scale based on profit margin
-        // Higher profit = can afford more slippage = larger size
-        if (dynamicCfg.profitScaling) {
-          const profitBps = opp.net_bps ?? opp.profit_bps;
-          
-          // Scaling factor: 0.5x at 10bps profit, 1.0x at 50bps, 1.5x at 100bps+
-          // This is conservative - we size down when margins are thin
-          const profitMultiplier = Math.min(1.5, Math.max(0.5, profitBps / 50));
-          sizeUsd *= profitMultiplier;
-        }
-      }
-    }
-    
-    // Clamp to configured bounds
-    sizeUsd = Math.max(minSize, Math.min(maxSize, sizeUsd));
-    
-    // CRITICAL: For non-flashloanable tokens, cap to wallet balance
-    // For flashloanable tokens with flashloan enabled, let it exceed (flashloan logic handles it)
-    const originalSize = sizeUsd;
-    if (!isFlashloanable || !flashloanEnabled) {
-      sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
-    }
-    
-    // Apply randomness to avoid predictable patterns (MEV protection)
-    const randomnessFactor = dynamicCfg.sizeRandomnessFactor ?? 0.1; // Default ±10%
-    let randomMultiplier = 1.0;
-    if (randomnessFactor > 0) {
-      // Random multiplier: e.g., 0.1 factor = range [0.9, 1.1]
-      randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
-      const sizeBeforeRandom = sizeUsd;
-      sizeUsd = sizeUsd * randomMultiplier;
-      
-      // Re-enforce bounds after randomness
-      sizeUsd = Math.max(minSize, sizeUsd);
-      if (!isFlashloanable || !flashloanEnabled) {
-        sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
-      }
-      sizeUsd = Math.min(maxSize, sizeUsd);
-    }
-    
-    logger.debug('arb.executor.sizing.final', {
-      cat: 'arb',
-      path: opp.path.join('->'),
-      method: method,
-      uncappedSize: originalSize,
-      walletBalanceUsd: walletBalanceUsd === Infinity ? 'unlimited' : walletBalanceUsd,
-      finalSize: sizeUsd,
-      cappedByWallet: sizeUsd < originalSize,
-      randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
-      isFlashloanable,
-      flashloanEnabled,
-      bottleneckUsd,
-      profitBps: opp.net_bps ?? opp.profit_bps,
-      rawBalanceFallback: rawBalanceFallback ?? null,
-    });
-    
-    return sizeUsd;
+    return fixedSize;
   }
 
   /**
@@ -3266,7 +3084,7 @@ export class ArbExecutor {
       sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
       
       // Apply randomness
-      const randomnessFactor = this.config.dynamicSizing?.sizeRandomnessFactor ?? 0.1;
+      const randomnessFactor = this.config.sizeRandomnessFactor ?? 0.1;
       let randomMultiplier = 1.0;
       if (randomnessFactor > 0) {
         randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
@@ -3298,8 +3116,7 @@ export class ArbExecutor {
     const calibrationInfo = bottleneckCurve.metadata?.calibration;
     
     // Apply randomness to avoid predictable patterns (MEV protection)
-    // Use dynamicSizing config for randomness factor
-    const randomnessFactor = this.config.dynamicSizing?.sizeRandomnessFactor ?? 0.1;
+    const randomnessFactor = this.config.sizeRandomnessFactor ?? 0.1;
     let finalSize = result.sizeUsd;
     let randomMultiplier = 1.0;
     if (randomnessFactor > 0) {
@@ -3595,10 +3412,6 @@ export class ArbExecutor {
     this.config = {
       ...this.config,
       ...updates,
-      // Deep merge dynamicSizing - preserve existing fields when updating subset
-      dynamicSizing: updates.dynamicSizing !== undefined
-        ? { ...this.config.dynamicSizing, ...updates.dynamicSizing }
-        : this.config.dynamicSizing,
       // Deep merge flashloanSettings
       flashloanSettings: updates.flashloanSettings !== undefined
         ? { ...this.config.flashloanSettings, ...updates.flashloanSettings }
@@ -3611,7 +3424,7 @@ export class ArbExecutor {
       adaptiveSizing: updates.adaptiveSizing !== undefined
         ? { ...this.config.adaptiveSizing, ...updates.adaptiveSizing }
         : this.config.adaptiveSizing,
-      // Deep merge sizingConfig (NEW capacity-based system)
+      // Deep merge sizingConfig (capacity-based sizing)
       sizingConfig: updates.sizingConfig !== undefined
         ? { ...DEFAULT_SIZING_CONFIG, ...this.config.sizingConfig, ...updates.sizingConfig }
         : this.config.sizingConfig,
@@ -3673,7 +3486,7 @@ export class ArbExecutor {
     
     // Calculate larger test size
     const upwardFactor = adaptiveCfg.upwardFactor ?? 1.5;
-    const maxSizeUsd = adaptiveCfg.maxUpwardSizeUsd ?? this.config.dynamicSizing?.maxSizeUsd ?? 500;
+    const maxSizeUsd = adaptiveCfg.maxUpwardSizeUsd ?? this.config.sizingConfig?.maxSizeUsd ?? DEFAULT_SIZING_CONFIG.maxSizeUsd;
     let testSizeUsd = successfulSizeUsd * upwardFactor;
     testSizeUsd = Math.min(testSizeUsd, maxSizeUsd);
     
@@ -3740,7 +3553,7 @@ export class ArbExecutor {
       
       // Simulate only (no execution)
       const simResult = await assembleAndSimulate(testBuilt.instructions, {
-        computeUnitLimit: this.config.dynamicSizing?.optimalSettings?.iterativeMaxIterations ?? 1_400_000,
+        computeUnitLimit: 1_400_000,
         computeUnitPriceMicroLamports: 1000,
         lookupTableAddresses: altAddresses,
         traceId: `${traceId}-upward`,

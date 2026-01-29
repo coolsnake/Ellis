@@ -26,6 +26,11 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     dynamicCompute: true,
     maxTxSizeBytes: 1200,
     cooldownMs: 5000,
+    // Dynamic CU and Priority Fees
+    dynamicCuLimits: false,
+    dynamicCuBuffer: 1.15,
+    dynamicPriorityFees: false,
+    priorityFeeUrgency: 'medium' as 'low' | 'medium' | 'high' | 'critical',
     // Skip simulation settings
     skipSimulationMinProfitBps: 25,
     // Adaptive sizing / upward retry
@@ -64,13 +69,18 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           ...p,
           ...(ex || {}),
           cooldownMs: execCfg?.cooldownMs ?? p.cooldownMs,
+          // Dynamic CU and Priority Fees
+          dynamicCuLimits: ex?.dynamicCuLimits ?? p.dynamicCuLimits,
+          dynamicCuBuffer: ex?.dynamicCuBuffer ?? p.dynamicCuBuffer,
+          dynamicPriorityFees: ex?.dynamicPriorityFees ?? p.dynamicPriorityFees,
+          priorityFeeUrgency: ex?.priorityFeeUrgency ?? p.priorityFeeUrgency,
           // Skip simulation settings
           skipSimulationMinProfitBps: execCfg?.skipSimulation?.minProfitBps ?? p.skipSimulationMinProfitBps,
           // Adaptive sizing / upward retry
           upwardRetryEnabled: execCfg?.adaptiveSizing?.upwardRetryEnabled ?? p.upwardRetryEnabled,
           upwardFactor: execCfg?.adaptiveSizing?.upwardFactor ?? p.upwardFactor,
           // Size randomness
-          sizeRandomnessFactor: execCfg?.dynamicSizing?.sizeRandomnessFactor ?? p.sizeRandomnessFactor,
+          sizeRandomnessFactor: execCfg?.sizeRandomnessFactor ?? p.sizeRandomnessFactor,
           near_miss_enable: (det?.near_miss_enable ?? p.near_miss_enable),
           debug_top_n: (det?.debug_top_n ?? p.debug_top_n),
           edge_allow: {
@@ -119,6 +129,11 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       createAtasInTx: !!cfg.createAtasInTx,
       dynamicCompute: !!cfg.dynamicCompute,
       maxTxSizeBytes: Number(cfg.maxTxSizeBytes || 0) || undefined,
+      // Dynamic CU and Priority Fees
+      dynamicCuLimits: !!cfg.dynamicCuLimits,
+      dynamicCuBuffer: Number(cfg.dynamicCuBuffer) || 1.15,
+      dynamicPriorityFees: !!cfg.dynamicPriorityFees,
+      priorityFeeUrgency: cfg.priorityFeeUrgency || 'medium',
     };
     const executorBody = {
       cooldownMs: Math.max(0, Number(cfg.cooldownMs) || 5000),
@@ -131,10 +146,8 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         upwardRetryEnabled: !!cfg.upwardRetryEnabled,
         upwardFactor: Math.max(1.0, Number(cfg.upwardFactor) || 1.5),
       },
-      // Size randomness (in dynamicSizing)
-      dynamicSizing: {
-        sizeRandomnessFactor: Math.max(0, Math.min(0.5, Number(cfg.sizeRandomnessFactor) || 0.1)),
-      },
+      // Size randomness
+      sizeRandomnessFactor: Math.max(0, Math.min(0.5, Number(cfg.sizeRandomnessFactor) || 0.1)),
     };
     try {
       const [r1, r2, r3] = await Promise.all([
@@ -185,6 +198,53 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.createAtasInTx} onChange={(e)=>set('createAtasInTx', e.target.checked)} />Create ATAs in transaction</label>
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.dynamicCompute} onChange={(e)=>set('dynamicCompute', e.target.checked)} />Dynamic Compute</label>
               <div><label className="block text-sm mb-1">Max Tx Size (bytes)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.maxTxSizeBytes ?? ''} onChange={(e)=>set('maxTxSizeBytes', Number(e.target.value)||0)} /></div>
+            </div>
+            
+            {/* Dynamic Fees Optimization Section */}
+            <div className="border-t border-gray-600 pt-4 mt-4">
+              <h4 className="text-sm font-semibold mb-3 text-gray-300">Dynamic Fee Optimization</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="flex items-center gap-2 mb-2">
+                    <input type="checkbox" checked={!!cfg.dynamicCuLimits} onChange={(e)=>set('dynamicCuLimits', e.target.checked)} />
+                    <span className="text-sm">Dynamic CU Limits</span>
+                  </label>
+                  <div className="text-xs text-gray-400 ml-6 mb-2">Use simulation result instead of fixed limit</div>
+                  {cfg.dynamicCuLimits && (
+                    <div className="ml-6">
+                      <label className="block text-xs mb-1">CU Buffer Multiplier</label>
+                      <input type="number" step="0.05" min="1.0" max="2.0"
+                        className="w-24 bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm"
+                        value={cfg.dynamicCuBuffer ?? 1.15} 
+                        onChange={(e) => set('dynamicCuBuffer', Number(e.target.value) || 1.15)} />
+                      <div className="text-xs text-gray-400 mt-1">1.15 = 15% safety margin</div>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="flex items-center gap-2 mb-2">
+                    <input type="checkbox" checked={!!cfg.dynamicPriorityFees} onChange={(e)=>set('dynamicPriorityFees', e.target.checked)} />
+                    <span className="text-sm">Dynamic Priority Fees</span>
+                  </label>
+                  <div className="text-xs text-gray-400 ml-6 mb-2">Use network-based fees (overrides Priority Fee above)</div>
+                  {cfg.dynamicPriorityFees && (
+                    <div className="ml-6">
+                      <label className="block text-xs mb-1">Urgency Level</label>
+                      <select className="w-32 bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm"
+                        value={cfg.priorityFeeUrgency ?? 'medium'}
+                        onChange={(e) => set('priorityFeeUrgency', e.target.value)}>
+                        <option value="low">Low (p25)</option>
+                        <option value="medium">Medium (p50)</option>
+                        <option value="high">High (p75)</option>
+                        <option value="critical">Critical (p95)</option>
+                      </select>
+                      <div className="text-xs text-gray-400 mt-1">Higher = faster but more expensive</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
               <div><label className="block text-sm mb-1">Route Cooldown (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.cooldownMs ?? 5000} onChange={(e)=>set('cooldownMs', Number(e.target.value)||0)} /><div className="text-xs text-gray-400 mt-1">Prevents executing the same route (pool IDs) within this time</div></div>
               <div><label className="block text-sm mb-1">Skip Sim Min Profit (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.skipSimulationMinProfitBps ?? 25} onChange={(e)=>set('skipSimulationMinProfitBps', Number(e.target.value)||0)} /><div className="text-xs text-gray-400 mt-1">Lower threshold for skip simulation on validated pools</div></div>
               <div><label className="block text-sm mb-1">Size Randomness</label><input type="number" step="0.05" min="0" max="0.5" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.sizeRandomnessFactor ?? 0.1} onChange={(e)=>set('sizeRandomnessFactor', Number(e.target.value)||0)} /><div className="text-xs text-gray-400 mt-1">Variance factor (0.1 = ±10%)</div></div>

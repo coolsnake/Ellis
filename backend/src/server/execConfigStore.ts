@@ -18,6 +18,15 @@ export type ExecConfig = {
   resendEnabled?: boolean; // Enable resend-until-confirmed loop (default: true)
   maxResendAttempts?: number; // Max resend attempts (default: 10)
   maxConfirmTimeMs?: number; // Max time to wait for confirmation (default: 30000)
+  // Dynamic CU limits (use simulation CU + buffer instead of fixed limit)
+  dynamicCuLimits?: boolean;           // default: false
+  dynamicCuBuffer?: number;            // buffer multiplier, default: 1.15 (15%)
+  // Dynamic priority fees (use background-polled network fees)
+  dynamicPriorityFees?: boolean;       // default: false
+  priorityFeeUrgency?: 'low' | 'medium' | 'high' | 'critical';  // default: 'medium'
+  priorityFeeRefreshMs?: number;       // polling interval, default: 10000
+  priorityFeeMinFloor?: number;        // minimum fee floor in micro-lamports, default: 1000
+  priorityFeeMaxCap?: number;          // maximum fee cap in micro-lamports, default: 2000000
 };
 
 const file = resolve(CONFIG.cacheDir, 'exec-config.json');
@@ -38,6 +47,15 @@ const defaults: ExecConfig = {
   resendEnabled: true, // Enable by default for better tx landing
   maxResendAttempts: 10,
   maxConfirmTimeMs: 30000,
+  // Dynamic CU limits - disabled by default (use fixed computeUnitLimit)
+  dynamicCuLimits: false,
+  dynamicCuBuffer: 1.15,
+  // Dynamic priority fees - disabled by default (use fixed computeUnitPriceMicroLamports)
+  dynamicPriorityFees: false,
+  priorityFeeUrgency: 'medium',
+  priorityFeeRefreshMs: 10_000,
+  priorityFeeMinFloor: 1_000,
+  priorityFeeMaxCap: 2_000_000,
 };
 
 export async function loadExecConfig(): Promise<ExecConfig> {

@@ -497,7 +497,7 @@ function summarizeSimError(logs?: string[], err?: any): { ix?: number; custom?: 
   } catch { return {}; }
 }
 
-export async function assembleAndSimulate(instructions: any[], opts?: SendOptions): Promise<{ logs?: string[]; err?: any; wireBase64?: string }> {
+export async function assembleAndSimulate(instructions: any[], opts?: SendOptions): Promise<{ logs?: string[]; err?: any; wireBase64?: string; unitsConsumed?: number | null }> {
   const connection = getConnection();
   const kp = await ensureWallet(CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
@@ -874,7 +874,12 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
       }); 
     } catch {}
   }
-  return { logs: sim.value?.logs, err: sim.value?.err, wireBase64 };
+  return { 
+    logs: sim.value?.logs, 
+    err: sim.value?.err, 
+    wireBase64,
+    unitsConsumed: sim.value?.unitsConsumed ?? null,
+  };
 }
 
 export async function assembleAndSend(instructions: any[], opts?: SendOptions): Promise<{ signature: string; wireBase64: string }> {

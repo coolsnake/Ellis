@@ -2489,8 +2489,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         } catch {}
       }
       
-      // Migrate old dynamicSizing config to new sizingConfig if needed
-      // This ensures the capacity-based sizing system is used
+      // Ensure sizingConfig exists (migrates old dynamicSizing if present)
       const { migrateExecutorConfig } = await import('../../execution/capacity/configMigration.js');
       config = migrateExecutorConfig(config);
       
@@ -2533,14 +2532,14 @@ export function createArbRouter(io: SocketIOServer): Router {
       const configPath = 'backend/config/arbExecutor.json';
       const config = await readJson(configPath, {});
       
-      // Auto-migrate old dynamicSizing config to new sizingConfig if needed
+      // Ensure sizingConfig exists (auto-migrate from old config if needed)
       const { migrateExecutorConfig, needsMigration } = await import('../../execution/capacity/configMigration.js');
       const migratedConfig = migrateExecutorConfig(config);
       
       // If migration was needed, save the migrated config back to file
       if (needsMigration(config)) {
         await writeJson(configPath, migratedConfig);
-        logger.info('arb.executor.config_migrated', { cat: 'arb', message: 'Migrated dynamicSizing to sizingConfig' });
+        logger.info('arb.executor.config_migrated', { cat: 'arb', message: 'Migrated legacy config to sizingConfig' });
       }
       
       res.json(migratedConfig);
@@ -2572,7 +2571,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         // This ensures the runtime instance always matches what's saved in the file
         let fullConfig = await readJson(configPath, {});
         
-        // Migrate to ensure sizingConfig is populated from dynamicSizing
+        // Ensure sizingConfig is populated
         const { migrateExecutorConfig } = await import('../../execution/capacity/configMigration.js');
         fullConfig = migrateExecutorConfig(fullConfig);
         
