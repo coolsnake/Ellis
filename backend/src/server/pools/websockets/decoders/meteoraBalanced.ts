@@ -1262,6 +1262,13 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
         updated.fee_bps = feeBps;
         updated.updated_ms = Date.now();
         
+        // CRITICAL: Always store sqrtPrice for V2 pools from WS updates
+        // This ensures vault updates can use it for correct pricing even if
+        // price calculation failed (e.g., vault balances not yet available)
+        if (isV2 && decoded.sqrtPrice && decoded.sqrtPrice > BigInt(0)) {
+          (updated as any)._sqrtPrice = decoded.sqrtPrice.toString();
+        }
+        
         prev.amm[idx] = updated;
         metbalCache.data = prev;
         metbalCache.ts = Date.now();
