@@ -1,10 +1,11 @@
 /**
  * Meteora Balanced (DAMM) pool decoder
  * 
- * Handles decoding and WebSocket updates for Meteora Balanced (Dynamic AMM) pools.
+ * Handles decoding and WebSocket updates for Meteora Balanced pools.
  * 
- * Meteora Balanced is similar to Pumpswap in that price is derived from vault balances.
- * Unlike DLMM pools which use bins, Balanced pools are simple AMM pools.
+ * IMPORTANT: V1 and V2 use DIFFERENT pricing mechanisms:
+ * - V1 (Dynamic AMM): Constant-product AMM, price = reserveB / reserveA
+ * - V2 (CP-AMM): Concentrated liquidity with sqrtPrice, price = (sqrtPrice / 2^64)^2
  * 
  * WebSocket updates can come from:
  * 1. Vault token accounts (balance changes) - processed via handleMeteoraBalancedVaultUpdate
@@ -45,6 +46,58 @@ import { resolveDecimalsGuaranteed } from '../../decimals.js';
 // Minimum buffer length for pool account decoding
 const MIN_DAMM_V1_POOL_BUFFER_LENGTH = 232;
 const MIN_DAMM_V2_POOL_BUFFER_LENGTH = 300; // CP-AMM pools are larger due to poolFees struct
+
+// Q64.64 fixed-point constants for sqrtPrice conversion
+const TWO_POW_64 = BigInt(2) ** BigInt(64);
+const TWO_POW_128 = BigInt(2) ** BigInt(128);
+
+/**
+ * Calculate price from CP-AMM sqrtPrice (Q64.64 fixed-point)
+ * 
+ * sqrtPrice represents sqrt(tokenB/tokenA) * 2^64
+ * price_a_per_b = (sqrtPrice / 2^64)^2 = sqrtPrice^2 / 2^128
+ * 
+ * Decimal adjustment is applied after: price * 10^(decimalsA - decimalsB)
+ * 
+ * @param sqrtPrice - The sqrtPrice from CP-AMM pool state (bigint)
+ * @param decimalsA - Decimals for token A
+ * @param decimalsB - Decimals for token B
+ * @returns price_a_per_b in whole units, or undefined if calculation fails
+ */
+export function calculateCpAmmPrice(
+  sqrtPrice: bigint,
+  decimalsA: number,
+  decimalsB: number
+): number | undefined {
+  try {
+    if (!sqrtPrice || sqrtPrice <= BigInt(0)) {
+      return undefined;
+    }
+    
+    // price = sqrtPrice^2 / 2^128
+    // To avoid overflow, we calculate: (sqrtPrice / 2^64)^2
+    // Using floating point for the final calculation
+    const sqrtPriceNum = Number(sqrtPrice) / Number(TWO_POW_64);
+    const rawPrice = sqrtPriceNum * sqrtPriceNum;
+    
+    if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
+      return undefined;
+    }
+    
+    // Apply decimal adjustment: price * 10^(decimalsA - decimalsB)
+    const decimalAdjustment = Math.pow(10, decimalsA - decimalsB);
+    const adjustedPrice = rawPrice * decimalAdjustment;
+    
+    if (!Number.isFinite(adjustedPrice) || adjustedPrice <= 0) {
+      return undefined;
+    }
+    
+    return adjustedPrice;
+  } catch (e) {
+    logCatchDebug('meteora_balanced.calculateCpAmmPrice', e);
+    return undefined;
+  }
+}
 
 // Cached SDK program for offline decoding
 let dammV1Program: any = null;
@@ -209,13 +262,14 @@ export async function decodeDammV1PoolAccount(data: Buffer): Promise<DammV1PoolS
 
 /**
  * Decoded DAMM v2 (CP-AMM) pool account state
- * Uses the same interface as V1 for compatibility
+ * CP-AMM uses concentrated liquidity with sqrtPrice, NOT simple constant-product
  */
 interface DammV2PoolState {
   tokenAMint: string;
   tokenBMint: string;
   tokenAVault: string;  // CP-AMM uses tokenAVault/tokenBVault naming
   tokenBVault: string;
+  sqrtPrice: bigint;    // Q64.64 fixed-point: sqrt(tokenB/tokenA) * 2^64
 }
 
 /**
@@ -289,6 +343,23 @@ export async function decodeDammV2PoolAccount(data: Buffer): Promise<DammV2PoolS
         const tokenAVault = state.tokenAVault?.toBase58?.() || state.tokenAVault?.toString?.() || '';
         const tokenBVault = state.tokenBVault?.toBase58?.() || state.tokenBVault?.toString?.() || '';
         
+        // Extract sqrtPrice - this is critical for correct pricing
+        // CP-AMM uses concentrated liquidity with sqrtPrice, NOT simple constant-product
+        // sqrtPrice is a BN (u128) representing sqrt(tokenB/tokenA) * 2^64
+        let sqrtPrice = BigInt(0);
+        try {
+          if (state.sqrtPrice) {
+            // Handle both BN and bigint/number formats
+            if (typeof state.sqrtPrice.toString === 'function') {
+              sqrtPrice = BigInt(state.sqrtPrice.toString());
+            } else {
+              sqrtPrice = BigInt(state.sqrtPrice);
+            }
+          }
+        } catch (sqrtErr) {
+          logCatchDebug('meteora_balanced.decodeDammV2.sqrtPrice', sqrtErr);
+        }
+        
         if (!tokenAMint || !tokenBMint || tokenAMint.length < 32 || tokenBMint.length < 32) {
           logCatchDebug('meteora_balanced.decodeDammV2', 'Invalid mints decoded from V2 pool');
           return null;
@@ -299,6 +370,7 @@ export async function decodeDammV2PoolAccount(data: Buffer): Promise<DammV2PoolS
           tokenBMint,
           tokenAVault,
           tokenBVault,
+          sqrtPrice,
         };
       }
     } catch (sdkErr) {
@@ -315,11 +387,12 @@ export async function decodeDammV2PoolAccount(data: Buffer): Promise<DammV2PoolS
 /**
  * Unified decoder that handles both V1 and V2 pool accounts
  * Returns a normalized structure with aVault/bVault naming
+ * For V2 (CP-AMM) pools, also returns sqrtPrice for correct pricing
  */
 export async function decodeMeteoraBalancedPoolAccount(
   data: Buffer,
   owner: string
-): Promise<{ tokenAMint: string; tokenBMint: string; aVault: string; bVault: string } | null> {
+): Promise<{ tokenAMint: string; tokenBMint: string; aVault: string; bVault: string; sqrtPrice?: bigint } | null> {
   try {
     const isV2 = owner === METEORA_BALANCED_V2_PROGRAM;
     
@@ -332,6 +405,7 @@ export async function decodeMeteoraBalancedPoolAccount(
           tokenBMint: v2Result.tokenBMint,
           aVault: v2Result.tokenAVault,
           bVault: v2Result.tokenBVault,
+          sqrtPrice: v2Result.sqrtPrice,  // CP-AMM uses sqrtPrice for pricing
         };
       }
       return null;
@@ -344,6 +418,7 @@ export async function decodeMeteoraBalancedPoolAccount(
           tokenBMint: v1Result.tokenBMint,
           aVault: v1Result.aVault,
           bVault: v1Result.bVault,
+          // V1 pools use constant-product formula, no sqrtPrice
         };
       }
       return null;
@@ -700,17 +775,61 @@ export async function handleMeteoraBalancedVaultUpdate(
       });
     }
 
-    const processedPrice = processPriceThroughPipeline({
-      mintA,
-      mintB,
-      decimalsA: decA,
-      decimalsB: decB,
-      poolId,
-      dex: decoded.dex || 'MeteoraBalanced_v2',
-      poolType: 'amm',
-      reserveA,
-      reserveB,
-    });
+    // Determine if this is a V2 (CP-AMM) pool
+    // V2 pools use sqrtPrice for pricing, NOT vault balance ratios
+    const dexName = decoded.dex || 'MeteoraBalanced_v2';
+    const isV2Pool = dexName === 'MeteoraBalanced_v2' || dexName.includes('_v2');
+    
+    // Try to get sqrtPrice from cached pool data for V2 pools
+    const storedSqrtPrice = (existingPool as any)?._sqrtPrice;
+    let processedPrice: ProcessedPriceResult | undefined;
+    
+    if (isV2Pool && storedSqrtPrice) {
+      // V2 (CP-AMM): Use sqrtPrice for pricing - concentrated liquidity
+      try {
+        const sqrtPrice = BigInt(storedSqrtPrice);
+        const cpAmmPrice = calculateCpAmmPrice(sqrtPrice, decA, decB);
+        
+        if (cpAmmPrice && Number.isFinite(cpAmmPrice) && cpAmmPrice > 0) {
+          processedPrice = processPriceThroughPipeline({
+            mintA,
+            mintB,
+            decimalsA: decA,
+            decimalsB: decB,
+            poolId,
+            dex: dexName,
+            poolType: 'amm',
+            rawPrice: cpAmmPrice,  // Pre-calculated from sqrtPrice
+          });
+          
+          logger.debug('meteora_balanced.vault.v2.sqrtPrice_pricing', {
+            poolId: poolId.slice(0, 8) + '…',
+            sqrtPrice: storedSqrtPrice.slice(0, 16) + '…',
+            cpAmmPrice,
+            decA,
+            decB,
+            cat: 'pools'
+          });
+        }
+      } catch (sqrtErr) {
+        logCatchDebug('meteora_balanced.vault.v2.sqrtPrice_parse', sqrtErr);
+      }
+    }
+    
+    // Fallback to reserve-based pricing (V1 pools, or V2 if sqrtPrice unavailable)
+    if (!processedPrice) {
+      processedPrice = processPriceThroughPipeline({
+        mintA,
+        mintB,
+        decimalsA: decA,
+        decimalsB: decB,
+        poolId,
+        dex: dexName,
+        poolType: 'amm',
+        reserveA,
+        reserveB,
+      });
+    }
 
     if (!processedPrice) {
       wsDeltaStats.meteora_damm_v2.skipped += 1;
@@ -726,7 +845,7 @@ export async function handleMeteoraBalancedVaultUpdate(
     // Build the updated pool item
     const item: AmmPool = {
       id: poolId,
-      dex: decoded.dex || 'MeteoraBalanced_v2',
+      dex: dexName,
       mint_a: processedPrice.mintA,
       mint_b: processedPrice.mintB,
       fee_bps: decoded.fee_bps || 30,
@@ -749,6 +868,8 @@ export async function handleMeteoraBalancedVaultUpdate(
       native_account_a: vaultA,
       native_account_b: vaultB,
       _pipelineProcessed: true,
+      // Preserve sqrtPrice for V2 pools
+      ...(storedSqrtPrice ? { _sqrtPrice: storedSqrtPrice } : {}),
     } as AmmPool;
 
     // Validate decoded pool
@@ -925,8 +1046,10 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     }
     
     // Decode the pool account using the appropriate decoder for V1 or V2
-    // CRITICAL: V1 and V2 have DIFFERENT on-chain layouts - use the correct decoder!
-    let decoded: { tokenAMint: string; tokenBMint: string; aVault: string; bVault: string; fees?: any } | null = null;
+    // CRITICAL: V1 and V2 have DIFFERENT on-chain layouts AND pricing mechanisms!
+    // - V1: Constant-product AMM, price = reserveB / reserveA
+    // - V2: Concentrated liquidity, price = (sqrtPrice / 2^64)^2
+    let decoded: { tokenAMint: string; tokenBMint: string; aVault: string; bVault: string; fees?: any; sqrtPrice?: bigint } | null = null;
     
     if (isV2) {
       // Use V2 decoder (CP-AMM SDK)
@@ -937,6 +1060,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
           tokenBMint: v2Result.tokenBMint,
           aVault: v2Result.tokenAVault,
           bVault: v2Result.tokenBVault,
+          sqrtPrice: v2Result.sqrtPrice,  // CRITICAL: V2 uses sqrtPrice for pricing
         };
       }
     } else {
@@ -1023,7 +1147,8 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     const balanceA = vaultBalanceCache.get(decoded.aVault) ?? null;
     const balanceB = vaultBalanceCache.get(decoded.bVault) ?? null;
     
-    // If we have vault balances, calculate price
+    // Calculate price based on pool version
+    // CRITICAL: V1 and V2 use DIFFERENT pricing mechanisms!
     let processedPrice: ProcessedPriceResult | null = null;
     let reserveA: bigint | null = balanceA;
     let reserveB: bigint | null = balanceB;
@@ -1036,7 +1161,37 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
       reserveB = anyToBigInt(existingPool.native_reserve_b_raw);
     }
     
-    if (reserveA !== null && reserveB !== null) {
+    if (isV2 && decoded.sqrtPrice && decoded.sqrtPrice > BigInt(0)) {
+      // V2 (CP-AMM): Use sqrtPrice for pricing - concentrated liquidity
+      // This is the correct price, NOT derived from vault balances
+      const cpAmmPrice = calculateCpAmmPrice(decoded.sqrtPrice, decA!, decB!);
+      
+      if (cpAmmPrice && Number.isFinite(cpAmmPrice) && cpAmmPrice > 0) {
+        // Use the pipeline for canonicalization only, passing the pre-calculated price
+        processedPrice = processPriceThroughPipeline({
+          mintA: decoded.tokenAMint,
+          mintB: decoded.tokenBMint,
+          decimalsA: decA!,
+          decimalsB: decB!,
+          poolId,
+          dex: dexName,
+          poolType: 'amm',
+          rawPrice: cpAmmPrice,  // Pre-calculated from sqrtPrice
+        });
+        
+        logger.debug('meteora_balanced.v2.sqrtPrice_pricing', {
+          poolId: poolId.slice(0, 8) + '…',
+          sqrtPrice: decoded.sqrtPrice.toString().slice(0, 16) + '…',
+          cpAmmPrice,
+          decA,
+          decB,
+          cat: 'pools'
+        });
+      }
+    }
+    
+    // Fallback to reserve-based pricing (V1, or V2 if sqrtPrice unavailable)
+    if (!processedPrice && reserveA !== null && reserveB !== null) {
       processedPrice = processPriceThroughPipeline({
         mintA: decoded.tokenAMint,
         mintB: decoded.tokenBMint,
@@ -1086,6 +1241,8 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
       account_a: processedPrice?.wasSwapped ? decoded.bVault : decoded.aVault,
       account_b: processedPrice?.wasSwapped ? decoded.aVault : decoded.bVault,
       _pipelineProcessed: !!processedPrice,
+      // Store sqrtPrice for V2 pools - used for pricing on subsequent vault updates
+      ...(isV2 && decoded.sqrtPrice ? { _sqrtPrice: decoded.sqrtPrice.toString() } : {}),
     } as AmmPool;
     
     // If we don't have a valid price, we can still update the pool metadata

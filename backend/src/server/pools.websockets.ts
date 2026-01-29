@@ -5525,6 +5525,8 @@ function runWebsocketRefreshLoop(): void {
                 tokenBMint: string;
                 aVault: string;
                 bVault: string;
+                sqrtPrice?: bigint;  // CP-AMM V2 pools use sqrtPrice for pricing
+                isV2: boolean;
               };
               
               const decodedPools: DecodedPoolData[] = [];
@@ -5555,18 +5557,21 @@ function runWebsocketRefreshLoop(): void {
                         const decoded = await decodeMeteoraBalancedPoolAccount(data, owner);
                         
                         if (decoded && decoded.tokenAMint && decoded.tokenBMint) {
+                          const isV2 = owner === METEORA_BALANCED_V2_PROGRAM;
                           decodedPools.push({ 
                             poolId, 
                             tokenAMint: decoded.tokenAMint, 
                             tokenBMint: decoded.tokenBMint, 
                             aVault: decoded.aVault, 
-                            bVault: decoded.bVault 
+                            bVault: decoded.bVault,
+                            sqrtPrice: decoded.sqrtPrice,  // CP-AMM V2 sqrtPrice for pricing
+                            isV2,
                           });
                           allMints.add(decoded.tokenAMint);
                           allMints.add(decoded.tokenBMint);
                           
                           // Track V1/V2 counts for logging
-                          if (owner === METEORA_BALANCED_V2_PROGRAM) {
+                          if (isV2) {
                             v2Count++;
                           } else {
                             v1Count++;
@@ -5632,8 +5637,9 @@ function runWebsocketRefreshLoop(): void {
               // Pass 3: Update pool and execution caches with all decoded data
               let poolsEnriched = 0;
               let mintsUpdated = 0;
+              let sqrtPriceStored = 0;
               for (const decoded of decodedPools) {
-                const { poolId, tokenAMint, tokenBMint, aVault, bVault } = decoded;
+                const { poolId, tokenAMint, tokenBMint, aVault, bVault, sqrtPrice, isV2 } = decoded;
                 
                 // Get decimals from resolved map (fallback to 9 for safety)
                 const decimalsA = decimalsMap.get(tokenAMint) ?? 9;
@@ -5654,6 +5660,13 @@ function runWebsocketRefreshLoop(): void {
                   if (!pool.native_account_b) pool.native_account_b = bVault;
                   if (!pool.account_a) pool.account_a = aVault;
                   if (!pool.account_b) pool.account_b = bVault;
+                  
+                  // CRITICAL: For V2 (CP-AMM) pools, store sqrtPrice for correct pricing
+                  // CP-AMM uses concentrated liquidity, NOT simple constant-product formula
+                  if (isV2 && sqrtPrice && sqrtPrice > BigInt(0)) {
+                    (pool as any)._sqrtPrice = sqrtPrice.toString();
+                    sqrtPriceStored++;
+                  }
                   
                   // CRITICAL FIX: Also update mint_a/mint_b if they appear to be incorrect
                   // This ensures graph edges (which use mint_a/mint_b for source/target) show valid token mints
@@ -5711,6 +5724,7 @@ function runWebsocketRefreshLoop(): void {
                 totalPools: uniqueMbal.length,
                 poolsEnriched,
                 mintsUpdated,
+                sqrtPriceStored,  // V2 pools with sqrtPrice for correct pricing
                 decodeFailed,
                 uniqueMints: allMints.size,
                 decimalsResolved: decimalsMap.size,

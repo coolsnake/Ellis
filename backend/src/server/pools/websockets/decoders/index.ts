@@ -60,6 +60,7 @@ export {
   handleMeteoraBalancedVaultUpdate,
   handleMeteoraBalancedUpdate,
   isMeteoraBalancedOwner,
+  calculateCpAmmPrice,
   METEORA_BALANCED_PROGRAMS,
   METEORA_BALANCED_V1_PROGRAM,
   METEORA_BALANCED_V2_PROGRAM,
