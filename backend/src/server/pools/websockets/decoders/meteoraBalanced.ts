@@ -905,27 +905,63 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
   poolId: string
 ): Promise<UpdateResult> {
   try {
-    wsDecodeStats.meteora_damm_v1.attempts += 1;
-    
     const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
     
-    if (!data || data.length < MIN_DAMM_V1_POOL_BUFFER_LENGTH) {
-      wsDeltaStats.meteora_damm_v1.skipped += 1;
-      incrementSkipReason('meteora_damm_v1', 'pool_data_too_short');
+    // Determine pool version from account owner
+    const ownerStr = info.owner?.toBase58?.() || info.owner?.toString?.() || '';
+    const isV2 = ownerStr === METEORA_BALANCED_V2_PROGRAM;
+    const statsKey = isV2 ? 'meteora_damm_v2' : 'meteora_damm_v1';
+    
+    wsDecodeStats[statsKey].attempts += 1;
+    
+    const minBufferLength = isV2 ? MIN_DAMM_V2_POOL_BUFFER_LENGTH : MIN_DAMM_V1_POOL_BUFFER_LENGTH;
+    if (!data || data.length < minBufferLength) {
+      wsDeltaStats[statsKey].skipped += 1;
+      incrementSkipReason(statsKey, 'pool_data_too_short');
       return { success: false, error: 'pool_data_too_short', skipped: true };
     }
     
-    // Decode the pool account
-    const decoded = await decodeDammV1PoolAccount(data);
+    // Decode the pool account using the appropriate decoder for V1 or V2
+    // CRITICAL: V1 and V2 have DIFFERENT on-chain layouts - use the correct decoder!
+    let decoded: { tokenAMint: string; tokenBMint: string; aVault: string; bVault: string; fees?: any } | null = null;
+    
+    if (isV2) {
+      // Use V2 decoder (CP-AMM SDK)
+      const v2Result = await decodeDammV2PoolAccount(data);
+      if (v2Result) {
+        decoded = {
+          tokenAMint: v2Result.tokenAMint,
+          tokenBMint: v2Result.tokenBMint,
+          aVault: v2Result.tokenAVault,
+          bVault: v2Result.tokenBVault,
+        };
+      }
+    } else {
+      // Use V1 decoder
+      const v1Result = await decodeDammV1PoolAccount(data);
+      if (v1Result) {
+        decoded = {
+          tokenAMint: v1Result.tokenAMint,
+          tokenBMint: v1Result.tokenBMint,
+          aVault: v1Result.aVault,
+          bVault: v1Result.bVault,
+          fees: v1Result.fees,
+        };
+      }
+    }
+    
     if (!decoded) {
-      wsDecodeStats.meteora_damm_v1.failures += 1;
-      incrementSkipReason('meteora_damm_v1', 'pool_state_decode_failed');
+      wsDecodeStats[statsKey].failures += 1;
+      incrementSkipReason(statsKey, 'pool_state_decode_failed');
       return { success: false, error: 'pool_state_decode_failed', skipped: true };
     }
     
     // Cache vault addresses for future vault balance updates
     if (decoded.aVault) vaultBalanceCache.set(`meta:${decoded.aVault}`, poolId as any);
     if (decoded.bVault) vaultBalanceCache.set(`meta:${decoded.bVault}`, poolId as any);
+    
+    // Determine dex name based on version
+    const dexName = isV2 ? 'MeteoraBalanced_v2' : 'MeteoraBalanced_v1';
     
     // Find existing pool in cache to get decimals and other metadata
     const poolData = findPoolInCache(poolId);
@@ -941,7 +977,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     // resolveDecimalsGuaranteed handles: anchors → cache → RPC → Jupiter → known → default
     // and persists RPC-resolved values to disk
     if (!Number.isFinite(decA) && decoded.tokenAMint) {
-      const resolved = await resolveDecimalsGuaranteed(decoded.tokenAMint, poolId, 'MeteoraBalanced_v1');
+      const resolved = await resolveDecimalsGuaranteed(decoded.tokenAMint, poolId, dexName);
       decA = resolved.decimals;
       logger.info('meteora_balanced.decoder.decimals_resolved', {
         poolId: poolId?.slice(0, 8) + '…',
@@ -955,7 +991,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
       });
     }
     if (!Number.isFinite(decB) && decoded.tokenBMint) {
-      const resolved = await resolveDecimalsGuaranteed(decoded.tokenBMint, poolId, 'MeteoraBalanced_v1');
+      const resolved = await resolveDecimalsGuaranteed(decoded.tokenBMint, poolId, dexName);
       decB = resolved.decimals;
       logger.info('meteora_balanced.decoder.decimals_resolved', {
         poolId: poolId?.slice(0, 8) + '…',
@@ -1004,7 +1040,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
         decimalsA: decA!,
         decimalsB: decB!,
         poolId,
-        dex: 'MeteoraBalanced_v1',
+        dex: dexName,
         poolType: 'amm',
         reserveA,
         reserveB,
@@ -1022,7 +1058,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     // Build the pool item
     const item: AmmPool = {
       id: poolId,
-      dex: 'MeteoraBalanced_v1',
+      dex: dexName,
       mint_a: processedPrice?.mintA || decoded.tokenAMint,
       mint_b: processedPrice?.mintB || decoded.tokenBMint,
       fee_bps: feeBps,
@@ -1070,24 +1106,24 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
         metbalCache.data = prev;
         metbalCache.ts = Date.now();
         
-        wsDeltaStats.meteora_damm_v1.decoded += 1;
-        wsDeltaStats.meteora_damm_v1.applied += 1;
-        wsDecodeStats.meteora_damm_v1.successes += 1;
+        wsDeltaStats[statsKey].decoded += 1;
+        wsDeltaStats[statsKey].applied += 1;
+        wsDecodeStats[statsKey].successes += 1;
         
         return { success: true, pool: updated as DecodedPool };
       }
       
       // New pool without price - skip for now, will be picked up later
-      wsDeltaStats.meteora_damm_v1.skipped += 1;
-      incrementSkipReason('meteora_damm_v1', 'new_pool_no_price');
+      wsDeltaStats[statsKey].skipped += 1;
+      incrementSkipReason(statsKey, 'new_pool_no_price');
       return { success: true, skipped: true, skipReason: 'new_pool_no_price' };
     }
     
     // Validate decoded pool
-    const validation = validateDecodedPool('meteora_damm_v1', item, poolId);
+    const validation = validateDecodedPool(statsKey, item, poolId);
     if (!validation.valid) {
-      wsDecodeStats.meteora_damm_v1.failures += 1;
-      incrementSkipReason('meteora_damm_v1', `validation_failed:${validation.reasons.join(',')}`);
+      wsDecodeStats[statsKey].failures += 1;
+      incrementSkipReason(statsKey, `validation_failed:${validation.reasons.join(',')}`);
       return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
     }
     
@@ -1105,15 +1141,15 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
       
       // Only validate price delta if orientations match
       if (prevWasSwapped === newWasSwapped) {
-        validatePriceDelta('meteora_damm_v1', poolId, item.price_a_per_b, prevPool.price_a_per_b);
+        validatePriceDelta(statsKey, poolId, item.price_a_per_b, prevPool.price_a_per_b);
       } else {
         // Orientation changed - compare with inverted previous price to avoid false alarms
         const adjustedPrevPrice = prevPool.price_a_per_b && prevPool.price_a_per_b > 0 
           ? 1 / prevPool.price_a_per_b 
           : undefined;
-        validatePriceDelta('meteora_damm_v1', poolId, item.price_a_per_b, adjustedPrevPrice);
+        validatePriceDelta(statsKey, poolId, item.price_a_per_b, adjustedPrevPrice);
         
-        logger.debug('meteora_balanced.v1.orientation_flip', {
+        logger.debug('meteora_balanced.orientation_flip', {
           poolId: poolId.slice(0, 8) + '…',
           prevWasSwapped,
           newWasSwapped,
@@ -1143,20 +1179,21 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     }
     
     // Update stats and cache
-    wsDecodeStats.meteora_damm_v1.successes += 1;
-    wsDeltaStats.meteora_damm_v1.decoded += 1;
+    wsDecodeStats[statsKey].successes += 1;
+    wsDeltaStats[statsKey].decoded += 1;
     
     const delta = diffNormalizedPools(prev, next);
     metbalCache.data = next;
     metbalCache.ts = Date.now();
     
     // CRITICAL: Update execution cache with native mints and was_swapped for direction calculation
+    const programId = isV2 ? METEORA_BALANCED_V2_PROGRAM : METEORA_BALANCED_V1_PROGRAM;
     try {
       const { executionCache } = await import('../../../../execution/cache.js');
       const existingStatic = executionCache.getStatic(poolId) || {} as any;
       executionCache.setStatic(poolId, {
         ...existingStatic,
-        programId: 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  // DAMM v1 program
+        programId,
         dex: 'meteora_balanced',
         pool_kind: 'amm',
         mint_a: item.mint_a,
@@ -1171,14 +1208,14 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
         native_account_b: decoded.bVault,
         was_swapped: processedPrice?.wasSwapped,
       });
-    } catch (e) { logCatchError('meteora_balanced.v1.cache', e); }
+    } catch (e) { logCatchError('meteora_balanced.cache', e); }
     
     const hasDelta = delta.amm.length || delta.clmm.length || delta.addedAmm || delta.removedAmm || delta.addedClmm || delta.removedClmm;
     if (hasDelta) {
-      wsDeltaStats.meteora_damm_v1.applied += 1;
+      wsDeltaStats[statsKey].applied += 1;
     } else {
-      wsDeltaStats.meteora_damm_v1.skipped += 1;
-      incrementSkipReason('meteora_damm_v1', 'no_delta');
+      wsDeltaStats[statsKey].skipped += 1;
+      incrementSkipReason(statsKey, 'no_delta');
     }
     
     // Emit update event
@@ -1194,7 +1231,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     
     // Schedule graph update
     if (hasDelta) {
-      await scheduleDexApply('meteora_damm_v1', prev);
+      await scheduleDexApply(isV2 ? 'meteora_damm_v2' : 'meteora_damm_v1', prev);
     }
     
     // Try to activate pool for lazy activation mode
@@ -1203,14 +1240,14 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
       Number.isFinite(processedPrice.priceForward) &&
       processedPrice.priceForward > 0
     );
-    tryActivatePool(poolId, 'meteora_damm_v1', hasValidPrice);
+    tryActivatePool(poolId, statsKey, hasValidPrice);
     
     // Track successful activity for staleness monitoring
-    recordPoolActivity(poolId, 'meteora_damm_v1', poolId);
+    recordPoolActivity(poolId, statsKey, poolId);
 
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {
-    wsDecodeStats.meteora_damm_v1.failures += 1;
+    wsDecodeStats[statsKey].failures += 1;
     logCatchError('meteora_balanced.handlePoolAccountUpdate', e, { pool: poolId.slice(0, 8) + '…' });
     return { success: false, error: String((e as Error)?.message || e) };
   }

@@ -5631,6 +5631,7 @@ function runWebsocketRefreshLoop(): void {
               
               // Pass 3: Update pool and execution caches with all decoded data
               let poolsEnriched = 0;
+              let mintsUpdated = 0;
               for (const decoded of decodedPools) {
                 const { poolId, tokenAMint, tokenBMint, aVault, bVault } = decoded;
                 
@@ -5653,6 +5654,34 @@ function runWebsocketRefreshLoop(): void {
                   if (!pool.native_account_b) pool.native_account_b = bVault;
                   if (!pool.account_a) pool.account_a = aVault;
                   if (!pool.account_b) pool.account_b = bVault;
+                  
+                  // CRITICAL FIX: Also update mint_a/mint_b if they appear to be incorrect
+                  // This ensures graph edges (which use mint_a/mint_b for source/target) show valid token mints
+                  // Check if current mints look invalid (too short, all zeros, or known garbage patterns)
+                  const currentMintA = pool.mint_a || '';
+                  const currentMintB = pool.mint_b || '';
+                  const mintALooksInvalid = currentMintA.length < 32 || currentMintA.startsWith('1111111');
+                  const mintBLooksInvalid = currentMintB.length < 32 || currentMintB.startsWith('1111111');
+                  
+                  if (mintALooksInvalid || mintBLooksInvalid) {
+                    // The HTTP/RPC-fetched mints are garbage - use the correctly decoded on-chain mints
+                    // Note: This preserves the native order; canonicalization will happen in the price pipeline
+                    pool.mint_a = tokenAMint;
+                    pool.mint_b = tokenBMint;
+                    (pool as any).decimals_a = decimalsA;
+                    (pool as any).decimals_b = decimalsB;
+                    mintsUpdated++;
+                    
+                    logger.debug('pools.ws.meteora_balanced.onchain_enrich.mints_corrected', {
+                      poolId: poolId.slice(0, 8) + '...',
+                      oldMintA: currentMintA.slice(0, 12) + '...',
+                      oldMintB: currentMintB.slice(0, 12) + '...',
+                      newMintA: tokenAMint.slice(0, 12) + '...',
+                      newMintB: tokenBMint.slice(0, 12) + '...',
+                      cat: 'pools'
+                    });
+                  }
+                  
                   poolsEnriched++;
                   
                   // CRITICAL: Update execution cache with native mints, decimals, and vaults
@@ -5666,6 +5695,13 @@ function runWebsocketRefreshLoop(): void {
                       native_decimals_b: decimalsB,
                       native_account_a: aVault,
                       native_account_b: bVault,
+                      // Also update canonical mints if they were corrected
+                      ...(mintALooksInvalid || mintBLooksInvalid ? {
+                        mint_a: tokenAMint,
+                        mint_b: tokenBMint,
+                        decimals_a: decimalsA,
+                        decimals_b: decimalsB,
+                      } : {}),
                     });
                   } catch {}
                 }
@@ -5674,6 +5710,7 @@ function runWebsocketRefreshLoop(): void {
               logger.info('pools.ws.meteora_balanced.onchain_enrich.complete', {
                 totalPools: uniqueMbal.length,
                 poolsEnriched,
+                mintsUpdated,
                 decodeFailed,
                 uniqueMints: allMints.size,
                 decimalsResolved: decimalsMap.size,
