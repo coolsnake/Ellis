@@ -638,3 +638,16 @@ importedlogs/invalidticks.json
 importedlogs/lamports.json
 importedlogs/toolarge.json
 /importedlogs
+backend/cache/raw-normalized-meteora.json
+backend/cache/raw-normalized-meteoraBalanced.json
+backend/cache/raw-normalized-orca.json
+backend/cache/raw-normalized-pumpswap.json
+backend/cache/raw-normalized-raydium.json
+backend/cache/tx-history.json
+backend/config/walletHistory.json
+backend/config/walletHistory.json
+backend/cache/raydium-cpmm-pools-graphql.json
+backend/cache/raydium-cpmm-graphql-raw.json
+backend/cache/mint-decimals.json
+backend/config/walletHistory.json
+backend/config/walletHistory.json
