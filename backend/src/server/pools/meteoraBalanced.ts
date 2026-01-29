@@ -1277,13 +1277,38 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
           }
           
           // Decode vault addresses from pool account data
-          // Pool layout (both V1 and V2): aVault at offset 104-136, bVault at offset 136-168
+          // NOTE: V1 and V2 have DIFFERENT layouts - use SDK decoders
+          //   - V1: aVault at offset 104-136, bVault at offset 136-168
+          //   - V2: poolFees struct first, then tokenAVault, tokenBVault (different offsets)
           if (account.data && account.data.length >= 168) {
             try {
               const data = Buffer.from(account.data);
-              const aVault = new PublicKey(data.subarray(104, 136)).toBase58();
-              const bVault = new PublicKey(data.subarray(136, 168)).toBase58();
-              poolVaultMap.set(poolId, { aVault, bVault });
+              const isV2 = ownerStr === DAMM_V2_PROGRAM;
+              
+              if (isV2) {
+                // Use CP-AMM SDK to decode V2 pool state
+                try {
+                  const cpAmmSdk = await import('@meteora-ag/cp-amm-sdk');
+                  const coder = cpAmmSdk.cpAmmCoder;
+                  if (coder?.accounts?.decode) {
+                    const state = coder.accounts.decode('pool', data);
+                    if (state) {
+                      const tokenAVault = state.tokenAVault?.toBase58?.() || state.tokenAVault?.toString?.() || '';
+                      const tokenBVault = state.tokenBVault?.toBase58?.() || state.tokenBVault?.toString?.() || '';
+                      if (tokenAVault && tokenBVault) {
+                        poolVaultMap.set(poolId, { aVault: tokenAVault, bVault: tokenBVault });
+                      }
+                    }
+                  }
+                } catch (sdkErr) {
+                  // V2 SDK decode failed - skip this pool's vault decode
+                }
+              } else {
+                // V1: Use manual offsets (these are correct for V1)
+                const aVault = new PublicKey(data.subarray(104, 136)).toBase58();
+                const bVault = new PublicKey(data.subarray(136, 168)).toBase58();
+                poolVaultMap.set(poolId, { aVault, bVault });
+              }
             } catch (decodeErr) {
               // Ignore decode errors - vault addresses will remain missing
             }

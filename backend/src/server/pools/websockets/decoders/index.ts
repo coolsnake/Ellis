@@ -54,10 +54,15 @@ export {
 // Meteora Balanced decoder (DAMM via vault updates)
 export {
   decodeMeteoraBalancedPool,
+  decodeDammV1PoolAccount,
+  decodeDammV2PoolAccount,
+  decodeMeteoraBalancedPoolAccount,
   handleMeteoraBalancedVaultUpdate,
   handleMeteoraBalancedUpdate,
   isMeteoraBalancedOwner,
   METEORA_BALANCED_PROGRAMS,
+  METEORA_BALANCED_V1_PROGRAM,
+  METEORA_BALANCED_V2_PROGRAM,
 } from './meteoraBalanced.js';
 
 // Raydium CPMM decoder

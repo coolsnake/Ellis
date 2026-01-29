@@ -44,10 +44,13 @@ import { resolveDecimalsGuaranteed } from '../../decimals.js';
 
 // Minimum buffer length for pool account decoding
 const MIN_DAMM_V1_POOL_BUFFER_LENGTH = 232;
+const MIN_DAMM_V2_POOL_BUFFER_LENGTH = 300; // CP-AMM pools are larger due to poolFees struct
 
 // Cached SDK program for offline decoding
 let dammV1Program: any = null;
 let dammV1ProgramInitializing = false;
+let dammV2Coder: any = null;
+let dammV2CoderInitializing = false;
 
 /**
  * Decoded DAMM v1 pool account state
@@ -200,6 +203,153 @@ export async function decodeDammV1PoolAccount(data: Buffer): Promise<DammV1PoolS
     };
   } catch (e) {
     logCatchDebug('meteora_balanced.decodeDammV1PoolAccount', e);
+    return null;
+  }
+}
+
+/**
+ * Decoded DAMM v2 (CP-AMM) pool account state
+ * Uses the same interface as V1 for compatibility
+ */
+interface DammV2PoolState {
+  tokenAMint: string;
+  tokenBMint: string;
+  tokenAVault: string;  // CP-AMM uses tokenAVault/tokenBVault naming
+  tokenBVault: string;
+}
+
+/**
+ * Load the DAMM v2 (CP-AMM) BorshCoder for offline decoding
+ * Uses @meteora-ag/cp-amm-sdk's exported coder
+ */
+async function loadDammV2Coder(): Promise<any> {
+  if (dammV2Coder) return dammV2Coder;
+  if (dammV2CoderInitializing) {
+    // Wait for initialization to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return dammV2Coder;
+  }
+  
+  dammV2CoderInitializing = true;
+  
+  try {
+    // Import the CP-AMM SDK's pre-configured BorshCoder
+    const cpAmmSdk = await import('@meteora-ag/cp-amm-sdk');
+    
+    // The SDK exports cpAmmCoder which is a pre-built BorshCoder instance
+    if (cpAmmSdk.cpAmmCoder) {
+      dammV2Coder = cpAmmSdk.cpAmmCoder;
+      logger.info('meteora_balanced.dammV2Coder.init.success', {
+        programId: METEORA_BALANCED_V2_PROGRAM,
+        cat: 'pools'
+      });
+      dammV2CoderInitializing = false;
+      return dammV2Coder;
+    }
+    
+    logCatchDebug('meteora_balanced.loadDammV2Coder', 'cpAmmCoder not found in cp-amm-sdk');
+    dammV2CoderInitializing = false;
+    return null;
+  } catch (e) {
+    logCatchDebug('meteora_balanced.loadDammV2Coder', e);
+    dammV2CoderInitializing = false;
+    return null;
+  }
+}
+
+/**
+ * Decode DAMM v2 (CP-AMM) pool account using SDK's BorshCoder
+ * 
+ * CP-AMM pool layout is significantly different from V1:
+ * - poolFees struct comes first (contains baseFee, dynamicFee, etc.)
+ * - Then tokenAMint, tokenBMint, tokenAVault, tokenBVault
+ * 
+ * IMPORTANT: Manual offset parsing WILL NOT WORK for V2 pools!
+ * The offsets 40-72, 72-104 etc. fall within the poolFees struct for V2.
+ */
+export async function decodeDammV2PoolAccount(data: Buffer): Promise<DammV2PoolState | null> {
+  try {
+    if (!data || data.length < MIN_DAMM_V2_POOL_BUFFER_LENGTH) {
+      return null;
+    }
+    
+    // Use SDK-based decoding (required for V2 - manual parsing won't work)
+    const coder = await loadDammV2Coder();
+    if (!coder?.accounts?.decode) {
+      logCatchDebug('meteora_balanced.decodeDammV2', 'V2 coder not available');
+      return null;
+    }
+    
+    try {
+      const state = coder.accounts.decode('pool', data);
+      if (state) {
+        // Extract PublicKey fields and convert to base58 strings
+        const tokenAMint = state.tokenAMint?.toBase58?.() || state.tokenAMint?.toString?.() || '';
+        const tokenBMint = state.tokenBMint?.toBase58?.() || state.tokenBMint?.toString?.() || '';
+        const tokenAVault = state.tokenAVault?.toBase58?.() || state.tokenAVault?.toString?.() || '';
+        const tokenBVault = state.tokenBVault?.toBase58?.() || state.tokenBVault?.toString?.() || '';
+        
+        if (!tokenAMint || !tokenBMint || tokenAMint.length < 32 || tokenBMint.length < 32) {
+          logCatchDebug('meteora_balanced.decodeDammV2', 'Invalid mints decoded from V2 pool');
+          return null;
+        }
+        
+        return {
+          tokenAMint,
+          tokenBMint,
+          tokenAVault,
+          tokenBVault,
+        };
+      }
+    } catch (sdkErr) {
+      logCatchDebug('meteora_balanced.decodeDammV2.sdk_error', sdkErr);
+    }
+    
+    return null;
+  } catch (e) {
+    logCatchDebug('meteora_balanced.decodeDammV2PoolAccount', e);
+    return null;
+  }
+}
+
+/**
+ * Unified decoder that handles both V1 and V2 pool accounts
+ * Returns a normalized structure with aVault/bVault naming
+ */
+export async function decodeMeteoraBalancedPoolAccount(
+  data: Buffer,
+  owner: string
+): Promise<{ tokenAMint: string; tokenBMint: string; aVault: string; bVault: string } | null> {
+  try {
+    const isV2 = owner === METEORA_BALANCED_V2_PROGRAM;
+    
+    if (isV2) {
+      // Use V2 SDK decoder
+      const v2Result = await decodeDammV2PoolAccount(data);
+      if (v2Result) {
+        return {
+          tokenAMint: v2Result.tokenAMint,
+          tokenBMint: v2Result.tokenBMint,
+          aVault: v2Result.tokenAVault,
+          bVault: v2Result.tokenBVault,
+        };
+      }
+      return null;
+    } else {
+      // Use V1 decoder (handles both SDK and manual fallback)
+      const v1Result = await decodeDammV1PoolAccount(data);
+      if (v1Result) {
+        return {
+          tokenAMint: v1Result.tokenAMint,
+          tokenBMint: v1Result.tokenBMint,
+          aVault: v1Result.aVault,
+          bVault: v1Result.bVault,
+        };
+      }
+      return null;
+    }
+  } catch (e) {
+    logCatchDebug('meteora_balanced.decodeMeteoraBalancedPoolAccount', e);
     return null;
   }
 }

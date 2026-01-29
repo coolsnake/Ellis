@@ -28,6 +28,9 @@ import {
   handlePumpswapVaultUpdate,
   handleMeteoraBalancedUpdate,
   handleMeteoraBalancedVaultUpdate,
+  decodeMeteoraBalancedPoolAccount,
+  METEORA_BALANCED_V1_PROGRAM,
+  METEORA_BALANCED_V2_PROGRAM,
   isRaydiumOwner,
   isRaydiumCpmmOwner,
   isOrcaOwner,
@@ -5501,11 +5504,10 @@ function runWebsocketRefreshLoop(): void {
           
           // CRITICAL: Batch-fetch ALL pool accounts to decode native mints, decimals, and vaults from on-chain data
           // This ensures swap direction (aToB) is calculated correctly using the program's native ordering
-          // Pool layout (both V1 and V2):
-          //   - tokenAMint at offset 40-72 (on-chain native order)
-          //   - tokenBMint at offset 72-104 (on-chain native order)
-          //   - aVault at offset 104-136
-          //   - bVault at offset 136-168
+          // NOTE: V1 and V2 pools have DIFFERENT on-chain layouts:
+          //   - V1 (Dynamic AMM): tokenAMint at 40-72, tokenBMint at 72-104, aVault at 104-136, bVault at 136-168
+          //   - V2 (CP-AMM): poolFees struct first (~200 bytes), then tokenAMint, tokenBMint, tokenAVault, tokenBVault
+          // We use SDK decoders for each version to handle this correctly.
           if (uniqueMbal.length > 0) {
             try {
               logger.info('pools.ws.meteora_balanced.onchain_enrich.start', {
@@ -5514,7 +5516,7 @@ function runWebsocketRefreshLoop(): void {
               });
               
               // Two-pass approach:
-              // Pass 1: Decode all pool accounts to extract native mints and vaults
+              // Pass 1: Decode all pool accounts to extract native mints and vaults (using SDK for V1/V2 detection)
               // Pass 2: Batch resolve decimals for all unique mints, then update caches
               
               type DecodedPoolData = {
@@ -5529,8 +5531,10 @@ function runWebsocketRefreshLoop(): void {
               const allMints = new Set<string>();
               const batchSize = 100;
               let decodeFailed = 0;
+              let v1Count = 0;
+              let v2Count = 0;
               
-              // Pass 1: Decode pool accounts
+              // Pass 1: Decode pool accounts using SDK decoders
               for (let batchStart = 0; batchStart < uniqueMbal.length; batchStart += batchSize) {
                 const batch = uniqueMbal.slice(batchStart, batchStart + batchSize);
                 const pubkeys = batch.map(poolId => new web3.PublicKey(poolId));
@@ -5545,16 +5549,37 @@ function runWebsocketRefreshLoop(): void {
                     if (account && account.data && account.data.length >= 168) {
                       try {
                         const data = Buffer.from(account.data);
-                        // Decode token mints from on-chain data (authoritative native order)
-                        const tokenAMint = new web3.PublicKey(data.subarray(40, 72)).toBase58();
-                        const tokenBMint = new web3.PublicKey(data.subarray(72, 104)).toBase58();
-                        // Decode vault addresses
-                        const aVault = new web3.PublicKey(data.subarray(104, 136)).toBase58();
-                        const bVault = new web3.PublicKey(data.subarray(136, 168)).toBase58();
+                        const owner = account.owner.toBase58();
                         
-                        decodedPools.push({ poolId, tokenAMint, tokenBMint, aVault, bVault });
-                        allMints.add(tokenAMint);
-                        allMints.add(tokenBMint);
+                        // Use unified decoder that handles both V1 and V2 layouts via SDK
+                        const decoded = await decodeMeteoraBalancedPoolAccount(data, owner);
+                        
+                        if (decoded && decoded.tokenAMint && decoded.tokenBMint) {
+                          decodedPools.push({ 
+                            poolId, 
+                            tokenAMint: decoded.tokenAMint, 
+                            tokenBMint: decoded.tokenBMint, 
+                            aVault: decoded.aVault, 
+                            bVault: decoded.bVault 
+                          });
+                          allMints.add(decoded.tokenAMint);
+                          allMints.add(decoded.tokenBMint);
+                          
+                          // Track V1/V2 counts for logging
+                          if (owner === METEORA_BALANCED_V2_PROGRAM) {
+                            v2Count++;
+                          } else {
+                            v1Count++;
+                          }
+                        } else {
+                          decodeFailed++;
+                          logger.debug('pools.ws.meteora_balanced.onchain_enrich.decode_null', {
+                            poolId,
+                            owner,
+                            dataLen: data.length,
+                            cat: 'pools'
+                          });
+                        }
                       } catch (decodeErr) {
                         decodeFailed++;
                       }
@@ -5572,6 +5597,14 @@ function runWebsocketRefreshLoop(): void {
                   });
                 }
               }
+              
+              logger.debug('pools.ws.meteora_balanced.onchain_enrich.decode_complete', {
+                v1Count,
+                v2Count,
+                totalDecoded: decodedPools.length,
+                decodeFailed,
+                cat: 'pools'
+              });
               
               // Pass 2: Batch resolve decimals for all unique mints
               let decimalsMap = new Map<string, number>();

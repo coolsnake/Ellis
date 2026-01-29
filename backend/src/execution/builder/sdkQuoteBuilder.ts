@@ -2908,51 +2908,70 @@ async function getMeteoraDammV2SdkQuote(
     );
     accounts.poolAuthority = authority.toBase58();
     
-    // If SDK didn't populate vaults, try manual decode
+    // If SDK didn't populate vaults, try decoding using CP-AMM SDK's BorshCoder
+    // NOTE: CP-AMM (V2) has a DIFFERENT layout than V1 - poolFees struct comes first (~200 bytes)
+    // Manual offset parsing from V1 layout WILL NOT WORK for V2 pools!
     if (!accounts.vaultA || !accounts.vaultB) {
       const accountInfo = await connection.getAccountInfo(poolPk);
       if (accountInfo && accountInfo.data) {
         const data = Buffer.from(accountInfo.data);
-        // CP-AMM v2 pool layout may differ - try similar offsets
-        if (data.length >= 168) {
-          const lpMint = new PublicKey(data.subarray(8, 40));
-          const tokenAMint = new PublicKey(data.subarray(40, 72));
-          const tokenBMint = new PublicKey(data.subarray(72, 104));
-          const aVault = new PublicKey(data.subarray(104, 136));
-          const bVault = new PublicKey(data.subarray(136, 168));
+        
+        try {
+          // Use CP-AMM SDK's BorshCoder to decode the pool state correctly
+          const cpAmmSdk = await import('@meteora-ag/cp-amm-sdk');
+          const coder = cpAmmSdk.cpAmmCoder;
           
-          accounts.vaultA = aVault.toBase58();
-          accounts.vaultB = bVault.toBase58();
-          accounts.lpMint = lpMint.toBase58();
-          
-          // CRITICAL: Update execution cache with native mints and decimals for direction calculation
-          // This ensures aToB is calculated correctly using on-chain ordering
-          try {
-            const { resolveDecimals } = await import('../../server/pools/decimals.js');
-            const [decimalsA, decimalsB] = await Promise.all([
-              resolveDecimals(tokenAMint.toBase58()),
-              resolveDecimals(tokenBMint.toBase58()),
-            ]);
-            
-            const existingStatic = executionCache.getStatic(poolId) || {};
-            executionCache.setStatic(poolId, {
-              ...existingStatic,
-              native_mint_a: tokenAMint.toBase58(),
-              native_mint_b: tokenBMint.toBase58(),
-              native_decimals_a: decimalsA ?? 9,
-              native_decimals_b: decimalsB ?? 9,
-              native_account_a: aVault.toBase58(),
-              native_account_b: bVault.toBase58(),
-            });
-            logger.debug('sdkQuoteBuilder.meteoraDammV2.cache.native_mints_updated', {
-              cat: 'tx',
-              poolId: poolId.slice(0, 8) + '...',
-              nativeMintA: tokenAMint.toBase58().slice(0, 8) + '...',
-              nativeMintB: tokenBMint.toBase58().slice(0, 8) + '...',
-              decimalsA: decimalsA ?? 9,
-              decimalsB: decimalsB ?? 9,
-            });
-          } catch {}
+          if (coder?.accounts?.decode) {
+            const state = coder.accounts.decode('pool', data);
+            if (state) {
+              const tokenAMint = state.tokenAMint?.toBase58?.() || state.tokenAMint?.toString?.() || '';
+              const tokenBMint = state.tokenBMint?.toBase58?.() || state.tokenBMint?.toString?.() || '';
+              const tokenAVault = state.tokenAVault?.toBase58?.() || state.tokenAVault?.toString?.() || '';
+              const tokenBVault = state.tokenBVault?.toBase58?.() || state.tokenBVault?.toString?.() || '';
+              
+              if (tokenAVault && tokenBVault) {
+                accounts.vaultA = tokenAVault;
+                accounts.vaultB = tokenBVault;
+                
+                // CRITICAL: Update execution cache with native mints and decimals for direction calculation
+                // This ensures aToB is calculated correctly using on-chain ordering
+                if (tokenAMint && tokenBMint) {
+                  try {
+                    const { resolveDecimals } = await import('../../server/pools/decimals.js');
+                    const [decimalsA, decimalsB] = await Promise.all([
+                      resolveDecimals(tokenAMint),
+                      resolveDecimals(tokenBMint),
+                    ]);
+                    
+                    const existingStatic = executionCache.getStatic(poolId) || {};
+                    executionCache.setStatic(poolId, {
+                      ...existingStatic,
+                      native_mint_a: tokenAMint,
+                      native_mint_b: tokenBMint,
+                      native_decimals_a: decimalsA ?? 9,
+                      native_decimals_b: decimalsB ?? 9,
+                      native_account_a: tokenAVault,
+                      native_account_b: tokenBVault,
+                    });
+                    logger.debug('sdkQuoteBuilder.meteoraDammV2.cache.native_mints_updated', {
+                      cat: 'tx',
+                      poolId: poolId.slice(0, 8) + '...',
+                      nativeMintA: tokenAMint.slice(0, 8) + '...',
+                      nativeMintB: tokenBMint.slice(0, 8) + '...',
+                      decimalsA: decimalsA ?? 9,
+                      decimalsB: decimalsB ?? 9,
+                    });
+                  } catch {}
+                }
+              }
+            }
+          }
+        } catch (decodeErr) {
+          logger.debug('sdkQuoteBuilder.meteoraDammV2.sdk_decode_error', {
+            cat: 'tx',
+            poolId: poolId.slice(0, 8) + '...',
+            error: (decodeErr as Error).message,
+          });
         }
       }
     }
