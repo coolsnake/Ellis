@@ -924,6 +924,7 @@ async function preloadPumpswapVaultCache(): Promise<void> {
 
 // Pre-populate vault balance cache for meteora_balanced pools before WebSocket subscriptions
 // This prevents pool decode failures when pool events arrive before vault events
+// CRITICAL: This must be called AFTER on-chain enrichment so that native_account_a/b are set correctly
 async function preloadMeteoraBalancedVaultCache(): Promise<void> {
   const pools = metbalCache.data?.amm || [];
   if (pools.length === 0) {
@@ -933,8 +934,13 @@ async function preloadMeteoraBalancedVaultCache(): Promise<void> {
   
   const vaults: string[] = [];
   for (const pool of pools) {
-    if ((pool as any).account_a) vaults.push((pool as any).account_a);
-    if ((pool as any).account_b) vaults.push((pool as any).account_b);
+    // CRITICAL: Prefer native_account_a/b (set by on-chain enrichment) over account_a/b
+    // For V2 pools, account_a/b may have incorrect values from HTTP API, but
+    // native_account_a/b are decoded directly from on-chain data using the correct SDK
+    const vaultA = (pool as any).native_account_a || (pool as any).account_a;
+    const vaultB = (pool as any).native_account_b || (pool as any).account_b;
+    if (vaultA && vaultA.length > 10) vaults.push(vaultA);
+    if (vaultB && vaultB.length > 10) vaults.push(vaultB);
   }
   
   if (vaults.length === 0) {
@@ -5496,12 +5502,6 @@ function runWebsocketRefreshLoop(): void {
             cat: 'pools' 
           });
           
-          // CRITICAL: Pre-populate vault balance cache before subscribing to WebSocket
-          // This ensures pool events can decode immediately without waiting for vault events
-          if (uniqueMbal.length > 0) {
-            await preloadMeteoraBalancedVaultCache();
-          }
-          
           // CRITICAL: Batch-fetch ALL pool accounts to decode native mints, decimals, and vaults from on-chain data
           // This ensures swap direction (aToB) is calculated correctly using the program's native ordering
           // NOTE: V1 and V2 pools have DIFFERENT on-chain layouts:
@@ -5722,6 +5722,15 @@ function runWebsocketRefreshLoop(): void {
                 cat: 'pools'
               });
             }
+          }
+          
+          // CRITICAL: Pre-populate vault balance cache AFTER on-chain enrichment
+          // This ensures we use the correct vault addresses (native_account_a/b) that were
+          // just decoded from on-chain data, not the potentially incorrect HTTP-fetched values.
+          // Without this fix, V2 pools would have their balances cached under wrong addresses,
+          // causing price calculations to fail or use stale data.
+          if (uniqueMbal.length > 0) {
+            await preloadMeteoraBalancedVaultCache();
           }
           
           for (let i = 0; i < uniqueMbal.length; i++) {
