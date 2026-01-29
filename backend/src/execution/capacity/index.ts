@@ -193,20 +193,29 @@ export function getOptimalSizeFromCurve(
   config: SizingConfig = DEFAULT_SIZING_CONFIG,
   walletBalanceUsd?: number
 ): OptimalSizeResult {
-  // Start with break-even capacity
-  let sizeUsd = curve.breakEvenSizeUsd;
+  let sizeUsd: number;
   let constrainedBy: OptimalSizeResult['constrainedBy'] = undefined;
   
-  // Apply profit-based scaling
-  // If profit is higher than break-even target (50 bps), we can size up
-  // If lower, we should size down
-  const profitRatio = profitBps / 50; // 50 bps is our break-even target
-  if (profitRatio > 0) {
-    sizeUsd *= Math.min(2, Math.sqrt(profitRatio)); // Square root scaling, capped at 2x
+  if (config.useBreakEvenFloor) {
+    // Traditional behavior: Start with break-even capacity
+    sizeUsd = curve.breakEvenSizeUsd;
+    
+    // Apply profit-based scaling
+    // If profit is higher than break-even target (50 bps), we can size up
+    // If lower, we should size down
+    const profitRatio = profitBps / 50; // 50 bps is our break-even target
+    if (profitRatio > 0) {
+      sizeUsd *= Math.min(2, Math.sqrt(profitRatio)); // Square root scaling, capped at 2x
+    }
+    
+    // Apply aggressiveness factor
+    sizeUsd *= config.aggressiveness;
+  } else {
+    // New behavior: Don't use break-even as floor
+    // Start from minSizeUsd and let on-chain router validate profitability
+    // This allows smaller trades when the on-chain profit check will verify
+    sizeUsd = config.minSizeUsd;
   }
-  
-  // Apply aggressiveness factor
-  sizeUsd *= config.aggressiveness;
   
   // Apply max slippage constraint
   const maxSlippageSize = findSizeAtSlippage(curve.curve, config.maxSlippageBps);

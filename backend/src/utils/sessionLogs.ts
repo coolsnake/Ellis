@@ -129,7 +129,7 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
       /\.(ix\.|instruction)\.(ready|built|build|coerce)/i,
       /\.swap\.(quote|built|ready)/i,
       // Arb executor patterns - ONLY execution-specific logs (not config/status)
-      /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_data|cycle_closed|balance_check_passed|resolving_plan|sizing|flashloan|build)/i,
+      /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_data|cycle_closed|balance_check_passed|resolving_plan|sizing|capacity_sizing|flashloan|build)/i,
       // Jito execution patterns
       /^arb\.jito\.(bundle|tip|send)/i,
     ];

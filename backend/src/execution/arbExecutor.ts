@@ -1100,7 +1100,7 @@ export class ArbExecutor {
               });
             } else {
               // No balance info at all - use minimum safe size
-              const minSafeSize = this.config.dynamicSizing?.minSizeUsd || 1;
+              const minSafeSize = this.config.dynamicSizing?.minSizeUsd || 0.1;
               logger.warn('arb.executor.sizing.balance_unknown', {
                 cat: 'arb',
                 traceId,
@@ -1770,7 +1770,7 @@ export class ArbExecutor {
         const adaptiveEnabled = adaptiveCfg?.enabled ?? false;
         const maxRetries = adaptiveEnabled ? (adaptiveCfg?.maxRetries ?? 3) : 0;
         const reductionFactor = adaptiveCfg?.reductionFactor ?? 0.5;
-        const adaptiveMinSizeUsd = adaptiveCfg?.minSizeUsd ?? this.config.dynamicSizing?.minSizeUsd ?? 5;
+        const adaptiveMinSizeUsd = adaptiveCfg?.minSizeUsd ?? this.config.dynamicSizing?.minSizeUsd ?? 0.1;
         const adaptiveTimeoutMs = adaptiveCfg?.timeoutMs ?? 500;
         
         let currentSizeUsd = effectiveSizeUsd;

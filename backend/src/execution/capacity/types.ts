@@ -149,6 +149,14 @@ export interface SizingConfig {
     clmm: number;
     dlmm: number;
   };
+  
+  /**
+   * Whether to use break-even capacity as a floor for sizing.
+   * - true = Use break-even as starting point (traditional behavior)
+   * - false = Don't limit based on break-even; let on-chain profit check validate
+   * Default: false (disabled - on-chain router validates profitability)
+   */
+  useBreakEvenFloor?: boolean;
 }
 
 /**
@@ -166,6 +174,7 @@ export const DEFAULT_SIZING_CONFIG: SizingConfig = {
     clmm: 1.0,
     dlmm: 1.0,
   },
+  useBreakEvenFloor: false, // Let on-chain router validate profitability
 };
 
 // ============================================================================
