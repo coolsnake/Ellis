@@ -1398,43 +1398,38 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
               const isV2 = ownerStr === DAMM_V2_PROGRAM;
               
               if (isV2) {
-                // Use CP-AMM SDK to decode V2 pool state
-                // CRITICAL: Extract sqrtPrice for correct pricing - V2 uses concentrated liquidity
-                try {
-                  const cpAmmSdk = await import('@meteora-ag/cp-amm-sdk');
-                  const coder = cpAmmSdk.cpAmmCoder;
-                  if (coder?.accounts?.decode) {
-                    const state = coder.accounts.decode('pool', data);
-                    if (state) {
-                      const tokenAVault = state.tokenAVault?.toBase58?.() || state.tokenAVault?.toString?.() || '';
-                      const tokenBVault = state.tokenBVault?.toBase58?.() || state.tokenBVault?.toString?.() || '';
-                      
-                      // Extract sqrtPrice - this is critical for correct V2 pricing
-                      // sqrtPrice is stored as u128 representing sqrt(tokenB/tokenA) * 2^64
-                      let sqrtPriceStr: string | undefined;
-                      try {
-                        if (state.sqrtPrice) {
-                          if (typeof state.sqrtPrice.toString === 'function') {
-                            sqrtPriceStr = state.sqrtPrice.toString();
-                          } else {
-                            sqrtPriceStr = String(state.sqrtPrice);
-                          }
-                        }
-                      } catch (sqrtErr) {
-                        // Ignore sqrtPrice extraction errors
-                      }
-                      
-                      if (tokenAVault && tokenBVault) {
-                        poolVaultMap.set(poolId, { 
-                          aVault: tokenAVault, 
-                          bVault: tokenBVault,
-                          sqrtPrice: sqrtPriceStr,
-                        });
-                      }
+                // V2 (CP-AMM) uses bytemuck/zero-copy serialization - manual offset parsing required
+                // BorshCoder cannot decode bytemuck accounts!
+                // Pool struct offsets (after 8-byte discriminator):
+                // - tokenAVault: offset 232 (32 bytes)
+                // - tokenBVault: offset 264 (32 bytes)
+                // - sqrtPrice: offset 456 (16 bytes, u128 little-endian)
+                const V2_OFFSET_TOKEN_A_VAULT = 232;
+                const V2_OFFSET_TOKEN_B_VAULT = 264;
+                const V2_OFFSET_SQRT_PRICE = 456;
+                const MIN_V2_BUFFER = 480;
+                
+                if (data.length >= MIN_V2_BUFFER) {
+                  try {
+                    const tokenAVault = new PublicKey(data.subarray(V2_OFFSET_TOKEN_A_VAULT, V2_OFFSET_TOKEN_A_VAULT + 32)).toBase58();
+                    const tokenBVault = new PublicKey(data.subarray(V2_OFFSET_TOKEN_B_VAULT, V2_OFFSET_TOKEN_B_VAULT + 32)).toBase58();
+                    
+                    // sqrtPrice is u128 (16 bytes) stored as little-endian
+                    const sqrtPriceLow = data.readBigUInt64LE(V2_OFFSET_SQRT_PRICE);
+                    const sqrtPriceHigh = data.readBigUInt64LE(V2_OFFSET_SQRT_PRICE + 8);
+                    const sqrtPrice = sqrtPriceLow + (sqrtPriceHigh << BigInt(64));
+                    const sqrtPriceStr = sqrtPrice.toString();
+                    
+                    if (tokenAVault && tokenBVault) {
+                      poolVaultMap.set(poolId, { 
+                        aVault: tokenAVault, 
+                        bVault: tokenBVault,
+                        sqrtPrice: sqrtPriceStr,
+                      });
                     }
+                  } catch (parseErr) {
+                    // V2 offset parsing failed - skip this pool
                   }
-                } catch (sdkErr) {
-                  // V2 SDK decode failed - skip this pool's vault decode
                 }
               } else {
                 // V1: Use manual offsets (these are correct for V1)

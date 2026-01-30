@@ -45,7 +45,15 @@ import { resolveDecimalsGuaranteed } from '../../decimals.js';
 
 // Minimum buffer length for pool account decoding
 const MIN_DAMM_V1_POOL_BUFFER_LENGTH = 232;
-const MIN_DAMM_V2_POOL_BUFFER_LENGTH = 300; // CP-AMM pools are larger due to poolFees struct
+const MIN_DAMM_V2_POOL_BUFFER_LENGTH = 480; // CP-AMM pools need at least 472 bytes (sqrtPrice ends at offset 472)
+
+// CP-AMM (V2) Pool struct offsets (bytemuck/zero-copy serialization)
+// Layout: discriminator(8) + poolFees(160) + mints/vaults/etc
+const V2_OFFSET_TOKEN_A_MINT = 168;   // 32 bytes
+const V2_OFFSET_TOKEN_B_MINT = 200;   // 32 bytes
+const V2_OFFSET_TOKEN_A_VAULT = 232;  // 32 bytes
+const V2_OFFSET_TOKEN_B_VAULT = 264;  // 32 bytes
+const V2_OFFSET_SQRT_PRICE = 456;     // 16 bytes (u128)
 
 // Q64.64 fixed-point constants for sqrtPrice conversion
 const TWO_POW_64 = BigInt(2) ** BigInt(64);
@@ -312,14 +320,28 @@ async function loadDammV2Coder(): Promise<any> {
 }
 
 /**
- * Decode DAMM v2 (CP-AMM) pool account using SDK's BorshCoder
+ * Decode DAMM v2 (CP-AMM) pool account using manual offset parsing
  * 
- * CP-AMM pool layout is significantly different from V1:
- * - poolFees struct comes first (contains baseFee, dynamicFee, etc.)
- * - Then tokenAMint, tokenBMint, tokenAVault, tokenBVault
+ * CP-AMM pools use bytemuck/zero-copy serialization (NOT Borsh), so we must
+ * use direct offset-based parsing. The BorshCoder cannot decode bytemuck accounts.
  * 
- * IMPORTANT: Manual offset parsing WILL NOT WORK for V2 pools!
- * The offsets 40-72, 72-104 etc. fall within the poolFees struct for V2.
+ * Pool struct layout (after 8-byte Anchor discriminator):
+ * - poolFees: 160 bytes (offset 8-167)
+ * - tokenAMint: 32 bytes (offset 168-199)
+ * - tokenBMint: 32 bytes (offset 200-231)
+ * - tokenAVault: 32 bytes (offset 232-263)
+ * - tokenBVault: 32 bytes (offset 264-295)
+ * - whitelisted_vault: 32 bytes (offset 296-327)
+ * - partner: 32 bytes (offset 328-359)
+ * - liquidity: 16 bytes (offset 360-375)
+ * - _padding: 16 bytes (offset 376-391)
+ * - protocol_a_fee: 8 bytes (offset 392-399)
+ * - protocol_b_fee: 8 bytes (offset 400-407)
+ * - partner_a_fee: 8 bytes (offset 408-415)
+ * - partner_b_fee: 8 bytes (offset 416-423)
+ * - sqrt_min_price: 16 bytes (offset 424-439)
+ * - sqrt_max_price: 16 bytes (offset 440-455)
+ * - sqrt_price: 16 bytes (offset 456-471) <-- CRITICAL FOR PRICING
  */
 export async function decodeDammV2PoolAccount(data: Buffer): Promise<DammV2PoolState | null> {
   try {
@@ -327,57 +349,35 @@ export async function decodeDammV2PoolAccount(data: Buffer): Promise<DammV2PoolS
       return null;
     }
     
-    // Use SDK-based decoding (required for V2 - manual parsing won't work)
-    const coder = await loadDammV2Coder();
-    if (!coder?.accounts?.decode) {
-      logCatchDebug('meteora_balanced.decodeDammV2', 'V2 coder not available');
+    // Ensure we have a proper Node.js Buffer for reading BigInt
+    const buf = Buffer.from(data);
+    
+    // Manual offset parsing for bytemuck/zero-copy accounts
+    // PublicKey fields are 32 bytes each
+    const tokenAMint = new PublicKey(buf.subarray(V2_OFFSET_TOKEN_A_MINT, V2_OFFSET_TOKEN_A_MINT + 32)).toBase58();
+    const tokenBMint = new PublicKey(buf.subarray(V2_OFFSET_TOKEN_B_MINT, V2_OFFSET_TOKEN_B_MINT + 32)).toBase58();
+    const tokenAVault = new PublicKey(buf.subarray(V2_OFFSET_TOKEN_A_VAULT, V2_OFFSET_TOKEN_A_VAULT + 32)).toBase58();
+    const tokenBVault = new PublicKey(buf.subarray(V2_OFFSET_TOKEN_B_VAULT, V2_OFFSET_TOKEN_B_VAULT + 32)).toBase58();
+    
+    // sqrtPrice is u128 (16 bytes) stored as little-endian
+    // Read as two u64 values and combine: low + (high << 64)
+    const sqrtPriceLow = buf.readBigUInt64LE(V2_OFFSET_SQRT_PRICE);
+    const sqrtPriceHigh = buf.readBigUInt64LE(V2_OFFSET_SQRT_PRICE + 8);
+    const sqrtPrice = sqrtPriceLow + (sqrtPriceHigh << BigInt(64));
+    
+    // Validate mints
+    if (!tokenAMint || !tokenBMint || tokenAMint.length < 32 || tokenBMint.length < 32) {
+      logCatchDebug('meteora_balanced.decodeDammV2', 'Invalid mints decoded from V2 pool');
       return null;
     }
     
-    try {
-      const state = coder.accounts.decode('pool', data);
-      if (state) {
-        // Extract PublicKey fields and convert to base58 strings
-        const tokenAMint = state.tokenAMint?.toBase58?.() || state.tokenAMint?.toString?.() || '';
-        const tokenBMint = state.tokenBMint?.toBase58?.() || state.tokenBMint?.toString?.() || '';
-        const tokenAVault = state.tokenAVault?.toBase58?.() || state.tokenAVault?.toString?.() || '';
-        const tokenBVault = state.tokenBVault?.toBase58?.() || state.tokenBVault?.toString?.() || '';
-        
-        // Extract sqrtPrice - this is critical for correct pricing
-        // CP-AMM uses concentrated liquidity with sqrtPrice, NOT simple constant-product
-        // sqrtPrice is a BN (u128) representing sqrt(tokenB/tokenA) * 2^64
-        let sqrtPrice = BigInt(0);
-        try {
-          if (state.sqrtPrice) {
-            // Handle both BN and bigint/number formats
-            if (typeof state.sqrtPrice.toString === 'function') {
-              sqrtPrice = BigInt(state.sqrtPrice.toString());
-            } else {
-              sqrtPrice = BigInt(state.sqrtPrice);
-            }
-          }
-        } catch (sqrtErr) {
-          logCatchDebug('meteora_balanced.decodeDammV2.sqrtPrice', sqrtErr);
-        }
-        
-        if (!tokenAMint || !tokenBMint || tokenAMint.length < 32 || tokenBMint.length < 32) {
-          logCatchDebug('meteora_balanced.decodeDammV2', 'Invalid mints decoded from V2 pool');
-          return null;
-        }
-        
-        return {
-          tokenAMint,
-          tokenBMint,
-          tokenAVault,
-          tokenBVault,
-          sqrtPrice,
-        };
-      }
-    } catch (sdkErr) {
-      logCatchDebug('meteora_balanced.decodeDammV2.sdk_error', sdkErr);
-    }
-    
-    return null;
+    return {
+      tokenAMint,
+      tokenBMint,
+      tokenAVault,
+      tokenBVault,
+      sqrtPrice,
+    };
   } catch (e) {
     logCatchDebug('meteora_balanced.decodeDammV2PoolAccount', e);
     return null;
