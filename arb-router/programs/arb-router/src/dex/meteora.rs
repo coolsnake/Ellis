@@ -26,23 +26,24 @@ use crate::error::ArbRouterError;
 /// - bin_step 2: ~0.02% per bin, each bin array covers 70 bins = ~1.4% price range
 /// - bin_step 15: ~0.15% per bin, each bin array covers 70 bins = ~10.5% price range
 /// 
-/// The on-chain code accepts variable bin array counts (3-5+) via remaining accounts.
-pub const MIN_BIN_ARRAYS: usize = 3;
+/// The on-chain code accepts variable bin array counts (2-5+) via remaining accounts.
+/// Reduced to 2 to support compact multi-DLMM routes (3+ hops) within tx size limits.
+pub const MIN_BIN_ARRAYS: usize = 2;
 
 /// Maximum bin arrays supported for fine-grained pools (bin_step ≤5)
 pub const MAX_BIN_ARRAYS: usize = 5;
 
 /// Number of accounts needed for Meteora DLMM `swap` (standard SPL tokens)
-/// 14 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays = 18 total
+/// 14 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays = 17 total
 /// Account layout: NO Memo Program, user tokens in INPUT/OUTPUT order
 /// Note: More accounts can be passed for fine-grained pools (up to 15 + MAX_BIN_ARRAYS)
-pub const SWAP_ACCOUNTS_NEEDED: usize = 15 + MIN_BIN_ARRAYS; // 18 total (min), 20 (max with 5 arrays)
+pub const SWAP_ACCOUNTS_NEEDED: usize = 15 + MIN_BIN_ARRAYS; // 17 total (min), 20 (max with 5 arrays)
 
 /// Number of accounts needed for Meteora DLMM `swap2` (Token-2022 compatible)
-/// 15 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays = 19 total
+/// 15 fixed accounts + 1 program + MIN_BIN_ARRAYS bin arrays = 18 total
 /// Account layout: INCLUDES Memo Program at index 13, user tokens in X/Y order
 /// Note: More accounts can be passed for fine-grained pools (up to 16 + MAX_BIN_ARRAYS)
-pub const SWAP2_ACCOUNTS_NEEDED: usize = 16 + MIN_BIN_ARRAYS; // 19 total (min), 21 (max with 5 arrays)
+pub const SWAP2_ACCOUNTS_NEEDED: usize = 16 + MIN_BIN_ARRAYS; // 18 total (min), 21 (max with 5 arrays)
 
 /// Default accounts needed (swap for standard tokens)
 pub const ACCOUNTS_NEEDED: usize = SWAP_ACCOUNTS_NEEDED;
@@ -67,8 +68,8 @@ pub struct SwapParams {
 /// Execute a swap on Meteora DLMM
 ///
 /// Automatically detects whether to use `swap` or `swap2` based on account count:
-/// - 18 accounts (SWAP_ACCOUNTS_NEEDED): Use `swap` for standard SPL tokens
-/// - 19 accounts (SWAP2_ACCOUNTS_NEEDED): Use `swap2` for Token-2022
+/// - 17+ accounts (SWAP_ACCOUNTS_NEEDED): Use `swap` for standard SPL tokens
+/// - 18+ accounts (SWAP2_ACCOUNTS_NEEDED): Use `swap2` for Token-2022
 ///
 /// ## `swap` instruction layout (18 accounts, standard SPL tokens):
 /// 0. `[writable]` LB Pair

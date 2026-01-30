@@ -2817,10 +2817,26 @@ async function extractDexAccounts(
               }
             }
 
-            // Ensure we have enough arrays (pad with what we have if needed)
-            while (directionalBinArrays.length < neededBinArrayCount && validatedArrays.length > 0) {
-              // Pad with the last array we have (safe fallback)
-              directionalBinArrays.push(directionalBinArrays[directionalBinArrays.length - 1] || validatedArrays[0]);
+            // If we don't have enough arrays from the primary direction, use remaining arrays
+            // from the opposite direction (better than duplicating)
+            if (directionalBinArrays.length < neededBinArrayCount) {
+              // Collect already-used addresses to avoid duplicates
+              const usedAddresses = new Set(directionalBinArrays.map(a => a.toBase58()));
+              
+              // Add remaining unused arrays from validatedArrays
+              for (const arr of validatedArrays) {
+                if (directionalBinArrays.length >= neededBinArrayCount) break;
+                if (!usedAddresses.has(arr.toBase58())) {
+                  directionalBinArrays.push(arr);
+                  usedAddresses.add(arr.toBase58());
+                }
+              }
+              
+              // Last resort: if we still don't have enough, duplicate the last one
+              // (this should rarely happen if SDK provided enough arrays)
+              while (directionalBinArrays.length < neededBinArrayCount && directionalBinArrays.length > 0) {
+                directionalBinArrays.push(directionalBinArrays[directionalBinArrays.length - 1]);
+              }
             }
 
             logger.debug('routerTx.meteora.binArrays.fromSdk', {
