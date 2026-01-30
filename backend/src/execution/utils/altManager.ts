@@ -1950,10 +1950,48 @@ export class DexAltManager {
         return result;
       }
 
+      // DEX matching function - handles graph edge dex values vs API dex keys
+      // Graph edges use different naming conventions than the API parameter
+      const dexMatchFn = (edgeDex: string, edgePoolKind: string): boolean => {
+        const normalizedEdgeDex = edgeDex.toLowerCase();
+        
+        switch (dex) {
+          case 'raydium':
+            // Match raydium CLMM only
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'clmm';
+          case 'raydium-amm':
+            // Match only raydium AMM v4 pools
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'amm';
+          case 'raydium-cpmm':
+            // Match only raydium CPMM pools (edges have dex='Raydium' with pool_kind='cpmm')
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'cpmm';
+          case 'orca':
+            return normalizedEdgeDex === 'orca';
+          case 'meteora':
+            // Match meteora DLMM only (clmm type)
+            return normalizedEdgeDex === 'meteora' && edgePoolKind === 'clmm';
+          case 'meteora-balanced':
+            return normalizedEdgeDex === 'meteora_balanced' || normalizedEdgeDex === 'meteora-balanced';
+          case 'meteora-damm-v1':
+            // Match Meteora Dynamic AMM v1 pools (various naming conventions in graph)
+            return normalizedEdgeDex === 'meteora_damm_v1' || normalizedEdgeDex === 'meteora-damm-v1' ||
+                   normalizedEdgeDex === 'meteorabalanced_v1' || normalizedEdgeDex === 'meteora_balanced_v1';
+          case 'meteora-damm-v2':
+            // Match Meteora CP-AMM v2 pools (various naming conventions in graph)
+            return normalizedEdgeDex === 'meteora_damm_v2' || normalizedEdgeDex === 'meteora-damm-v2' ||
+                   normalizedEdgeDex === 'meteorabalanced_v2' || normalizedEdgeDex === 'meteora_balanced_v2';
+          case 'pumpswap':
+            return normalizedEdgeDex === 'pumpswap';
+          default:
+            return false;
+        }
+      };
+
       // Filter and sort edges for this DEX
       let filtered = snapshot.edges.filter(edge => {
         const edgeDex = String(edge.dex || '').toLowerCase();
-        return edgeDex === dex.toLowerCase();
+        const edgePoolKind = String((edge as any).pool_kind || '');
+        return dexMatchFn(edgeDex, edgePoolKind);
       });
 
       // Filter out reverse edges
@@ -5064,11 +5102,50 @@ export class DexAltManager {
         return result;
       }
 
+      // DEX matching function - handles graph edge dex values vs API dex keys
+      // Graph edges use different naming conventions than the API parameter
+      const dexMatchFn = (edgeDex: string, edgePoolKind: string): boolean => {
+        const normalizedEdgeDex = edgeDex.toLowerCase();
+        
+        switch (dex) {
+          case 'raydium':
+            // Match raydium CLMM only
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'clmm';
+          case 'raydium-amm':
+            // Match only raydium AMM v4 pools
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'amm';
+          case 'raydium-cpmm':
+            // Match only raydium CPMM pools (edges have dex='Raydium' with pool_kind='cpmm')
+            return normalizedEdgeDex === 'raydium' && edgePoolKind === 'cpmm';
+          case 'orca':
+            return normalizedEdgeDex === 'orca';
+          case 'meteora':
+            // Match meteora DLMM only (clmm type)
+            return normalizedEdgeDex === 'meteora' && edgePoolKind === 'clmm';
+          case 'meteora-balanced':
+            return normalizedEdgeDex === 'meteora_balanced' || normalizedEdgeDex === 'meteora-balanced';
+          case 'meteora-damm-v1':
+            // Match Meteora Dynamic AMM v1 pools (various naming conventions in graph)
+            return normalizedEdgeDex === 'meteora_damm_v1' || normalizedEdgeDex === 'meteora-damm-v1' ||
+                   normalizedEdgeDex === 'meteorabalanced_v1' || normalizedEdgeDex === 'meteora_balanced_v1';
+          case 'meteora-damm-v2':
+            // Match Meteora CP-AMM v2 pools (various naming conventions in graph)
+            return normalizedEdgeDex === 'meteora_damm_v2' || normalizedEdgeDex === 'meteora-damm-v2' ||
+                   normalizedEdgeDex === 'meteorabalanced_v2' || normalizedEdgeDex === 'meteora_balanced_v2';
+          case 'pumpswap':
+            return normalizedEdgeDex === 'pumpswap';
+          default:
+            return false;
+        }
+      };
+
       // Collect ALL unique pools for this DEX
       const poolIds = new Set<string>();
       for (const edge of snapshot.edges) {
         const edgeDex = String(edge.dex || '').toLowerCase();
-        if (edgeDex !== dex.toLowerCase()) continue;
+        const edgePoolKind = String((edge as any).pool_kind || '');
+        
+        if (!dexMatchFn(edgeDex, edgePoolKind)) continue;
         
         const poolId = String(edge.pool_id || '');
         if (!poolId) continue;
