@@ -78,9 +78,13 @@ export async function getFreshBlockhashOrFetch(maxAgeMs = 300): Promise<string |
 
 async function fetchLatestBlockhashWithFallback(timeoutMs: number, label: string): Promise<{ blockhash: string; lastValidBlockHeight: number } | null> {
   // Try primary connection first (rate-limited, timeout-guarded)
+  // Use 'confirmed' commitment instead of 'processed' for better cross-node reliability.
+  // 'processed' gives the most recent blockhash but may not be recognized by other RPC nodes
+  // since it hasn't been confirmed yet. 'confirmed' is ~2-3 slots behind tip but much more
+  // reliable for simulation and transaction submission across different nodes.
   try {
     const p = withRpcRetry(
-      () => S.conn!.getLatestBlockhash({ commitment: 'processed' }),
+      () => S.conn!.getLatestBlockhash({ commitment: 'confirmed' }),
       { timeoutMs: Math.max(250, Math.min(2000, timeoutMs)), retries: 0, baseMs: 80, maxMs: 200, label }
     );
     const res = await withRpcTimeout(p, Math.max(300, Math.min(2500, timeoutMs + 100)), `${label}.cap`);

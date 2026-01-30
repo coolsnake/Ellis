@@ -1059,8 +1059,16 @@ fn get_user_token_in_index(dex_type: &DexType, a_to_b: bool, accounts_count: usi
         DexType::PumpSwap => if a_to_b { 6 } else { 5 },
         // Raydium AMM v4: position 15 (User Source Token Account)
         DexType::RaydiumAmm => 15,
-        // Meteora DAMM: position 1 (User Source Token Account)
-        DexType::MeteoraDAMM => 1,
+        // Meteora DAMM: account layout differs between v1 and v2
+        // v1 (16 accounts): userSourceToken at position 1
+        // v2 (14 accounts): InputToken at position 2
+        DexType::MeteoraDAMM => {
+            if accounts_count >= dex::meteora_damm::ACCOUNTS_NEEDED_V1 {
+                1  // v1: userSourceToken
+            } else {
+                2  // v2: Input Token Account
+            }
+        },
         // Raydium CPMM: position 4 (User Input Token Account)
         DexType::RaydiumCpmm => 4,
     }
@@ -1088,8 +1096,16 @@ fn get_user_token_out_index(dex_type: &DexType, a_to_b: bool, accounts_count: us
         DexType::PumpSwap => if a_to_b { 5 } else { 6 },
         // Raydium AMM v4: position 16 (User Dest Token Account)
         DexType::RaydiumAmm => 16,
-        // Meteora DAMM: position 2 (User Dest Token Account)
-        DexType::MeteoraDAMM => 2,
+        // Meteora DAMM: account layout differs between v1 and v2
+        // v1 (16 accounts): userDestinationToken at position 2
+        // v2 (14 accounts): OutputToken at position 3
+        DexType::MeteoraDAMM => {
+            if accounts_count >= dex::meteora_damm::ACCOUNTS_NEEDED_V1 {
+                2  // v1: userDestinationToken
+            } else {
+                3  // v2: Output Token Account
+            }
+        },
         // Raydium CPMM: position 5 (User Output Token Account)
         DexType::RaydiumCpmm => 5,
     }
