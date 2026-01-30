@@ -3730,7 +3730,9 @@ function runWebsocketRefreshLoop(): void {
               return id as unknown as number;
             } catch (e: any) {
               const msg = String(e?.message || e);
-              const isWsState = msg.includes('socket was not') || msg.includes('readyState') || msg.includes('not ready');
+              // Include EPIPE/ECONNRESET/ETIMEDOUT as retryable - these occur when RPC closes connection
+              const isWsState = msg.includes('socket was not') || msg.includes('readyState') || msg.includes('not ready') ||
+                                msg.includes('EPIPE') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT');
               attempt += 1;
               if (!isWsState || attempt >= maxAttempts) {
                 // Give up on non-WS errors or after exhausting retries
@@ -3777,7 +3779,9 @@ function runWebsocketRefreshLoop(): void {
               return id as unknown as number;
             } catch (e: any) {
               const msg = String(e?.message || e);
-              const isWsState = msg.includes('socket was not') || msg.includes('readyState') || msg.includes('not ready');
+              // Include EPIPE/ECONNRESET/ETIMEDOUT as retryable - these occur when RPC closes connection
+              const isWsState = msg.includes('socket was not') || msg.includes('readyState') || msg.includes('not ready') ||
+                                msg.includes('EPIPE') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT');
               attempt += 1;
               if (!isWsState || attempt >= maxAttempts) {
                 throw e;
