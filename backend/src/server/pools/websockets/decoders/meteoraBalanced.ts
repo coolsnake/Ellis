@@ -795,11 +795,34 @@ export async function handleMeteoraBalancedVaultUpdate(
         const poolPk = new PublicKey(poolId);
         const account = await conn.getAccountInfo(poolPk);
         
-        if (account?.data && account.data.length >= 168) {
+        if (!account) {
+          logger.warn('meteora_balanced.vault.v2.sqrtPrice_fetch.no_account', {
+            poolId: poolId.slice(0, 8) + '…',
+            cat: 'pools'
+          });
+        } else if (!account.data || account.data.length < 168) {
+          logger.warn('meteora_balanced.vault.v2.sqrtPrice_fetch.small_buffer', {
+            poolId: poolId.slice(0, 8) + '…',
+            dataLen: account.data?.length ?? 0,
+            cat: 'pools'
+          });
+        } else {
           const data = Buffer.from(account.data);
           const decodedPool = await decodeDammV2PoolAccount(data);
           
-          if (decodedPool?.sqrtPrice && decodedPool.sqrtPrice > BigInt(0)) {
+          if (!decodedPool) {
+            logger.warn('meteora_balanced.vault.v2.sqrtPrice_fetch.decode_null', {
+              poolId: poolId.slice(0, 8) + '…',
+              dataLen: data.length,
+              cat: 'pools'
+            });
+          } else if (!decodedPool.sqrtPrice || decodedPool.sqrtPrice <= BigInt(0)) {
+            logger.warn('meteora_balanced.vault.v2.sqrtPrice_fetch.sqrtPrice_zero', {
+              poolId: poolId.slice(0, 8) + '…',
+              sqrtPrice: decodedPool.sqrtPrice?.toString() ?? 'undefined',
+              cat: 'pools'
+            });
+          } else {
             storedSqrtPrice = decodedPool.sqrtPrice.toString();
             
             // Update cache for future vault updates
@@ -819,8 +842,12 @@ export async function handleMeteoraBalancedVaultUpdate(
             });
           }
         }
-      } catch (fetchErr) {
-        logCatchDebug('meteora_balanced.vault.v2.sqrtPrice_ondemand_fetch', fetchErr);
+      } catch (fetchErr: any) {
+        logger.warn('meteora_balanced.vault.v2.sqrtPrice_ondemand_fetch.error', {
+          poolId: poolId.slice(0, 8) + '…',
+          error: String(fetchErr?.message || fetchErr),
+          cat: 'pools'
+        });
       }
     }
     
