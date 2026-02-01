@@ -119,6 +119,75 @@ export async function apiPost<T = any>(path: string, body?: any, init?: RequestI
 	try { return (await res.json()) as T; } catch { return undefined as unknown as T; }
 }
 
+export async function apiPatch<T = any>(path: string, body?: any, init?: RequestInit): Promise<T> {
+	const res = await fetch(apiUrl(path), { method: 'PATCH', headers: { 'content-type': 'application/json', ...(init?.headers || {}) }, body: body !== undefined ? JSON.stringify(body) : undefined, ...init });
+	if (!res.ok) {
+		const text = await res.text().catch(() => '');
+		throw new Error(`PATCH ${path} failed: ${res.status} ${text}`);
+	}
+	try { return (await res.json()) as T; } catch { return undefined as unknown as T; }
+}
+
+export async function apiDelete<T = any>(path: string, body?: any, init?: RequestInit): Promise<T> {
+	const res = await fetch(apiUrl(path), { method: 'DELETE', headers: { 'content-type': 'application/json', ...(init?.headers || {}) }, body: body !== undefined ? JSON.stringify(body) : undefined, ...init });
+	if (!res.ok) {
+		const text = await res.text().catch(() => '');
+		throw new Error(`DELETE ${path} failed: ${res.status} ${text}`);
+	}
+	try { return (await res.json()) as T; } catch { return undefined as unknown as T; }
+}
+
+// Notification API types
+export interface NotificationStatus {
+	enabled: boolean;
+	firebaseReady: boolean;
+	deviceCount: number;
+	profitThresholds: {
+		low: number;
+		medium: number;
+		high: number;
+		critical: number;
+	};
+}
+
+export interface NotificationConfig {
+	enabled: boolean;
+	profitThresholds: {
+		low: number;
+		medium: number;
+		high: number;
+		critical: number;
+	};
+}
+
+export interface RegisteredDevice {
+	platform: string;
+	registeredAt: number;
+	lastUsed?: number;
+	tokenPrefix: string;
+}
+
+// Notification API functions
+export async function getNotificationStatus(): Promise<NotificationStatus> {
+	return apiGet<NotificationStatus>('/notifications/status');
+}
+
+export async function getNotificationConfig(): Promise<NotificationConfig> {
+	return apiGet<NotificationConfig>('/notifications/config');
+}
+
+export async function updateNotificationConfig(config: Partial<NotificationConfig>): Promise<NotificationConfig> {
+	return apiPatch<NotificationConfig>('/notifications/config', config);
+}
+
+export async function getRegisteredDevices(): Promise<{ devices: RegisteredDevice[] }> {
+	return apiGet<{ devices: RegisteredDevice[] }>('/notifications/devices');
+}
+
+export async function sendTestNotification(): Promise<{ success: boolean; message: string }> {
+	return apiPost<{ success: boolean; message: string }>('/notifications/test');
+}
+
 export {};
 
 

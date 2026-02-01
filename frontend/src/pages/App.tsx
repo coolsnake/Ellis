@@ -50,6 +50,7 @@ import { RpcMonitor } from '../components/RpcMonitor';
 export const App: React.FC = () => {
   const { system, setSystem } = useSystem();
   const [showFillerRunnerConfig, setShowFillerRunnerConfig] = useState(false);
+  const [showNotificationConfig, setShowNotificationConfig] = useState(false);
   const { wallet, setWallet, walletTokens, setWalletTokens, prices, setPrices } = useWallet();
   const { status: driftStatus, setStatus: setDriftStatus, subaccounts: driftSubaccounts, setSubaccounts: setDriftSubaccounts, selectedSubId: driftSelectedSubId, setSelectedSubId: setDriftSelectedSubId, subBalances: driftSubBalances, setSubBalances: setDriftSubBalances, spotMarkets: driftSpotMarkets, setSpotMarkets: setDriftSpotMarkets, action: driftAction, setAction: setDriftAction, amount: driftAmount, setAmount: setDriftAmount, spotIndex: driftSpotIndex, setSpotIndex: setDriftSpotIndex } = useDrift();
   const { arbConfig, setArbConfig, strategies, setStrategies } = useArb();
@@ -2093,6 +2094,22 @@ export const App: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Mobile Notifications */}
+          <div className="mt-4 pt-4 border-t border-gray-700">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-lg font-semibold text-white">Mobile Notifications</h3>
+              <button
+                onClick={() => setShowNotificationConfig(true)}
+                className="px-3 py-1 bg-purple-600 text-white rounded text-sm hover:bg-purple-700"
+              >
+                Configure
+              </button>
+            </div>
+            <div className="text-sm text-gray-400">
+              Push notifications for confirmed arbitrage transactions
+            </div>
+          </div>
           </section>
           <WatchlistSection
             watchlist={watchlist}
@@ -2321,6 +2338,8 @@ export const App: React.FC = () => {
           onCloseTriggerRunner={() => setShowTriggerRunnerConfig(false)}
           showFillerRunnerConfig={showFillerRunnerConfig}
           onCloseFillerRunner={() => setShowFillerRunnerConfig(false)}
+          showNotificationConfig={showNotificationConfig}
+          onCloseNotification={() => setShowNotificationConfig(false)}
         />
         <CollapsibleSection title={"Drift"} storageKey="panel:drift">
           <DriftSection

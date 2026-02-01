@@ -9,6 +9,7 @@ import { GraphConfig } from '../../components/GraphConfig';
 import { LiquidatorRunnerConfig } from '../../components/LiquidatorRunnerConfig';
 import { TriggerRunnerConfig } from '../../components/TriggerRunnerConfig';
 import { FillerRunnerConfig } from '../../components/FillerRunnerConfig';
+import { NotificationConfig } from '../../components/NotificationConfig';
 
 export const ConfigsSection: React.FC<{
   apiBase: string;
@@ -32,6 +33,8 @@ export const ConfigsSection: React.FC<{
   onCloseTriggerRunner?: () => void;
   showFillerRunnerConfig: boolean;
   onCloseFillerRunner: () => void;
+  showNotificationConfig?: boolean;
+  onCloseNotification?: () => void;
 }> = (p) => {
   const { system } = useSystem();
   return (
@@ -49,6 +52,7 @@ export const ConfigsSection: React.FC<{
       {p.showLiqRunnerConfig && (<LiquidatorRunnerConfig apiBase={p.apiBase} onClose={p.onCloseLiqRunner} />)}
       {p.showTriggerRunnerConfig && (<TriggerRunnerConfig apiBase={p.apiBase} onClose={p.onCloseTriggerRunner!} />)}
       {p.showFillerRunnerConfig && (<FillerRunnerConfig apiBase={p.apiBase} onClose={p.onCloseFillerRunner} />)}
+      {p.showNotificationConfig && (<NotificationConfig onClose={p.onCloseNotification!} />)}
     </>
   );
 };
