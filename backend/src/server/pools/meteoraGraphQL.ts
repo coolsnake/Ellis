@@ -1124,8 +1124,10 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         }
       }
 
-      // Get bitmap extension: GraphQL first, then RPC gap-fill, then fallback
+      // Get bitmap extension: GraphQL first, then RPC gap-fill
       // GraphQL data may be stale, so RPC verifies all pools without a GraphQL PDA
+      // CRITICAL: Do NOT default to program ID - leave undefined if not found
+      // The downstream code (routerTx.ts) will do on-chain verification when needed
       let bin_array_bitmap_extension: string | undefined = pool.bitmapExtensionPDA;
       
       // If GraphQL didn't have it, check RPC gap-fill results
@@ -1133,9 +1135,9 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         bin_array_bitmap_extension = bitmapExtensionMap.get(id);
       }
       
-      // Final fallback to program ID (RPC returns this if account doesn't exist)
-      if (!bin_array_bitmap_extension) {
-        bin_array_bitmap_extension = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+      // Filter out program ID if it somehow got set (some SDKs return this as "no extension")
+      if (bin_array_bitmap_extension === 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') {
+        bin_array_bitmap_extension = undefined;
       }
 
       clmm.push({

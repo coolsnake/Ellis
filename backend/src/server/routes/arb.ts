@@ -3036,9 +3036,8 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.post('/arb/alt/extend-auto/common', async (_req: Request, res: Response) => {
     try {
       const { dexAltManager } = await import('../../execution/utils/altManager.js');
-      const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
       const { ensureWallet } = await import('../../wallet/wallet.js');
-      const { PublicKey } = await import('@solana/web3.js');
       
       await dexAltManager.initialize();
       const wallet = await ensureWallet(CONFIG.walletPath);
@@ -3068,7 +3067,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       
       // Filter to only new accounts
       const newAccounts = allAccounts.filter(
-        (pk: PublicKey) => !existingAddrs.has(pk.toBase58())
+        (pk: any) => !existingAddrs.has(pk.toBase58())
       );
       
       if (newAccounts.length === 0) {
@@ -3111,7 +3110,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         address: config.alts.common,
         accountsAdded: newAccounts.length,
         newTotal: result.accountCount,
-        newAccounts: newAccounts.map((pk: PublicKey) => pk.toBase58()),
+        newAccounts: newAccounts.map((pk: any) => pk.toBase58()),
       });
     } catch (e: any) {
       logger.error('arb.alt.api.common_extend_failed', { cat: 'tx', error: String(e?.message || e) });
@@ -3125,7 +3124,6 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { dexAltManager } = await import('../../execution/utils/altManager.js');
       const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
       const { ensureWallet } = await import('../../wallet/wallet.js');
-      const { PublicKey } = await import('@solana/web3.js');
       
       await dexAltManager.initialize();
       const wallet = await ensureWallet(CONFIG.walletPath);
@@ -3155,7 +3153,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       
       // Filter to only new accounts
       const newAccounts = allAccounts.filter(
-        (pk: PublicKey) => !existingAddrs.has(pk.toBase58())
+        (pk: any) => !existingAddrs.has(pk.toBase58())
       );
       
       if (newAccounts.length === 0) {

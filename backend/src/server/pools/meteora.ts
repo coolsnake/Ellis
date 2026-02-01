@@ -375,13 +375,16 @@ export interface PoolBitmapInfo {
  * internal bitmap range of ±512 bin array indices).
  * 
  * @param pools - Array of pool IDs (strings) or pool info objects with activeId
- * @returns Map of pool ID -> bitmap extension PDA (or program ID if not needed)
+ * @returns Map of pool ID -> bitmap extension PDA (ONLY for pools that have one on-chain)
+ * @note Pools without a bitmap extension will NOT have an entry in the returned map.
+ *       Downstream code should do on-chain verification if the map doesn't have an entry.
  */
 export async function resolveMeteoraBitmapExtensions(
   pools: (string | PoolBitmapInfo)[]
 ): Promise<Map<string, string>> {
   const result = new Map<string, string>();
-  const fallback = METEORA_DLMM_PROGRAM_ID;
+  // NOTE: We no longer use a fallback - if a pool doesn't have a bitmap extension on-chain,
+  // we leave it undefined and let downstream code handle the on-chain verification
   
   // Normalize input to PoolBitmapInfo format
   const poolInfos: PoolBitmapInfo[] = pools
@@ -463,7 +466,7 @@ export async function resolveMeteoraBitmapExtensions(
         
         derived.push({ id: poolInfo.id, pda: bitmapExtPda });
       } catch (err) {
-        result.set(poolInfo.id, fallback);
+        // Don't add entry - let downstream code do on-chain verification
         try {
           logger.info('meteora.bitmap_ext.derive_failed', {
             pool: poolInfo.id,
@@ -533,9 +536,10 @@ export async function resolveMeteoraBitmapExtensions(
           totalChecked++;
           
           if (!info) {
-            // Account doesn't exist - use fallback
+            // Account doesn't exist - don't add entry, let downstream handle
             totalMissing++;
-            result.set(entry.id, fallback);
+            // NOTE: We intentionally don't set result.set(entry.id, ...) here
+            // Downstream code will do on-chain verification if needed
             continue;
           }
           
@@ -583,7 +587,7 @@ export async function resolveMeteoraBitmapExtensions(
             } catch (e) { logCatchError('pools.meteora', e); }
           } else {
             totalOwnerMismatch++;
-            result.set(entry.id, fallback);
+            // Don't add entry - let downstream handle this unusual case
             // Log owner mismatch at INFO level so we can see it
             try {
               logger.info('meteora.bitmap_ext.owner_mismatch', {
@@ -597,9 +601,7 @@ export async function resolveMeteoraBitmapExtensions(
           }
         }
       } catch (batchErr) {
-        for (const entry of batch) {
-          result.set(entry.id, fallback);
-        }
+        // Don't add entries for failed batch - let downstream handle
         try {
           logger.warn('meteora.bitmap_ext.batch_failed', {
             error: String((batchErr as any)?.message || batchErr),
@@ -617,8 +619,8 @@ export async function resolveMeteoraBitmapExtensions(
         exist: totalExist,
         missing: totalMissing,
         ownerMismatch: totalOwnerMismatch,
-        resolved: Array.from(result.values()).filter(v => v !== fallback).length,
-        fallback: Array.from(result.values()).filter(v => v === fallback).length,
+        resolved: result.size,
+        unresolved: totalChecked - result.size,
         cat: 'meteora'
       });
     } catch (e) { logCatchError('pools.meteora', e); }
@@ -629,9 +631,7 @@ export async function resolveMeteoraBitmapExtensions(
         cat: 'meteora'
       });
     } catch (e) { logCatchError('pools.meteora', e); }
-    for (const p of unique) {
-      if (!result.has(p.id)) result.set(p.id, fallback);
-    }
+    // Don't set fallback values - let downstream code handle on-chain verification
   }
   return result;
 }

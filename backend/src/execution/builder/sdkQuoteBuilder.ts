@@ -465,6 +465,14 @@ function tryGetCachedMeteoraDlmmAccounts(poolId: string): SdkProvidedAccounts | 
   if (staticData?.vault_a) accounts.vaultA = staticData.vault_a;
   if (staticData?.vault_b) accounts.vaultB = staticData.vault_b;
   
+  // CRITICAL: Get bitmap extension from static cache
+  // This is needed for pools with bins outside the default ±512 range
+  const bitmapExt = (staticData as any)?.bin_array_bitmap_extension;
+  if (bitmapExt && bitmapExt !== 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') {
+    // Only return if it's a real PDA, not the program ID placeholder
+    accounts.bitmapExtension = bitmapExt;
+  }
+  
   const hasBinArrays = accounts.binArrays && accounts.binArrays.length > 0;
   return hasBinArrays ? accounts : null;
 }
@@ -475,13 +483,16 @@ function tryGetCachedMeteoraDlmmAccounts(poolId: string): SdkProvidedAccounts | 
 function cacheMeteoraDlmmAccounts(poolId: string, accounts: SdkProvidedAccounts): void {
   const cleanPoolId = poolId.replace(/[#-]rev$/, '');
   
-  // Store vaults in static cache
-  if (accounts.vaultA || accounts.vaultB) {
+  // Store vaults and bitmap extension in static cache (these don't change)
+  if (accounts.vaultA || accounts.vaultB || accounts.bitmapExtension) {
     const existing = executionCache.getStatic(cleanPoolId) || {};
     executionCache.setStatic(cleanPoolId, {
       ...existing,
       vault_a: accounts.vaultA || existing.vault_a,
       vault_b: accounts.vaultB || existing.vault_b,
+      // CRITICAL: Cache bitmap extension PDA - needed for pools with bins outside default range
+      // The bitmap extension is static for a pool (it either exists or doesn't)
+      bin_array_bitmap_extension: accounts.bitmapExtension || (existing as any).bin_array_bitmap_extension,
     });
   }
   
