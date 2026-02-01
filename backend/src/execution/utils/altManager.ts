@@ -1148,21 +1148,35 @@ export class DexAltManager {
       // Meteora Event Authority PDA (every Meteora swap)
       addAccount('D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6');
       
-      // Common Raydium CLMM/CPMM configs (fee tiers)
-      const raydiumConfigs = [
-        'HVSwB6sML94MBWaHNrfmLMo3ZstLYvbnqRtMRdupCrXJ',  // CLMM config
-        'GjLEiquek1Nc2YjcBhufUGFRkaqW1JhaGjsdFd8mys38',  // CLMM config
-        'D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2',  // 0.01% fee tier
-        'GVSwm4smQBYcgAJU7qjFHLQBHTc4mL3yq7MfKGfKr95K',  // CPMM config 1
-        'BMS3X4bVvMXqX8NjZqVVLfx9BSXJ3z1JqPBXMV7YMXHL',  // CPMM config 2
+      // Raydium CLMM AMM configs (all fee tiers)
+      const raydiumClmmConfigs = [
+        '9iFER3bpjf1PTTCQCfTRu17EJgvsxo9pVyA9QWwEuX4x',  // 1bp (0.01%) - most common for major pairs
+        'HVSwB6sML94MBWaHNrfmLMo3ZstLYvbnqRtMRdupCrXJ',  // 2bp (0.02%)
+        'GjLEiquek1Nc2YjcBhufUGFRkaqW1JhaGjsdFd8mys38',  // 4bp (0.04%)
+        'E64NGkDLLCdQ2yFNPcavaKptrEgmiQaNykUuLC1Qgwyp',  // 5bp (0.05%)
+        '2fGXL8uhqxJ4tpgtosHZXT4zcQap6j62z3bMDxdkMvy5',  // 10bp (0.10%)
+        '3XKBz1TgMDzFKLD2MhFH8SfJpLCQcFQqbLhaBLAkKMRU',  // 20bp (0.20%)
+        'CQYbhr6amxNER6Wrip4mFHPgA1wCyPqvCNqvLrsTdTHC',  // 25bp (0.25%)
+        'A1BBtTYJd4i3xU8D6Tc2FzU6ZN4oXZWXKZnCxwbHXr8x',  // 100bp (1%)
+        'D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2',  // Additional config
       ];
-      for (const config of raydiumConfigs) {
+      for (const config of raydiumClmmConfigs) {
         addAccount(config);
       }
 
-      // Orca whirlpools config
-      addAccount('2LecshUwdy9xi7meFgHtFJQNSKk4KdTrcpvaB56dP2NQ');
-      addAccount('FcrweFY1G9HJAHG5inkGB6pKg1HZ6x9UC2WioAfWrGkR');  // Orca Whirlpools Config Extension
+      // Raydium CPMM configs
+      const raydiumCpmmConfigs = [
+        'GVSwm4smQBYcgAJU7qjFHLQBHTc4mL3yq7MfKGfKr95K',  // CPMM config 1
+        'BMS3X4bVvMXqX8NjZqVVLfx9BSXJ3z1JqPBXMV7YMXHL',  // CPMM config 2
+      ];
+      for (const config of raydiumCpmmConfigs) {
+        addAccount(config);
+      }
+
+      // Orca Whirlpools configs
+      addAccount('2LecshUwdy9xi7meFgHtFJQNSKk4KdTrcpvaB56dP2NQ');  // Main whirlpools config
+      addAccount('FcrweFY1G9HJAHG5inkGB6pKg1HZ6x9UC2WioAfWrGkR');  // Whirlpools Config Extension v1
+      addAccount('777H5H3Tp9U11uRVRzFwM8BinfiakbaLT8vQpeuhvEiH');  // Whirlpools Config Extension v2
 
       // ============================================
       // 4. ANCHOR MINT ADDRESSES

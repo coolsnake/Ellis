@@ -128,6 +128,20 @@ export async function startTxConfirmationTask(io?: any): Promise<void> {
             });
           } catch {}
           
+          // Send push notification for successful arb confirmations
+          if (result.success) {
+            try {
+              const { sendArbNotification } = await import('../notifications/push.js');
+              // Get the updated record with confirmedAt set
+              const updatedRec = items.find(r => r.signature === rec.signature);
+              if (updatedRec) {
+                await sendArbNotification(updatedRec);
+              }
+            } catch {
+              // Don't let notification failure block confirmation flow
+            }
+          }
+          
           // Process skip simulation feedback for learning
           if (rec.skipSimulation) {
             try {

@@ -143,6 +143,10 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
   const [manualExtendCategory, setManualExtendCategory] = useState('common');
   const [manualExtending, setManualExtending] = useState(false);
   
+  // Auto-extend static ALTs
+  const [extendingCommon, setExtendingCommon] = useState(false);
+  const [extendingUserPdas, setExtendingUserPdas] = useState(false);
+  
   // Persist pool counts when they change
   useEffect(() => {
     updateUiPrefs({ poolCounts });
@@ -553,6 +557,68 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
     }
   };
 
+  const handleExtendAutoCommon = async () => {
+    setExtendingCommon(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.extendAutoCommon}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = await resp.json();
+      
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to extend common ALT');
+      }
+
+      if (data.status === 'no_change') {
+        setSuccess(`Common ALT already has all accounts (${data.currentCount} total)`);
+      } else {
+        setSuccess(`Extended common ALT with ${data.accountsAdded} new account(s). New total: ${data.newTotal}`);
+      }
+      await loadAltStatus();
+      await discoverAllAlts();
+    } catch (err: any) {
+      setError(err.message || 'Failed to extend common ALT');
+    } finally {
+      setExtendingCommon(false);
+    }
+  };
+
+  const handleExtendAutoUserPdas = async () => {
+    setExtendingUserPdas(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.extendAutoUserPdas}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = await resp.json();
+      
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to extend user PDAs ALT');
+      }
+
+      if (data.status === 'no_change') {
+        setSuccess(`User PDAs ALT already has all accounts (${data.currentCount} total)`);
+      } else {
+        setSuccess(`Extended user PDAs ALT with ${data.accountsAdded} new account(s). New total: ${data.newTotal}`);
+      }
+      await loadAltStatus();
+      await discoverAllAlts();
+    } catch (err: any) {
+      setError(err.message || 'Failed to extend user PDAs ALT');
+    } finally {
+      setExtendingUserPdas(false);
+    }
+  };
+
   const truncateAddress = (addr: string) => {
     return addr.length > 16 ? `${addr.slice(0, 8)}...${addr.slice(-8)}` : addr;
   };
@@ -847,6 +913,171 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
         {/* Create DEX ALTs Tab */}
         {activeTab === 'create' && (
           <div className="space-y-4">
+            {/* Static ALTs Section */}
+            <div className="bg-gradient-to-r from-green-900/30 to-teal-900/30 border border-green-700/50 rounded-lg p-4">
+              <h4 className="text-white font-semibold mb-3 flex items-center gap-2">
+                🔧 Static ALTs (Programs, Configs, User ATAs)
+              </h4>
+              <p className="text-gray-400 text-sm mb-4">
+                These ALTs contain system programs, DEX configs, common mints, and user token accounts.
+                Extend them to add any new accounts from the latest configuration.
+              </p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Common ALT */}
+                <div className="bg-gray-800/50 rounded p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-white font-medium">🔧 Common</span>
+                    {altStatus?.addresses?.common ? (
+                      <span className="text-xs text-green-400">Active</span>
+                    ) : (
+                      <span className="text-xs text-gray-500">Not Created</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mb-2">
+                    System programs, DEX programs, CLMM configs, common mints
+                  </p>
+                  {altStatus?.addresses?.common ? (
+                    <button
+                      onClick={handleExtendAutoCommon}
+                      disabled={extendingCommon || loading}
+                      className="w-full px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                    >
+                      {extendingCommon ? '⏳ Extending...' : '🔄 Extend with New Accounts'}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        setLoading(true);
+                        setError(null);
+                        try {
+                          const resp = await fetch(`${apiBase}${ROUTES.arb.alts.createCommon}`, {
+                            method: 'POST',
+                          });
+                          if (!resp.ok) {
+                            const data = await resp.json();
+                            throw new Error(data.error || 'Failed to create');
+                          }
+                          const data = await resp.json();
+                          setSuccess(`Created common ALT: ${data.address} (${data.accountCount} accounts)`);
+                          await loadAltStatus();
+                          await discoverAllAlts();
+                        } catch (err: any) {
+                          setError(err.message);
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                      disabled={loading}
+                      className="w-full px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                    >
+                      ➕ Create ALT
+                    </button>
+                  )}
+                </div>
+
+                {/* Flashloan ALT */}
+                <div className="bg-gray-800/50 rounded p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-white font-medium">⚡ Flashloan</span>
+                    {altStatus?.addresses?.flashloan ? (
+                      <span className="text-xs text-green-400">Active</span>
+                    ) : (
+                      <span className="text-xs text-gray-500">Not Created</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mb-2">
+                    Vault PDAs, vault token accounts for flashloans
+                  </p>
+                  {altStatus?.addresses?.flashloan ? (
+                    <span className="text-xs text-gray-500 block text-center py-1.5">
+                      ✓ Configured
+                    </span>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        setLoading(true);
+                        setError(null);
+                        try {
+                          const resp = await fetch(`${apiBase}${ROUTES.arb.alts.createFlashloan}`, {
+                            method: 'POST',
+                          });
+                          if (!resp.ok) {
+                            const data = await resp.json();
+                            throw new Error(data.error || 'Failed to create');
+                          }
+                          const data = await resp.json();
+                          setSuccess(`Created flashloan ALT: ${data.address} (${data.accountCount} accounts)`);
+                          await loadAltStatus();
+                          await discoverAllAlts();
+                        } catch (err: any) {
+                          setError(err.message);
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                      disabled={loading}
+                      className="w-full px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                    >
+                      ➕ Create ALT
+                    </button>
+                  )}
+                </div>
+
+                {/* User PDAs ALT */}
+                <div className="bg-gray-800/50 rounded p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-white font-medium">👤 User PDAs</span>
+                    {altStatus?.addresses?.userPdas ? (
+                      <span className="text-xs text-green-400">Active</span>
+                    ) : (
+                      <span className="text-xs text-gray-500">Not Created</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mb-2">
+                    User ATAs for common mints (WSOL, USDC, etc.)
+                  </p>
+                  {altStatus?.addresses?.userPdas ? (
+                    <button
+                      onClick={handleExtendAutoUserPdas}
+                      disabled={extendingUserPdas || loading}
+                      className="w-full px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                    >
+                      {extendingUserPdas ? '⏳ Extending...' : '🔄 Extend with New Accounts'}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        setLoading(true);
+                        setError(null);
+                        try {
+                          const resp = await fetch(`${apiBase}${ROUTES.arb.alts.createUserPdas}`, {
+                            method: 'POST',
+                          });
+                          if (!resp.ok) {
+                            const data = await resp.json();
+                            throw new Error(data.error || 'Failed to create');
+                          }
+                          const data = await resp.json();
+                          setSuccess(`Created user PDAs ALT: ${data.address} (${data.accountCount} accounts)`);
+                          await loadAltStatus();
+                          await discoverAllAlts();
+                        } catch (err: any) {
+                          setError(err.message);
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                      disabled={loading}
+                      className="w-full px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+                    >
+                      ➕ Create ALT
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Manual Account Extension Section */}
             <div className="bg-gradient-to-r from-purple-900/30 to-blue-900/30 border border-purple-700/50 rounded-lg p-4">
               <h4 className="text-white font-semibold mb-3 flex items-center gap-2">

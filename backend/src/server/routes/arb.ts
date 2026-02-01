@@ -3031,6 +3031,182 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Extend common ALT with fresh accounts from collectCommonAccounts()
+  // This adds any new program IDs, configs, mints that aren't already in the ALT
+  api.post('/arb/alt/extend-auto/common', async (_req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { ensureWallet } = await import('../../wallet/wallet.js');
+      const { PublicKey } = await import('@solana/web3.js');
+      
+      await dexAltManager.initialize();
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      
+      // Check if common ALT exists
+      const config = await loadAltConfig();
+      if (!config.alts.common) {
+        return res.status(400).json({ 
+          error: 'Common ALT does not exist. Create it first using /arb/alt/create/common',
+        });
+      }
+      
+      // Collect fresh common accounts
+      const allAccounts = await (dexAltManager as any).collectCommonAccounts(wallet.publicKey);
+      
+      // Get existing accounts in the ALT
+      const existingAlt = dexAltManager.getCachedAltByAddress(config.alts.common);
+      if (!existingAlt) {
+        return res.status(400).json({ 
+          error: 'Common ALT not found in cache. Run refresh first.',
+        });
+      }
+      
+      const existingAddrs = new Set(
+        (existingAlt.state?.addresses || []).map(a => a.toBase58())
+      );
+      
+      // Filter to only new accounts
+      const newAccounts = allAccounts.filter(
+        (pk: PublicKey) => !existingAddrs.has(pk.toBase58())
+      );
+      
+      if (newAccounts.length === 0) {
+        return res.json({ 
+          status: 'no_change', 
+          message: 'Common ALT already has all accounts',
+          currentCount: existingAlt.state?.addresses?.length || 0,
+        });
+      }
+      
+      // Check capacity
+      const currentCount = existingAlt.state?.addresses?.length || 0;
+      const remainingCapacity = 256 - currentCount;
+      
+      if (newAccounts.length > remainingCapacity) {
+        return res.status(400).json({ 
+          error: `Not enough capacity. Need ${newAccounts.length} slots but only ${remainingCapacity} available.`,
+          currentCount,
+          newAccountsCount: newAccounts.length,
+          remainingCapacity,
+        });
+      }
+      
+      // Extend the ALT
+      const result = await dexAltManager.extendAlt('common', newAccounts);
+      
+      // Refresh cache
+      await dexAltManager.preloadAllAltAccounts();
+      
+      logger.info('arb.alt.api.common_extended', { 
+        cat: 'tx', 
+        address: config.alts.common,
+        accountsAdded: newAccounts.length,
+        newTotal: result.accountCount,
+      });
+      
+      res.json({ 
+        status: 'extended', 
+        category: 'common',
+        address: config.alts.common,
+        accountsAdded: newAccounts.length,
+        newTotal: result.accountCount,
+        newAccounts: newAccounts.map((pk: PublicKey) => pk.toBase58()),
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.common_extend_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Extend userPdas ALT with fresh user ATAs
+  api.post('/arb/alt/extend-auto/userPdas', async (_req: Request, res: Response) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { ensureWallet } = await import('../../wallet/wallet.js');
+      const { PublicKey } = await import('@solana/web3.js');
+      
+      await dexAltManager.initialize();
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      
+      // Check if userPdas ALT exists
+      const config = await loadAltConfig();
+      if (!config.alts.userPdas) {
+        return res.status(400).json({ 
+          error: 'User PDAs ALT does not exist. Create it first using /arb/alt/create/userPdas',
+        });
+      }
+      
+      // Collect fresh user PDA accounts
+      const allAccounts = await dexAltManager.collectUserPdaAccounts(wallet.publicKey);
+      
+      // Get existing accounts in the ALT
+      const existingAlt = dexAltManager.getCachedAltByAddress(config.alts.userPdas);
+      if (!existingAlt) {
+        return res.status(400).json({ 
+          error: 'User PDAs ALT not found in cache. Run refresh first.',
+        });
+      }
+      
+      const existingAddrs = new Set(
+        (existingAlt.state?.addresses || []).map(a => a.toBase58())
+      );
+      
+      // Filter to only new accounts
+      const newAccounts = allAccounts.filter(
+        (pk: PublicKey) => !existingAddrs.has(pk.toBase58())
+      );
+      
+      if (newAccounts.length === 0) {
+        return res.json({ 
+          status: 'no_change', 
+          message: 'User PDAs ALT already has all accounts',
+          currentCount: existingAlt.state?.addresses?.length || 0,
+        });
+      }
+      
+      // Check capacity
+      const currentCount = existingAlt.state?.addresses?.length || 0;
+      const remainingCapacity = 256 - currentCount;
+      
+      if (newAccounts.length > remainingCapacity) {
+        return res.status(400).json({ 
+          error: `Not enough capacity. Need ${newAccounts.length} slots but only ${remainingCapacity} available.`,
+          currentCount,
+          newAccountsCount: newAccounts.length,
+          remainingCapacity,
+        });
+      }
+      
+      // Extend the ALT
+      const result = await dexAltManager.extendAlt('userPdas', newAccounts);
+      
+      // Refresh cache
+      await dexAltManager.preloadAllAltAccounts();
+      
+      logger.info('arb.alt.api.userPdas_extended', { 
+        cat: 'tx', 
+        address: config.alts.userPdas,
+        accountsAdded: newAccounts.length,
+        newTotal: result.accountCount,
+        wallet: wallet.publicKey.toBase58(),
+      });
+      
+      res.json({ 
+        status: 'extended', 
+        category: 'userPdas',
+        address: config.alts.userPdas,
+        accountsAdded: newAccounts.length,
+        newTotal: result.accountCount,
+        wallet: wallet.publicKey.toBase58(),
+      });
+    } catch (e: any) {
+      logger.error('arb.alt.api.userPdas_extend_failed', { cat: 'tx', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Create DEX pool ALTs (multiple ALTs for top pools by TVL)
   api.post('/arb/alt/create/dex-pools', async (req: Request, res: Response) => {
     try {

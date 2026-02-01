@@ -103,6 +103,8 @@ export const ROUTES = {
       createDexPools: '/arb/alt/create/dex-pools',
       coverage: '/arb/alt/coverage',
       extendCategory: '/arb/alt/extend', // POST /arb/alt/extend/:category
+      extendAutoCommon: '/arb/alt/extend-auto/common',     // POST - Extend common ALT with fresh accounts
+      extendAutoUserPdas: '/arb/alt/extend-auto/userPdas', // POST - Extend userPdas ALT with fresh accounts
       refresh: '/arb/alt/refresh',
       pools: '/arb/alt/pools',
       // New comprehensive ALT endpoints
