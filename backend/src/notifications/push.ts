@@ -4,8 +4,44 @@ import { logger } from '../utils/logger.js';
 import { emit } from '../server/realtime.js';
 import { getMessaging, isFirebaseReady } from './firebase.js';
 import { getAllDeviceTokens, cleanupInvalidTokens, loadNotificationConfig } from './deviceStore.js';
+import { loadJupiterTokenMap } from '../utils/tokens.js';
 import type { TxRecord } from '../server/txHistory.js';
 import type { NotificationPriority, ArbNotificationPayload } from './types.js';
+
+// Cache for token symbol lookups
+let tokenSymbolCache: Record<string, string> = {};
+let tokenCacheLoaded = false;
+
+/**
+ * Load and cache token symbols from Jupiter token list
+ */
+async function ensureTokenCache(): Promise<void> {
+  if (tokenCacheLoaded) return;
+  try {
+    const jupMap = await loadJupiterTokenMap();
+    for (const [mint, info] of Object.entries(jupMap)) {
+      tokenSymbolCache[mint] = info.symbol;
+    }
+    tokenCacheLoaded = true;
+  } catch {
+    // Fallback to common tokens
+    tokenSymbolCache = {
+      'So11111111111111111111111111111111111111112': 'SOL',
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
+    };
+    tokenCacheLoaded = true;
+  }
+}
+
+/**
+ * Convert mint address to symbol (short form if unknown)
+ */
+function mintToSymbol(mint: string): string {
+  if (tokenSymbolCache[mint]) return tokenSymbolCache[mint];
+  // Return shortened mint if unknown
+  return mint.slice(0, 4) + '..';
+}
 
 /**
  * Calculate notification priority based on estimated profit
@@ -36,23 +72,30 @@ function estimateProfitUsd(rec: TxRecord): number {
 /**
  * Build notification payload from TxRecord
  */
-function buildNotificationPayload(rec: TxRecord): ArbNotificationPayload {
+async function buildNotificationPayload(rec: TxRecord): Promise<ArbNotificationPayload> {
+  // Ensure token cache is loaded
+  await ensureTokenCache();
+  
   const estimatedProfitUsd = estimateProfitUsd(rec);
   const priority = calculatePriority(estimatedProfitUsd);
   const dexes = [...new Set(rec.hops.map(h => h.dex))];
   
-  // Build human-readable summary
-  const pathDisplay = rec.path.join(' → ');
+  // Convert mints to symbols for display
+  const pathSymbols = rec.path.map(mint => mintToSymbol(mint));
+  const pathDisplay = pathSymbols.join(' → ');
+  
+  // Build human-readable summary with profit first
   const profitStr = estimatedProfitUsd > 0 
-    ? `+$${estimatedProfitUsd.toFixed(4)}` 
-    : 'profit TBD';
-  const summary = `${pathDisplay} via ${rec.hops.length} hop${rec.hops.length !== 1 ? 's' : ''} (${dexes.join(', ')}) - ${profitStr}`;
+    ? `+$${estimatedProfitUsd.toFixed(2)}` 
+    : 'Confirmed';
+  const summary = `${profitStr} | ${pathDisplay} via ${dexes.join('/')}`;
   
   return {
     id: rec.id,
     signature: rec.signature || '',
     timestamp: rec.confirmedAt || Date.now(),
     path: rec.path,
+    pathSymbols, // Include symbols for mobile app
     hops: rec.hops.length,
     dexes,
     sizeUsd: rec.sizeUsd,
@@ -90,25 +133,29 @@ export async function sendArbNotification(rec: TxRecord): Promise<void> {
   }
   
   // Build notification payload
-  const payload = buildNotificationPayload(rec);
+  const payload = await buildNotificationPayload(rec);
   
-  // Prepare FCM message
-  const profitDisplay = payload.estimatedProfitUsd > 0 
-    ? `+$${payload.estimatedProfitUsd.toFixed(4)}` 
+  // Format notification with profit first, then route
+  const profitDisplay = payload.estimatedProfitUsd && payload.estimatedProfitUsd > 0 
+    ? `+$${payload.estimatedProfitUsd.toFixed(2)}` 
     : 'Confirmed';
+  const routeDisplay = payload.pathSymbols?.join(' → ') || payload.path.join(' → ');
   
   try {
     const response = await messaging.sendEachForMulticast({
       tokens,
       notification: {
-        title: `Arb ${profitDisplay}: ${payload.path.join(' → ')}`,
-        body: payload.summary,
+        // Title: Profit amount prominently
+        title: profitDisplay,
+        // Body: Route with token symbols
+        body: `${routeDisplay} via ${payload.dexes.join('/')}`,
       },
       data: {
         type: 'arb_confirmed',
         id: payload.id,
         signature: payload.signature,
         path: JSON.stringify(payload.path),
+        pathSymbols: JSON.stringify(payload.pathSymbols || []),
         hops: String(payload.hops),
         dexes: JSON.stringify(payload.dexes),
         priority: payload.priority,

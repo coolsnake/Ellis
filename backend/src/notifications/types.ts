@@ -32,6 +32,7 @@ export interface ArbNotificationPayload {
   signature: string;
   timestamp: number;
   path: string[];
+  pathSymbols?: string[]; // Token symbols corresponding to path mints
   hops: number;
   dexes: string[];
   sizeUsd?: number;
