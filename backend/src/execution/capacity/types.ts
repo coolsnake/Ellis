@@ -169,6 +169,108 @@ export interface SizingConfig {
    * Default: false (disabled - on-chain router validates profitability)
    */
   useBreakEvenFloor?: boolean;
+  
+  /**
+   * Multi-hop profit optimization settings.
+   * When enabled, simulates trades through all hops to find the size
+   * that maximizes expected profit, rather than using single-pool bottleneck.
+   */
+  multiHopOptimization?: MultiHopOptimizationConfig;
+}
+
+// ============================================================================
+// Multi-Hop Optimization Configuration
+// ============================================================================
+
+/**
+ * Slippage model parameters for each pool type.
+ * These control how slippage is estimated during multi-hop simulation.
+ */
+export interface SlippageModelParams {
+  /** AMM (constant product) parameters */
+  amm: {
+    /** 
+     * Effective reserve multiplier (accounts for hidden depth).
+     * 0.95 = assume 95% of reported reserve is available.
+     */
+    reserveMultiplier: number;
+  };
+  /** CLMM (concentrated liquidity) parameters */
+  clmm: {
+    /** 
+     * Liquidity decay factor per tick crossing (0-1).
+     * 0.70 = each subsequent tick has 70% of previous tick's liquidity.
+     */
+    liquidityDecayPerTick: number;
+    /** Max ticks to simulate before using extrapolation */
+    maxTickSimulation: number;
+  };
+  /** DLMM (discrete liquidity bins) parameters */
+  dlmm: {
+    /** 
+     * Fraction of TVL assumed in active bin (0-1).
+     * 0.10 = 10% of pool TVL is in the active bin.
+     */
+    activeBinFraction: number;
+    /** Liquidity decay factor per bin crossing (0-1) */
+    liquidityDecayPerBin: number;
+  };
+}
+
+/**
+ * Configuration for multi-hop profit optimization.
+ */
+export interface MultiHopOptimizationConfig {
+  /** Enable multi-hop profit optimization */
+  enabled: boolean;
+  
+  /** 
+   * Optimization method:
+   * - 'ternary_search': Finds maximum of unimodal profit function (recommended)
+   * - 'binary_search': Alternative search method
+   */
+  method: 'ternary_search' | 'binary_search';
+  
+  /** 
+   * Fixed costs to subtract from profit (USD).
+   * Includes: Jito tip estimate, transaction fee, priority fee.
+   * Default: 0.001 (roughly 10k lamports at $150 SOL)
+   */
+  fixedCostUsd: number;
+  
+  /**
+   * Safety margin multiplier (0.5-1.0).
+   * Applied to computed optimal size to account for model uncertainty.
+   * 0.8 = use 80% of computed optimal (default)
+   */
+  safetyMargin: number;
+  
+  /**
+   * Search precision (USD).
+   * Stop optimization when search interval < this value.
+   * Default: 0.10
+   */
+  searchPrecisionUsd: number;
+  
+  /**
+   * Maximum iterations for optimization search.
+   * Default: 20 (sufficient for log3(maxSize/minSize) precision)
+   */
+  maxIterations: number;
+  
+  /**
+   * Fallback to single-pool bottleneck method when:
+   * - Missing reserve data for any hop
+   * - Forward simulation fails
+   * Default: true
+   */
+  fallbackToBottleneck: boolean;
+  
+  /**
+   * Slippage model parameters for each pool type.
+   * Controls how slippage is estimated during multi-hop simulation.
+   */
+  slippageParams: SlippageModelParams;
 }
 
 /**
@@ -187,6 +289,37 @@ export const DEFAULT_SIZING_CONFIG: SizingConfig = {
     dlmm: 1.0,
   },
   useBreakEvenFloor: false, // Let on-chain router validate profitability
+};
+
+/**
+ * Default slippage model parameters
+ */
+export const DEFAULT_SLIPPAGE_PARAMS: SlippageModelParams = {
+  amm: {
+    reserveMultiplier: 0.95,
+  },
+  clmm: {
+    liquidityDecayPerTick: 0.70,
+    maxTickSimulation: 50,
+  },
+  dlmm: {
+    activeBinFraction: 0.10,
+    liquidityDecayPerBin: 0.75,
+  },
+};
+
+/**
+ * Default multi-hop optimization configuration
+ */
+export const DEFAULT_MULTIHOP_CONFIG: MultiHopOptimizationConfig = {
+  enabled: false, // Disabled by default for backward compatibility
+  method: 'ternary_search',
+  fixedCostUsd: 0.001,
+  safetyMargin: 0.80,
+  searchPrecisionUsd: 0.10,
+  maxIterations: 20,
+  fallbackToBottleneck: true,
+  slippageParams: DEFAULT_SLIPPAGE_PARAMS,
 };
 
 // ============================================================================

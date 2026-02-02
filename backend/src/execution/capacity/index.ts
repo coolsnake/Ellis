@@ -81,6 +81,49 @@ export {
   type FeedbackOutcome,
 } from './feedbackCollector.js';
 
+// Re-export multi-hop optimization types and functions
+export type {
+  MultiHopOptimizationConfig,
+  SlippageModelParams,
+} from './types.js';
+export {
+  DEFAULT_MULTIHOP_CONFIG,
+  DEFAULT_SLIPPAGE_PARAMS,
+} from './types.js';
+
+// Re-export multi-hop sizing functions
+export {
+  calculateMultiHopOptimalSize,
+  getQuickMultiHopEstimate,
+  isMultiHopOptimizationEnabled,
+  getMultiHopConfig,
+  type OpportunityData,
+  type MultiHopSizingResult,
+} from './multiHopSizing.js';
+
+// Re-export profit optimizer functions
+export {
+  findOptimalSize,
+  quickOptimalEstimate,
+  simulateMultiHopTrade,
+  computeProfitAtSize,
+  computeSearchBounds,
+  type OptimizationResult,
+  type OptimizationConfig,
+  type SearchBounds,
+} from './profitOptimizer.js';
+
+// Re-export slippage models
+export {
+  computeHopOutput,
+  computeAmmOutput,
+  computeClmmOutput,
+  computeDlmmOutput,
+  hasValidHopData,
+  getHopLiquidityUsd,
+  type HopParams,
+} from './slippageModels.js';
+
 // ============================================================================
 // Pool Hot Data Interface (matches ExecutionCache.PoolHot)
 // ============================================================================

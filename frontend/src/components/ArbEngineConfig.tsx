@@ -10,6 +10,8 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   const [uiPrefs, updateUiPrefs] = useModalConfig('arbEngineConfig', {
     expandedSections: {
       execution: true,
+      sizing: true,
+      multiHop: false,
       nearMiss: true,
       edgeAllow: true,
     },
@@ -47,6 +49,22 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       meteoraBalanced: { v1: true, v2: true },
       pumpswap: { amm: true },
     },
+    // Trade Sizing Configuration
+    sizingEnabled: true,
+    minSizeUsd: 0.1,
+    maxSizeUsd: 500,
+    aggressiveness: 0.70,
+    maxSlippageBps: 500,
+    // Multi-hop optimization
+    multiHopEnabled: false,
+    multiHopMethod: 'ternary_search' as 'ternary_search' | 'binary_search',
+    multiHopFixedCostUsd: 0.001,
+    multiHopSafetyMargin: 0.80,
+    multiHopFallbackToBottleneck: true,
+    // Slippage model params
+    ammReserveMultiplier: 0.95,
+    clmmLiquidityDecay: 0.70,
+    dlmmActiveBinFraction: 0.10,
   });
   
   // Save configuration values to localStorage when they change
@@ -81,6 +99,22 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           upwardFactor: execCfg?.adaptiveSizing?.upwardFactor ?? p.upwardFactor,
           // Size randomness
           sizeRandomnessFactor: execCfg?.sizeRandomnessFactor ?? p.sizeRandomnessFactor,
+          // Trade Sizing Configuration
+          sizingEnabled: execCfg?.sizingConfig?.enabled ?? p.sizingEnabled,
+          minSizeUsd: execCfg?.sizingConfig?.minSizeUsd ?? p.minSizeUsd,
+          maxSizeUsd: execCfg?.sizingConfig?.maxSizeUsd ?? p.maxSizeUsd,
+          aggressiveness: execCfg?.sizingConfig?.aggressiveness ?? p.aggressiveness,
+          maxSlippageBps: execCfg?.sizingConfig?.maxSlippageBps ?? p.maxSlippageBps,
+          // Multi-hop optimization
+          multiHopEnabled: execCfg?.sizingConfig?.multiHopOptimization?.enabled ?? p.multiHopEnabled,
+          multiHopMethod: execCfg?.sizingConfig?.multiHopOptimization?.method ?? p.multiHopMethod,
+          multiHopFixedCostUsd: execCfg?.sizingConfig?.multiHopOptimization?.fixedCostUsd ?? p.multiHopFixedCostUsd,
+          multiHopSafetyMargin: execCfg?.sizingConfig?.multiHopOptimization?.safetyMargin ?? p.multiHopSafetyMargin,
+          multiHopFallbackToBottleneck: execCfg?.sizingConfig?.multiHopOptimization?.fallbackToBottleneck ?? p.multiHopFallbackToBottleneck,
+          // Slippage model params
+          ammReserveMultiplier: execCfg?.sizingConfig?.multiHopOptimization?.slippageParams?.amm?.reserveMultiplier ?? p.ammReserveMultiplier,
+          clmmLiquidityDecay: execCfg?.sizingConfig?.multiHopOptimization?.slippageParams?.clmm?.liquidityDecayPerTick ?? p.clmmLiquidityDecay,
+          dlmmActiveBinFraction: execCfg?.sizingConfig?.multiHopOptimization?.slippageParams?.dlmm?.activeBinFraction ?? p.dlmmActiveBinFraction,
           near_miss_enable: (det?.near_miss_enable ?? p.near_miss_enable),
           debug_top_n: (det?.debug_top_n ?? p.debug_top_n),
           edge_allow: {
@@ -148,6 +182,30 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       },
       // Size randomness
       sizeRandomnessFactor: Math.max(0, Math.min(0.5, Number(cfg.sizeRandomnessFactor) || 0.1)),
+      // Trade Sizing Configuration
+      sizingConfig: {
+        enabled: !!cfg.sizingEnabled,
+        minSizeUsd: Math.max(0.01, Number(cfg.minSizeUsd) || 0.1),
+        maxSizeUsd: Math.max(1, Number(cfg.maxSizeUsd) || 500),
+        respectWalletBalance: true,
+        aggressiveness: Math.max(0.1, Math.min(0.99, Number(cfg.aggressiveness) || 0.70)),
+        maxSlippageBps: Math.max(10, Math.min(2000, Number(cfg.maxSlippageBps) || 500)),
+        poolTypeAdjustments: { amm: 1.0, clmm: 1.0, dlmm: 1.0 },
+        multiHopOptimization: {
+          enabled: !!cfg.multiHopEnabled,
+          method: cfg.multiHopMethod || 'ternary_search',
+          fixedCostUsd: Math.max(0, Number(cfg.multiHopFixedCostUsd) || 0.001),
+          safetyMargin: Math.max(0.5, Math.min(1.0, Number(cfg.multiHopSafetyMargin) || 0.80)),
+          searchPrecisionUsd: 0.10,
+          maxIterations: 20,
+          fallbackToBottleneck: cfg.multiHopFallbackToBottleneck !== false,
+          slippageParams: {
+            amm: { reserveMultiplier: Math.max(0.5, Math.min(1.0, Number(cfg.ammReserveMultiplier) || 0.95)) },
+            clmm: { liquidityDecayPerTick: Math.max(0.3, Math.min(0.99, Number(cfg.clmmLiquidityDecay) || 0.70)), maxTickSimulation: 50 },
+            dlmm: { activeBinFraction: Math.max(0.01, Math.min(0.5, Number(cfg.dlmmActiveBinFraction) || 0.10)), liquidityDecayPerBin: 0.75 },
+          },
+        },
+      },
     };
     try {
       const [r1, r2, r3] = await Promise.all([
@@ -169,7 +227,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   };
   const removeListItem = (k: 'dex_allow', i: number) => setCfg((p: any) => ({ ...p, [k]: (p[k]||[]).filter((_: any, idx: number) => idx !== i) }));
 
-  const toggleSection = (section: 'execution' | 'nearMiss' | 'edgeAllow') => {
+  const toggleSection = (section: 'execution' | 'sizing' | 'multiHop' | 'nearMiss' | 'edgeAllow') => {
     updateUiPrefs({
       expandedSections: {
         ...uiPrefs.expandedSections,
@@ -253,6 +311,150 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.near_miss_enable} onChange={(e)=>set('near_miss_enable', e.target.checked)} />Enable near-miss output (arb-rs)</label>
               <div><label className="block text-sm mb-1">Debug Top-N Near Misses</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.debug_top_n} onChange={(e)=>set('debug_top_n', Number(e.target.value)||0)} /></div>
             </div>
+          </div>
+
+          {/* Trade Sizing Section */}
+          <div className="bg-gray-700 rounded p-4">
+            <div className="flex items-center justify-between mb-3 cursor-pointer" onClick={() => toggleSection('sizing')}>
+              <h3 className="text-lg font-semibold">Trade Sizing</h3>
+              <span className="text-gray-400">{uiPrefs.expandedSections?.sizing ? '▼' : '▶'}</span>
+            </div>
+            {uiPrefs.expandedSections?.sizing && (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <label className="flex items-center gap-2 md:col-span-3">
+                    <input type="checkbox" checked={!!cfg.sizingEnabled} onChange={(e)=>set('sizingEnabled', e.target.checked)} />
+                    Enable Dynamic Sizing
+                  </label>
+                  <div>
+                    <label className="block text-sm mb-1">Min Size (USD)</label>
+                    <input type="number" step="0.1" min="0.01" max="100"
+                      className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1"
+                      value={cfg.minSizeUsd ?? 0.1}
+                      onChange={(e)=>set('minSizeUsd', Number(e.target.value) || 0.1)}
+                      disabled={!cfg.sizingEnabled} />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1">Max Size (USD)</label>
+                    <input type="number" step="10" min="1" max="10000"
+                      className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1"
+                      value={cfg.maxSizeUsd ?? 500}
+                      onChange={(e)=>set('maxSizeUsd', Number(e.target.value) || 500)}
+                      disabled={!cfg.sizingEnabled} />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1">Aggressiveness</label>
+                    <input type="number" step="0.05" min="0.1" max="0.99"
+                      className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1"
+                      value={cfg.aggressiveness ?? 0.70}
+                      onChange={(e)=>set('aggressiveness', Number(e.target.value) || 0.70)}
+                      disabled={!cfg.sizingEnabled} />
+                    <div className="text-xs text-gray-400 mt-1">0.5 = conservative, 0.95 = aggressive</div>
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1">Max Slippage (bps)</label>
+                    <input type="number" step="50" min="10" max="2000"
+                      className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1"
+                      value={cfg.maxSlippageBps ?? 500}
+                      onChange={(e)=>set('maxSlippageBps', Number(e.target.value) || 500)}
+                      disabled={!cfg.sizingEnabled} />
+                    <div className="text-xs text-gray-400 mt-1">Cap trade size when slippage exceeds this</div>
+                  </div>
+                </div>
+
+                {/* Multi-Hop Optimization Sub-Section */}
+                <div className="border-t border-gray-600 pt-4 mt-4">
+                  <div className="flex items-center justify-between mb-3 cursor-pointer" onClick={() => toggleSection('multiHop')}>
+                    <h4 className="text-sm font-semibold text-gray-300">Multi-Hop Profit Optimization</h4>
+                    <span className="text-gray-400 text-sm">{uiPrefs.expandedSections?.multiHop ? '▼' : '▶'}</span>
+                  </div>
+                  <label className="flex items-center gap-2 mb-3">
+                    <input type="checkbox" checked={!!cfg.multiHopEnabled} onChange={(e)=>set('multiHopEnabled', e.target.checked)} disabled={!cfg.sizingEnabled} />
+                    <span className="text-sm">Enable Multi-Hop Optimization</span>
+                  </label>
+                  <div className="text-xs text-gray-400 mb-3">
+                    When enabled, simulates trades through all hops to find the size that maximizes profit.
+                    Falls back to bottleneck method if insufficient data.
+                  </div>
+                  
+                  {uiPrefs.expandedSections?.multiHop && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <label className="block text-xs mb-1">Optimization Method</label>
+                          <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm"
+                            value={cfg.multiHopMethod ?? 'ternary_search'}
+                            onChange={(e)=>set('multiHopMethod', e.target.value)}
+                            disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled}>
+                            <option value="ternary_search">Ternary Search</option>
+                            <option value="binary_search">Binary Search</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs mb-1">Fixed Cost (USD)</label>
+                          <input type="number" step="0.0001" min="0" max="0.1"
+                            className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm"
+                            value={cfg.multiHopFixedCostUsd ?? 0.001}
+                            onChange={(e)=>set('multiHopFixedCostUsd', Number(e.target.value) || 0.001)}
+                            disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
+                          <div className="text-xs text-gray-400 mt-1">Gas + Jito tip estimate</div>
+                        </div>
+                        <div>
+                          <label className="block text-xs mb-1">Safety Margin</label>
+                          <input type="number" step="0.05" min="0.5" max="1.0"
+                            className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm"
+                            value={cfg.multiHopSafetyMargin ?? 0.80}
+                            onChange={(e)=>set('multiHopSafetyMargin', Number(e.target.value) || 0.80)}
+                            disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
+                          <div className="text-xs text-gray-400 mt-1">0.8 = use 80% of computed optimal</div>
+                        </div>
+                      </div>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" 
+                          checked={cfg.multiHopFallbackToBottleneck !== false} 
+                          onChange={(e)=>set('multiHopFallbackToBottleneck', e.target.checked)}
+                          disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
+                        <span className="text-sm">Fallback to bottleneck method on insufficient data</span>
+                      </label>
+
+                      {/* Slippage Model Parameters */}
+                      <div className="border-t border-gray-600 pt-3 mt-3">
+                        <h5 className="text-xs font-semibold text-gray-400 mb-3">Slippage Model Parameters</h5>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div>
+                            <label className="block text-xs mb-1">AMM Reserve Multiplier</label>
+                            <input type="number" step="0.05" min="0.5" max="1.0"
+                              className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm"
+                              value={cfg.ammReserveMultiplier ?? 0.95}
+                              onChange={(e)=>set('ammReserveMultiplier', Number(e.target.value) || 0.95)}
+                              disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
+                            <div className="text-xs text-gray-400 mt-1">0.95 = 95% of reserves available</div>
+                          </div>
+                          <div>
+                            <label className="block text-xs mb-1">CLMM Liquidity Decay</label>
+                            <input type="number" step="0.05" min="0.3" max="0.99"
+                              className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm"
+                              value={cfg.clmmLiquidityDecay ?? 0.70}
+                              onChange={(e)=>set('clmmLiquidityDecay', Number(e.target.value) || 0.70)}
+                              disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
+                            <div className="text-xs text-gray-400 mt-1">Per tick (0.7 = 30% drop each tick)</div>
+                          </div>
+                          <div>
+                            <label className="block text-xs mb-1">DLMM Active Bin Fraction</label>
+                            <input type="number" step="0.01" min="0.01" max="0.5"
+                              className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm"
+                              value={cfg.dlmmActiveBinFraction ?? 0.10}
+                              onChange={(e)=>set('dlmmActiveBinFraction', Number(e.target.value) || 0.10)}
+                              disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
+                            <div className="text-xs text-gray-400 mt-1">TVL fraction in active bin</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           <div className="bg-gray-700 rounded p-4">

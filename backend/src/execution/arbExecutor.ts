@@ -36,6 +36,7 @@ import {
   getOptimalSizeFromCurve,
   getPoolTypeFromDex,
   DEFAULT_SIZING_CONFIG,
+  calculateMultiHopOptimalSize,
 } from './capacity/index.js';
 import type { SizingConfig, PoolType } from './capacity/types.js';
 import { recordSlippageFeedback } from './capacity/feedbackCollector.js';
@@ -3056,7 +3057,49 @@ export class ArbExecutor {
       }
     }
     
-    // Find the bottleneck pool's capacity curve
+    // NEW: Try multi-hop profit optimization first if enabled
+    if (config.multiHopOptimization?.enabled) {
+      const multiHopResult = calculateMultiHopOptimalSize(opp, config, walletBalanceUsd);
+      
+      if (multiHopResult) {
+        // Apply randomness for MEV protection
+        const randomnessFactor = this.config.sizeRandomnessFactor ?? 0.1;
+        let finalSize = multiHopResult.sizeUsd;
+        let randomMultiplier = 1.0;
+        
+        if (randomnessFactor > 0) {
+          randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
+          finalSize = finalSize * randomMultiplier;
+          finalSize = Math.max(config.minSizeUsd, Math.min(config.maxSizeUsd, finalSize));
+          finalSize = Math.min(finalSize, walletBalanceUsd);
+        }
+        
+        logger.debug('arb.executor.sizing.multi_hop', {
+          cat: 'arb',
+          path: opp.path.join('->'),
+          method: multiHopResult.method,
+          optimizedSize: multiHopResult.sizeUsd.toFixed(2),
+          finalSize: finalSize.toFixed(2),
+          expectedProfitUsd: multiHopResult.expectedProfitUsd.toFixed(4),
+          expectedSlippageBps: multiHopResult.expectedSlippageBps,
+          confidence: multiHopResult.confidence,
+          randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
+          iterations: multiHopResult.details?.iterations,
+          hopsAnalyzed: multiHopResult.details?.hopsAnalyzed,
+          missingDataHops: multiHopResult.details?.missingDataHops,
+        });
+        
+        return finalSize;
+      }
+      // Fall through to bottleneck method if multi-hop returned null
+      logger.debug('arb.executor.sizing.multi_hop_fallback', {
+        cat: 'arb',
+        path: opp.path.join('->'),
+        reason: 'multi_hop_returned_null',
+      });
+    }
+    
+    // EXISTING: Find the bottleneck pool's capacity curve
     const hopPoolIds = opp.hop_pool_ids || [];
     const hopDexes = opp.hop_dexes || opp.dexes || [];
     
