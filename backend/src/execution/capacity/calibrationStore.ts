@@ -398,10 +398,29 @@ export function recordObservation(
 // ============================================================================
 
 /**
- * Recompute calibration factors from observations
+ * Minimum positive delta (bps) to count as "better than expected".
+ * This avoids noise from tiny differences.
+ */
+const MIN_POSITIVE_DELTA_BPS = 5;
+
+/**
+ * Bonus delta to add for successful trades to provide recovery signal.
+ * When a trade succeeds, we assume we could have traded slightly larger.
+ */
+const SUCCESS_RECOVERY_BONUS_BPS = 10;
+
+/**
+ * Recompute calibration factors from observations.
+ * 
+ * IMPORTANT: This now uses SYMMETRIC feedback:
+ * - Negative outcomes (6007, worse slippage) push scale factor DOWN
+ * - Positive outcomes (success, better slippage) push scale factor UP
+ * 
+ * This prevents the one-way ratchet that previously locked capacity at minimum.
  */
 function recomputeCalibration(cal: PoolCalibration): void {
   const now = Date.now();
+  const previousScaleFactor = cal.scaleFactor;
   
   if (cal.observations.length === 0) {
     cal.scaleFactor = 1.0;
@@ -415,30 +434,47 @@ function recomputeCalibration(cal: PoolCalibration): void {
   let weightedSum = 0;
   let totalWeight = 0;
   let recentCount = 0;
+  let recentSuccessCount = 0;
+  let recentFailCount = 0;
   
   for (const obs of cal.observations) {
     const ageHours = (now - obs.timestamp) / 3600_000;
     const weight = Math.exp(-ageHours / OBSERVATION_DECAY_HOURS);
     
-    // Track recent observations for confidence
+    // Track recent observations for confidence and recovery detection
     if (ageHours < 1) {
       recentCount++;
+      if (obs.outcome === 'success') recentSuccessCount++;
+      if (obs.outcome === '6007') recentFailCount++;
     }
     
-    // For 6007 errors, the slippage was underestimated
-    // deltaBps is negative when quoted was worse than expected
-    // We want to track how much we underestimated (positive = underestimated)
+    // SYMMETRIC FEEDBACK:
+    // - Positive weightedSum = need to reduce capacity (underestimated slippage)
+    // - Negative weightedSum = can increase capacity (overestimated slippage)
+    
     if (obs.outcome === '6007') {
+      // 6007 error: slippage was worse than expected
       // -deltaBps because negative delta means worse than expected
-      weightedSum += -obs.actualDeltaBps * weight;
-      totalWeight += weight;
+      // Use 70% weight (was 100%) to balance with positive feedback
+      weightedSum += -obs.actualDeltaBps * weight * 0.7;
+      totalWeight += weight * 0.7;
     } else if (obs.outcome === 'success') {
-      // Success means our estimate was acceptable
-      // Only count if we were too optimistic (negative delta)
-      if (obs.actualDeltaBps < 0) {
-        weightedSum += -obs.actualDeltaBps * weight * 0.5; // Weight success less
+      if (obs.actualDeltaBps < -MIN_POSITIVE_DELTA_BPS) {
+        // Worse than expected but still succeeded - minor negative signal
+        // Use 30% weight (was 50%)
+        weightedSum += -obs.actualDeltaBps * weight * 0.3;
+        totalWeight += weight * 0.3;
+      } else if (obs.actualDeltaBps > MIN_POSITIVE_DELTA_BPS) {
+        // BETTER than expected - POSITIVE signal to increase capacity
+        // This is the key fix: we now count positive outcomes
+        weightedSum += -obs.actualDeltaBps * weight * 0.5;
+        totalWeight += weight * 0.5;
+      } else {
+        // Neutral outcome (within ±5 bps) - add small positive bias for recovery
+        // Success means our estimate worked, give small credit toward increasing
+        weightedSum += -SUCCESS_RECOVERY_BONUS_BPS * weight * 0.2;
+        totalWeight += weight * 0.2;
       }
-      totalWeight += weight * 0.5;
     }
     // 'other_error' outcomes are not used for calibration
   }
@@ -446,22 +482,33 @@ function recomputeCalibration(cal: PoolCalibration): void {
   // Compute average slippage error
   cal.avgSlippageError = totalWeight > 0 ? weightedSum / totalWeight : 0;
   
-  // Convert slippage error to scale factor
-  // If we're underestimating slippage by X bps on average,
-  // scale down capacity proportionally
-  // Formula: scaleFactor = 1 / (1 + avgError / BREAK_EVEN_SLIPPAGE_BPS)
-  // This means: 50 bps error -> 0.5 scaleFactor (halve capacity)
-  //             25 bps error -> 0.67 scaleFactor
-  //             0 bps error -> 1.0 scaleFactor
-  if (cal.avgSlippageError > 0) {
-    cal.scaleFactor = Math.max(0.5, Math.min(1.5,
-      1 / (1 + cal.avgSlippageError / BREAK_EVEN_SLIPPAGE_BPS)
-    ));
-  } else {
-    // If we're overestimating slippage (good!), slightly increase capacity
-    cal.scaleFactor = Math.max(0.5, Math.min(1.5,
-      1 + Math.min(0.2, -cal.avgSlippageError / (BREAK_EVEN_SLIPPAGE_BPS * 2))
-    ));
+  // SYMMETRIC scale factor calculation
+  // Formula: scaleFactor = 1.0 - (avgError / BREAK_EVEN_SLIPPAGE_BPS)
+  // +50 bps error (underestimating) -> 0.5 scaleFactor
+  // -50 bps error (overestimating) -> 1.5 scaleFactor
+  // 0 bps error -> 1.0 scaleFactor
+  cal.scaleFactor = Math.max(0.5, Math.min(1.5,
+    1.0 - (cal.avgSlippageError / BREAK_EVEN_SLIPPAGE_BPS)
+  ));
+  
+  // RECOVERY MECHANISM: If stuck at low scale factor with mostly successes, recover faster
+  // This catches edge cases where the feedback loop still gets stuck
+  if (previousScaleFactor < 0.7 && recentCount >= 5) {
+    const recentSuccessRate = recentSuccessCount / recentCount;
+    if (recentSuccessRate >= 0.8 && recentFailCount === 0) {
+      // 80%+ success rate with no recent failures - boost recovery
+      const recoveryBoost = Math.min(0.1, (recentSuccessRate - 0.8) * 0.5);
+      cal.scaleFactor = Math.min(1.5, cal.scaleFactor + recoveryBoost);
+      
+      logger.debug('capacity.calibration.recovery_boost', {
+        cat: 'sizing',
+        poolId: cal.poolId.slice(0, 12) + '...',
+        previousScale: previousScaleFactor.toFixed(3),
+        newScale: cal.scaleFactor.toFixed(3),
+        recentSuccessRate: recentSuccessRate.toFixed(2),
+        boost: recoveryBoost.toFixed(3),
+      });
+    }
   }
   
   // Confidence based on observation count and recency
@@ -475,6 +522,14 @@ function recomputeCalibration(cal: PoolCalibration): void {
     // Add recency boost (up to 0.5)
     const recencyConfidence = Math.min(0.5, recentCount / 5);
     cal.confidence = countConfidence + recencyConfidence;
+  }
+  
+  // STALE DATA HANDLING: When confidence drops due to old data, drift toward neutral
+  // This prevents old pessimistic calibrations from persisting forever
+  if (cal.confidence < 0.3 && totalObs >= MIN_OBSERVATIONS_FOR_CONFIDENCE) {
+    // Data is getting stale - blend scale factor toward 1.0
+    const staleDriftFactor = 0.1; // 10% drift per recompute when stale
+    cal.scaleFactor = cal.scaleFactor * (1 - staleDriftFactor) + 1.0 * staleDriftFactor;
   }
   
   cal.lastUpdated = now;

@@ -113,6 +113,13 @@ export async function processSkipSimConfirmation(
 }
 
 /**
+ * Positive delta to record for successful skip-sim executions.
+ * This signals that our estimate worked and we could potentially trade larger.
+ * Skip-sim is only used for pre-validated pools, so success is a strong positive signal.
+ */
+const SKIP_SIM_SUCCESS_DELTA_BPS = 15;
+
+/**
  * Handle successful skip simulation execution.
  * Mark pools as validated and record positive capacity feedback.
  */
@@ -133,13 +140,16 @@ function handleSuccess(
     validatedPoolsCache.markValidated(hop.poolId, hop.dex, hop.variant, 'success');
   }
   
-  // Record positive capacity feedback for each pool
+  // Record POSITIVE capacity feedback for each pool
+  // Success on skip-sim is a strong signal - the trade worked without simulation
+  // This helps recover from overly conservative calibrations
   const perHopSize = sizeUsd / Math.max(1, hops.length);
   
   for (const hop of hops) {
     const poolType = getPoolTypeFromDex(hop.dex, hop.variant);
-    // Success means our estimate was acceptable - record small positive delta
-    recordPoolFeedback(hop.poolId, poolType, 0, perHopSize, 'success');
+    // Record positive delta to signal "we could potentially trade larger"
+    // This is key for recovering from the minimum-size trap
+    recordPoolFeedback(hop.poolId, poolType, SKIP_SIM_SUCCESS_DELTA_BPS, perHopSize, 'success');
   }
   
   // Update stats
@@ -152,6 +162,7 @@ function handleSuccess(
     signature: signature.slice(0, 16),
     hops: hops.length,
     sizeUsd: sizeUsd.toFixed(2),
+    deltaBps: SKIP_SIM_SUCCESS_DELTA_BPS,
     pools: hops.map(h => h.poolId.slice(0, 8)).join(', '),
   });
 }
