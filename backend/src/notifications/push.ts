@@ -60,6 +60,17 @@ function calculatePriority(estimatedProfitUsd: number): NotificationPriority {
 }
 
 /**
+ * Format profit with dynamic precision based on magnitude.
+ * Smaller profits get more decimal places for readability.
+ */
+function formatProfitUsd(usd: number): string {
+  if (usd >= 1) return usd.toFixed(2);      // $1.23
+  if (usd >= 0.01) return usd.toFixed(3);   // $0.123
+  if (usd >= 0.001) return usd.toFixed(4);  // $0.0123
+  return usd.toFixed(5);                     // $0.00123
+}
+
+/**
  * Get profit in USD from TxRecord.
  * Prefers actual profit from execution, falls back to estimated if not available.
  */
@@ -93,7 +104,7 @@ async function buildNotificationPayload(rec: TxRecord): Promise<ArbNotificationP
   
   // Build human-readable summary with profit first
   const profitStr = profitUsd > 0 
-    ? `+$${profitUsd.toFixed(2)}${isActual ? '' : '~'}` // Add ~ suffix if estimated
+    ? `+$${formatProfitUsd(profitUsd)}${isActual ? '' : '~'}` // Add ~ suffix if estimated
     : 'Confirmed';
   const summary = `${profitStr} | ${pathDisplay} via ${dexes.join('/')}`;
   
@@ -147,7 +158,7 @@ export async function sendArbNotification(rec: TxRecord): Promise<void> {
   // Format notification with profit first, then route
   // Use actual profit if available, add ~ suffix if estimated
   const profitDisplay = payload.estimatedProfitUsd && payload.estimatedProfitUsd > 0 
-    ? `+$${payload.estimatedProfitUsd.toFixed(2)}${payload.isActualProfit ? '' : '~'}` 
+    ? `+$${formatProfitUsd(payload.estimatedProfitUsd)}${payload.isActualProfit ? '' : '~'}` 
     : 'Confirmed';
   const routeDisplay = payload.pathSymbols?.join(' → ') || payload.path.join(' → ');
   
