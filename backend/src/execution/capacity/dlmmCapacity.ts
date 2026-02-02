@@ -367,7 +367,7 @@ export function estimateBinsCrossed(
   // Total capacity over N bins ≈ activeBinLiquidity * (1 - decay^N) / (1 - decay)
   // Inverting: N ≈ log(1 - input * (1-decay) / activeBinLiquidity) / log(decay)
   
-  const decay = LIQUIDITY_DECAY_PER_BIN;
+  const decay = DEFAULT_LIQUIDITY_DECAY_PER_BIN;
   const ratio = inputUsd * (1 - decay) / activeBinLiquidityUsd;
   
   if (ratio >= 1) {

@@ -84,12 +84,24 @@ export interface CapacityCurve {
     feeBps?: number;
     /** Adjustment factor applied */
     adjustment?: number;
+    /** Break-even slippage target used for computation (bps) */
+    breakEvenTargetBps?: number;
+    /** Liquidity decay factor per tick/bin crossing (CLMM/DLMM) */
+    liquidityDecay?: number;
+    /** Fraction of TVL in active bin (DLMM) */
+    activeBinFraction?: number;
+    /** Reserve ratio (reserveIn / reserveOut) for AMM pools */
+    reserveRatio?: number;
+    /** Whether pool reserves are significantly imbalanced (AMM) */
+    isImbalanced?: boolean;
     /** Learned calibration data (if applied) */
     calibration?: {
       scaleFactor: number;
       confidence: number;
       observationCount: number;
       avgSlippageError: number;
+      /** Whether this calibration is from pool-type aggregate fallback */
+      isFallback?: boolean;
     };
   };
 }
