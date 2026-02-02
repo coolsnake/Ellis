@@ -24,6 +24,8 @@ import type {
 
 import {
   DEFAULT_SIZING_CONFIG,
+  DEFAULT_BREAK_EVEN_SLIPPAGE_BPS,
+  CONFIDENCE_SAFETY_FACTORS,
   interpolateCurve,
   findSizeAtSlippage,
   getPoolTypeFromDex,
@@ -39,7 +41,7 @@ import {
 import { computeClmmCapacityCurve, clmmTier1Estimate } from './clmmCapacity.js';
 import { computeDlmmCapacityCurve, dlmmTier1Estimate } from './dlmmCapacity.js';
 import { computeAmmCapacityCurve, ammTier1Estimate } from './ammCapacity.js';
-import { getPoolCalibration } from './calibrationStore.js';
+import { getPoolCalibration, getCalibrationWithFallback, getPoolTypeCalibration } from './calibrationStore.js';
 
 import { logger } from '../../utils/logger.js';
 
@@ -62,6 +64,8 @@ export {
   saveCalibrations,
   saveOnShutdown,
   getPoolCalibration,
+  getCalibrationWithFallback,
+  getPoolTypeCalibration,
   recordObservation,
   getCalibrationStats,
   getCalibratedPoolCount,
@@ -178,9 +182,10 @@ export function lookupCapacity(
  * 
  * The algorithm:
  * 1. Find the size where slippage equals the profit margin (break-even)
- * 2. Apply aggressiveness factor (e.g., use 70% of break-even capacity)
- * 3. Clamp to min/max bounds
- * 4. Optionally cap to max slippage
+ * 2. Apply confidence-based safety factor (lower confidence = smaller trades)
+ * 3. Apply aggressiveness factor (e.g., use 70% of break-even capacity)
+ * 4. Clamp to min/max bounds
+ * 5. Optionally cap to max slippage
  * 
  * @param curve - Pre-computed capacity curve
  * @param profitBps - Expected profit in basis points
@@ -196,20 +201,28 @@ export function getOptimalSizeFromCurve(
   let sizeUsd: number;
   let constrainedBy: OptimalSizeResult['constrainedBy'] = undefined;
   
+  // Get confidence-based safety factor
+  // Lower confidence = more conservative sizing to account for uncertainty
+  const confidenceFactor = CONFIDENCE_SAFETY_FACTORS[curve.confidence];
+  
   if (config.useBreakEvenFloor) {
     // Traditional behavior: Start with break-even capacity
     sizeUsd = curve.breakEvenSizeUsd;
     
     // Apply profit-based scaling
-    // If profit is higher than break-even target (50 bps), we can size up
-    // If lower, we should size down
-    const profitRatio = profitBps / 50; // 50 bps is our break-even target
+    // The break-even target is stored in curve metadata, fallback to 50 bps
+    const breakEvenTargetBps = (curve.metadata as any)?.breakEvenTargetBps ?? DEFAULT_BREAK_EVEN_SLIPPAGE_BPS;
+    const profitRatio = profitBps / breakEvenTargetBps;
     if (profitRatio > 0) {
       sizeUsd *= Math.min(2, Math.sqrt(profitRatio)); // Square root scaling, capped at 2x
     }
     
     // Apply aggressiveness factor
     sizeUsd *= config.aggressiveness;
+    
+    // Apply confidence-based safety factor
+    // This scales down trades when we're less certain about our estimates
+    sizeUsd *= confidenceFactor;
   } else {
     // New behavior: Don't use break-even as floor
     // Start from minSizeUsd and let on-chain router validate profitability
@@ -222,6 +235,14 @@ export function getOptimalSizeFromCurve(
   if (sizeUsd > maxSlippageSize) {
     sizeUsd = maxSlippageSize;
     constrainedBy = 'max_slippage';
+  }
+  
+  // Apply capacity constraint (based on active liquidity)
+  // Don't exceed a fraction of active liquidity even if break-even suggests we can
+  const maxCapacitySize = curve.activeLiquidityUsd * 0.3 * confidenceFactor;
+  if (sizeUsd > maxCapacitySize && maxCapacitySize > config.minSizeUsd) {
+    sizeUsd = maxCapacitySize;
+    constrainedBy = 'capacity';
   }
   
   // Apply min/max bounds
@@ -260,22 +281,30 @@ export function getOptimalSizeFromCurve(
  * 
  * This is the "slow path" that does full curve computation.
  * It's called asynchronously and the result is cached.
+ * 
+ * @param poolId - Pool identifier
+ * @param poolType - Pool type (amm, clmm, dlmm)
+ * @param hot - Hot data from execution cache
+ * @param config - Sizing configuration
+ * @param profitBps - Optional profit margin in bps (defaults to 50)
  */
 export function computeAndCacheCapacityCurve(
   poolId: string,
   poolType: PoolType,
   hot: PoolHotData,
-  config: SizingConfig = DEFAULT_SIZING_CONFIG
+  config: SizingConfig = DEFAULT_SIZING_CONFIG,
+  profitBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS
 ): CapacityCurve | null {
   try {
     // Get user-configured adjustment
     const userAdjustment = config.poolTypeAdjustments[poolType];
     
-    // Get learned calibration (if available with sufficient confidence)
-    const calibration = getPoolCalibration(poolId);
-    const learnedFactor = calibration && calibration.confidence > 0.3 
+    // Get calibration with fallback to pool-type aggregate for cold start
+    const calibration = getCalibrationWithFallback(poolId, poolType);
+    const learnedFactor = calibration && calibration.confidence > 0.2 
       ? calibration.scaleFactor 
       : 1.0;
+    const isFallbackCalibration = calibration && (calibration as any).isFallback === true;
     
     // Combine adjustments: user preference * learned correction
     const adjustment = userAdjustment * learnedFactor;
@@ -304,7 +333,8 @@ export function computeAndCacheCapacityCurve(
           sqrtPriceX64,
           tickSpacing,
           feeBps,
-          adjustment
+          adjustment,
+          profitBps
         );
         break;
       }
@@ -321,7 +351,8 @@ export function computeAndCacheCapacityCurve(
           tvlUsd,
           binStep,
           feeBps,
-          adjustment
+          adjustment,
+          profitBps
         );
         break;
       }
@@ -337,21 +368,24 @@ export function computeAndCacheCapacityCurve(
           reserveUsd,
           reserveUsd,
           feeBps,
-          adjustment
+          adjustment,
+          profitBps
         );
         break;
       }
     }
     
     // Add calibration info to curve metadata
-    if (calibration && calibration.confidence > 0.3) {
+    if (calibration && calibration.confidence > 0.2) {
+      const poolCal = calibration as any;
       curve.metadata = {
         ...curve.metadata,
         calibration: {
           scaleFactor: calibration.scaleFactor,
           confidence: calibration.confidence,
-          observationCount: calibration.observations.length,
-          avgSlippageError: calibration.avgSlippageError,
+          observationCount: poolCal.observations?.length ?? 0,
+          avgSlippageError: poolCal.avgSlippageError ?? 0,
+          isFallback: isFallbackCalibration,
         },
       };
       
@@ -362,6 +396,8 @@ export function computeAndCacheCapacityCurve(
         learnedFactor: learnedFactor.toFixed(3),
         confidence: calibration.confidence.toFixed(2),
         effectiveAdjustment: adjustment.toFixed(3),
+        isFallback: isFallbackCalibration,
+        profitBps,
       });
     }
     
@@ -407,24 +443,33 @@ export function recomputeCapacityCurve(
  * Generate a Tier 1 (instant) capacity curve estimate.
  * Used when no pre-computed curve is available.
  * 
- * Now also applies learned calibration if available.
+ * Now also applies learned calibration if available, with fallback
+ * to pool-type aggregate calibration for cold start.
+ * 
+ * @param poolId - Pool identifier
+ * @param poolType - Pool type
+ * @param hot - Hot data from execution cache
+ * @param config - Sizing configuration
+ * @param profitBps - Optional profit margin in bps (defaults to 50)
  */
 function generateTier1Curve(
   poolId: string,
   poolType: PoolType,
   hot: PoolHotData,
-  config: SizingConfig
+  config: SizingConfig,
+  profitBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS
 ): CapacityCurve {
   const now = Date.now();
   
   // Get user-configured adjustment
   const userAdjustment = config.poolTypeAdjustments[poolType];
   
-  // Get learned calibration (if available with sufficient confidence)
-  const calibration = getPoolCalibration(poolId);
-  const learnedFactor = calibration && calibration.confidence > 0.3 
+  // Get calibration with fallback to pool-type aggregate for cold start
+  const calibration = getCalibrationWithFallback(poolId, poolType);
+  const learnedFactor = calibration && calibration.confidence > 0.2 
     ? calibration.scaleFactor 
     : 1.0;
+  const isFallbackCalibration = calibration && (calibration as any).isFallback === true;
   
   // Combine adjustments: user preference * learned correction
   const adjustment = userAdjustment * learnedFactor;
@@ -444,7 +489,7 @@ function generateTier1Curve(
       const feeBps = hot.feeRate ?? 30;
       
       for (const size of sizes) {
-        const estimate = clmmTier1Estimate(size, liquidity, sqrtPriceX64, tickSpacing, feeBps);
+        const estimate = clmmTier1Estimate(size, liquidity, sqrtPriceX64, tickSpacing, feeBps, profitBps);
         curve.set(size, estimate.outputMultiplier);
         if (size === 50) {
           breakEvenSizeUsd = estimate.breakEvenSizeUsd * adjustment;
@@ -460,7 +505,7 @@ function generateTier1Curve(
       const feeBps = hot.feeRate ?? 25;
       
       for (const size of sizes) {
-        const estimate = dlmmTier1Estimate(size, tvlUsd, binStep, feeBps);
+        const estimate = dlmmTier1Estimate(size, tvlUsd, binStep, feeBps, profitBps);
         curve.set(size, estimate.outputMultiplier);
         if (size === 50) {
           breakEvenSizeUsd = estimate.breakEvenSizeUsd * adjustment;
@@ -476,7 +521,7 @@ function generateTier1Curve(
       const feeBps = hot.feeRate ?? 25;
       
       for (const size of sizes) {
-        const estimate = ammTier1Estimate(size, reserveUsd, reserveUsd, feeBps);
+        const estimate = ammTier1Estimate(size, reserveUsd, reserveUsd, feeBps, profitBps);
         curve.set(size, estimate.outputMultiplier);
         if (size === 50) {
           breakEvenSizeUsd = estimate.breakEvenSizeUsd * adjustment;
@@ -488,17 +533,18 @@ function generateTier1Curve(
   }
   
   // Build calibration metadata if calibration was applied
-  const calibrationMeta = calibration && calibration.confidence > 0.3 ? {
+  const calibrationMeta = calibration && calibration.confidence > 0.2 ? {
     calibration: {
       scaleFactor: calibration.scaleFactor,
       confidence: calibration.confidence,
-      observationCount: calibration.observations.length,
-      avgSlippageError: calibration.avgSlippageError,
+      observationCount: (calibration as any).observations?.length ?? 0,
+      avgSlippageError: (calibration as any).avgSlippageError ?? 0,
+      isFallback: isFallbackCalibration,
     },
   } : {};
   
   // Log when calibration is applied in Tier 1
-  if (calibration && calibration.confidence > 0.3) {
+  if (calibration && calibration.confidence > 0.2) {
     logger.debug('capacity.tier1.calibration_applied', {
       cat: 'sizing',
       poolId: poolId.slice(0, 12) + '...',
@@ -507,6 +553,8 @@ function generateTier1Curve(
       confidence: calibration.confidence.toFixed(2),
       effectiveAdjustment: adjustment.toFixed(3),
       breakEvenSizeUsd: breakEvenSizeUsd.toFixed(2),
+      isFallback: isFallbackCalibration,
+      profitBps,
     });
   }
   
@@ -523,6 +571,7 @@ function generateTier1Curve(
       binStep: hot.binStep,
       feeBps: hot.feeRate,
       adjustment,
+      breakEvenTargetBps: profitBps,
       ...calibrationMeta,
     },
   };

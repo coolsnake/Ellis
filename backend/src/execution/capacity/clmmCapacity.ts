@@ -13,7 +13,7 @@
  */
 
 import type { CapacityCurve, Tier1EstimateResult } from './types.js';
-import { STANDARD_CURVE_POINTS } from './types.js';
+import { STANDARD_CURVE_POINTS, DEFAULT_BREAK_EVEN_SLIPPAGE_BPS } from './types.js';
 import { logger } from '../../utils/logger.js';
 
 // ============================================================================
@@ -27,14 +27,27 @@ const Q64 = BigInt(1) << BigInt(64);
 const MIN_LIQUIDITY = BigInt(1000);
 
 /** 
- * Conservative estimate of liquidity decay per tick crossing.
- * Real pools vary, but this provides a safe approximation.
- * 0.85 means each subsequent tick has ~85% of previous tick's liquidity.
+ * Default liquidity decay per tick crossing when no tick array data is available.
+ * This is conservative - real pools vary widely.
+ * 0.70 means each subsequent tick has ~70% of previous tick's liquidity.
+ * (Reduced from 0.85 to be more conservative given uncertainty)
  */
-const LIQUIDITY_DECAY_PER_TICK = 0.85;
+const DEFAULT_LIQUIDITY_DECAY_PER_TICK = 0.70;
 
-/** Break-even slippage target (50 bps) for estimating break-even size */
-const BREAK_EVEN_SLIPPAGE_BPS = 50;
+/**
+ * Liquidity decay factors based on tick spacing.
+ * Pools with larger tick spacing tend to have more concentrated liquidity.
+ * These values are empirically tuned.
+ */
+const LIQUIDITY_DECAY_BY_TICK_SPACING: Record<number, number> = {
+  1: 0.60,    // Very tight spacing (Orca 1-tick) - liquidity falls off fast
+  8: 0.65,    // Tight spacing (common for stablecoins)
+  10: 0.65,   // Raydium common
+  60: 0.70,   // Medium spacing (Orca default for volatile pairs)
+  64: 0.70,   // Raydium common
+  100: 0.75,  // Wide spacing
+  200: 0.80,  // Very wide spacing
+};
 
 // ============================================================================
 // Main Curve Computation
@@ -49,6 +62,7 @@ const BREAK_EVEN_SLIPPAGE_BPS = 50;
  * @param tickSpacing - Tick spacing for the pool
  * @param feeBps - Pool fee in basis points
  * @param adjustment - Multiplier from user config (0.75, 1.0, or 1.25)
+ * @param breakEvenSlippageBps - Target slippage in bps (defaults to 50, should be actual profitBps)
  */
 export function computeClmmCapacityCurve(
   poolId: string,
@@ -56,7 +70,8 @@ export function computeClmmCapacityCurve(
   sqrtPriceX64: bigint,
   tickSpacing: number,
   feeBps: number,
-  adjustment: number = 1.0
+  adjustment: number = 1.0,
+  breakEvenSlippageBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS
 ): CapacityCurve {
   const now = Date.now();
   
@@ -85,6 +100,9 @@ export function computeClmmCapacityCurve(
   // singleTickCapacity ≈ activeLiquidity * (tickSpacing / 10000)
   const singleTickCapacityUsd = activeLiquidityUsd * (tickSpacing / 10000);
   
+  // Get tick-spacing-specific liquidity decay factor
+  const liquidityDecay = getLiquidityDecayForTickSpacing(tickSpacing);
+  
   // Build the curve at standard points
   const curve = new Map<number, number>();
   
@@ -94,18 +112,20 @@ export function computeClmmCapacityCurve(
       activeLiquidityUsd,
       singleTickCapacityUsd,
       feeBps,
-      tickSpacing
+      tickSpacing,
+      liquidityDecay
     );
     curve.set(sizeUsd, outputMultiplier);
   }
   
-  // Find break-even size (where slippage = BREAK_EVEN_SLIPPAGE_BPS)
+  // Find break-even size using actual profit margin (not hardcoded 50 bps)
   const breakEvenSizeUsd = findBreakEvenSize(
     activeLiquidityUsd,
     singleTickCapacityUsd,
     feeBps,
     tickSpacing,
-    BREAK_EVEN_SLIPPAGE_BPS
+    breakEvenSlippageBps,
+    liquidityDecay
   );
   
   const result: CapacityCurve = {
@@ -120,6 +140,9 @@ export function computeClmmCapacityCurve(
       tickSpacing,
       feeBps,
       adjustment,
+      // Track the break-even target used for transparency
+      breakEvenTargetBps: breakEvenSlippageBps,
+      liquidityDecay,
     },
   };
   
@@ -131,6 +154,8 @@ export function computeClmmCapacityCurve(
     activeLiquidityUsd: activeLiquidityUsd.toFixed(2),
     singleTickCapacityUsd: singleTickCapacityUsd.toFixed(2),
     breakEvenSizeUsd: breakEvenSizeUsd.toFixed(2),
+    breakEvenTargetBps: breakEvenSlippageBps,
+    liquidityDecay,
     adjustment,
   });
   
@@ -138,15 +163,43 @@ export function computeClmmCapacityCurve(
 }
 
 /**
+ * Get liquidity decay factor based on tick spacing.
+ * Pools with different tick spacing have different liquidity distributions.
+ */
+function getLiquidityDecayForTickSpacing(tickSpacing: number): number {
+  // Check for exact match first
+  if (LIQUIDITY_DECAY_BY_TICK_SPACING[tickSpacing] !== undefined) {
+    return LIQUIDITY_DECAY_BY_TICK_SPACING[tickSpacing];
+  }
+  
+  // Interpolate/extrapolate based on tick spacing
+  // Smaller tick spacing = more concentrated = faster decay
+  // Larger tick spacing = more spread out = slower decay
+  if (tickSpacing <= 1) return 0.55;
+  if (tickSpacing <= 10) return 0.60 + (tickSpacing - 1) * 0.005;
+  if (tickSpacing <= 64) return 0.65 + (tickSpacing - 10) * 0.001;
+  if (tickSpacing <= 200) return 0.70 + (tickSpacing - 64) * 0.0007;
+  return 0.80; // Very wide spacing
+}
+
+/**
  * Tier 1 instant estimate for CLMM when no curve is available.
  * Uses minimal data to provide a quick (but less accurate) estimate.
+ * 
+ * @param inputUsd - Trade size to estimate
+ * @param liquidityRaw - Raw liquidity from pool state
+ * @param sqrtPriceX64 - Sqrt price in Q64.64 format
+ * @param tickSpacing - Tick spacing
+ * @param feeBps - Fee in basis points
+ * @param breakEvenSlippageBps - Target slippage for break-even (default: 50 bps)
  */
 export function clmmTier1Estimate(
   inputUsd: number,
   liquidityRaw: bigint,
   sqrtPriceX64: bigint,
   tickSpacing: number,
-  feeBps: number
+  feeBps: number,
+  breakEvenSlippageBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS
 ): Tier1EstimateResult {
   // Convert to usable values
   const L = liquidityRaw > MIN_LIQUIDITY ? liquidityRaw : MIN_LIQUIDITY;
@@ -159,13 +212,17 @@ export function clmmTier1Estimate(
   
   const singleTickCapacityUsd = activeLiquidityUsd * (tickSpacing / 10000);
   
+  // Get tick-spacing-specific liquidity decay
+  const liquidityDecay = getLiquidityDecayForTickSpacing(tickSpacing);
+  
   // Compute output multiplier
   const outputMultiplier = computeClmmOutputMultiplier(
     inputUsd,
     activeLiquidityUsd,
     singleTickCapacityUsd,
     feeBps,
-    tickSpacing
+    tickSpacing,
+    liquidityDecay
   );
   
   // Convert to slippage bps
@@ -174,13 +231,14 @@ export function clmmTier1Estimate(
   // Estimate ticks crossed
   const ticksCrossed = Math.ceil(inputUsd / singleTickCapacityUsd);
   
-  // Estimate break-even size
+  // Estimate break-even size using actual profit margin
   const breakEvenSizeUsd = findBreakEvenSize(
     activeLiquidityUsd,
     singleTickCapacityUsd,
     feeBps,
     tickSpacing,
-    BREAK_EVEN_SLIPPAGE_BPS
+    breakEvenSlippageBps,
+    liquidityDecay
   );
   
   return {
@@ -201,13 +259,21 @@ export function clmmTier1Estimate(
 /**
  * Compute output multiplier for a given trade size.
  * Models tick crossing with decaying liquidity.
+ * 
+ * @param inputUsd - Trade size in USD
+ * @param activeLiquidityUsd - Liquidity in the active tick (USD)
+ * @param singleTickCapacityUsd - Trade size that fills one tick
+ * @param feeBps - Fee in basis points
+ * @param tickSpacing - Tick spacing
+ * @param liquidityDecay - Decay factor per tick crossing (0-1)
  */
 function computeClmmOutputMultiplier(
   inputUsd: number,
   activeLiquidityUsd: number,
   singleTickCapacityUsd: number,
   feeBps: number,
-  tickSpacing: number
+  tickSpacing: number,
+  liquidityDecay: number = DEFAULT_LIQUIDITY_DECAY_PER_TICK
 ): number {
   if (inputUsd <= 0 || activeLiquidityUsd <= 0) return 1.0;
   
@@ -228,7 +294,10 @@ function computeClmmOutputMultiplier(
   let currentTickCapacity = singleTickCapacityUsd;
   let ticksCrossed = 0;
   
-  while (remainingInput > 0 && currentLiquidity > 1 && ticksCrossed < 100) {
+  // Cap iterations to prevent infinite loops
+  const maxTicks = Math.min(100, Math.ceil(inputUsd / (singleTickCapacityUsd * 0.1)));
+  
+  while (remainingInput > 0 && currentLiquidity > 1 && ticksCrossed < maxTicks) {
     // Amount we can swap in this tick
     const amountInTick = Math.min(remainingInput, currentTickCapacity);
     
@@ -241,18 +310,21 @@ function computeClmmOutputMultiplier(
     
     // Move to next tick with decayed liquidity
     ticksCrossed++;
-    currentLiquidity *= LIQUIDITY_DECAY_PER_TICK;
+    currentLiquidity *= liquidityDecay;
     currentTickCapacity = currentLiquidity * (tickSpacing / 10000);
   }
   
   // If we still have remaining input, it means we've exhausted available liquidity
-  // Add it with severe slippage
+  // Add it with severe slippage (scaled by how much overflow)
   if (remainingInput > 0) {
-    totalOutput += remainingInput * 0.5 * feeMultiplier; // 50% slippage for overflow
+    const overflowRatio = remainingInput / inputUsd;
+    const overflowPenalty = 0.3 + 0.2 * (1 - overflowRatio); // 30-50% for overflow
+    totalOutput += remainingInput * overflowPenalty * feeMultiplier;
   }
   
   // Output multiplier = total output / input
-  return Math.max(0.5, Math.min(1.0, totalOutput / inputUsd));
+  // Don't clamp too aggressively - let callers see extreme slippage
+  return Math.max(0.3, Math.min(1.0, totalOutput / inputUsd));
 }
 
 /**
@@ -263,14 +335,15 @@ function findBreakEvenSize(
   singleTickCapacityUsd: number,
   feeBps: number,
   tickSpacing: number,
-  targetSlippageBps: number
+  targetSlippageBps: number,
+  liquidityDecay: number = DEFAULT_LIQUIDITY_DECAY_PER_TICK
 ): number {
   const targetMultiplier = 1 - targetSlippageBps / 10000;
   
   let low = 0.1;
   let high = activeLiquidityUsd * 0.5; // Cap at 50% of active liquidity
   
-  // Binary search
+  // Binary search with early termination
   for (let i = 0; i < 20; i++) {
     const mid = (low + high) / 2;
     const mult = computeClmmOutputMultiplier(
@@ -278,7 +351,8 @@ function findBreakEvenSize(
       activeLiquidityUsd,
       singleTickCapacityUsd,
       feeBps,
-      tickSpacing
+      tickSpacing,
+      liquidityDecay
     );
     
     if (mult > targetMultiplier) {
@@ -286,6 +360,9 @@ function findBreakEvenSize(
     } else {
       high = mid;
     }
+    
+    // Early termination if converged
+    if (Math.abs(high - low) < 0.01) break;
   }
   
   return (low + high) / 2;

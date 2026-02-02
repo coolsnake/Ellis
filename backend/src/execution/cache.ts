@@ -319,15 +319,22 @@ export class ExecutionCache {
     
     this.hotByPool.set(poolId, merged);
     
-    // Trigger capacity curve recomputation on boundary crossings
-    // This runs asynchronously to avoid blocking the hot path
+    // On boundary crossings, invalidate the capacity curve but DON'T recompute immediately.
+    // Recomputation will happen AFTER tick/bin arrays are validated by the background validator.
+    // This prevents using stale array data for capacity estimates.
     if (tickArrayBoundaryCrossed || binArrayBoundaryCrossed) {
-      const poolType = this.inferPoolType(poolId, existing, val);
-      if (poolType) {
-        // Invalidate existing curve and trigger async recomputation
-        invalidateCapacityCurve(poolId);
-        recomputeCapacityCurve(poolId, poolType, merged, this.sizingConfig);
-      }
+      // Just invalidate - recomputation will happen in setValidatedTickArrays/setValidatedBinArrays
+      invalidateCapacityCurve(poolId);
+      
+      try {
+        logger.debug('cache.capacity.invalidated_on_boundary', {
+          cat: 'cache',
+          poolId: poolId.slice(0, 8) + '…',
+          tickCrossed: tickArrayBoundaryCrossed,
+          binCrossed: binArrayBoundaryCrossed,
+          hint: 'Will recompute after array validation',
+        });
+      } catch {}
     }
   }
   
@@ -601,35 +608,53 @@ export class ExecutionCache {
 
   /**
    * Mark tick arrays as validated (called by background validator)
-   * This clears the needsTickArrayValidation flag and stores the validated arrays
+   * This clears the needsTickArrayValidation flag and stores the validated arrays.
+   * Also triggers capacity curve recomputation now that we have validated data.
    */
   setValidatedTickArrays(
     poolId: string, 
     tickArrays: { center?: string; lower?: string | string[]; upper?: string | string[] }
   ): void {
     const existing = this.hotByPool.get(poolId) || {};
-    this.hotByPool.set(poolId, {
+    const merged = {
       ...existing,
       tickArrays,
       needsTickArrayValidation: false,
       tickArraysValidatedAt: Date.now(),
-    });
+    };
+    this.hotByPool.set(poolId, merged);
+    
+    // Now that arrays are validated, trigger capacity curve recomputation
+    // (this was deferred from the boundary crossing to ensure we have valid data)
+    const poolType = this.inferPoolType(poolId, existing, merged);
+    if (poolType && this.sizingConfig) {
+      recomputeCapacityCurve(poolId, poolType, merged, this.sizingConfig);
+    }
   }
 
   /**
    * Mark bin arrays as validated (called by background validator)
+   * Also triggers capacity curve recomputation now that we have validated data.
    */
   setValidatedBinArrays(
     poolId: string,
     binArrays: { lower?: string; upper?: string; active?: string; arrays?: Array<{ index: number; address: string }> }
   ): void {
     const existing = this.hotByPool.get(poolId) || {};
-    this.hotByPool.set(poolId, {
+    const merged = {
       ...existing,
       binArrays,
       needsBinArrayValidation: false,
       binArraysValidatedAt: Date.now(),
-    });
+    };
+    this.hotByPool.set(poolId, merged);
+    
+    // Now that arrays are validated, trigger capacity curve recomputation
+    // (this was deferred from the boundary crossing to ensure we have valid data)
+    const poolType = this.inferPoolType(poolId, existing, merged);
+    if (poolType && this.sizingConfig) {
+      recomputeCapacityCurve(poolId, poolType, merged, this.sizingConfig);
+    }
   }
 
   /**

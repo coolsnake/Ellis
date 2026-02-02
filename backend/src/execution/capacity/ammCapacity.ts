@@ -15,7 +15,7 @@
  */
 
 import type { CapacityCurve, Tier1EstimateResult } from './types.js';
-import { STANDARD_CURVE_POINTS } from './types.js';
+import { STANDARD_CURVE_POINTS, DEFAULT_BREAK_EVEN_SLIPPAGE_BPS } from './types.js';
 import { logger } from '../../utils/logger.js';
 
 // ============================================================================
@@ -24,9 +24,6 @@ import { logger } from '../../utils/logger.js';
 
 /** Minimum reserve to consider (avoid division by zero) */
 const MIN_RESERVE_USD = 100;
-
-/** Break-even slippage target (50 bps) */
-const BREAK_EVEN_SLIPPAGE_BPS = 50;
 
 // ============================================================================
 // Main Curve Computation
@@ -40,13 +37,15 @@ const BREAK_EVEN_SLIPPAGE_BPS = 50;
  * @param reserveOutUsd - Reserve of output token in USD
  * @param feeBps - Pool fee in basis points
  * @param adjustment - Multiplier from user config (0.75, 1.0, or 1.25)
+ * @param breakEvenSlippageBps - Target slippage for break-even (defaults to 50, should be actual profitBps)
  */
 export function computeAmmCapacityCurve(
   poolId: string,
   reserveInUsd: number,
   reserveOutUsd: number,
   feeBps: number,
-  adjustment: number = 1.0
+  adjustment: number = 1.0,
+  breakEvenSlippageBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS
 ): CapacityCurve {
   const now = Date.now();
   
@@ -54,9 +53,19 @@ export function computeAmmCapacityCurve(
   const safeReserveIn = Math.max(reserveInUsd, MIN_RESERVE_USD);
   const safeReserveOut = Math.max(reserveOutUsd, MIN_RESERVE_USD);
   
-  // Use geometric mean as representative liquidity
-  // This provides direction-agnostic capacity
-  const activeLiquidityUsd = Math.sqrt(safeReserveIn * safeReserveOut) * adjustment;
+  // Compute both direction-specific and direction-agnostic liquidity
+  // Direction-specific: use actual reserveIn for capacity
+  // Direction-agnostic: use geometric mean
+  const geometricMeanLiquidity = Math.sqrt(safeReserveIn * safeReserveOut);
+  
+  // For imbalanced pools, capacity is constrained by the smaller side
+  // Use the minimum of input reserve and geometric mean for conservative estimate
+  const effectiveLiquidity = Math.min(safeReserveIn, geometricMeanLiquidity);
+  const activeLiquidityUsd = effectiveLiquidity * adjustment;
+  
+  // Track imbalance for logging
+  const imbalanceRatio = safeReserveIn / safeReserveOut;
+  const isImbalanced = imbalanceRatio < 0.5 || imbalanceRatio > 2.0;
   
   // Build the curve at standard points
   const curve = new Map<number, number>();
@@ -71,11 +80,11 @@ export function computeAmmCapacityCurve(
     curve.set(sizeUsd, outputMultiplier);
   }
   
-  // Find break-even size using closed-form
+  // Find break-even size using actual profit margin
   const breakEvenSizeUsd = findBreakEvenSize(
     safeReserveIn,
     feeBps,
-    BREAK_EVEN_SLIPPAGE_BPS
+    breakEvenSlippageBps
   );
   
   const result: CapacityCurve = {
@@ -89,6 +98,10 @@ export function computeAmmCapacityCurve(
     metadata: {
       feeBps,
       adjustment,
+      breakEvenTargetBps: breakEvenSlippageBps,
+      // Track reserve ratio for transparency
+      reserveRatio: imbalanceRatio,
+      isImbalanced,
     },
   };
   
@@ -99,6 +112,9 @@ export function computeAmmCapacityCurve(
     reserveOutUsd: safeReserveOut.toFixed(2),
     activeLiquidityUsd: activeLiquidityUsd.toFixed(2),
     breakEvenSizeUsd: breakEvenSizeUsd.toFixed(2),
+    breakEvenTargetBps: breakEvenSlippageBps,
+    imbalanceRatio: imbalanceRatio.toFixed(2),
+    isImbalanced,
     adjustment,
   });
   
@@ -108,12 +124,19 @@ export function computeAmmCapacityCurve(
 /**
  * Tier 1 instant estimate for AMM when no curve is available.
  * AMM is simple enough that Tier 1 is quite accurate.
+ * 
+ * @param inputUsd - Trade size to estimate
+ * @param reserveInUsd - Reserve of input token in USD
+ * @param reserveOutUsd - Reserve of output token in USD
+ * @param feeBps - Fee in basis points
+ * @param breakEvenSlippageBps - Target slippage for break-even (default: 50 bps)
  */
 export function ammTier1Estimate(
   inputUsd: number,
   reserveInUsd: number,
   reserveOutUsd: number,
-  feeBps: number
+  feeBps: number,
+  breakEvenSlippageBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS
 ): Tier1EstimateResult {
   // Ensure minimum reserves
   const safeReserveIn = Math.max(reserveInUsd, MIN_RESERVE_USD);
@@ -130,11 +153,11 @@ export function ammTier1Estimate(
   // Convert to slippage bps
   const slippageBps = Math.round((1 - outputMultiplier) * 10000);
   
-  // Find break-even size
+  // Find break-even size using actual profit margin
   const breakEvenSizeUsd = findBreakEvenSize(
     safeReserveIn,
     feeBps,
-    BREAK_EVEN_SLIPPAGE_BPS
+    breakEvenSlippageBps
   );
   
   return {

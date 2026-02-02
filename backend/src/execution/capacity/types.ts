@@ -243,6 +243,23 @@ export const STANDARD_CURVE_POINTS = [
   1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000
 ];
 
+/**
+ * Default break-even slippage target in basis points.
+ * This is the slippage at which profit margin is consumed.
+ * In practice, this should be overridden by actual profitBps from opportunities.
+ */
+export const DEFAULT_BREAK_EVEN_SLIPPAGE_BPS = 50;
+
+/**
+ * Confidence-based safety factors for sizing.
+ * When confidence is lower, we scale down trade sizes to reduce risk.
+ */
+export const CONFIDENCE_SAFETY_FACTORS = {
+  high: 1.0,    // Full capacity for high-confidence estimates
+  medium: 0.75, // 75% capacity for medium-confidence (CLMM/DLMM estimates)
+  low: 0.5,     // 50% capacity for low-confidence (Tier 1 fallbacks)
+} as const;
+
 // ============================================================================
 // Utility Functions
 // ============================================================================

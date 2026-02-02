@@ -252,6 +252,100 @@ export function getPoolCalibration(poolId: string): PoolCalibration | undefined 
 }
 
 /**
+ * Get pool-type-level calibration as a fallback for uncalibrated pools.
+ * 
+ * This solves the cold-start problem: new pools have no calibration data,
+ * so we use aggregate learnings from all pools of the same type.
+ * 
+ * @param poolType - The pool type (amm, clmm, dlmm)
+ * @returns Aggregate calibration for the pool type, or undefined if insufficient data
+ */
+export function getPoolTypeCalibration(poolType: PoolType): {
+  scaleFactor: number;
+  confidence: number;
+  poolCount: number;
+} | undefined {
+  let totalWeight = 0;
+  let weightedScaleSum = 0;
+  let poolCount = 0;
+  
+  const now = Date.now();
+  
+  for (const cal of calibrations.values()) {
+    if (cal.poolType !== poolType) continue;
+    if (cal.confidence < 0.2) continue; // Skip very low confidence calibrations
+    
+    // Weight by confidence and recency
+    const ageHours = (now - cal.lastUpdated) / 3600_000;
+    const recencyWeight = Math.exp(-ageHours / 48); // 48-hour half-life
+    const weight = cal.confidence * recencyWeight;
+    
+    weightedScaleSum += cal.scaleFactor * weight;
+    totalWeight += weight;
+    poolCount++;
+  }
+  
+  // Need at least 3 pools with calibration data
+  if (poolCount < 3 || totalWeight <= 0) {
+    return undefined;
+  }
+  
+  const avgScaleFactor = weightedScaleSum / totalWeight;
+  
+  // Aggregate confidence is lower than individual pool confidence
+  // because we're extrapolating from other pools
+  const aggregateConfidence = Math.min(0.5, totalWeight / 10);
+  
+  return {
+    scaleFactor: avgScaleFactor,
+    confidence: aggregateConfidence,
+    poolCount,
+  };
+}
+
+/**
+ * Get calibration for a pool with fallback to pool-type-level calibration.
+ * 
+ * This is the recommended function for getting calibration data, as it
+ * handles the cold-start problem by falling back to aggregate data.
+ * 
+ * @param poolId - The pool identifier
+ * @param poolType - The pool type (for fallback)
+ * @returns Pool-specific calibration if available, otherwise pool-type aggregate
+ */
+export function getCalibrationWithFallback(
+  poolId: string,
+  poolType: PoolType
+): PoolCalibration | { scaleFactor: number; confidence: number; isFallback: true } | undefined {
+  // Try pool-specific calibration first
+  const poolCal = calibrations.get(poolId);
+  if (poolCal && poolCal.confidence > 0.2) {
+    return poolCal;
+  }
+  
+  // Fall back to pool-type aggregate
+  const typeCal = getPoolTypeCalibration(poolType);
+  if (typeCal) {
+    logger.debug('capacity.calibration.using_fallback', {
+      cat: 'sizing',
+      poolId: poolId.slice(0, 12) + '...',
+      poolType,
+      fallbackScaleFactor: typeCal.scaleFactor.toFixed(3),
+      fallbackConfidence: typeCal.confidence.toFixed(2),
+      poolsUsed: typeCal.poolCount,
+    });
+    
+    return {
+      scaleFactor: typeCal.scaleFactor,
+      confidence: typeCal.confidence,
+      isFallback: true,
+    };
+  }
+  
+  return undefined;
+}
+
+/**
  * Record a new slippage observation for a pool
  */
 export function recordObservation(

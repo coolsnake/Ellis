@@ -44,39 +44,9 @@ pub fn detect_negative_cycles(g: &ArbGraph, max_hops: usize) -> Vec<DetectedCycl
         let v = e.target().index();
         let w = -(e.weight().rate_effective.max(1e-12)).ln();
         if dist[u] + w < dist[v] - 1e-12 {
-            // Found a cycle, backtrack
-            let mut x = v;
-            // Limit backtracking to max_hops to find the cycle start
-            let max_backtrack = max_hops.min(n);
-            for _ in 0..max_backtrack {
-                if let Some(p) = pred[x] {
-                    x = p;
-                } else {
-                    break;
-                }
-            }
-            // collect cycle
-            let mut cycle = Vec::new();
-            let mut cur = x;
-            loop {
-                cycle.push(cur);
-                // Early exit if cycle exceeds max_hops
-                if cycle.len() > max_hops {
-                    break;
-                }
-                if let Some(p) = pred[cur] {
-                    cur = p;
-                } else {
-                    // No predecessor means we can't continue the cycle
-                    break;
-                }
-                if cur == x || cycle.len() > max_hops {
-                    break;
-                }
-            }
-            // Only add cycles that respect max_hops (and are at least 2 nodes)
-            if cycle.len() >= 2 && cycle.len() <= max_hops {
-                cycle.reverse();
+            // Found a negative cycle - use Floyd's algorithm to extract it properly
+            let cycle = extract_cycle_from_node(v, &pred, max_hops);
+            if !cycle.is_empty() {
                 cycles.push(DetectedCycle {
                     nodes: cycle,
                     log_sum: 0.0,
@@ -387,38 +357,9 @@ pub fn detect_negative_cycles_filtered(
     for &(u, v, rate) in filtered_edges.iter() {
         let w = -(rate.max(1e-12)).ln();
         if dist[u] + w < dist[v] - 1e-12 {
-            // Found a cycle, backtrack
-            let mut x = v;
-            // Limit backtracking to max_hops
-            let max_backtrack = max_hops.min(n);
-            for _ in 0..max_backtrack {
-                if let Some(p) = pred[x] {
-                    x = p;
-                } else {
-                    break;
-                }
-            }
-            // collect cycle
-            let mut cycle = Vec::new();
-            let mut cur = x;
-            loop {
-                cycle.push(cur);
-                // Early exit if cycle exceeds max_hops
-                if cycle.len() > max_hops {
-                    break;
-                }
-                if let Some(p) = pred[cur] {
-                    cur = p;
-                } else {
-                    break;
-                }
-                if cur == x || cycle.len() > max_hops {
-                    break;
-                }
-            }
-            // Only add cycles that respect max_hops
-            if cycle.len() >= 2 && cycle.len() <= max_hops {
-                cycle.reverse();
+            // Found a negative cycle - use Floyd's algorithm to extract it properly
+            let cycle = extract_cycle_from_node(v, &pred, max_hops);
+            if !cycle.is_empty() {
                 cycles.push(DetectedCycle {
                     nodes: cycle,
                     log_sum: 0.0,
@@ -488,38 +429,10 @@ pub fn detect_negative_cycles_from_anchors(
             
             // Only process if u is reachable from anchor and forms a negative cycle
             if dist[u] != f64::INFINITY && dist[u] + w < dist[v] - 1e-12 {
-                // Found a negative cycle, backtrack to find the cycle
-                let mut x = v;
-                let max_backtrack = max_hops.min(n);
-                for _ in 0..max_backtrack {
-                    if let Some(p) = pred[x] {
-                        x = p;
-                    } else {
-                        break;
-                    }
-                }
+                // Found a negative cycle - use Floyd's algorithm to extract it properly
+                let cycle = extract_cycle_from_node(v, &pred, max_hops);
                 
-                // Collect the cycle starting from x
-                let mut cycle = Vec::new();
-                let mut cur = x;
-                loop {
-                    cycle.push(cur);
-                    if cycle.len() > max_hops {
-                        break;
-                    }
-                    if let Some(p) = pred[cur] {
-                        cur = p;
-                    } else {
-                        break;
-                    }
-                    if cur == x || cycle.len() > max_hops {
-                        break;
-                    }
-                }
-                
-                if cycle.len() >= 2 && cycle.len() <= max_hops {
-                    cycle.reverse();
-                    
+                if !cycle.is_empty() {
                     // Check if cycle contains the anchor
                     if let Some(anchor_pos) = cycle.iter().position(|&node| node == anchor_idx) {
                         // Rotate cycle to start from anchor
