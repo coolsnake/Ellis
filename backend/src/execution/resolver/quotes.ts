@@ -343,7 +343,10 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
       }
       return 0n;
     } else if (hop.dex === 'meteora_balanced') {
-      // Meteora Balanced (DAMM) constant product AMM quoting
+      // Meteora Balanced (DAMM) quoting
+      // CRITICAL: V1 and V2 use DIFFERENT pricing mechanisms!
+      // - V1 (Dynamic AMM): Constant-product formula, price = reserveB / reserveA
+      // - V2 (CP-AMM): Concentrated liquidity with sqrtPrice, price = (sqrtPrice / 2^64)^2
       const sys: any = (CONFIG as any)?.system || {};
       if (sys.quotes?.enableMinimalMath !== false) {
         const isRev = /[#-]rev$/.test(hop.poolId || '');
@@ -366,7 +369,60 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           
+          // Detect V2 (CP-AMM) pools - they have _sqrtPrice and/or dex name contains _v2
+          const isV2Pool = !!(
+            (p as any)?._sqrtPrice || 
+            String((p as any)?.dex || '').includes('_v2') ||
+            hop.variant === 'damm_v2'
+          );
+          
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
+            const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
+            
+            // For V2 pools with sqrtPrice: use the pool's price_a_per_b directly
+            // This price was calculated from sqrtPrice in the price pipeline
+            if (isV2Pool && (p as any)?.price_a_per_b > 0) {
+              const priceAperB = Number((p as any).price_a_per_b);
+              
+              // Determine swap direction based on hop mints vs pool canonical mints
+              const poolMintA = String((p as any)?.mint_a || '');
+              const poolMintB = String((p as any)?.mint_b || '');
+              const swappingAtoB = hop.inputMint === poolMintA && hop.outputMint === poolMintB;
+              const swappingBtoA = hop.inputMint === poolMintB && hop.outputMint === poolMintA;
+              
+              if (swappingAtoB || swappingBtoA) {
+                // price_a_per_b = how many B for 1 A
+                // If swapping A→B: outWhole = inWhole * priceAperB * fee
+                // If swapping B→A: outWhole = inWhole / priceAperB * fee
+                const outWhole = swappingAtoB 
+                  ? amtIn * priceAperB * fee
+                  : amtIn / priceAperB * fee;
+                
+                const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
+                
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.debug('meteora_balanced.v2.quote.sqrtPrice_based', {
+                    cat: 'tx',
+                    ctx: {
+                      poolId: id.slice(0, 8),
+                      isV2Pool,
+                      hasSqrtPrice: !!(p as any)?._sqrtPrice,
+                      priceAperB,
+                      swappingAtoB,
+                      amtIn,
+                      outWhole,
+                      outRaw: outRaw.toString(),
+                      feeBps,
+                    }
+                  });
+                } catch {}
+                
+                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+              }
+            }
+            
+            // V1 pools (or V2 fallback): Use constant product formula
             const reserveInWhole = Number(
               isRev
                 ? (p as any)?.amount_b_whole ?? 0
@@ -377,13 +433,29 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 ? (p as any)?.amount_a_whole ?? 0
                 : (p as any)?.amount_b_whole ?? 0,
             );
-            const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
             
             if (reserveInWhole > 0 && reserveOutWhole > 0 && Number.isFinite(amtIn)) {
               // Constant product formula: out = (in * fee * reserveOut) / (reserveIn + in * fee)
               const amtInAfterFee = amtIn * fee;
               const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
               const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
+              
+              // Log warning if V2 pool is using reserve fallback (likely incorrect)
+              if (isV2Pool) {
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.warn('meteora_balanced.v2.quote.reserve_fallback', {
+                    cat: 'tx',
+                    ctx: {
+                      poolId: id.slice(0, 8),
+                      warning: 'V2 pool using reserve-based quote (sqrtPrice unavailable)',
+                      hasSqrtPrice: !!(p as any)?._sqrtPrice,
+                      priceAperB: (p as any)?.price_a_per_b,
+                    }
+                  });
+                } catch {}
+              }
+              
               if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
             }
           }

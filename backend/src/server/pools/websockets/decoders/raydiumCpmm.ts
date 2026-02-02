@@ -584,8 +584,40 @@ export async function handleCpmmVaultUpdate(
           const wasSwapped = (poolData as any)?.was_swapped === true;
           const decA = poolData.native_decimals_a ?? (wasSwapped ? poolData.decimals_b : poolData.decimals_a) ?? 9;
           const decB = poolData.native_decimals_b ?? (wasSwapped ? poolData.decimals_a : poolData.decimals_b) ?? 6;
-          const mintA = poolData.native_mint_a ?? poolData.mint_a;
-          const mintB = poolData.native_mint_b ?? poolData.mint_b;
+          
+          // CRITICAL FIX: When falling back to canonical mints, must also swap reserves
+          // to maintain consistency. Reserves are ALWAYS in native order (from native_account_a/b),
+          // so if native_mint_a is missing and we use canonical mint_a, reserves must be swapped.
+          const hasNativeMints = !!(poolData.native_mint_a && poolData.native_mint_b);
+          let mintA: string | undefined;
+          let mintB: string | undefined;
+          let reserveA = balanceA;
+          let reserveB = balanceB;
+          
+          if (hasNativeMints) {
+            // Native mints available - use them directly with native reserves
+            mintA = poolData.native_mint_a;
+            mintB = poolData.native_mint_b;
+          } else if (poolData.mint_a && poolData.mint_b) {
+            // Falling back to canonical mints - need to derive native order
+            if (wasSwapped) {
+              // Canonical A = Native B, Canonical B = Native A
+              // To get native order: native A = canonical B, native B = canonical A
+              mintA = poolData.mint_b;
+              mintB = poolData.mint_a;
+            } else {
+              mintA = poolData.mint_a;
+              mintB = poolData.mint_b;
+            }
+            
+            logger.debug('raydium.cpmm.vault.derived_native_mints', {
+              poolId: poolId.slice(0, 8) + '…',
+              wasSwapped,
+              mintA: mintA?.slice(0, 8) + '…',
+              mintB: mintB?.slice(0, 8) + '…',
+              cat: 'pools'
+            });
+          }
           
           if (mintA && mintB) {
             const processedPrice = processPriceThroughPipeline({
@@ -596,8 +628,8 @@ export async function handleCpmmVaultUpdate(
               poolId,
               dex: 'Raydium',
               poolType: 'cpmm',
-              reserveA: balanceA,
-              reserveB: balanceB,
+              reserveA,
+              reserveB,
             });
             
             if (processedPrice && processedPrice.priceForward > 0) {
