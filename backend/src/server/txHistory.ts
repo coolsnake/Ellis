@@ -1,6 +1,7 @@
 import { joinPath } from '../utils/fs.js';
 import { CONFIG } from '../utils/config.js';
 import { ensureDir, readJson, writeJson } from '../utils/fs.js';
+import { logger } from '../utils/logger.js';
 
 export type TxRecord = {
   id: string;
@@ -19,7 +20,124 @@ export type TxRecord = {
   // Skip simulation feedback context
   sizeUsd?: number;           // Trade size for capacity feedback calculation
   expectedProfitBps?: number; // Expected profit for slippage delta estimation
+  // Actual profit from confirmed transaction (calculated from on-chain logs)
+  actualProfitUsd?: number;   // Real profit in USD from transaction execution
+  actualProfitRaw?: string;   // Raw profit in base token units (for debugging)
 };
+
+/**
+ * Fetch transaction logs from chain and calculate actual profit in USD.
+ * 
+ * @param signature - Transaction signature
+ * @param baseMint - The base token mint (first token in arb cycle path)
+ * @returns Object with actualProfitUsd and actualProfitRaw, or null if calculation failed
+ */
+async function calculateActualProfit(
+  signature: string,
+  baseMint: string
+): Promise<{ actualProfitUsd: number; actualProfitRaw: string } | null> {
+  try {
+    const { getConnection } = await import('../wallet/wallet.js');
+    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    const { parseSimulationLogs } = await import('../execution/simLogParser.js');
+    const { getPriceByMint } = await import('./priceStore.js');
+    const { loadJupiterTokenMap } = await import('../utils/tokens.js');
+    
+    const connection = getConnection();
+    
+    // Fetch transaction with logs
+    const tx = await withRpcLimit(
+      () => connection.getTransaction(signature, {
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 0,
+      }),
+      1,
+      { module: 'txHistory', method: 'getTransaction' }
+    );
+    
+    if (!tx?.meta?.logMessages) {
+      logger.debug('txHistory.actualProfit.no_logs', {
+        signature: signature.slice(0, 16),
+        cat: 'notifications',
+      });
+      return null;
+    }
+    
+    // Parse the transaction logs to extract profit value
+    const analysis = parseSimulationLogs(tx.meta.logMessages, tx.meta.err);
+    
+    if (analysis.profitValue === undefined) {
+      logger.debug('txHistory.actualProfit.no_profit_value', {
+        signature: signature.slice(0, 16),
+        hasLogs: tx.meta.logMessages.length,
+        cat: 'notifications',
+      });
+      return null;
+    }
+    
+    // profitValue is in raw token units (lamports for SOL, etc.)
+    const profitRaw = analysis.profitValue;
+    
+    // Get decimals for base token
+    const jupMap = await loadJupiterTokenMap();
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    
+    let decimals: number;
+    if (baseMint === SOL_MINT) {
+      decimals = 9;
+    } else if (jupMap[baseMint]?.decimals !== undefined) {
+      decimals = jupMap[baseMint].decimals;
+    } else {
+      // Default to 6 for stablecoins, 9 for others
+      decimals = baseMint.startsWith('EPjFWdd5') || baseMint.startsWith('Es9vMFrz') ? 6 : 9;
+    }
+    
+    // Convert raw profit to human-readable amount
+    const profitAmount = Number(profitRaw) / Math.pow(10, decimals);
+    
+    // Get current USD price for the base token
+    const priceData = getPriceByMint(baseMint);
+    const usdPrice = priceData?.usdc ?? 0;
+    
+    if (usdPrice <= 0) {
+      logger.debug('txHistory.actualProfit.no_price', {
+        signature: signature.slice(0, 16),
+        baseMint: baseMint.slice(0, 8),
+        profitRaw: profitRaw.toString(),
+        cat: 'notifications',
+      });
+      // Return raw profit without USD conversion
+      return {
+        actualProfitUsd: 0,
+        actualProfitRaw: profitRaw.toString(),
+      };
+    }
+    
+    const actualProfitUsd = profitAmount * usdPrice;
+    
+    logger.info('txHistory.actualProfit.calculated', {
+      signature: signature.slice(0, 16),
+      baseMint: baseMint.slice(0, 8),
+      profitRaw: profitRaw.toString(),
+      profitAmount: profitAmount.toFixed(6),
+      usdPrice: usdPrice.toFixed(4),
+      actualProfitUsd: actualProfitUsd.toFixed(4),
+      cat: 'notifications',
+    });
+    
+    return {
+      actualProfitUsd,
+      actualProfitRaw: profitRaw.toString(),
+    };
+  } catch (e: any) {
+    logger.warn('txHistory.actualProfit.error', {
+      signature: signature.slice(0, 16),
+      error: String(e?.message || e),
+      cat: 'notifications',
+    });
+    return null;
+  }
+}
 
 const capacity = 200;
 const items: TxRecord[] = [];
@@ -73,7 +191,15 @@ export async function checkTxConfirmation(signature: string): Promise<{ confirme
 }
 
 // Update transaction record with confirmation status
-export async function updateTxConfirmation(signature: string, confirmed: boolean, success?: boolean, slot?: number, error?: string): Promise<void> {
+export async function updateTxConfirmation(
+  signature: string, 
+  confirmed: boolean, 
+  success?: boolean, 
+  slot?: number, 
+  error?: string,
+  actualProfitUsd?: number,
+  actualProfitRaw?: string
+): Promise<void> {
   const idx = items.findIndex((r) => r.signature === signature);
   if (idx === -1) return;
   
@@ -88,6 +214,9 @@ export async function updateTxConfirmation(signature: string, confirmed: boolean
     confirmedAt: confirmed ? Date.now() : undefined,
     confirmationSlot: slot,
     error: error || rec.error,
+    // Include actual profit from transaction execution
+    actualProfitUsd: actualProfitUsd ?? rec.actualProfitUsd,
+    actualProfitRaw: actualProfitRaw ?? rec.actualProfitRaw,
   };
   
   try {
@@ -119,12 +248,32 @@ export async function startTxConfirmationTask(io?: any): Promise<void> {
         if (!rec.signature) continue;
         const result = await checkTxConfirmation(rec.signature);
         if (result.confirmed) {
-          await updateTxConfirmation(rec.signature, true, result.success, result.slot, result.error);
+          // Calculate actual profit from on-chain transaction logs for successful txs
+          let actualProfitData: { actualProfitUsd: number; actualProfitRaw: string } | null = null;
+          if (result.success && rec.path && rec.path.length > 0) {
+            try {
+              actualProfitData = await calculateActualProfit(rec.signature, rec.path[0]);
+            } catch {
+              // Don't let profit calculation failure block confirmation
+            }
+          }
+          
+          await updateTxConfirmation(
+            rec.signature, 
+            true, 
+            result.success, 
+            result.slot, 
+            result.error,
+            actualProfitData?.actualProfitUsd,
+            actualProfitData?.actualProfitRaw
+          );
+          
           try {
             emit('tx:history.updated', { 
               id: rec.id, 
               status: result.success ? 'confirmed_ok' : 'confirmed_err',
               signature: rec.signature,
+              actualProfitUsd: actualProfitData?.actualProfitUsd,
             });
           } catch {}
           
@@ -132,7 +281,7 @@ export async function startTxConfirmationTask(io?: any): Promise<void> {
           if (result.success) {
             try {
               const { sendArbNotification } = await import('../notifications/push.js');
-              // Get the updated record with confirmedAt set
+              // Get the updated record with confirmedAt and actualProfitUsd set
               const updatedRec = items.find(r => r.signature === rec.signature);
               if (updatedRec) {
                 await sendArbNotification(updatedRec);

@@ -60,13 +60,19 @@ function calculatePriority(estimatedProfitUsd: number): NotificationPriority {
 }
 
 /**
- * Estimate profit in USD from TxRecord
+ * Get profit in USD from TxRecord.
+ * Prefers actual profit from execution, falls back to estimated if not available.
  */
-function estimateProfitUsd(rec: TxRecord): number {
-  if (rec.sizeUsd && rec.expectedProfitBps) {
-    return rec.sizeUsd * (rec.expectedProfitBps / 10000);
+function getProfitUsd(rec: TxRecord): { profitUsd: number; isActual: boolean } {
+  // Prefer actual profit from transaction execution
+  if (rec.actualProfitUsd !== undefined && rec.actualProfitUsd !== null) {
+    return { profitUsd: rec.actualProfitUsd, isActual: true };
   }
-  return 0;
+  // Fall back to estimated profit
+  if (rec.sizeUsd && rec.expectedProfitBps) {
+    return { profitUsd: rec.sizeUsd * (rec.expectedProfitBps / 10000), isActual: false };
+  }
+  return { profitUsd: 0, isActual: false };
 }
 
 /**
@@ -76,8 +82,9 @@ async function buildNotificationPayload(rec: TxRecord): Promise<ArbNotificationP
   // Ensure token cache is loaded
   await ensureTokenCache();
   
-  const estimatedProfitUsd = estimateProfitUsd(rec);
-  const priority = calculatePriority(estimatedProfitUsd);
+  // Get profit (actual from execution if available, otherwise estimated)
+  const { profitUsd, isActual } = getProfitUsd(rec);
+  const priority = calculatePriority(profitUsd);
   const dexes = [...new Set(rec.hops.map(h => h.dex))];
   
   // Convert mints to symbols for display
@@ -85,8 +92,8 @@ async function buildNotificationPayload(rec: TxRecord): Promise<ArbNotificationP
   const pathDisplay = pathSymbols.join(' → ');
   
   // Build human-readable summary with profit first
-  const profitStr = estimatedProfitUsd > 0 
-    ? `+$${estimatedProfitUsd.toFixed(2)}` 
+  const profitStr = profitUsd > 0 
+    ? `+$${profitUsd.toFixed(2)}${isActual ? '' : '~'}` // Add ~ suffix if estimated
     : 'Confirmed';
   const summary = `${profitStr} | ${pathDisplay} via ${dexes.join('/')}`;
   
@@ -100,7 +107,9 @@ async function buildNotificationPayload(rec: TxRecord): Promise<ArbNotificationP
     dexes,
     sizeUsd: rec.sizeUsd,
     expectedProfitBps: rec.expectedProfitBps,
-    estimatedProfitUsd,
+    estimatedProfitUsd: profitUsd, // Now contains actual profit if available
+    actualProfitUsd: rec.actualProfitUsd, // Include actual profit separately
+    isActualProfit: isActual, // Flag to indicate if profit is actual or estimated
     priority,
     summary,
   };
@@ -136,8 +145,9 @@ export async function sendArbNotification(rec: TxRecord): Promise<void> {
   const payload = await buildNotificationPayload(rec);
   
   // Format notification with profit first, then route
+  // Use actual profit if available, add ~ suffix if estimated
   const profitDisplay = payload.estimatedProfitUsd && payload.estimatedProfitUsd > 0 
-    ? `+$${payload.estimatedProfitUsd.toFixed(2)}` 
+    ? `+$${payload.estimatedProfitUsd.toFixed(2)}${payload.isActualProfit ? '' : '~'}` 
     : 'Confirmed';
   const routeDisplay = payload.pathSymbols?.join(' → ') || payload.path.join(' → ');
   
@@ -160,6 +170,8 @@ export async function sendArbNotification(rec: TxRecord): Promise<void> {
         dexes: JSON.stringify(payload.dexes),
         priority: payload.priority,
         profitUsd: String(payload.estimatedProfitUsd || 0),
+        actualProfitUsd: String(payload.actualProfitUsd ?? ''),
+        isActualProfit: String(payload.isActualProfit ?? false),
         sizeUsd: String(payload.sizeUsd || 0),
         timestamp: String(payload.timestamp),
       },

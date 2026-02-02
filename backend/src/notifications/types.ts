@@ -37,7 +37,9 @@ export interface ArbNotificationPayload {
   dexes: string[];
   sizeUsd?: number;
   expectedProfitBps?: number;
-  estimatedProfitUsd?: number;
+  estimatedProfitUsd?: number; // Best available profit (actual if available, otherwise estimated)
+  actualProfitUsd?: number;    // Actual profit from transaction execution (if available)
+  isActualProfit?: boolean;    // True if estimatedProfitUsd is from actual execution
   priority: NotificationPriority;
   summary: string;
 }

@@ -1357,6 +1357,9 @@ export class ArbExecutor {
               txSizeBytes: 0, // Not available here
               signature: signature || null,
               status: signature ? 'send_ok' : 'send_err',
+              // Include profit data for notifications
+              sizeUsd: flashloanAmountUsd,
+              expectedProfitBps: opp.profit_bps,
             });
             
             this.state.successfulExecutions++;
@@ -2427,6 +2430,9 @@ export class ArbExecutor {
             signature,
             status: 'send_ok',
             logFile,
+            // Include profit data for notifications
+            sizeUsd: currentSizeUsd,
+            expectedProfitBps: opp.profit_bps,
           });
 
           emit('arb:execution', {
@@ -2661,6 +2667,9 @@ export class ArbExecutor {
             signature,
             status: 'send_ok',
             logFile,
+            // Include profit data for notifications
+            sizeUsd: effectiveSizeUsd,
+            expectedProfitBps: opp.profit_bps,
           });
 
           // Emit to frontend
