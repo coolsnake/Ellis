@@ -749,7 +749,7 @@ function stopWsPing(): void {
 /**
  * Start WebSocket keep-alive ping to prevent RPC provider timeout.
  * Most RPC providers close idle connections after 20-60 minutes.
- * This sends a lightweight getHealth() call periodically to keep the connection alive.
+ * This sends a lightweight getSlot() call periodically to keep the connection alive.
  */
 function startWsPing(conn: any): void {
   stopWsPing(); // Clear any existing timer
@@ -770,11 +770,11 @@ function startWsPing(conn: any): void {
         return;
       }
       
-      // Use getHealth() as a lightweight RPC ping that confirms the connection works
+      // Use getSlot() as a lightweight RPC ping that confirms the connection works
       const startMs = Date.now();
       try {
         await Promise.race([
-          conn.getHealth(),
+          conn.getSlot(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('ping timeout')), 5000))
         ]);
         try { 
