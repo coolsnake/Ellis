@@ -142,6 +142,7 @@ export const CONFIG = {
     wsHealthTimeoutMs: Number(process.env.WS_HEALTH_TIMEOUT_MS || 30000), // 30s (idle threshold: 60s)
     wsReconnectMinGapMs: Number(process.env.WS_RECONNECT_MIN_GAP_MS || 15000), // 15s minimum between retargets
     wsAggLogPeriodMs: Number(process.env.WS_AGG_LOG_PERIOD_MS || 20000), // 20s aggregate logging
+    wsPingIntervalMs: Number(process.env.WS_PING_INTERVAL_MS || 30000), // 30s keep-alive ping to prevent RPC timeout
     
     // WebSocket retarget process configuration (sequential throttling)
     wsRetargetCooldownMs: Number(process.env.WS_RETARGET_COOLDOWN_MS || 3000), // 3s cooldown after unsubscribe

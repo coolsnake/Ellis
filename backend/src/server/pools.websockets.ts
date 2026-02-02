@@ -712,6 +712,7 @@ let healthTimer: any | undefined;
 let lastWsEventMs: number = Date.now();
 let wsHealthy: boolean = false;
 let aggTimer: any | undefined;
+let wsPingTimer: NodeJS.Timeout | null = null;
 const wsCounts: { raydium: number; 'raydium-cpmm'?: number; orca: number; meteora?: number; pumpswap?: number; meteora_balanced?: number } = { raydium: 0, 'raydium-cpmm': 0, orca: 0, meteora: 0, pumpswap: 0, meteora_balanced: 0 };
 // wsDeltaStats, wsDecodeStats, incrementSkipReason, wsDebugCounters, and wsTargetDebugCounters
 // are imported from ./pools.metrics.ts.
@@ -733,6 +734,83 @@ const wsValidationStats: Record<'raydium' | 'orca' | 'meteora_dlmm' | 'meteora_d
   meteora_damm_v2: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
   pumpswap: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
 };
+
+/**
+ * Stop WebSocket keep-alive ping timer
+ */
+function stopWsPing(): void {
+  if (wsPingTimer) {
+    clearInterval(wsPingTimer);
+    wsPingTimer = null;
+    try { logger.debug('pools.ws.ping.stopped', { cat: 'pools' }); } catch {}
+  }
+}
+
+/**
+ * Start WebSocket keep-alive ping to prevent RPC provider timeout.
+ * Most RPC providers close idle connections after 20-60 minutes.
+ * This sends a lightweight getHealth() call periodically to keep the connection alive.
+ */
+function startWsPing(conn: any): void {
+  stopWsPing(); // Clear any existing timer
+  
+  const pingIntervalMs = Math.max(10000, Number((CONFIG.system as any)?.wsPingIntervalMs || 30000));
+  
+  wsPingTimer = setInterval(async () => {
+    try {
+      const rpcWs = conn?._rpcWebSocket;
+      if (!rpcWs) return;
+      
+      const ws = rpcWs.underlyingSocket || rpcWs._ws || rpcWs.socket || rpcWs._socket;
+      const ready = ws?.readyState;
+      
+      // Only ping if socket is OPEN (1)
+      if (ready !== 1) {
+        try { logger.debug('pools.ws.ping.skipped', { readyState: ready, cat: 'pools' }); } catch {}
+        return;
+      }
+      
+      // Use getHealth() as a lightweight RPC ping that confirms the connection works
+      const startMs = Date.now();
+      try {
+        await Promise.race([
+          conn.getHealth(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('ping timeout')), 5000))
+        ]);
+        try { 
+          logger.debug('pools.ws.ping.ok', { latencyMs: Date.now() - startMs, cat: 'pools' }); 
+        } catch {}
+      } catch (pingErr: any) {
+        const msg = String(pingErr?.message || pingErr);
+        try { 
+          logger.warn('pools.ws.ping.failed', { error: msg, latencyMs: Date.now() - startMs, cat: 'pools' }); 
+        } catch {}
+        
+        // If ping fails with connection error, mark unhealthy and trigger reconnection
+        if (msg.includes('EPIPE') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') ||
+            msg.includes('timeout') || msg.includes('socket was not') || msg.includes('CLOSED')) {
+          wsHealthy = false;
+          try {
+            // Trigger reconnection via reconcileNow (defined later in file, called async)
+            (async () => {
+              try {
+                const last = (reconcileNow as any)?._last || 0;
+                const gap = Math.max(2000, Number((CONFIG.system as any)?.wsReconnectMinGapMs || 5000));
+                if (Date.now() - last > gap) {
+                  await reconcileNow();
+                }
+              } catch {}
+            })();
+          } catch {}
+        }
+      }
+    } catch (err) {
+      try { logger.debug('pools.ws.ping.error', { error: String(err), cat: 'pools' }); } catch {}
+    }
+  }, pingIntervalMs);
+  
+  try { logger.info('pools.ws.ping.started', { intervalMs: pingIntervalMs, cat: 'pools' }); } catch {}
+}
 
 /**
  * Validates a decoded pool to ensure all critical fields are present and valid
@@ -1557,6 +1635,18 @@ function runWebsocketRefreshLoop(): void {
         } catch (err) {
           try { 
             logger.warn('pools.ws failed to protect WebSocket', { 
+              error: String(err), 
+              cat: 'pools' 
+            }); 
+          } catch {}
+        }
+        
+        // Start keep-alive ping to prevent RPC provider from closing idle connection
+        try {
+          startWsPing(conn);
+        } catch (err) {
+          try { 
+            logger.warn('pools.ws.ping.setup_failed', { 
               error: String(err), 
               cat: 'pools' 
             }); 
@@ -5817,6 +5907,9 @@ function runWebsocketRefreshLoop(): void {
 
         wsUnsubscribe = () => {
           try {
+            // Stop keep-alive ping first
+            try { stopWsPing(); } catch {}
+            
             // Begin async teardown and websocket close; future setups will await wsClosePromise
             wsClosePromise = (async () => {
               try {
@@ -6151,6 +6244,7 @@ async function reconcileNow(): Promise<void> {
 
 // Stop all pool activity: timers and websocket subscriptions
 export function stopPoolRefreshLoop(): void {
+  try { stopWsPing(); } catch {}
   try { if (rayTimer) { clearInterval(rayTimer); rayTimer = undefined; } } catch {}
   try { if (orcaTimer) { clearInterval(orcaTimer); orcaTimer = undefined; } } catch {}
   try { if (aggTimer) { clearInterval(aggTimer); aggTimer = undefined; } } catch {}
@@ -6181,6 +6275,9 @@ export function enablePoolWebsocketRefreshes(): void {
 
 export function disablePoolWebsocketRefreshes(): void {
   try {
+    // Stop keep-alive ping
+    try { stopWsPing(); } catch {}
+    
     // Stop per-pool staleness monitor
     try {
       stopStalenessMonitor();
