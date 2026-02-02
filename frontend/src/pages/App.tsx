@@ -2192,8 +2192,8 @@ export const App: React.FC = () => {
               <ul className="text-sm text-gray-300 space-y-1">
                 {(() => {
                   const SOL_MINT = 'So11111111111111111111111111111111111111112';
-                  // Filter out wSOL from SPL list since it's shown with native SOL
-                  const tokenEntries = Object.entries(wallet?.balances?.tokens || {}).filter(([mint]) => mint !== SOL_MINT);
+                  // Filter out wSOL from SPL list since it's shown with native SOL, and exclude zero balances
+                  const tokenEntries = Object.entries(wallet?.balances?.tokens || {}).filter(([mint, amount]) => mint !== SOL_MINT && Number(amount) > 0);
                   if (tokenEntries.length === 0) {
                     return <li className="text-gray-500">No SPL tokens detected</li>;
                   }
