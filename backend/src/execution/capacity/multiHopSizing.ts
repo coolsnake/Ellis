@@ -261,8 +261,10 @@ function buildHopParams(
     
     if (poolType === 'amm') {
       // AMM: Try to get reserves from static cache
-      const reserveA = parseReserveRaw(staticData?.native_reserve_a_raw);
-      const reserveB = parseReserveRaw(staticData?.native_reserve_b_raw);
+      // Note: native_reserve_a_raw/b_raw are added dynamically to static cache, not in PoolStatic type
+      const staticAny = staticData as any;
+      const reserveA = parseReserveRaw(staticAny?.native_reserve_a_raw);
+      const reserveB = parseReserveRaw(staticAny?.native_reserve_b_raw);
       
       if (reserveA > 0 && reserveB > 0) {
         // We have raw reserves - convert to USD approximation
@@ -346,13 +348,16 @@ export function isMultiHopOptimizationEnabled(config: SizingConfig): boolean {
  * Get the merged multi-hop config with defaults.
  */
 export function getMultiHopConfig(config: SizingConfig): MultiHopOptimizationConfig {
-  const userConfig = config.multiHopOptimization ?? {};
+  const userConfig = config.multiHopOptimization;
+  if (!userConfig) {
+    return DEFAULT_MULTIHOP_CONFIG;
+  }
   return {
     ...DEFAULT_MULTIHOP_CONFIG,
     ...userConfig,
     slippageParams: {
       ...DEFAULT_SLIPPAGE_PARAMS,
-      ...userConfig.slippageParams,
+      ...(userConfig.slippageParams ?? {}),
     },
   };
 }
