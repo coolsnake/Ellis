@@ -2,7 +2,7 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload, SummaryPool } from './types.js';
-import { resolveManyDecimals } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsFromRpcBatch } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
@@ -967,6 +967,47 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     bitmapExtensionMapPromise
   ]);
   
+  // CRITICAL FIX: Collect mints that weren't resolved by the batch decimalsMap
+  // and do a secondary RPC lookup to avoid dangerous ?? 9 fallbacks
+  const unresolvedMints = new Set<string>();
+  for (const pool of raw) {
+    const mint_a = pool.tokenXMint;
+    const mint_b = pool.tokenYMint;
+    if (mint_a && !decimalsMap.has(mint_a) && !jupPriceMap[mint_a]?.decimals) {
+      unresolvedMints.add(mint_a);
+    }
+    if (mint_b && !decimalsMap.has(mint_b) && !jupPriceMap[mint_b]?.decimals) {
+      unresolvedMints.add(mint_b);
+    }
+  }
+  
+  // Secondary RPC batch lookup for unresolved mints
+  if (unresolvedMints.size > 0) {
+    try {
+      logger.info('meteora.decimals.secondary_rpc_lookup', {
+        unresolvedCount: unresolvedMints.size,
+        mints: Array.from(unresolvedMints).slice(0, 5).map(m => m.slice(0, 8) + '…'),
+        cat: 'meteora'
+      });
+      
+      const secondaryDecimals = await resolveDecimalsFromRpcBatch(Array.from(unresolvedMints));
+      
+      // Merge secondary results into decimalsMap
+      for (const [mint, decimals] of secondaryDecimals.entries()) {
+        decimalsMap.set(mint, decimals);
+      }
+      
+      logger.info('meteora.decimals.secondary_rpc_complete', {
+        requested: unresolvedMints.size,
+        resolved: secondaryDecimals.size,
+        stillUnresolved: unresolvedMints.size - secondaryDecimals.size,
+        cat: 'meteora'
+      });
+    } catch (e) { 
+      logCatchError('pools.meteoraGraphQL.secondary_decimals', e); 
+    }
+  }
+  
   for (const pool of raw) {
     try {
       const id = pool.pubkey || pool.baseKey;
@@ -990,9 +1031,9 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       
       if (!mint_a || !mint_b) continue;
       
-      // Use Jupiter token map as fallback before defaulting to 9
-      const decA = decimalsMap.get(mint_a) ?? jupPriceMap[mint_a]?.decimals ?? 9;
-      const decB = decimalsMap.get(mint_b) ?? jupPriceMap[mint_b]?.decimals ?? 9;
+      // Get decimals: decimalsMap (batch resolved) → Jupiter → fallback with WARNING
+      let decA = decimalsMap.get(mint_a) ?? jupPriceMap[mint_a]?.decimals;
+      let decB = decimalsMap.get(mint_b) ?? jupPriceMap[mint_b]?.decimals;
       
       // Log when using Jupiter fallback to track decimal resolution sources
       if (!decimalsMap.has(mint_a) && jupPriceMap[mint_a]?.decimals) {
@@ -1008,6 +1049,29 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
           mint: mint_b.slice(0, 8),
           decimals: decB,
           pool: id,
+          cat: 'meteora'
+        });
+      }
+      
+      // CRITICAL: Log warnings when falling back to default 9
+      // This indicates potential price calculation errors (10x, 100x, etc.)
+      if (decA === undefined) {
+        decA = 9;
+        logger.warn('meteora.decimals.fallback_default', {
+          mint: mint_a.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          defaultDecimals: 9,
+          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+          cat: 'meteora'
+        });
+      }
+      if (decB === undefined) {
+        decB = 9;
+        logger.warn('meteora.decimals.fallback_default', {
+          mint: mint_b.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          defaultDecimals: 9,
+          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
           cat: 'meteora'
         });
       }

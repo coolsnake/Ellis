@@ -160,8 +160,26 @@ export async function decodeRaydiumCpmmPool(
     const creator = state.poolCreator?.toBase58?.() || '';
     const token0Program = state.mintProgramA?.toBase58?.() || '';
     const token1Program = state.mintProgramB?.toBase58?.() || '';
-    const mint0Decimals = state.mintDecimalA ?? 9;
-    const mint1Decimals = state.mintDecimalB ?? 6;
+    
+    // CRITICAL: Use symmetric fallback (9) to avoid ratio errors from mismatched decimals
+    // On-chain state should always have decimals, but if missing, log warning
+    let mint0Decimals = state.mintDecimalA;
+    let mint1Decimals = state.mintDecimalB;
+    
+    if (!Number.isFinite(mint0Decimals) || !Number.isFinite(mint1Decimals)) {
+      // Log warning - on-chain decimals should never be missing
+      logger.warn('raydium.cpmm.decode.decimals_missing_onchain', {
+        poolId: poolId.slice(0, 8) + '…',
+        token0Mint: token0Mint.slice(0, 8) + '…',
+        token1Mint: token1Mint.slice(0, 8) + '…',
+        mint0Decimals,
+        mint1Decimals,
+        warning: 'On-chain decimals missing - using fallback 9, price may be incorrect',
+        cat: 'pools'
+      });
+      if (!Number.isFinite(mint0Decimals)) mint0Decimals = 9;
+      if (!Number.isFinite(mint1Decimals)) mint1Decimals = 9;
+    }
     
     // Validate required fields
     if (!token0Mint || !token1Mint) {
@@ -582,8 +600,58 @@ export async function handleCpmmVaultUpdate(
           // We have both balances - recalculate price
           // CRITICAL: If native decimals missing, derive from canonical + was_swapped
           const wasSwapped = (poolData as any)?.was_swapped === true;
-          const decA = poolData.native_decimals_a ?? (wasSwapped ? poolData.decimals_b : poolData.decimals_a) ?? 9;
-          const decB = poolData.native_decimals_b ?? (wasSwapped ? poolData.decimals_a : poolData.decimals_b) ?? 6;
+          let decA: number | undefined = poolData.native_decimals_a ?? (wasSwapped ? poolData.decimals_b : poolData.decimals_a);
+          let decB: number | undefined = poolData.native_decimals_b ?? (wasSwapped ? poolData.decimals_a : poolData.decimals_b);
+          
+          // CRITICAL FIX: Use guaranteed decimals resolution instead of ?? 9/6 fallback
+          // This prevents 10x-1000x price errors from incorrect decimal assumptions
+          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+            try {
+              const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
+              const mintA = poolData.native_mint_a || (wasSwapped ? poolData.mint_b : poolData.mint_a);
+              const mintB = poolData.native_mint_b || (wasSwapped ? poolData.mint_a : poolData.mint_b);
+              
+              if (!Number.isFinite(decA) && mintA) {
+                const resultA = await resolveDecimalsGuaranteed(mintA, poolId, 'Raydium_CPMM');
+                decA = resultA.decimals;
+                if (resultA.source === 'default' && !resultA.validated) {
+                  logger.warn('raydium.cpmm.vault.decimals_fallback', {
+                    poolId: poolId.slice(0, 8) + '…',
+                    mint: mintA?.slice(0, 8) + '…',
+                    side: 'A',
+                    decimals: decA,
+                    source: resultA.source,
+                    warning: 'Price may be 10x-1000x off if actual decimals differ',
+                    cat: 'pools'
+                  });
+                }
+              }
+              if (!Number.isFinite(decB) && mintB) {
+                const resultB = await resolveDecimalsGuaranteed(mintB, poolId, 'Raydium_CPMM');
+                decB = resultB.decimals;
+                if (resultB.source === 'default' && !resultB.validated) {
+                  logger.warn('raydium.cpmm.vault.decimals_fallback', {
+                    poolId: poolId.slice(0, 8) + '…',
+                    mint: mintB?.slice(0, 8) + '…',
+                    side: 'B',
+                    decimals: decB,
+                    source: resultB.source,
+                    warning: 'Price may be 10x-1000x off if actual decimals differ',
+                    cat: 'pools'
+                  });
+                }
+              }
+            } catch (resolveErr) {
+              logger.warn('raydium.cpmm.vault.decimals_resolve_error', {
+                poolId: poolId.slice(0, 8) + '…',
+                error: String((resolveErr as Error)?.message || resolveErr),
+                cat: 'pools'
+              });
+              // Last resort fallback to 9 (symmetric to avoid ratio errors)
+              if (!Number.isFinite(decA)) decA = 9;
+              if (!Number.isFinite(decB)) decB = 9;
+            }
+          }
           
           // CRITICAL FIX: When falling back to canonical mints, must also swap reserves
           // to maintain consistency. Reserves are ALWAYS in native order (from native_account_a/b),

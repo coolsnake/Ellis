@@ -1678,13 +1678,38 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
       if (!mint_a || !mint_b) continue;
       
       // Get decimals with centralized cache as final fallback (checks ANCHOR_DECIMALS, KNOWN_TOKEN_DECIMALS)
-      // Priority: API response → decimalsMap (resolved) → centralized cache → 9
-      const decA = isClmm 
-        ? (pool.mintDecimals0 ?? decimalsMap.get(mint_a) ?? getDecimalsFromCache(mint_a) ?? 9)
-        : (pool.baseDecimal ?? decimalsMap.get(mint_a) ?? getDecimalsFromCache(mint_a) ?? 9);
-      const decB = isClmm
-        ? (pool.mintDecimals1 ?? decimalsMap.get(mint_b) ?? getDecimalsFromCache(mint_b) ?? 9)
-        : (pool.quoteDecimal ?? decimalsMap.get(mint_b) ?? getDecimalsFromCache(mint_b) ?? 9);
+      // Priority: API response → decimalsMap (resolved) → centralized cache → 9 (with warning)
+      let decA = isClmm 
+        ? (pool.mintDecimals0 ?? decimalsMap.get(mint_a) ?? getDecimalsFromCache(mint_a))
+        : (pool.baseDecimal ?? decimalsMap.get(mint_a) ?? getDecimalsFromCache(mint_a));
+      let decB = isClmm
+        ? (pool.mintDecimals1 ?? decimalsMap.get(mint_b) ?? getDecimalsFromCache(mint_b))
+        : (pool.quoteDecimal ?? decimalsMap.get(mint_b) ?? getDecimalsFromCache(mint_b));
+      
+      // CRITICAL: Log warnings when falling back to default decimals
+      // This indicates potential 10x-1000x price errors
+      if (decA === undefined) {
+        decA = 9;
+        logger.warn('raydium.decimals.fallback_default', {
+          mint: mint_a.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          type: isClmm ? 'CLMM' : 'AMM',
+          defaultDecimals: 9,
+          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+          cat: 'raydium'
+        });
+      }
+      if (decB === undefined) {
+        decB = 9;
+        logger.warn('raydium.decimals.fallback_default', {
+          mint: mint_b.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          type: isClmm ? 'CLMM' : 'AMM',
+          defaultDecimals: 9,
+          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+          cat: 'raydium'
+        });
+      }
       
       // Parse fee based on pool type
       let fee_bps = 25; // Default

@@ -4,6 +4,76 @@ import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getDecimalsFromCache } from '../../server/pools/decimals.js';
 
+// Track fallback decimal usage for monitoring
+let fallbackDecimalCount = 0;
+const FALLBACK_WARN_THROTTLE_MS = 10000; // Warn at most every 10s
+let lastFallbackWarnTime = 0;
+
+/**
+ * Resolve decimals for a quote calculation with warning when using fallback.
+ * Priority: centralized cache → pool data → hop data → fallback 9 (with warning)
+ */
+function resolveQuoteDecimals(
+  mint: string | undefined,
+  poolDecimals: number | undefined,
+  hopDecimals: number | undefined,
+  context: { side: 'input' | 'output'; dex?: string; poolId?: string }
+): number {
+  // 1. Centralized cache (highest priority - RPC validated)
+  const cacheDecimals = mint ? getDecimalsFromCache(mint) : undefined;
+  if (cacheDecimals !== undefined && Number.isFinite(cacheDecimals)) {
+    return cacheDecimals;
+  }
+  
+  // 2. Pool data (from pool fetch)
+  if (poolDecimals !== undefined && Number.isFinite(poolDecimals)) {
+    return poolDecimals;
+  }
+  
+  // 3. Hop data (from opportunity path)
+  if (hopDecimals !== undefined && Number.isFinite(hopDecimals)) {
+    return hopDecimals;
+  }
+  
+  // 4. Fallback to 9 with warning
+  fallbackDecimalCount++;
+  const now = Date.now();
+  if (now - lastFallbackWarnTime > FALLBACK_WARN_THROTTLE_MS) {
+    lastFallbackWarnTime = now;
+    import('../../utils/logger.js').then(({ logger }) => {
+      logger.warn('quote.decimals.fallback_used', {
+        cat: 'tx',
+        ctx: {
+          mint: mint?.slice(0, 12) + '…',
+          side: context.side,
+          dex: context.dex,
+          poolId: context.poolId?.slice(0, 8) + '…',
+          fallbackDecimals: 9,
+          totalFallbacks: fallbackDecimalCount,
+          warning: 'Quote using fallback decimals - price may be 10x-1000x off',
+        }
+      });
+    }).catch(() => {});
+  }
+  
+  return 9;
+}
+
+/**
+ * Get count of fallback decimals used in quote calculations.
+ * Useful for monitoring decimal resolution effectiveness.
+ */
+export function getQuoteFallbackDecimalCount(): number {
+  return fallbackDecimalCount;
+}
+
+/**
+ * Reset fallback decimal count (useful for monitoring windows).
+ */
+export function resetQuoteFallbackDecimalCount(): void {
+  fallbackDecimalCount = 0;
+}
+
 /**
  * Sanity check for decimal mismatch detection and auto-correction.
  * Detects when a quote is off by powers of 10 (typical decimal errors).
@@ -21,9 +91,15 @@ function sanityCheckAndCorrectQuote(quotedOut: bigint, hop: DirectHop, amountInR
   const rate = (hop as any).rate || (hop as any).price;
   if (!rate || !Number.isFinite(rate) || rate <= 0) return quotedOut;
   
-  // Get decimals - prefer centralized cache
-  const decIn = getDecimalsFromCache(hop.inputMint) ?? hop.inputDecimals ?? 9;
-  const decOut = getDecimalsFromCache(hop.outputMint) ?? hop.outputDecimals ?? 9;
+  // Get decimals - use resolveQuoteDecimals for consistent resolution with warnings
+  const decIn = resolveQuoteDecimals(
+    hop.inputMint, undefined, hop.inputDecimals, 
+    { side: 'input', dex: hop.dex, poolId: hop.poolId }
+  );
+  const decOut = resolveQuoteDecimals(
+    hop.outputMint, undefined, hop.outputDecimals, 
+    { side: 'output', dex: hop.dex, poolId: hop.poolId }
+  );
   
   // Calculate expected output based on rate
   // rate = outputWhole / inputWhole
