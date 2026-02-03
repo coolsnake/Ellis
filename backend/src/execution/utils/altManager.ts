@@ -1,4 +1,4 @@
-import { Connection, PublicKey, AddressLookupTableAccount, TransactionMessage, VersionedTransaction, AddressLookupTableProgram, Transaction, Keypair } from '@solana/web3.js';
+import { Connection, PublicKey, AddressLookupTableAccount, TransactionMessage, VersionedTransaction, AddressLookupTableProgram, Transaction, Keypair, ComputeBudgetProgram } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
@@ -12,6 +12,10 @@ import { ARB_ROUTER_PROGRAM_ID } from '../../router/types.js';
 const ALT_BATCH_SIZE = 5;
 // Delay between batches in milliseconds
 const ALT_BATCH_DELAY_MS = 500;
+// Priority fee for ALT transactions (micro-lamports per compute unit)
+// ALT operations are low CU (~10-20k), so a modest priority is sufficient
+const ALT_PRIORITY_FEE_MICRO_LAMPORTS = 5000; // 5,000 micro-lamports per CU
+const ALT_COMPUTE_UNIT_LIMIT = 50000; // Conservative limit for ALT operations
 
 /**
  * Manages Address Lookup Tables (ALTs) for DEX transactions
@@ -441,6 +445,11 @@ export class DexAltManager {
     });
     
     const extendTx = new Transaction();
+    // Add priority fee instructions for reliable confirmation
+    extendTx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+    );
     extendTx.add(extendIx);
     const extendBlockhash = await withRpcLimit(
       () => connection.getLatestBlockhash('finalized'),
@@ -676,6 +685,11 @@ export class DexAltManager {
     // STEP 1: Create the lookup table (first transaction)
     // The lookup table account must exist before we can extend it
     const createTx = new Transaction();
+    // Add priority fee instructions for reliable confirmation
+    createTx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+    );
     createTx.add(createIx);
     const createBlockhash = await withRpcLimit(
       () => connection.getLatestBlockhash('finalized'),
@@ -995,6 +1009,11 @@ export class DexAltManager {
         });
         
         const extendTx = new Transaction();
+        // Add priority fee instructions for reliable confirmation
+        extendTx.add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+        );
         extendTx.add(extendIx);
         const extendBlockhash = await withRpcLimit(
           () => connection.getLatestBlockhash('finalized'),
@@ -4313,7 +4332,13 @@ export class DexAltManager {
       authority: wallet.publicKey,
     });
 
-    const tx = new Transaction().add(deactivateIx);
+    const tx = new Transaction();
+    // Add priority fee instructions for reliable confirmation
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+    );
+    tx.add(deactivateIx);
     const { blockhash } = await withRpcLimit(
       () => connection.getLatestBlockhash(),
       1,
@@ -4406,7 +4431,13 @@ export class DexAltManager {
       recipient: wallet.publicKey,
     });
 
-    const tx = new Transaction().add(closeIx);
+    const tx = new Transaction();
+    // Add priority fee instructions for reliable confirmation
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+    );
+    tx.add(closeIx);
     const { blockhash } = await withRpcLimit(
       () => connection.getLatestBlockhash(),
       1,
@@ -4703,7 +4734,13 @@ export class DexAltManager {
     });
 
     // Create and send transaction
-    const tx = new Transaction().add(deactivateIx);
+    const tx = new Transaction();
+    // Add priority fee instructions for reliable confirmation
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+    );
+    tx.add(deactivateIx);
     const { blockhash } = await withRpcLimit(
       () => connection.getLatestBlockhash(),
       1,
@@ -4818,7 +4855,13 @@ export class DexAltManager {
     });
 
     // Create and send transaction
-    const tx = new Transaction().add(closeIx);
+    const tx = new Transaction();
+    // Add priority fee instructions for reliable confirmation
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+    );
+    tx.add(closeIx);
     const { blockhash } = await withRpcLimit(
       () => connection.getLatestBlockhash(),
       1,
