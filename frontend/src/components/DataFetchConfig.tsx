@@ -182,6 +182,90 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
+  // Discovery state
+  const [discoveryRunning, setDiscoveryRunning] = useState(false);
+  const [discoveryStatus, setDiscoveryStatus] = useState<any>(null);
+  const [discoveryResult, setDiscoveryResult] = useState<any>(null);
+  
+  // Fetch discovery status
+  const refreshDiscoveryStatus = async () => {
+    try {
+      const [statusRes, lastRes] = await Promise.all([
+        fetch(`${apiBase}/api/discovery/status`),
+        fetch(`${apiBase}/api/discovery/last`),
+      ]);
+      if (statusRes.ok) {
+        const status = await statusRes.json();
+        setDiscoveryStatus(status);
+        setDiscoveryRunning(status.cycleInProgress);
+      }
+      if (lastRes.ok) {
+        const last = await lastRes.json();
+        setDiscoveryResult(last);
+      }
+    } catch (e) {
+      console.error('Failed to fetch discovery status', e);
+    }
+  };
+  
+  // Run manual discovery
+  const runManualDiscovery = async () => {
+    setDiscoveryRunning(true);
+    setDiscoveryResult(null);
+    try {
+      const res = await fetch(`${apiBase}/api/discovery/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          maxTokens: 50,
+          wait: true,
+          timeoutMs: 120000,
+        }),
+      });
+      const data = await res.json();
+      if (data.result) {
+        setDiscoveryResult(data.result);
+      }
+      await refreshDiscoveryStatus();
+    } catch (e: any) {
+      setError(`Discovery failed: ${e?.message || e}`);
+    } finally {
+      setDiscoveryRunning(false);
+    }
+  };
+  
+  // Run dry-run discovery (preview only, no integration)
+  const runDryRunDiscovery = async () => {
+    setDiscoveryRunning(true);
+    setDiscoveryResult(null);
+    try {
+      const res = await fetch(`${apiBase}/api/discovery/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          maxTokens: 50,
+          dryRun: true,
+          wait: true,
+          timeoutMs: 120000,
+        }),
+      });
+      const data = await res.json();
+      if (data.result) {
+        setDiscoveryResult({ ...data.result, dryRun: true });
+      }
+      await refreshDiscoveryStatus();
+    } catch (e: any) {
+      setError(`Discovery dry-run failed: ${e?.message || e}`);
+    } finally {
+      setDiscoveryRunning(false);
+    }
+  };
+  
+  // Fetch discovery status on mount
+  useEffect(() => {
+    refreshDiscoveryStatus();
+  }, []);
+  
   // Save ALL configuration values to localStorage when they change (excluding API keys)
   useEffect(() => {
     const sanitized = {
@@ -1816,7 +1900,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
           <div className="bg-gray-700 rounded p-4">
             <h3 className="text-lg font-semibold mb-3">Token Discovery</h3>
             <p className="text-xs text-gray-400 mb-3">Automatically discover new tokens from Jupiter top traded list and their pools via DexScreener. Requires Jupiter API key.</p>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
               <div>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" checked={!!cfg.discovery_enabled} onChange={(e)=>set('discovery_enabled', e.target.checked)} />
@@ -1835,6 +1919,73 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <label className="block text-sm mb-1">Max Pools/Token</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.discovery_maxPoolsPerToken || 20} onChange={(e)=>set('discovery_maxPoolsPerToken', Number(e.target.value))} min={1} max={100} />
               </div>
+            </div>
+            
+            {/* Manual Discovery Controls */}
+            <div className="border-t border-gray-600 pt-3 mt-3">
+              <div className="flex items-center gap-4 mb-3">
+                <h4 className="text-sm font-semibold">Manual Discovery</h4>
+                <button 
+                  className={`px-3 py-1 text-sm rounded ${discoveryRunning ? 'bg-gray-500 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
+                  onClick={runManualDiscovery}
+                  disabled={discoveryRunning}
+                >
+                  {discoveryRunning ? 'Running...' : 'Run Discovery Now'}
+                </button>
+                <button 
+                  className={`px-3 py-1 text-sm rounded ${discoveryRunning ? 'bg-gray-500 cursor-not-allowed' : 'bg-yellow-600 hover:bg-yellow-700'}`}
+                  onClick={runDryRunDiscovery}
+                  disabled={discoveryRunning}
+                >
+                  Dry Run (Preview)
+                </button>
+                <button 
+                  className="px-3 py-1 text-sm rounded bg-gray-600 hover:bg-gray-500"
+                  onClick={refreshDiscoveryStatus}
+                >
+                  Refresh Status
+                </button>
+              </div>
+              
+              {/* Discovery Status */}
+              {discoveryStatus && (
+                <div className="bg-gray-800 rounded p-3 text-xs">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+                    <div><span className="text-gray-400">Loop Running:</span> <span className={discoveryStatus.loopRunning ? 'text-green-400' : 'text-gray-500'}>{discoveryStatus.loopRunning ? 'Yes' : 'No'}</span></div>
+                    <div><span className="text-gray-400">Cycle Active:</span> <span className={discoveryStatus.cycleInProgress ? 'text-yellow-400' : 'text-gray-500'}>{discoveryStatus.cycleInProgress ? 'Yes' : 'No'}</span></div>
+                    <div><span className="text-gray-400">Cycles Run:</span> {discoveryStatus.cyclesCompleted || 0}</div>
+                    <div><span className="text-gray-400">Last Run:</span> {discoveryStatus.lastCycleTime ? new Date(discoveryStatus.lastCycleTime).toLocaleTimeString() : 'Never'}</div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Last Discovery Result */}
+              {discoveryResult && (
+                <div className="bg-gray-800 rounded p-3 text-xs mt-2">
+                  <div className="font-semibold mb-2 text-blue-400">Last Discovery Result {discoveryResult.dryRun && <span className="text-yellow-400">(DRY RUN)</span>}</div>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                    <div><span className="text-gray-400">Tokens Checked:</span> {discoveryResult.tokensChecked}</div>
+                    <div><span className="text-gray-400">New Tokens:</span> {discoveryResult.newTokensFound}</div>
+                    <div><span className="text-gray-400">Pools Discovered:</span> {discoveryResult.poolsDiscovered}</div>
+                    <div><span className="text-gray-400">Pools Enriched:</span> {discoveryResult.poolsEnriched}</div>
+                    <div><span className="text-gray-400">Pools Added:</span> <span className="text-green-400">{discoveryResult.poolsAdded}</span></div>
+                  </div>
+                  {discoveryResult.byDex && Object.keys(discoveryResult.byDex).length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-gray-700">
+                      <span className="text-gray-400">By DEX:</span>{' '}
+                      {Object.entries(discoveryResult.byDex).map(([dex, stats]: [string, any]) => (
+                        <span key={dex} className="mr-3">{dex}: <span className="text-blue-300">{stats.added || 0}</span></span>
+                      ))}
+                    </div>
+                  )}
+                  {discoveryResult.errors && discoveryResult.errors.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-gray-700 text-red-400">
+                      <span className="text-gray-400">Errors ({discoveryResult.errors.length}):</span> {discoveryResult.errors.slice(0, 3).join(', ')}{discoveryResult.errors.length > 3 ? '...' : ''}
+                    </div>
+                  )}
+                  <div className="mt-1 text-gray-500">Duration: {discoveryResult.durationMs}ms</div>
+                </div>
+              )}
             </div>
           </div>
 
