@@ -70,6 +70,7 @@ pub fn compute_amm_output(input: f64, reserve_in: f64, reserve_out: f64, fee_bps
 /// Compute the slippage multiplier for an AMM trade.
 /// Returns the ratio: actual_output / theoretical_output
 /// where theoretical_output = input * (reserve_out / reserve_in) * (1 - fee)
+#[allow(dead_code)]
 pub fn compute_amm_slippage_multiplier(
     input: f64,
     reserve_in: f64,
