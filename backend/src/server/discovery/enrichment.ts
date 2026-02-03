@@ -43,6 +43,12 @@ import {
   normalizeMeteoraGraphQL 
 } from '../pools/meteoraGraphQL.js';
 
+// PumpSwap
+import { 
+  fetchPumpswapPoolsByAddress,
+  normalizePumpswapPools 
+} from '../pools/pumpswap.js';
+
 // ============================================================================
 // Default Options
 // ============================================================================
@@ -273,6 +279,49 @@ async function enrichMeteoraDlmm(
   }
 }
 
+/**
+ * Enrich PumpSwap AMM pools
+ */
+async function enrichPumpswap(
+  poolIds: string[],
+  opts: Required<EnrichmentOptions>
+): Promise<{ pools: any[]; failed: string[] }> {
+  if (poolIds.length === 0) return { pools: [], failed: [] };
+  
+  try {
+    logger.info('discovery.enrich.pumpswap.start', { 
+      count: poolIds.length, 
+      cat: 'discovery' 
+    });
+    
+    const poolMap = await fetchPumpswapPoolsByAddress(poolIds, {
+      retries: opts.retries,
+      backoffMs: opts.backoffMs,
+      batchSize: Math.min(opts.batchSize, 50), // Shyft limit
+      delayMs: opts.delayMs,
+    });
+    
+    const pools = Array.from(poolMap.values());
+    const found = new Set(poolMap.keys());
+    const failed = poolIds.filter(id => !found.has(id));
+    
+    logger.info('discovery.enrich.pumpswap.complete', { 
+      requested: poolIds.length,
+      found: pools.length,
+      failed: failed.length,
+      cat: 'discovery' 
+    });
+    
+    return { pools, failed };
+  } catch (err: any) {
+    logger.error('discovery.enrich.pumpswap.error', { 
+      error: String(err?.message || err),
+      cat: 'discovery' 
+    });
+    return { pools: [], failed: poolIds };
+  }
+}
+
 // ============================================================================
 // Main Enrichment Orchestrator
 // ============================================================================
@@ -280,8 +329,8 @@ async function enrichMeteoraDlmm(
 /**
  * Enrich discovered pools by fetching full data from DEX sources.
  * 
- * Note: Phase 1 supports Raydium (AMM/CLMM/CPMM), Orca, and Meteora DLMM.
- * Meteora Balanced (DAMM) and PumpSwap are not yet supported for enrichment.
+ * Supports: Raydium (AMM/CLMM/CPMM), Orca, Meteora DLMM, PumpSwap.
+ * Meteora Balanced (DAMM) is not yet supported for enrichment.
  * 
  * @param discoveredPools Pools discovered from DexScreener with mappings
  * @param options Enrichment options
@@ -361,12 +410,10 @@ export async function enrichDiscoveredPools(
         });
         
       } else if (key === 'pumpswap:amm') {
-        // PumpSwap not yet supported - skip but don't fail
-        logger.debug('discovery.enrich.skip_pumpswap', { 
-          count: poolIds.length,
-          reason: 'not_yet_supported',
-          cat: 'discovery' 
-        });
+        const { pools: enriched, failed } = await enrichPumpswap(poolIds, opts);
+        const normalized = await normalizePumpswapPools(enriched);
+        result.pools.pumpswap.amm.push(...(normalized.amm || []));
+        result.failed.push(...failed);
         
       } else {
         logger.warn('discovery.enrich.unknown_group', { key, count: poolIds.length, cat: 'discovery' });
@@ -390,7 +437,8 @@ export async function enrichDiscoveredPools(
     result.pools.raydium.clmm.length +
     result.pools.raydium.cpmm.length +
     result.pools.orca.clmm.length +
-    result.pools.meteora.clmm.length;
+    result.pools.meteora.clmm.length +
+    result.pools.pumpswap.amm.length;
     
   logger.info('discovery.enrich.complete', { 
     totalPools: discoveredPools.length,
@@ -402,6 +450,7 @@ export async function enrichDiscoveredPools(
       raydium_cpmm: result.pools.raydium.cpmm.length,
       orca: result.pools.orca.clmm.length,
       meteora: result.pools.meteora.clmm.length,
+      pumpswap: result.pools.pumpswap.amm.length,
     },
     errors: result.errors.length,
     cat: 'discovery' 

@@ -160,38 +160,55 @@ async function integratePoolsIntoCaches(enrichmentResult: any): Promise<number> 
   
   try {
     const poolsModule = await import('../pools.js');
-    const { raydiumCache, orcaCache, meteoraCache } = await import('../pools.cache.js');
+    const { raydiumCache, orcaCache, meteoraCache, cpmmCache, pumpswapCache } = await import('../pools.cache.js');
     
-    // Add Raydium pools
+    // Add Raydium AMM and CLMM pools to raydiumCache
     const raydiumPools = enrichmentResult.pools.raydium;
-    if (raydiumPools.amm.length > 0 || raydiumPools.clmm.length > 0 || raydiumPools.cpmm.length > 0) {
+    if (raydiumPools.amm.length > 0 || raydiumPools.clmm.length > 0) {
       const currentRaydium = raydiumCache.data || { amm: [], clmm: [], cpmm: [] };
       
       // Deduplicate by pool ID
-      const existingIds = new Set([
-        ...currentRaydium.amm.map((p: any) => p.id),
-        ...currentRaydium.clmm.map((p: any) => p.id),
-        ...(currentRaydium.cpmm || []).map((p: any) => p.id),
-      ]);
+      const existingAmmIds = new Set(currentRaydium.amm.map((p: any) => p.id));
+      const existingClmmIds = new Set(currentRaydium.clmm.map((p: any) => p.id));
       
-      const newAmm = raydiumPools.amm.filter((p: any) => p.id && !existingIds.has(p.id));
-      const newClmm = raydiumPools.clmm.filter((p: any) => p.id && !existingIds.has(p.id));
-      const newCpmm = raydiumPools.cpmm.filter((p: any) => p.id && !existingIds.has(p.id));
+      const newAmm = raydiumPools.amm.filter((p: any) => p.id && !existingAmmIds.has(p.id));
+      const newClmm = raydiumPools.clmm.filter((p: any) => p.id && !existingClmmIds.has(p.id));
       
       // Pools are already canonicalized by normalizers
       raydiumCache.data = {
         amm: [...currentRaydium.amm, ...newAmm],
         clmm: [...currentRaydium.clmm, ...newClmm],
-        cpmm: [...(currentRaydium.cpmm || []), ...newCpmm],
+        cpmm: currentRaydium.cpmm || [], // Keep existing cpmm reference (but don't add new ones here)
       };
       raydiumCache.ts = Date.now();
       
-      addedCount += newAmm.length + newClmm.length + newCpmm.length;
+      addedCount += newAmm.length + newClmm.length;
       
-      if (newAmm.length > 0 || newClmm.length > 0 || newCpmm.length > 0) {
+      if (newAmm.length > 0 || newClmm.length > 0) {
         logger.info('discovery.integrate.raydium', { 
           amm: newAmm.length,
           clmm: newClmm.length,
+          cat: 'discovery' 
+        });
+      }
+    }
+    
+    // Add Raydium CPMM pools to cpmmCache (separate cache!)
+    if (raydiumPools.cpmm.length > 0) {
+      const currentCpmm = cpmmCache.data || { cpmm: [] };
+      
+      const existingCpmmIds = new Set(currentCpmm.cpmm.map((p: any) => p.id));
+      const newCpmm = raydiumPools.cpmm.filter((p: any) => p.id && !existingCpmmIds.has(p.id));
+      
+      cpmmCache.data = {
+        cpmm: [...currentCpmm.cpmm, ...newCpmm],
+      };
+      cpmmCache.ts = Date.now();
+      
+      addedCount += newCpmm.length;
+      
+      if (newCpmm.length > 0) {
+        logger.info('discovery.integrate.raydium_cpmm', { 
           cpmm: newCpmm.length,
           cat: 'discovery' 
         });
@@ -245,6 +262,32 @@ async function integratePoolsIntoCaches(enrichmentResult: any): Promise<number> 
       if (newClmm.length > 0) {
         logger.info('discovery.integrate.meteora', { 
           clmm: newClmm.length,
+          cat: 'discovery' 
+        });
+      }
+    }
+    
+    // Add PumpSwap pools to pumpswapCache
+    const pumpswapPools = enrichmentResult.pools.pumpswap;
+    if (pumpswapPools && pumpswapPools.amm.length > 0) {
+      const currentPumpswap = pumpswapCache.data || { amm: [], clmm: [], cpmm: [] };
+      
+      const existingIds = new Set((currentPumpswap.amm || []).map((p: any) => p.id));
+      const newAmm = pumpswapPools.amm.filter((p: any) => p.id && !existingIds.has(p.id));
+      
+      // Pools are already canonicalized by normalizers
+      pumpswapCache.data = {
+        amm: [...(currentPumpswap.amm || []), ...newAmm],
+        clmm: currentPumpswap.clmm || [],
+        cpmm: currentPumpswap.cpmm || [],
+      };
+      pumpswapCache.ts = Date.now();
+      
+      addedCount += newAmm.length;
+      
+      if (newAmm.length > 0) {
+        logger.info('discovery.integrate.pumpswap', { 
+          amm: newAmm.length,
           cat: 'discovery' 
         });
       }

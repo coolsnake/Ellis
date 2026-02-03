@@ -593,6 +593,157 @@ async function fetchPoolsForToken(
   return allPools;
 }
 
+// ============================================================================
+// Fetch Pools by Address (for Discovery)
+// ============================================================================
+
+/**
+ * Options for fetchPumpswapPoolsByAddress
+ */
+export interface FetchPumpswapByAddressOptions {
+  retries?: number;
+  backoffMs?: number;
+  batchSize?: number;
+  delayMs?: number;
+}
+
+/**
+ * Fetch Pumpswap pools by their pool addresses (pubkeys).
+ * Used by the discovery system to enrich pools found via DexScreener.
+ * 
+ * @param poolAddresses Array of pool pubkey addresses to fetch
+ * @param options Fetch options (retries, backoff, batch size, delay)
+ * @returns Map of pool address to raw pool data
+ */
+export async function fetchPumpswapPoolsByAddress(
+  poolAddresses: string[],
+  options?: FetchPumpswapByAddressOptions
+): Promise<Map<string, PumpswapPoolApiResponse>> {
+  const apiKey = (CONFIG as any)?.pumpswap?.shyftApiKey || '';
+  if (!apiKey) {
+    logger.warn('pumpswap.fetchByAddress.apiKey_missing', { cat: 'pumpswap' });
+    return new Map();
+  }
+  
+  if (poolAddresses.length === 0) {
+    return new Map();
+  }
+  
+  const retries = options?.retries ?? Number((CONFIG as any)?.pumpswap?.maxHttpRetries || 2);
+  const backoffMs = options?.backoffMs ?? Number((CONFIG as any)?.pumpswap?.httpBackoffMs || 500);
+  const batchSize = options?.batchSize ?? 50; // Shyft GraphQL limit
+  const delayMs = options?.delayMs ?? Number((CONFIG as any)?.pumpswap?.pageDelayMs || 200);
+  
+  const result = new Map<string, PumpswapPoolApiResponse>();
+  const batches = chunkArray(poolAddresses, batchSize);
+  
+  logger.info('pumpswap.fetchByAddress.start', { 
+    totalPools: poolAddresses.length,
+    batches: batches.length,
+    batchSize,
+    cat: 'pumpswap' 
+  });
+  
+  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+    const batch = batches[batchIdx];
+    
+    const query = `
+      query GetPumpswapPoolsByAddress($addresses: [String!]!) {
+        pump_fun_amm_Pool(where: {pubkey: {_in: $addresses}}) {
+          base_mint
+          quote_mint
+          pubkey
+          creator
+          lp_mint
+          lp_supply
+          pool_base_token_account
+          pool_quote_token_account
+          pool_bump
+          index
+        }
+      }
+    `;
+    
+    const url = 'https://programs.shyft.to/v0/graphql/accounts';
+    const params = new URLSearchParams({ 
+      api_key: apiKey, 
+      network: 'mainnet-beta' 
+    });
+    
+    // eslint-disable-next-line no-undef
+    const fetchFn: any = (globalThis as any).fetch || fetch;
+    
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const cid = httpLogStart({ source: 'pumpswap', url: `${url}?${params}`, extra: { batch: batchIdx, poolCount: batch.length } });
+        const res = await fetchFn(`${url}?${params}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            query, 
+            operationName: 'GetPumpswapPoolsByAddress',
+            variables: { addresses: batch }
+          })
+        });
+        
+        if (res?.status === 429) {
+          logger.warn('pumpswap.fetchByAddress.429', { batch: batchIdx, cat: 'pumpswap' });
+          httpLog429({ source: 'pumpswap', url: `${url}?${params}`, cid });
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+            continue;
+          }
+          throw new Error('429');
+        }
+        
+        httpLogResponse({ res, cid, source: 'pumpswap' });
+        
+        if (!res?.ok) {
+          httpLogNonOk({ source: 'pumpswap', url: `${url}?${params}`, statusCode: res?.status, cid });
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+            continue;
+          }
+          throw new Error(`HTTP ${res?.status}`);
+        }
+        
+        const json = await res.json();
+        const pools = json?.data?.pump_fun_amm_Pool || [];
+        
+        for (const pool of pools) {
+          if (pool?.pubkey) {
+            result.set(pool.pubkey, pool);
+          }
+        }
+        
+        break; // Success, exit retry loop
+        
+      } catch (err: any) {
+        if (attempt === retries) {
+          logger.error('pumpswap.fetchByAddress.batch_error', { 
+            batch: batchIdx, 
+            error: String(err?.message || err),
+            cat: 'pumpswap' 
+          });
+        }
+      }
+    }
+    
+    // Delay between batches
+    if (batchIdx < batches.length - 1 && delayMs > 0) {
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  
+  logger.info('pumpswap.fetchByAddress.complete', { 
+    requested: poolAddresses.length,
+    found: result.size,
+    cat: 'pumpswap' 
+  });
+  
+  return result;
+}
+
 /**
  * Helper to parse SPL token account balance from raw account data
  * Token account layout: amount is u64 at offset 64
