@@ -104,6 +104,11 @@ export function calculateMultiHopOptimalSize(
     logger.debug('multiHopSizing.no_hop_data', {
       cat: 'sizing',
       path: opp.path.join('->'),
+      hasHopPoolIds: !!opp.hop_pool_ids,
+      hopPoolIdsLength: opp.hop_pool_ids?.length ?? 0,
+      hasHopDexes: !!opp.hop_dexes,
+      hasHopFeeBps: !!opp.hop_fee_bps,
+      hasHopLiquidityDisplay: !!opp.hop_liquidity_display,
     });
     return null;
   }
@@ -126,6 +131,9 @@ export function calculateMultiHopOptimalSize(
       missingDataCount,
       totalHops: hops.length,
       missingRatio: missingRatio.toFixed(2),
+      hopLiquidityDisplay: hopLiquidityDisplay,
+      hopDexes: hopDexes,
+      hopsWithData: hops.length - missingDataCount,
     });
     return null; // Caller should fall back to bottleneck method
   }
@@ -151,7 +159,7 @@ export function calculateMultiHopOptimalSize(
     // Run profit optimization
     const result = findOptimalSize(profitBps, hops, optimizationConfig);
     
-    // Log the result
+    // Log the result with full context for debugging
     logger.debug('multiHopSizing.optimized', {
       cat: 'sizing',
       path: opp.path.join('->'),
@@ -161,9 +169,19 @@ export function calculateMultiHopOptimalSize(
       expectedSlippageBps: result.totalSlippageBps,
       iterations: result.iterations,
       confidence: result.confidence,
+      method: result.method,
       hops: hops.length,
       missingData: missingDataCount,
       rawOptimal: result.rawOptimalSizeUsd?.toFixed(2),
+      // Include config bounds for context
+      configMinSizeUsd: config.minSizeUsd,
+      configMaxSizeUsd: config.maxSizeUsd,
+      effectiveMaxSizeUsd: effectiveMaxSize,
+      walletBalanceUsd,
+      // Include opportunity data for cross-reference
+      estCapacity: opp.est_capacity,
+      minEdgeLiquidity: opp.min_edge_liquidity,
+      hopLiquidityDisplay: hopLiquidityDisplay,
     });
     
     return {
@@ -177,6 +195,8 @@ export function calculateMultiHopOptimalSize(
         hopsAnalyzed: hops.length,
         missingDataHops: missingDataCount,
         rawOptimalSize: result.rawOptimalSizeUsd,
+        searchBoundsLower: (result as any).searchBoundsLower,
+        searchBoundsUpper: (result as any).searchBoundsUpper,
       },
     };
   } catch (e) {

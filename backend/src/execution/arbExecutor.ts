@@ -1246,6 +1246,7 @@ export class ArbExecutor {
               last_verified_ms: opp.last_verified_ms,
               detections: opp.detections,
             },
+            sizing: (opp as any)._sizingInfo || null,
             plan: null, // Plan resolution or build failed
             dexes,
             execConfig: null,
@@ -1434,6 +1435,8 @@ export class ArbExecutor {
               last_verified_ms: opp.last_verified_ms,
               detections: opp.detections,
             },
+            // Include sizing calculation details for debugging
+            sizing: (opp as any)._sizingInfo || null,
             plan,
             dexes, // Include all DEXes involved
             execConfig: execCfg,
@@ -1722,6 +1725,7 @@ export class ArbExecutor {
                 txId: traceId,
                 traceId,
                 opportunity: { ...opp },
+                sizing: (opp as any)._sizingInfo || null,
                 plan,
                 dexes,
                 execConfig: execCfg,
@@ -2171,6 +2175,7 @@ export class ArbExecutor {
               txId: traceId,
               traceId,
               opportunity: { ...opp },
+              sizing: (opp as any)._sizingInfo || null,
               plan: currentPlan,
               dexes,
               execConfig: execCfg,
@@ -2425,6 +2430,7 @@ export class ArbExecutor {
               txId: traceId,
               traceId,
               opportunity: { ...opp },
+              sizing: (opp as any)._sizingInfo || null,
               plan,
               dexes,
               execConfig: execCfg,
@@ -2592,6 +2598,7 @@ export class ArbExecutor {
               last_verified_ms: opp.last_verified_ms,
               detections: opp.detections,
             },
+            sizing: (opp as any)._sizingInfo || null,
             plan,
             dexes, // Include all DEXes involved
             execConfig: execCfg,
@@ -2771,6 +2778,7 @@ export class ArbExecutor {
             last_verified_ms: opp.last_verified_ms,
             detections: opp.detections,
           },
+          sizing: (opp as any)._sizingInfo || null,
           plan,
           dexes: plan ? Array.from(new Set(plan.hops.map((h: any) => h.dex))) : Array.from(new Set(executionDexes || [])),
           execConfig: execCfg,
@@ -3095,6 +3103,29 @@ export class ArbExecutor {
           finalSize = Math.min(finalSize, walletBalanceUsd);
         }
         
+        // Store sizing info on opportunity for tx dumps
+        (opp as any)._sizingInfo = {
+          method: 'multi_hop',
+          multiHopResult: {
+            method: multiHopResult.method,
+            rawSizeUsd: multiHopResult.sizeUsd,
+            finalSizeUsd: finalSize,
+            expectedProfitUsd: multiHopResult.expectedProfitUsd,
+            expectedSlippageBps: multiHopResult.expectedSlippageBps,
+            confidence: multiHopResult.confidence,
+            iterations: multiHopResult.details?.iterations,
+            hopsAnalyzed: multiHopResult.details?.hopsAnalyzed,
+            missingDataHops: multiHopResult.details?.missingDataHops,
+            searchBoundsLower: multiHopResult.details?.searchBoundsLower,
+            searchBoundsUpper: multiHopResult.details?.searchBoundsUpper,
+            rawOptimalSize: multiHopResult.details?.rawOptimalSize,
+          },
+          randomMultiplier,
+          walletBalanceUsd,
+          configMinSizeUsd: config.minSizeUsd,
+          configMaxSizeUsd: config.maxSizeUsd,
+        };
+        
         logger.debug('arb.executor.sizing.multi_hop', {
           cat: 'arb',
           path: opp.path.join('->'),
@@ -3113,6 +3144,16 @@ export class ArbExecutor {
         return finalSize;
       }
       // Fall through to bottleneck method if multi-hop returned null
+      // Store fallback info for tx dumps
+      (opp as any)._sizingInfo = {
+        method: 'multi_hop_fallback',
+        multiHopResult: null,
+        fallbackReason: 'multi_hop_returned_null',
+        walletBalanceUsd,
+        configMinSizeUsd: config.minSizeUsd,
+        configMaxSizeUsd: config.maxSizeUsd,
+      };
+      
       logger.debug('arb.executor.sizing.multi_hop_fallback', {
         cat: 'arb',
         path: opp.path.join('->'),
@@ -3171,6 +3212,21 @@ export class ArbExecutor {
         sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
       }
       
+      // Store sizing info for tx dumps
+      (opp as any)._sizingInfo = {
+        method: 'bottleneck_heuristic',
+        multiHopResult: null,
+        bottleneckUsd,
+        rawSizeUsd: sizeUsd / randomMultiplier,
+        finalSizeUsd: sizeUsd,
+        randomMultiplier,
+        walletBalanceUsd,
+        configMinSizeUsd: config.minSizeUsd,
+        configMaxSizeUsd: config.maxSizeUsd,
+        aggressiveness: config.aggressiveness,
+        reason: 'no_capacity_curve',
+      };
+      
       logger.debug('arb.executor.capacity_sizing.fallback', {
         cat: 'arb',
         path: opp.path.join('->'),
@@ -3206,6 +3262,34 @@ export class ArbExecutor {
       finalSize = Math.min(config.maxSizeUsd, finalSize);
       finalSize = Math.min(finalSize, walletBalanceUsd);
     }
+    
+    // Store sizing info for tx dumps
+    (opp as any)._sizingInfo = {
+      method: 'bottleneck_curve',
+      multiHopResult: null,
+      bottleneckCurve: {
+        hopIndex: bottleneckHopIdx,
+        poolType: bottleneckCurve.poolType,
+        breakEvenSizeUsd: bottleneckCurve.breakEvenSizeUsd,
+        confidence: bottleneckCurve.confidence,
+        activeLiquidityUsd: bottleneckCurve.activeLiquidityUsd,
+      },
+      rawSizeUsd: result.sizeUsd,
+      finalSizeUsd: finalSize,
+      expectedSlippageBps: result.expectedSlippageBps,
+      constrainedBy: result.constrainedBy,
+      randomMultiplier,
+      walletBalanceUsd,
+      configMinSizeUsd: config.minSizeUsd,
+      configMaxSizeUsd: config.maxSizeUsd,
+      profitBps,
+      aggressiveness: config.aggressiveness,
+      calibration: calibrationInfo ? {
+        applied: true,
+        scaleFactor: calibrationInfo.scaleFactor,
+        confidence: calibrationInfo.confidence,
+      } : null,
+    };
     
     logger.debug('arb.executor.capacity_sizing.computed', {
       cat: 'arb',
