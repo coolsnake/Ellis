@@ -191,8 +191,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   const refreshDiscoveryStatus = async () => {
     try {
       const [statusRes, lastRes] = await Promise.all([
-        fetch(`${apiBase}/api/discovery/status`),
-        fetch(`${apiBase}/api/discovery/last`),
+        fetch(`${apiBase}/discovery/status`),
+        fetch(`${apiBase}/discovery/last`),
       ]);
       if (statusRes.ok) {
         const status = await statusRes.json();
@@ -213,7 +213,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     setDiscoveryRunning(true);
     setDiscoveryResult(null);
     try {
-      const res = await fetch(`${apiBase}/api/discovery/run`, {
+      const res = await fetch(`${apiBase}/discovery/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -239,7 +239,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     setDiscoveryRunning(true);
     setDiscoveryResult(null);
     try {
-      const res = await fetch(`${apiBase}/api/discovery/run`, {
+      const res = await fetch(`${apiBase}/discovery/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
