@@ -263,6 +263,30 @@ async function triggerGraphRebuild(): Promise<void> {
   }
 }
 
+/**
+ * Trigger WebSocket retarget to subscribe to newly discovered pools
+ */
+async function triggerPoolRetarget(): Promise<void> {
+  try {
+    const { retargetPoolWebsockets } = await import('../pools.js');
+    
+    // Small delay to let the graph rebuild complete
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    const result = await retargetPoolWebsockets();
+    
+    logger.info('discovery.pools.retarget_complete', { 
+      attached: result.attached,
+      cat: 'discovery' 
+    });
+  } catch (err: any) {
+    logger.error('discovery.pools.retarget_error', { 
+      error: String(err?.message || err),
+      cat: 'discovery' 
+    });
+  }
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -486,7 +510,17 @@ export async function runDiscoveryCycle(options?: {
       }
       
       if (result.poolsAdded > 0) {
+        // Rebuild graph with new pools
         await triggerGraphRebuild();
+        
+        // Retarget WebSocket subscriptions to include new pools
+        // This runs in background to not block the discovery cycle
+        triggerPoolRetarget().catch(err => {
+          logger.warn('discovery.cycle.retarget_background_error', { 
+            error: String(err?.message || err),
+            cat: 'discovery' 
+          });
+        });
       }
     }
     
