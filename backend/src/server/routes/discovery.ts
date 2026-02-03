@@ -18,7 +18,7 @@ import {
   stopDiscoveryLoop,
   restartDiscoveryLoop,
 } from '../tasks/discovery.js';
-import { getDiscoveryConfig } from '../discovery/tokenDiscovery.js';
+import { getDiscoveryConfig, runFullUniverseDiscoveryCycle } from '../discovery/tokenDiscovery.js';
 
 export function createDiscoveryRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -163,6 +163,77 @@ export function createDiscoveryRouter(io: SocketIOServer): Router {
       
     } catch (err: any) {
       logger.error('discovery.route.run.error', { 
+        error: String(err?.message || err),
+        cat: 'discovery' 
+      });
+      res.status(500).json({ error: String(err?.message || 'Internal error') });
+    }
+  });
+  
+  // ============================================================================
+  // POST /api/discovery/full-universe
+  // Run a full universe discovery (all tokens + Jupiter top 100)
+  // WARNING: This is slow and rate-limited, can take 10+ minutes
+  // ============================================================================
+  api.post('/discovery/full-universe', async (req, res) => {
+    try {
+      if (isDiscoveryCycleInProgress()) {
+        res.status(409).json({ 
+          error: 'Discovery cycle already in progress',
+          inProgress: true,
+        });
+        return;
+      }
+      
+      const body = req.body || {};
+      const options = {
+        minLiquidityUsd: typeof body.minLiquidityUsd === 'number' ? body.minLiquidityUsd : undefined,
+        maxPoolsPerToken: typeof body.maxPoolsPerToken === 'number' ? body.maxPoolsPerToken : undefined,
+        batchSize: typeof body.batchSize === 'number' ? body.batchSize : 20,
+        batchDelayMs: typeof body.batchDelayMs === 'number' ? body.batchDelayMs : 2000,
+        dryRun: body.dryRun === true,
+      };
+      
+      logger.info('discovery.route.full_universe.start', { options, cat: 'discovery' });
+      
+      // Run the full universe discovery
+      const runPromise = runFullUniverseDiscoveryCycle(options);
+      
+      // If client wants to wait, do so with timeout
+      if (body.wait === true) {
+        const timeout = Number(body.timeoutMs || 600000); // 10 min default
+        const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeout));
+        
+        const result = await Promise.race([runPromise, timeoutPromise]);
+        
+        if (result === null) {
+          res.json({ 
+            started: true, 
+            timeout: true,
+            message: 'Full universe discovery is still running (timed out waiting)',
+          });
+        } else {
+          res.json({ started: true, result });
+        }
+      } else {
+        // Return immediately
+        res.json({ 
+          started: true, 
+          message: 'Full universe discovery started (this may take 10+ minutes)',
+          inProgress: true,
+        });
+        
+        // Let the cycle run in background
+        runPromise.catch(err => {
+          logger.error('discovery.route.full_universe.background_error', { 
+            error: String(err?.message || err),
+            cat: 'discovery' 
+          });
+        });
+      }
+      
+    } catch (err: any) {
+      logger.error('discovery.route.full_universe.error', { 
         error: String(err?.message || err),
         cat: 'discovery' 
       });

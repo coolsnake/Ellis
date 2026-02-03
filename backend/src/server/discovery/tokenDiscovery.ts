@@ -712,3 +712,236 @@ export async function runDiscoveryCycle(options?: {
   
   return result;
 }
+
+// ============================================================================
+// Full Universe Discovery
+// ============================================================================
+
+/**
+ * Run a full universe discovery cycle.
+ * This fetches pools for ALL tokens in the token universe + Jupiter top 100.
+ * Much slower than regular discovery but finds all possible pools.
+ * 
+ * @param options Discovery options
+ * @returns Discovery result
+ */
+export async function runFullUniverseDiscoveryCycle(options?: {
+  minLiquidityUsd?: number;
+  maxPoolsPerToken?: number;
+  dryRun?: boolean;
+  batchSize?: number;
+  batchDelayMs?: number;
+}): Promise<DiscoveryResult> {
+  const startTime = Date.now();
+  const cfg = getDiscoveryConfig();
+  
+  const result: DiscoveryResult = {
+    tokensChecked: 0,
+    newTokensFound: 0,
+    poolsDiscovered: 0,
+    poolsFiltered: 0,
+    poolsEnriched: 0,
+    poolsAdded: 0,
+    errors: [],
+    byDex: {},
+    timestamp: startTime,
+    durationMs: 0,
+  };
+  
+  try {
+    logger.info('discovery.full_universe.start', { 
+      minLiquidity: options?.minLiquidityUsd || cfg.minLiquidityUsd,
+      maxPoolsPerToken: options?.maxPoolsPerToken || cfg.maxPoolsPerToken,
+      dryRun: options?.dryRun,
+      cat: 'discovery' 
+    });
+    
+    // Step 1: Get token universe
+    const { computeTokenUniverse } = await import('../universe.js');
+    const { CONFIG } = await import('../../utils/config.js');
+    const universeMode = (CONFIG.system as any)?.tokenUniverseMode;
+    const universeTokens = await computeTokenUniverse(universeMode);
+    
+    logger.info('discovery.full_universe.universe_loaded', { 
+      universeSize: universeTokens.size,
+      mode: universeMode,
+      cat: 'discovery' 
+    });
+    
+    // Step 2: Fetch Jupiter top 100 and merge
+    const jupiterTokens = await fetchJupiterTopTokens();
+    const allTokens = new Set(universeTokens);
+    for (const jt of jupiterTokens) {
+      if (jt.id) allTokens.add(jt.id);
+    }
+    
+    logger.info('discovery.full_universe.tokens_merged', { 
+      universeSize: universeTokens.size,
+      jupiterSize: jupiterTokens.length,
+      totalUnique: allTokens.size,
+      cat: 'discovery' 
+    });
+    
+    result.tokensChecked = allTokens.size;
+    
+    // Step 3: Get already tracked pool IDs (for filtering)
+    const trackedPoolIds = await getTrackedPoolIds();
+    
+    // Step 4: Fetch DexScreener pools in batches
+    const allDiscoveredPools: DiscoveredPool[] = [];
+    const minLiq = options?.minLiquidityUsd ?? cfg.minLiquidityUsd;
+    const maxPoolsPerToken = options?.maxPoolsPerToken ?? cfg.maxPoolsPerToken;
+    const batchSize = options?.batchSize ?? 20; // Process 20 tokens at a time
+    const batchDelayMs = options?.batchDelayMs ?? 2000; // 2s between batches to avoid rate limits
+    
+    const tokenArray = Array.from(allTokens);
+    const totalBatches = Math.ceil(tokenArray.length / batchSize);
+    
+    logger.info('discovery.full_universe.dexscreener_start', { 
+      totalTokens: tokenArray.length,
+      batches: totalBatches,
+      batchSize,
+      batchDelayMs,
+      cat: 'discovery' 
+    });
+    
+    for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+      const batchStart = batchIdx * batchSize;
+      const batchTokens = tokenArray.slice(batchStart, batchStart + batchSize);
+      
+      // Log progress every 10 batches
+      if (batchIdx % 10 === 0 || batchIdx === totalBatches - 1) {
+        logger.info('discovery.full_universe.batch_progress', { 
+          batch: batchIdx + 1,
+          totalBatches,
+          tokensProcessed: batchStart,
+          poolsFound: result.poolsDiscovered,
+          cat: 'discovery' 
+        });
+      }
+      
+      // Process each token in the batch
+      for (const mint of batchTokens) {
+        try {
+          const rawPools = await fetchDexScreenerPools(mint);
+          result.poolsDiscovered += rawPools.length;
+          
+          // Filter by supported DEX
+          let filtered = filterBySupportedDex(rawPools, cfg.supportedDexIds);
+          
+          // Filter by min liquidity
+          filtered = filterByMinLiquidity(filtered, minLiq);
+          
+          // Filter out already tracked pools
+          filtered = filterOutTracked(filtered, trackedPoolIds);
+          
+          // Apply max pools per token limit
+          if (maxPoolsPerToken > 0) {
+            filtered = filtered.slice(0, maxPoolsPerToken);
+          }
+          
+          // Map to internal types
+          const mapped = mapAndFilterPools(filtered);
+          result.poolsFiltered += mapped.length;
+          
+          allDiscoveredPools.push(...mapped);
+          
+          // Track per-DEX stats
+          for (const pool of mapped) {
+            const dexKey = pool.mapping.dex;
+            result.byDex[dexKey] = result.byDex[dexKey] || { discovered: 0, enriched: 0, added: 0 };
+            result.byDex[dexKey].discovered++;
+          }
+          
+        } catch (err: any) {
+          // Don't fail the whole batch on single token error
+          result.errors.push(`Token ${mint.slice(0, 8)}: ${err?.message || err}`);
+        }
+      }
+      
+      // Delay between batches to avoid rate limits
+      if (batchIdx < totalBatches - 1 && batchDelayMs > 0) {
+        await new Promise(r => setTimeout(r, batchDelayMs));
+      }
+    }
+    
+    logger.info('discovery.full_universe.dexscreener_complete', { 
+      tokensProcessed: tokenArray.length,
+      poolsDiscovered: result.poolsDiscovered,
+      poolsFiltered: result.poolsFiltered,
+      byDex: result.byDex,
+      cat: 'discovery' 
+    });
+    
+    result.newTokensFound = allDiscoveredPools.length; // In full universe mode, this represents new pools
+    
+    if (allDiscoveredPools.length === 0) {
+      logger.info('discovery.full_universe.no_new_pools', { cat: 'discovery' });
+      result.durationMs = Date.now() - startTime;
+      return result;
+    }
+    
+    // Step 5: Enrich pools
+    logger.info('discovery.full_universe.enrichment_start', { 
+      poolsToEnrich: allDiscoveredPools.length,
+      cat: 'discovery' 
+    });
+    
+    const enrichmentResult = await enrichDiscoveredPools(allDiscoveredPools);
+    result.poolsEnriched = getEnrichedPoolCount(enrichmentResult);
+    result.errors.push(...enrichmentResult.errors);
+    
+    // Update per-DEX enriched counts
+    for (const dex of Object.keys(result.byDex)) {
+      const enrichedCount = 
+        (dex === 'raydium' ? enrichmentResult.pools.raydium.amm.length + enrichmentResult.pools.raydium.clmm.length + enrichmentResult.pools.raydium.cpmm.length : 0) +
+        (dex === 'orca' ? enrichmentResult.pools.orca.clmm.length : 0) +
+        (dex === 'meteora' ? enrichmentResult.pools.meteora.clmm.length : 0) +
+        (dex === 'pumpswap' ? enrichmentResult.pools.pumpswap.amm.length : 0);
+      result.byDex[dex].enriched = enrichedCount;
+    }
+    
+    // Step 6: Integrate into caches and trigger graph rebuild
+    if (!options?.dryRun && result.poolsEnriched > 0) {
+      result.poolsAdded = await integratePoolsIntoCaches(enrichmentResult);
+      
+      // Update per-DEX added counts
+      for (const dex of Object.keys(result.byDex)) {
+        result.byDex[dex].added = result.byDex[dex].enriched;
+      }
+      
+      if (result.poolsAdded > 0) {
+        await triggerGraphRebuild();
+        
+        // Subscribe to new pools
+        subscribeToNewPools(enrichmentResult).catch(err => {
+          logger.warn('discovery.full_universe.subscribe_error', { 
+            error: String(err?.message || err),
+            cat: 'discovery' 
+          });
+        });
+      }
+    }
+    
+  } catch (err: any) {
+    result.errors.push(`Full universe error: ${err?.message || err}`);
+    logger.error('discovery.full_universe.error', { 
+      error: String(err?.message || err),
+      cat: 'discovery' 
+    });
+  }
+  
+  result.durationMs = Date.now() - startTime;
+  
+  logger.info('discovery.full_universe.complete', { 
+    tokensChecked: result.tokensChecked,
+    poolsDiscovered: result.poolsDiscovered,
+    poolsEnriched: result.poolsEnriched,
+    poolsAdded: result.poolsAdded,
+    errors: result.errors.length,
+    durationMs: result.durationMs,
+    cat: 'discovery' 
+  });
+  
+  return result;
+}

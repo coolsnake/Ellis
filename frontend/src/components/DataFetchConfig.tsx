@@ -208,7 +208,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     }
   };
   
-  // Run manual discovery
+  // Run manual discovery (no token limit - check all new tokens from Jupiter)
   const runManualDiscovery = async () => {
     setDiscoveryRunning(true);
     setDiscoveryResult(null);
@@ -217,9 +217,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          maxTokens: 50,
+          // No maxTokens limit - check all new tokens
           wait: true,
-          timeoutMs: 120000,
+          timeoutMs: 180000, // 3 min timeout for larger fetches
         }),
       });
       const data = await res.json();
@@ -243,10 +243,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          maxTokens: 50,
+          // No maxTokens limit - check all new tokens
           dryRun: true,
           wait: true,
-          timeoutMs: 120000,
+          timeoutMs: 180000,
         }),
       });
       const data = await res.json();
@@ -256,6 +256,31 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
       await refreshDiscoveryStatus();
     } catch (e: any) {
       setError(`Discovery dry-run failed: ${e?.message || e}`);
+    } finally {
+      setDiscoveryRunning(false);
+    }
+  };
+  
+  // Run full universe discovery (all tokens from universe + Jupiter top 100)
+  const runFullUniverseDiscovery = async () => {
+    setDiscoveryRunning(true);
+    setDiscoveryResult(null);
+    try {
+      const res = await fetch(`${apiBase}/discovery/full-universe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wait: true,
+          timeoutMs: 600000, // 10 min timeout for full universe
+        }),
+      });
+      const data = await res.json();
+      if (data.result) {
+        setDiscoveryResult({ ...data.result, fullUniverse: true });
+      }
+      await refreshDiscoveryStatus();
+    } catch (e: any) {
+      setError(`Full universe discovery failed: ${e?.message || e}`);
     } finally {
       setDiscoveryRunning(false);
     }
@@ -1923,27 +1948,37 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             
             {/* Manual Discovery Controls */}
             <div className="border-t border-gray-600 pt-3 mt-3">
-              <div className="flex items-center gap-4 mb-3">
+              <div className="flex flex-wrap items-center gap-3 mb-3">
                 <h4 className="text-sm font-semibold">Manual Discovery</h4>
                 <button 
                   className={`px-3 py-1 text-sm rounded ${discoveryRunning ? 'bg-gray-500 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
                   onClick={runManualDiscovery}
                   disabled={discoveryRunning}
+                  title="Discover pools for NEW tokens from Jupiter top 100"
                 >
-                  {discoveryRunning ? 'Running...' : 'Run Discovery Now'}
+                  {discoveryRunning ? 'Running...' : 'New Tokens'}
                 </button>
                 <button 
                   className={`px-3 py-1 text-sm rounded ${discoveryRunning ? 'bg-gray-500 cursor-not-allowed' : 'bg-yellow-600 hover:bg-yellow-700'}`}
                   onClick={runDryRunDiscovery}
                   disabled={discoveryRunning}
+                  title="Preview what would be discovered (no changes)"
                 >
-                  Dry Run (Preview)
+                  Dry Run
+                </button>
+                <button 
+                  className={`px-3 py-1 text-sm rounded ${discoveryRunning ? 'bg-gray-500 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'}`}
+                  onClick={runFullUniverseDiscovery}
+                  disabled={discoveryRunning}
+                  title="Full scan: Token universe + Jupiter top 100 via DexScreener (slow)"
+                >
+                  Full Universe
                 </button>
                 <button 
                   className="px-3 py-1 text-sm rounded bg-gray-600 hover:bg-gray-500"
                   onClick={refreshDiscoveryStatus}
                 >
-                  Refresh Status
+                  Refresh
                 </button>
               </div>
               
@@ -1962,7 +1997,11 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
               {/* Last Discovery Result */}
               {discoveryResult && (
                 <div className="bg-gray-800 rounded p-3 text-xs mt-2">
-                  <div className="font-semibold mb-2 text-blue-400">Last Discovery Result {discoveryResult.dryRun && <span className="text-yellow-400">(DRY RUN)</span>}</div>
+                  <div className="font-semibold mb-2 text-blue-400">
+                    Last Discovery Result 
+                    {discoveryResult.dryRun && <span className="text-yellow-400 ml-2">(DRY RUN)</span>}
+                    {discoveryResult.fullUniverse && <span className="text-purple-400 ml-2">(FULL UNIVERSE)</span>}
+                  </div>
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                     <div><span className="text-gray-400">Tokens Checked:</span> {discoveryResult.tokensChecked}</div>
                     <div><span className="text-gray-400">New Tokens:</span> {discoveryResult.newTokensFound}</div>
