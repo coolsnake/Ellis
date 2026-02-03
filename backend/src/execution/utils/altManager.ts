@@ -424,6 +424,7 @@ export class DexAltManager {
 
   /**
    * Extend an existing lookup table with accounts
+   * Automatically batches if more than 20 addresses to avoid transaction size limits
    */
   private async extendLookupTable(
     payer: { publicKey: PublicKey; secretKey: Uint8Array },
@@ -437,40 +438,140 @@ export class DexAltManager {
     const connection = getConnection();
     const kp = Keypair.fromSecretKey(payer.secretKey);
     
-    const extendIx = AddressLookupTableProgram.extendLookupTable({
-      payer: payer.publicKey,
-      authority: payer.publicKey,
-      lookupTable: lookupTableAddress,
-      addresses,
-    });
+    // ExtendLookupTable is limited to ~20-25 addresses per transaction
+    // due to transaction size limits (each pubkey is 32 bytes)
+    // Use conservative batch size of 20 to ensure we stay under 1232 byte limit
+    const EXTEND_BATCH_SIZE = 20;
     
-    const extendTx = new Transaction();
-    // Add priority fee instructions for reliable confirmation
-    extendTx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
-    );
-    extendTx.add(extendIx);
-    const extendBlockhash = await withRpcLimit(
-      () => connection.getLatestBlockhash('finalized'),
-      1,
-      { module: 'alt', method: 'getLatestBlockhash' }
-    );
-    extendTx.recentBlockhash = extendBlockhash.blockhash;
-    extendTx.feePayer = payer.publicKey;
+    // If we can fit in one transaction, do it directly
+    if (addresses.length <= EXTEND_BATCH_SIZE) {
+      const extendIx = AddressLookupTableProgram.extendLookupTable({
+        payer: payer.publicKey,
+        authority: payer.publicKey,
+        lookupTable: lookupTableAddress,
+        addresses,
+      });
+      
+      const extendTx = new Transaction();
+      // Add priority fee instructions for reliable confirmation
+      extendTx.add(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+      );
+      extendTx.add(extendIx);
+      const extendBlockhash = await withRpcLimit(
+        () => connection.getLatestBlockhash('finalized'),
+        1,
+        { module: 'alt', method: 'getLatestBlockhash' }
+      );
+      extendTx.recentBlockhash = extendBlockhash.blockhash;
+      extendTx.feePayer = payer.publicKey;
+      
+      extendTx.sign(kp);
+      
+      const extendSig = await withRpcLimit(
+        () => connection.sendRawTransaction(extendTx.serialize()),
+        1,
+        { module: 'alt', method: 'sendRawTransaction' }
+      );
+      await withRpcLimit(
+        () => connection.confirmTransaction(extendSig, 'confirmed'),
+        1,
+        { module: 'alt', method: 'confirmTransaction' }
+      );
+      
+      try {
+        logger.info('alt.manager.extended', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            accountCount: addresses.length,
+            signature: extendSig,
+          },
+        });
+      } catch {}
+      
+      return extendSig;
+    }
     
-    extendTx.sign(kp);
+    // Need to batch - split addresses into chunks
+    const batches: PublicKey[][] = [];
+    for (let i = 0; i < addresses.length; i += EXTEND_BATCH_SIZE) {
+      batches.push(addresses.slice(i, i + EXTEND_BATCH_SIZE));
+    }
     
-    const extendSig = await withRpcLimit(
-      () => connection.sendRawTransaction(extendTx.serialize()),
-      1,
-      { module: 'alt', method: 'sendRawTransaction' }
-    );
-    await withRpcLimit(
-      () => connection.confirmTransaction(extendSig, 'confirmed'),
-      1,
-      { module: 'alt', method: 'confirmTransaction' }
-    );
+    try {
+      logger.info('alt.manager.extend.batching', {
+        cat: 'tx',
+        ctx: {
+          address: lookupTableAddress.toBase58(),
+          totalAccounts: addresses.length,
+          batchCount: batches.length,
+          batchSize: EXTEND_BATCH_SIZE,
+        },
+      });
+    } catch {}
+    
+    const signatures: string[] = [];
+    
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      const batch = batches[batchIdx];
+      
+      const extendIx = AddressLookupTableProgram.extendLookupTable({
+        payer: payer.publicKey,
+        authority: payer.publicKey,
+        lookupTable: lookupTableAddress,
+        addresses: batch,
+      });
+      
+      const extendTx = new Transaction();
+      extendTx.add(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: ALT_COMPUTE_UNIT_LIMIT }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: ALT_PRIORITY_FEE_MICRO_LAMPORTS })
+      );
+      extendTx.add(extendIx);
+      
+      const extendBlockhash = await withRpcLimit(
+        () => connection.getLatestBlockhash('finalized'),
+        1,
+        { module: 'alt', method: 'getLatestBlockhash' }
+      );
+      extendTx.recentBlockhash = extendBlockhash.blockhash;
+      extendTx.feePayer = payer.publicKey;
+      
+      extendTx.sign(kp);
+      
+      const extendSig = await withRpcLimit(
+        () => connection.sendRawTransaction(extendTx.serialize()),
+        1,
+        { module: 'alt', method: 'sendRawTransaction' }
+      );
+      await withRpcLimit(
+        () => connection.confirmTransaction(extendSig, 'confirmed'),
+        1,
+        { module: 'alt', method: 'confirmTransaction' }
+      );
+      
+      signatures.push(extendSig);
+      
+      try {
+        logger.info('alt.manager.extend.batch.complete', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            batchIndex: batchIdx + 1,
+            batchTotal: batches.length,
+            batchSize: batch.length,
+            signature: extendSig,
+          },
+        });
+      } catch {}
+      
+      // Small delay between batches to avoid overwhelming RPC
+      if (batchIdx < batches.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
     
     try {
       logger.info('alt.manager.extended', {
@@ -478,12 +579,14 @@ export class DexAltManager {
         ctx: {
           address: lookupTableAddress.toBase58(),
           accountCount: addresses.length,
-          signature: extendSig,
+          batchCount: batches.length,
+          signatures: signatures.slice(0, 3), // Log first 3 for brevity
         },
       });
     } catch {}
     
-    return extendSig;
+    // Return the last signature
+    return signatures[signatures.length - 1] || '';
   }
 
   /**
@@ -1007,9 +1110,9 @@ export class DexAltManager {
         });
       } catch {}
       
-      // IMPORTANT: ExtendLookupTable is limited to ~30 addresses per transaction
-      // due to transaction size limits. Split into batches if needed.
-      const BATCH_SIZE = 30;
+      // IMPORTANT: ExtendLookupTable is limited to ~20 addresses per transaction
+      // due to transaction size limits (1232 bytes). Split into batches if needed.
+      const BATCH_SIZE = 20;
       const batches: PublicKey[][] = [];
       
       for (let i = 0; i < addressesToAdd.length; i += BATCH_SIZE) {
