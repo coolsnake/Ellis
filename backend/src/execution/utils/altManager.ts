@@ -497,11 +497,27 @@ export class DexAltManager {
   ): Promise<PublicKey> {
     const connection = getConnection();
     
+    // Truncate seed to max 32 bytes (Solana PDA seed limit)
+    // Use a hash if the seed is too long to maintain uniqueness
+    let effectiveSeed = seed;
+    if (seed.length > 32) {
+      // Use first 24 chars + 8 char hash to maintain uniqueness within 32 bytes
+      const crypto = await import('crypto');
+      const hash = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 8);
+      effectiveSeed = seed.slice(0, 24) + hash;
+      try {
+        logger.info('alt.manager.seed.truncated', {
+          cat: 'tx',
+          ctx: { originalSeed: seed, effectiveSeed, originalLength: seed.length },
+        });
+      } catch {}
+    }
+    
     try {
       // Derive ALT address deterministically with custom seed (for checking existing ALTs)
       const [derivedAddress] = PublicKey.findProgramAddressSync(
         [
-          Buffer.from(seed),
+          Buffer.from(effectiveSeed),
           payer.publicKey.toBuffer(),
         ],
         AddressLookupTableProgram.programId
@@ -578,14 +594,16 @@ export class DexAltManager {
         }
       }
       
-      // Check ALT config for existing addresses first
+      // Check ALT config for existing addresses with MATCHING category/seed
+      // Don't reuse common/userPdas ALTs for pool-specific accounts
       try {
         const config = await loadAltConfig();
         if (config.alts) {
-          for (const [category, address] of Object.entries(config.alts)) {
-            if (!address) continue;
+          // Only check for exact seed match in config.alts
+          const existingAddress = config.alts[seed as keyof typeof config.alts];
+          if (existingAddress) {
             try {
-              const altPk = new PublicKey(address);
+              const altPk = new PublicKey(existingAddress);
               const result = await withRpcLimit(
                 () => connection.getAddressLookupTable(altPk),
                 1,
@@ -599,15 +617,14 @@ export class DexAltManager {
                 // If empty or has enough capacity, reuse it
                 if (accountCount === 0 || (remainingCapacity >= accounts.length && accounts.length > 0)) {
                   try {
-                    logger.info('alt.manager.found.config', {
+                    logger.info('alt.manager.found.config.match', {
                       cat: 'tx',
                       ctx: {
-                        address,
-                        category,
+                        address: existingAddress,
+                        category: seed,
                         accountCount,
                         remainingCapacity,
                         accountsToAdd: accounts.length,
-                        requestedSeed: seed,
                       },
                     });
                   } catch {}
@@ -615,14 +632,42 @@ export class DexAltManager {
                   // Extend if needed
                   if (accounts.length > 0 && remainingCapacity >= accounts.length) {
                     const addressesToAdd = accounts.slice(0, remainingCapacity);
-                    await this.extendLookupTable(payer, altPk, addressesToAdd);
+                    try {
+                      await this.extendLookupTable(payer, altPk, addressesToAdd);
+                    } catch (extendError) {
+                      // Log the error instead of silently swallowing it
+                      try {
+                        logger.error('alt.manager.extend.reuse.failed', {
+                          cat: 'tx',
+                          ctx: {
+                            address: existingAddress,
+                            category: seed,
+                            accountsToAdd: addressesToAdd.length,
+                            error: String((extendError as any)?.message || extendError),
+                          },
+                        });
+                      } catch {}
+                      // Continue to create a new ALT instead
+                      throw extendError;
+                    }
                   }
                   
                   // Return the ALT address - caller will handle storing
                   return altPk;
                 }
               }
-            } catch {}
+            } catch (e) {
+              // Log reuse attempt failure
+              try {
+                logger.warn('alt.manager.reuse.failed', {
+                  cat: 'tx',
+                  ctx: {
+                    seed,
+                    error: String((e as any)?.message || e),
+                  },
+                });
+              } catch {}
+            }
           }
         }
       } catch {}
@@ -2742,15 +2787,30 @@ export class DexAltManager {
     const accounts: PublicKey[] = [];
     
     try {
-      if (!poolInfo?.data || poolInfo.data.length < 100) return accounts;
+      // Require at least 264 bytes (last slice goes to offset 264)
+      if (!poolInfo?.data || poolInfo.data.length < 264) return accounts;
 
       const data = poolInfo.data;
+      const dataLen = data.length;
       
       const asPk = (v: any): PublicKey | null => {
         try {
           if (!v) return null;
           if (v instanceof PublicKey) return v;
+          // Ensure we have exactly 32 bytes for a valid public key
+          if (Buffer.isBuffer(v) && v.length !== 32) return null;
+          if (v instanceof Uint8Array && v.length !== 32) return null;
           return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+      
+      // Safe slice helper with bounds checking
+      const safeSlice = (start: number, end: number): Buffer | null => {
+        if (start < 0 || end > dataLen || start >= end) return null;
+        try {
+          return data.slice(start, end);
         } catch {
           return null;
         }
@@ -2762,44 +2822,65 @@ export class DexAltManager {
 
       try {
         // AMM config
-        const ammConfig = asPk(data.slice(8, 40));
-        if (ammConfig) accounts.push(ammConfig);
+        const slice = safeSlice(8, 40);
+        if (slice) {
+          const ammConfig = asPk(slice);
+          if (ammConfig) accounts.push(ammConfig);
+        }
       } catch {}
 
       try {
         // Token 0 mint
-        const token0Mint = asPk(data.slice(72, 104));
-        if (token0Mint) accounts.push(token0Mint);
+        const slice = safeSlice(72, 104);
+        if (slice) {
+          const token0Mint = asPk(slice);
+          if (token0Mint) accounts.push(token0Mint);
+        }
       } catch {}
 
       try {
         // Token 1 mint
-        const token1Mint = asPk(data.slice(104, 136));
-        if (token1Mint) accounts.push(token1Mint);
+        const slice = safeSlice(104, 136);
+        if (slice) {
+          const token1Mint = asPk(slice);
+          if (token1Mint) accounts.push(token1Mint);
+        }
       } catch {}
 
       try {
         // Token 0 vault
-        const token0Vault = asPk(data.slice(136, 168));
-        if (token0Vault) accounts.push(token0Vault);
+        const slice = safeSlice(136, 168);
+        if (slice) {
+          const token0Vault = asPk(slice);
+          if (token0Vault) accounts.push(token0Vault);
+        }
       } catch {}
 
       try {
         // Token 1 vault
-        const token1Vault = asPk(data.slice(168, 200));
-        if (token1Vault) accounts.push(token1Vault);
+        const slice = safeSlice(168, 200);
+        if (slice) {
+          const token1Vault = asPk(slice);
+          if (token1Vault) accounts.push(token1Vault);
+        }
       } catch {}
 
       try {
         // LP mint
-        const lpMint = asPk(data.slice(200, 232));
-        if (lpMint) accounts.push(lpMint);
+        const slice = safeSlice(200, 232);
+        if (slice) {
+          const lpMint = asPk(slice);
+          if (lpMint) accounts.push(lpMint);
+        }
       } catch {}
 
       try {
         // Observation key
-        const observation = asPk(data.slice(232, 264));
-        if (observation) accounts.push(observation);
+        const slice = safeSlice(232, 264);
+        if (slice) {
+          const observation = asPk(slice);
+          if (observation) accounts.push(observation);
+        }
       } catch {}
 
       try {
@@ -2808,6 +2889,7 @@ export class DexAltManager {
           ctx: {
             pool: poolPk.toBase58(),
             accountCount: accounts.length,
+            dataLength: dataLen,
           },
         });
       } catch {}
@@ -3791,16 +3873,17 @@ export class DexAltManager {
           if (altAccount) {
             const accountCount = altAccount.state?.addresses?.length || 0;
             if (accountCount > 0) {
-              const category = `${dex}-pools-${index}`;
+              // Use 1-based indexing to match createAllDexPoolAlts naming convention
+              const category = `${dex}-pools-${index + 1}`;
               this.altAddresses.set(category, altAccount.key);
               this.altAccounts.set(address, altAccount);
               results[category] = address;
               dexAltCount++;
             } else {
-              errors.push(`DEX ALT ${dex}[${index}] (${address}) is empty`);
+              errors.push(`DEX ALT ${dex}[${index + 1}] (${address}) is empty`);
             }
           } else {
-            errors.push(`DEX ALT ${dex}[${index}] (${address}) not found on-chain`);
+            errors.push(`DEX ALT ${dex}[${index + 1}] (${address}) not found on-chain`);
           }
         }
         
@@ -5248,11 +5331,91 @@ export class DexAltManager {
       if (!config.dexAlts) config.dexAlts = {};
       if (!config.poolToAlt) config.poolToAlt = {};
 
+      // Load existing DEX ALT addresses from config into in-memory cache
+      // This ensures we don't create duplicate ALTs after service restart
+      const existingDexAlts = config.dexAlts[dex];
+      if (existingDexAlts?.addresses && Array.isArray(existingDexAlts.addresses)) {
+        // Limit to reasonable number of existing ALTs (safety check)
+        const maxExistingAlts = Math.min(existingDexAlts.addresses.length, 100);
+        for (let altIdx = 0; altIdx < maxExistingAlts; altIdx++) {
+          const altAddr = existingDexAlts.addresses[altIdx];
+          if (!altAddr || typeof altAddr !== 'string') continue;
+          
+          try {
+            // Validate it's a valid base58 address
+            new PublicKey(altAddr);
+            
+            const category = `${dex}-pools-${altIdx + 1}`;
+            if (!this.altAddresses.has(category)) {
+              this.altAddresses.set(category, new PublicKey(altAddr));
+              try {
+                logger.info('alt.manager.loaded.existing.dex.alt', {
+                  cat: 'tx',
+                  ctx: { dex, category, altAddress: altAddr.slice(0, 8) + '...' },
+                });
+              } catch {}
+            }
+          } catch (e) {
+            // Invalid address, skip
+            try {
+              logger.warn('alt.manager.invalid.existing.alt', {
+                cat: 'tx',
+                ctx: { dex, altIdx, error: String((e as any)?.message || e) },
+              });
+            } catch {}
+          }
+        }
+      }
+
+      // Filter out pools that already have ALTs assigned
+      const poolsNeedingAlts = allPools.filter(poolId => !config.poolToAlt![poolId]);
+      const poolsAlreadyAssigned = allPools.length - poolsNeedingAlts.length;
+      
+      if (poolsAlreadyAssigned > 0) {
+        try {
+          logger.info('alt.manager.createAllDexPoolAlts.existing.pools', {
+            cat: 'tx',
+            ctx: {
+              dex,
+              totalPools: allPools.length,
+              poolsAlreadyAssigned,
+              poolsNeedingAlts: poolsNeedingAlts.length,
+            },
+          });
+        } catch {}
+      }
+
+      // If all pools already have ALTs, return existing result
+      if (poolsNeedingAlts.length === 0) {
+        try {
+          logger.info('alt.manager.createAllDexPoolAlts.all.assigned', {
+            cat: 'tx',
+            ctx: { dex, totalPools: allPools.length },
+          });
+        } catch {}
+        
+        // Return existing result from config
+        if (existingDexAlts) {
+          return existingDexAlts;
+        }
+        return result;
+      }
+
+      // Recalculate ALTs needed for remaining pools
+      const poolsToProcess = poolsNeedingAlts;
+      const altsNeededForRemaining = Math.ceil(poolsToProcess.length / poolsPerAlt);
+      
+      // Find the next ALT index (continue from existing)
+      let nextAltIndex = existingDexAlts?.addresses?.length || 0;
+
       // Process pools in chunks
-      for (let altIndex = 0; altIndex < altsNeeded; altIndex++) {
-        const startIdx = altIndex * poolsPerAlt;
-        const endIdx = Math.min(startIdx + poolsPerAlt, allPools.length);
-        const chunkPools = allPools.slice(startIdx, endIdx);
+      for (let i = 0; i < altsNeededForRemaining; i++) {
+        const altIndex = nextAltIndex + i;
+        const startIdx = i * poolsPerAlt;
+        const endIdx = Math.min(startIdx + poolsPerAlt, poolsToProcess.length);
+        const chunkPools = poolsToProcess.slice(startIdx, endIdx);
+        
+        if (chunkPools.length === 0) continue;
         
         const category = `${dex}-pools-${altIndex + 1}`;
         
@@ -5343,10 +5506,19 @@ export class DexAltManager {
               altAddress: altAddress.slice(0, 8) + '...',
               poolCount: chunkPoolIds.length,
               accountCount: dedupedAccounts.length,
-              progress: `${altIndex + 1}/${altsNeeded}`,
+              progress: `${i + 1}/${altsNeededForRemaining} (ALT #${altIndex + 1})`,
             },
           });
         } catch {}
+      }
+
+      // Merge existing ALTs with new ones
+      if (existingDexAlts) {
+        // Prepend existing addresses and contents
+        result.addresses = [...existingDexAlts.addresses, ...result.addresses];
+        result.altContents = { ...existingDexAlts.altContents, ...result.altContents };
+        result.totalPools += existingDexAlts.totalPools || 0;
+        result.totalAccounts += existingDexAlts.totalAccounts || 0;
       }
 
       // Save updated config
