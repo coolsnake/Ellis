@@ -1091,8 +1091,8 @@ export const CONFIG = {
   // Token Discovery configuration
   // Automatically discovers new tokens from Jupiter top traded list and their pools via DexScreener
   discovery: {
-    // Enable/disable the discovery service
-    enabled: process.env.DISCOVERY_ENABLED === 'true',
+    // Enable/disable the discovery service (enabled by default)
+    enabled: process.env.DISCOVERY_ENABLED !== 'false',
     // Interval between discovery cycles (ms)
     intervalMs: Number(process.env.DISCOVERY_INTERVAL_MS || 300_000), // 5 minutes default
     
