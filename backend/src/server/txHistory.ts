@@ -56,20 +56,31 @@ async function calculateActualProfit(
     );
     
     if (!tx?.meta?.logMessages) {
-      logger.debug('txHistory.actualProfit.no_logs', {
+      logger.info('txHistory.actualProfit.no_logs', {
         signature: signature.slice(0, 16),
         cat: 'notifications',
       });
       return null;
     }
     
+    logger.info('txHistory.actualProfit.parsing', {
+      signature: signature.slice(0, 16),
+      logCount: tx.meta.logMessages.length,
+      cat: 'notifications',
+    });
+    
     // Parse the transaction logs to extract profit value
     const analysis = parseSimulationLogs(tx.meta.logMessages, tx.meta.err);
     
     if (analysis.profitValue === undefined) {
-      logger.debug('txHistory.actualProfit.no_profit_value', {
+      // Log some of the actual logs to help debug pattern matching
+      const relevantLogs = tx.meta.logMessages.filter(log => 
+        log.includes('Profit') || log.includes('executed') || log.includes('Route')
+      );
+      logger.info('txHistory.actualProfit.no_profit_value', {
         signature: signature.slice(0, 16),
         hasLogs: tx.meta.logMessages.length,
+        relevantLogs: relevantLogs.slice(0, 5),
         cat: 'notifications',
       });
       return null;
@@ -252,8 +263,26 @@ export async function startTxConfirmationTask(io?: any): Promise<void> {
           let actualProfitData: { actualProfitUsd: number; actualProfitRaw: string } | null = null;
           if (result.success && rec.path && rec.path.length > 0) {
             try {
+              logger.info('txHistory.confirmation.calculating_profit', {
+                signature: rec.signature.slice(0, 16),
+                baseMint: rec.path[0].slice(0, 8),
+                cat: 'notifications',
+              });
               actualProfitData = await calculateActualProfit(rec.signature, rec.path[0]);
-            } catch {
+              logger.info('txHistory.confirmation.profit_result', {
+                signature: rec.signature.slice(0, 16),
+                hasActualProfit: !!actualProfitData,
+                actualProfitUsd: actualProfitData?.actualProfitUsd,
+                sizeUsd: rec.sizeUsd,
+                expectedProfitBps: rec.expectedProfitBps,
+                cat: 'notifications',
+              });
+            } catch (profitErr: any) {
+              logger.warn('txHistory.confirmation.profit_error', {
+                signature: rec.signature.slice(0, 16),
+                error: String(profitErr?.message || profitErr),
+                cat: 'notifications',
+              });
               // Don't let profit calculation failure block confirmation
             }
           }

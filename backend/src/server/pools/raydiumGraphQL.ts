@@ -1746,10 +1746,17 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
         let amount_a_whole: number | undefined;
         let amount_b_whole: number | undefined;
         let tvl_usd: number | undefined;
+        // Raw atomic reserves for slippage simulation (in on-chain order)
+        let native_reserve_a_raw: string | undefined;
+        let native_reserve_b_raw: string | undefined;
         
         try {
           const balA = pool.tokenVault0 ? vaultBalances.get(pool.tokenVault0) : undefined;
           const balB = pool.tokenVault1 ? vaultBalances.get(pool.tokenVault1) : undefined;
+          
+          // Store raw atomic reserves (on-chain order, not canonical)
+          if (balA !== undefined) native_reserve_a_raw = balA.toString();
+          if (balB !== undefined) native_reserve_b_raw = balB.toString();
           
           if (balA !== undefined && balB !== undefined) {
             const wholeA = Number(balA) / Math.pow(10, decA);
@@ -1843,6 +1850,8 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           native_decimals_b: decB,
           native_account_a: finalNativeAccountA,
           native_account_b: finalNativeAccountB,
+          native_reserve_a_raw, // Raw atomic reserve for slippage simulation
+          native_reserve_b_raw, // Raw atomic reserve for slippage simulation
           amount_a_whole: finalAmountA,
           amount_b_whole: finalAmountB,
           amount_a: finalAmountA,
@@ -1964,6 +1973,8 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           native_decimals_b: decB,
           native_account_a: finalNativeAccountA,
           native_account_b: finalNativeAccountB,
+          native_reserve_a_raw: reserveA?.toString(), // Raw atomic reserve for slippage simulation
+          native_reserve_b_raw: reserveB?.toString(), // Raw atomic reserve for slippage simulation
           native_open_orders: pool.openOrders,
           native_target_orders: pool.targetOrders,
           native_base_need_take_pnl: pool.baseNeedTakePnl,

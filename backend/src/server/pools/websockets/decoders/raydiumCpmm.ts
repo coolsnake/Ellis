@@ -471,6 +471,9 @@ async function handleCpmmUpdate(
         tvl_usd: prevPool.tvl_usd,
         liquidity_display: prevPool.liquidity_display,
         pool_liquidity_raw: prevPool.pool_liquidity_raw,
+        // Preserve native reserves - they're in on-chain order, not affected by canonicalization
+        native_reserve_a_raw: (prevPool as any).native_reserve_a_raw,
+        native_reserve_b_raw: (prevPool as any).native_reserve_b_raw,
       };
       next.cpmm[idx] = { ...finalItem, ...orientationIndependentFields };
     } else {

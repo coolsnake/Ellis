@@ -935,10 +935,17 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
       let amount_a_whole: number | undefined;
       let amount_b_whole: number | undefined;
       let tvl_usd: number | undefined;
+      // Raw atomic reserves for slippage simulation (in on-chain order)
+      let native_reserve_a_raw: string | undefined;
+      let native_reserve_b_raw: string | undefined;
       
       try {
         const balA = pool.tokenVaultA ? vaultBalances.get(pool.tokenVaultA) : undefined;
         const balB = pool.tokenVaultB ? vaultBalances.get(pool.tokenVaultB) : undefined;
+        
+        // Store raw atomic reserves (on-chain order, not canonical)
+        if (balA !== undefined) native_reserve_a_raw = balA.toString();
+        if (balB !== undefined) native_reserve_b_raw = balB.toString();
         
         if (balA !== undefined && balB !== undefined) {
           const wholeA = Number(balA) / Math.pow(10, decA);
@@ -1043,6 +1050,8 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
         native_decimals_b: decB,
         native_account_a: finalNativeAccountA,
         native_account_b: finalNativeAccountB,
+        native_reserve_a_raw, // Raw atomic reserve for slippage simulation
+        native_reserve_b_raw, // Raw atomic reserve for slippage simulation
         native_oracle: pool.oracle,
         native_reward_infos: pool.rewardInfos,
         amount_a: finalAmountA,

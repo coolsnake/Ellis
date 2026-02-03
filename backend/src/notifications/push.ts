@@ -130,6 +130,16 @@ async function buildNotificationPayload(rec: TxRecord): Promise<ArbNotificationP
  * Send push notification for a confirmed arb transaction
  */
 export async function sendArbNotification(rec: TxRecord): Promise<void> {
+  // Log the profit data we have
+  logger.info('notifications: sendArbNotification called', {
+    id: rec.id,
+    signature: rec.signature?.slice(0, 16),
+    actualProfitUsd: rec.actualProfitUsd,
+    sizeUsd: rec.sizeUsd,
+    expectedProfitBps: rec.expectedProfitBps,
+    cat: 'notifications',
+  });
+  
   // Check if Firebase is ready
   if (!isFirebaseReady()) {
     return;

@@ -1011,11 +1011,14 @@ export async function handleOrcaUpdate(
           cat: 'pools'
         });
         
-        // Preserve orientation-independent fields
+        // Preserve orientation-independent fields (including reserves for slippage simulation)
         const orientationIndependentFields = {
           tvl_usd: prevPool.tvl_usd,
           liquidity_display: prevPool.liquidity_display,
           pool_liquidity_raw: prevPool.pool_liquidity_raw,
+          // Preserve native reserves - they're in on-chain order, not affected by canonicalization
+          native_reserve_a_raw: (prevPool as any).native_reserve_a_raw,
+          native_reserve_b_raw: (prevPool as any).native_reserve_b_raw,
         };
         next.clmm[idx] = { ...finalItem, ...orientationIndependentFields };
       } else {
