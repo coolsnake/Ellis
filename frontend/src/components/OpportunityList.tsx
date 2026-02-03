@@ -61,6 +61,18 @@ type ExecutionResult = {
     finalBalance?: string;
     errorCode?: number;
     errorMessage?: string;
+    /** Alternative pool exploration results */
+    altPoolExploration?: {
+      attempted: boolean;
+      problematicHopIndex?: number;
+      problematicPoolId?: string;
+      slippageBps?: number;
+      alternativesFound: number;
+      alternativesTried: number;
+      success: boolean;
+      successfulAltPoolId?: string;
+      successfulAltDex?: string;
+    };
   };
   executionContext?: {
     sizeUsd?: number;
@@ -600,6 +612,31 @@ export function OpportunityList(
                               </div>
                             )}
                           </div>
+                          
+                          {/* Alternative Pool Exploration indicator */}
+                          {latest.simulationDetails?.altPoolExploration && (
+                            <div className="border-t border-gray-700 pt-1 mt-1">
+                              <div className="text-[10px] flex items-center gap-2">
+                                <span className="text-gray-400">Alt Pool Search:</span>
+                                {latest.simulationDetails.altPoolExploration.alternativesFound === 0 ? (
+                                  <span className="text-yellow-500">
+                                    ⚠️ No alternatives found for hop {(latest.simulationDetails.altPoolExploration.problematicHopIndex ?? 0) + 1}
+                                    {latest.simulationDetails.altPoolExploration.slippageBps !== undefined && (
+                                      <span className="opacity-70"> ({latest.simulationDetails.altPoolExploration.slippageBps}bp slip)</span>
+                                    )}
+                                  </span>
+                                ) : latest.simulationDetails.altPoolExploration.success ? (
+                                  <span className="text-green-400">
+                                    ✓ Found better pool ({latest.simulationDetails.altPoolExploration.successfulAltDex})
+                                  </span>
+                                ) : (
+                                  <span className="text-orange-400">
+                                    ✗ Tried {latest.simulationDetails.altPoolExploration.alternativesTried}/{latest.simulationDetails.altPoolExploration.alternativesFound} alternatives, none worked
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
 

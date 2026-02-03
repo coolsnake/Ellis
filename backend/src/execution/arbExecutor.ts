@@ -1815,6 +1815,19 @@ export class ArbExecutor {
         const adaptiveStartTime = Date.now();
         const originalSizeUsd = effectiveSizeUsd;
         
+        // Track alternative pool exploration results for UI indicator
+        let altPoolExplorationResult: {
+          attempted: boolean;
+          problematicHopIndex?: number;
+          problematicPoolId?: string;
+          slippageBps?: number;
+          alternativesFound: number;
+          alternativesTried: number;
+          success: boolean;
+          successfulAltPoolId?: string;
+          successfulAltDex?: string;
+        } | undefined;
+        
         // Adaptive retry loop
         while (attempt <= maxRetries) {
           // Check timeout (skip for first attempt)
@@ -1996,6 +2009,17 @@ export class ArbExecutor {
                 }
               );
               
+              // Initialize exploration tracking
+              altPoolExplorationResult = {
+                attempted: true,
+                problematicHopIndex: altResult.problematicHop?.hopIndex,
+                problematicPoolId: altResult.problematicHop?.poolId,
+                slippageBps: altResult.problematicHop?.slippageBps,
+                alternativesFound: altResult.alternatives.length,
+                alternativesTried: 0,
+                success: false,
+              };
+              
               if (altResult.found && altResult.problematicHop && altResult.alternatives.length > 0) {
                 logger.info('arb.executor.altpool.trying_alternatives', {
                   cat: 'arb',
@@ -2021,6 +2045,9 @@ export class ArbExecutor {
                     modifiedHopPoolIds[hopIdx] = altPool.poolId;
                     modifiedHopDexes[hopIdx] = altPool.dex;
                   }
+                  
+                  // Track that we're trying this alternative
+                  altPoolExplorationResult!.alternativesTried = altIdx + 1;
                   
                   logger.debug('arb.executor.altpool.trying', {
                     cat: 'arb',
@@ -2073,6 +2100,10 @@ export class ArbExecutor {
                     
                     if (!altSimResult.err) {
                       // Success! Alternative pool worked
+                      altPoolExplorationResult!.success = true;
+                      altPoolExplorationResult!.successfulAltPoolId = altPool.poolId;
+                      altPoolExplorationResult!.successfulAltDex = altPool.dex;
+                      
                       logger.info('arb.executor.altpool.success', {
                         cat: 'arb',
                         traceId,
@@ -2268,6 +2299,8 @@ export class ArbExecutor {
               finalBalance: lastSimAnalysis!.finalBalance?.toString(),
               errorCode: lastSimAnalysis!.errorCode,
               errorMessage: lastSimAnalysis!.errorMessage,
+              // Alternative pool exploration results
+              altPoolExploration: altPoolExplorationResult,
             },
             // Execution context
             executionContext: {

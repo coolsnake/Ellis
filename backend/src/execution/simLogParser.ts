@@ -108,8 +108,8 @@ export function parseSimulationLogs(logs: string[] | undefined, simErr?: any): S
   // Pattern for step execution
   const stepPattern = /Executing step (\d+) on DEX/i;
 
-  // Pattern for profit check
-  const profitPattern = /Route executed successfully\.\s*Profit:\s*(-?\d+)/i;
+  // Pattern for profit check (matches all variants: Route, Compact route, Compact V2 route)
+  const profitPattern = /(?:Compact V2 route|Compact route|Route) executed successfully\.\s*Profit:\s*(-?\d+)/i;
   const noProfitPattern = /NoProfitFromRoute|Route execution failed - no profit/i;
 
   // VERBOSE log patterns (arb-router verbose mode)

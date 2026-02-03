@@ -982,6 +982,13 @@ async fn main() -> anyhow::Result<()> {
                         ratio,
                         "arb.detect.scope"
                     );
+                    // Log slippage simulation status
+                    if s.config.slippage_simulation_enable {
+                        tracing::info!(
+                            min_simulated_profit_bps = s.config.min_simulated_profit_bps,
+                            "arb.detect.slippage_sim_enabled"
+                        );
+                    }
                     // Run detection - log which mode is being used
                     let current_mode = s.config.start_mint_mode.as_str();
                     let cycles = match current_mode {
@@ -1348,6 +1355,23 @@ async fn main() -> anyhow::Result<()> {
                             };
                             hop_outs.push(next_out);
                             cur_out = next_out;
+                            
+                            // Track reserve availability for diagnostic logging (first few per cycle)
+                            if s.config.slippage_simulation_enable && w == 0 {
+                                let has_reserves = edge.native_reserve_a_raw.is_some() && edge.native_reserve_b_raw.is_some();
+                                let has_pool_kind = edge.pool_kind.is_some();
+                                tracing::info!(
+                                    target = "arb_rs",
+                                    pool_id = %edge.pool_id,
+                                    dex = %edge.dex,
+                                    has_reserves,
+                                    has_pool_kind,
+                                    pool_kind = ?edge.pool_kind,
+                                    reserve_a = ?edge.native_reserve_a_raw,
+                                    reserve_b = ?edge.native_reserve_b_raw,
+                                    "arb.slippage.hop_info"
+                                );
+                            }
                         }
                         // Use precision-safe profit calculation with log_rate_prod for accuracy near breakeven
                         let profit_bps = compute_profit_bps(rate_prod, log_rate_prod);
@@ -4629,6 +4653,9 @@ struct ConfigReq {
     anchor_mints: Option<Vec<String>>,
     // WebSocket broadcast interval in milliseconds (CRITICAL for execution latency)
     ws_broadcast_interval_ms: Option<u64>,
+    // Slippage simulation settings
+    slippage_simulation_enable: Option<bool>,
+    min_simulated_profit_bps: Option<i64>,
 }
 
 async fn set_config(
@@ -4686,6 +4713,12 @@ async fn set_config(
         }
         if cfg.ws_broadcast_interval_ms.is_some() {
             keys.push("ws_broadcast_interval_ms");
+        }
+        if cfg.slippage_simulation_enable.is_some() {
+            keys.push("slippage_simulation_enable");
+        }
+        if cfg.min_simulated_profit_bps.is_some() {
+            keys.push("min_simulated_profit_bps");
         }
         let keys_str = keys.join(",");
         tracing::info!(
@@ -4805,6 +4838,15 @@ async fn set_config(
         }
         s.config.ws_broadcast_interval_ms = clamped;
         tracing::info!(target = "arb_rs", ws_broadcast_interval_ms = clamped, "arb.config.ws_interval_updated");
+    }
+    // Slippage simulation settings
+    if let Some(v) = cfg.slippage_simulation_enable {
+        s.config.slippage_simulation_enable = v;
+        tracing::info!(target = "arb_rs", slippage_simulation_enable = v, "arb.config.slippage_sim_updated");
+    }
+    if let Some(v) = cfg.min_simulated_profit_bps {
+        s.config.min_simulated_profit_bps = v;
+        tracing::info!(target = "arb_rs", min_simulated_profit_bps = v, "arb.config.min_sim_profit_updated");
     }
     // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
     // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
