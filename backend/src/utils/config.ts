@@ -199,20 +199,21 @@ export const CONFIG = {
     // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union' | 'jupiterTop'
     tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'union',
     jupiterTopTokens: {
+      apiKey: process.env.JUPITER_API_KEY || '',
       category: (() => {
         const value = String(process.env.JUPITER_TOP_TOKENS_CATEGORY || 'toptraded').toLowerCase();
         return ['toporganicscore', 'toptraded', 'toptrending'].includes(value) ? value : 'toptraded';
       })(),
       interval: (() => {
-        const value = String(process.env.JUPITER_TOP_TOKENS_INTERVAL || '24h').toLowerCase();
-        return ['5m', '1h', '6h', '24h'].includes(value) ? value : '24h';
+        const value = String(process.env.JUPITER_TOP_TOKENS_INTERVAL || '5m').toLowerCase();
+        return ['5m', '1h', '6h', '24h'].includes(value) ? value : '5m';
       })(),
       limit: (() => {
         const raw = Number(process.env.JUPITER_TOP_TOKENS_LIMIT || 100);
         if (!Number.isFinite(raw)) return 100;
         return Math.max(1, Math.min(100, Math.floor(raw)));
       })(),
-      cacheTtlMs: Math.max(30_000, Number(process.env.JUPITER_TOP_TOKENS_CACHE_TTL_MS || 300_000)),
+      cacheTtlMs: Math.max(30_000, Number(process.env.JUPITER_TOP_TOKENS_CACHE_TTL_MS || 60_000)),
     },
     // Control whether anchors are injected into the universe set (default: true)
     includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'true') !== 'false',
@@ -1086,6 +1087,39 @@ export const CONFIG = {
     // When enabled, transactions are sent immediately without local simulation first
     // Disable for debugging (SKIP_PRESEND_SIMULATION=false) to validate before send
     skipPresendSimulation: process.env.SKIP_PRESEND_SIMULATION === 'true', // Default: false (run simulation for safety)
+  },
+  // Token Discovery configuration
+  // Automatically discovers new tokens from Jupiter top traded list and their pools via DexScreener
+  discovery: {
+    // Enable/disable the discovery service
+    enabled: process.env.DISCOVERY_ENABLED === 'true',
+    // Interval between discovery cycles (ms)
+    intervalMs: Number(process.env.DISCOVERY_INTERVAL_MS || 300_000), // 5 minutes default
+    
+    // Jupiter settings (can also be set via JUPITER_API_KEY env var)
+    jupiterApiKey: process.env.JUPITER_API_KEY || '',
+    jupiterCategory: (process.env.DISCOVERY_JUPITER_CATEGORY || 'toptraded') as 'toptraded' | 'toporganicscore' | 'toptrending',
+    jupiterInterval: (process.env.DISCOVERY_JUPITER_INTERVAL || '5m') as '5m' | '1h' | '6h' | '24h',
+    jupiterLimit: Number(process.env.DISCOVERY_JUPITER_LIMIT || 100),
+    
+    // DexScreener settings
+    // Delay between requests to stay under 300 req/min rate limit
+    dexScreenerDelayMs: Number(process.env.DEXSCREENER_DELAY_MS || 200),
+    // Number of tokens to process in parallel batches
+    dexScreenerBatchSize: Number(process.env.DEXSCREENER_BATCH_SIZE || 10),
+    
+    // Filtering
+    // Minimum liquidity (USD) for a pool to be included
+    minLiquidityUsd: Number(process.env.DISCOVERY_MIN_LIQUIDITY_USD || 1000),
+    // Maximum pools to process per token
+    maxPoolsPerToken: Number(process.env.DISCOVERY_MAX_POOLS_PER_TOKEN || 20),
+    
+    // Supported DEXes (comma-separated list or default)
+    supportedDexIds: (() => {
+      const raw = process.env.DISCOVERY_SUPPORTED_DEX_IDS || '';
+      if (raw) return raw.split(',').map(s => s.trim()).filter(Boolean);
+      return ['raydium', 'orca', 'meteora', 'pumpswap'];
+    })(),
   },
 };
 

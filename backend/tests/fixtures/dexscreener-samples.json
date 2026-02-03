@@ -1,0 +1,249 @@
+{
+  "raydium_clmm": {
+    "chainId": "solana",
+    "dexId": "raydium",
+    "url": "https://dexscreener.com/solana/3nMFwZXwY1s1M5s8vYAHqd4wGs4iSxXE4LRoUMMYqEgF",
+    "pairAddress": "3nMFwZXwY1s1M5s8vYAHqd4wGs4iSxXE4LRoUMMYqEgF",
+    "labels": ["CLMM"],
+    "baseToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "quoteToken": {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "priceNative": "1.000",
+    "priceUsd": "169.50",
+    "liquidity": {
+      "usd": 5000000,
+      "base": 15000,
+      "quote": 2542500
+    },
+    "fdv": 50000000000,
+    "pairCreatedAt": 1700000000000
+  },
+  "raydium_cpmm": {
+    "chainId": "solana",
+    "dexId": "raydium",
+    "url": "https://dexscreener.com/solana/4iPcCSJ2GPywFAju8cxkfnQQzftwhXAjUc8pTBAKeCpq",
+    "pairAddress": "4iPcCSJ2GPywFAju8cxkfnQQzftwhXAjUc8pTBAKeCpq",
+    "labels": ["CPMM"],
+    "baseToken": {
+      "address": "ExampleMint1111111111111111111111111111111111",
+      "name": "Example Token",
+      "symbol": "EXAMPLE"
+    },
+    "quoteToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "priceNative": "0.0001",
+    "priceUsd": "0.017",
+    "liquidity": {
+      "usd": 150000,
+      "base": 4500000,
+      "quote": 450
+    },
+    "pairCreatedAt": 1705000000000
+  },
+  "raydium_amm": {
+    "chainId": "solana",
+    "dexId": "raydium",
+    "url": "https://dexscreener.com/solana/58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+    "pairAddress": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+    "baseToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "quoteToken": {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "priceNative": "1.000",
+    "priceUsd": "169.50",
+    "liquidity": {
+      "usd": 3500000,
+      "base": 10500,
+      "quote": 1778750
+    },
+    "pairCreatedAt": 1650000000000
+  },
+  "orca_whirlpool": {
+    "chainId": "solana",
+    "dexId": "orca",
+    "url": "https://dexscreener.com/solana/Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+    "pairAddress": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+    "labels": ["wp"],
+    "baseToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "quoteToken": {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "priceNative": "1.000",
+    "priceUsd": "169.50",
+    "liquidity": {
+      "usd": 8000000,
+      "base": 24000,
+      "quote": 4068000
+    },
+    "pairCreatedAt": 1660000000000
+  },
+  "meteora_dlmm": {
+    "chainId": "solana",
+    "dexId": "meteora",
+    "url": "https://dexscreener.com/solana/5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+    "pairAddress": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+    "labels": ["DLMM"],
+    "baseToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "quoteToken": {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "priceNative": "1.000",
+    "priceUsd": "169.50",
+    "liquidity": {
+      "usd": 2000000,
+      "base": 6000,
+      "quote": 1017000
+    },
+    "pairCreatedAt": 1700000000000
+  },
+  "meteora_damm_v1": {
+    "chainId": "solana",
+    "dexId": "meteora",
+    "url": "https://dexscreener.com/solana/5yuefgbJJpmFNK2iiYbLSpv1aZXq7F9AUKkZKErTYCvs",
+    "pairAddress": "5yuefgbJJpmFNK2iiYbLSpv1aZXq7F9AUKkZKErTYCvs",
+    "labels": ["DYN"],
+    "baseToken": {
+      "address": "ExampleMint2222222222222222222222222222222222",
+      "name": "Another Token",
+      "symbol": "ANOTHER"
+    },
+    "quoteToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "priceNative": "0.0005",
+    "priceUsd": "0.085",
+    "liquidity": {
+      "usd": 75000,
+      "base": 500000,
+      "quote": 225
+    },
+    "pairCreatedAt": 1702000000000
+  },
+  "meteora_damm_v2": {
+    "chainId": "solana",
+    "dexId": "meteora",
+    "url": "https://dexscreener.com/solana/8Pm2kZpnxD3hoMmt4bjStX2Pw2Z9abpbHzZxMPqxPmie",
+    "pairAddress": "8Pm2kZpnxD3hoMmt4bjStX2Pw2Z9abpbHzZxMPqxPmie",
+    "labels": ["DYN2"],
+    "baseToken": {
+      "address": "ExampleMint3333333333333333333333333333333333",
+      "name": "V2 Token",
+      "symbol": "V2TOK"
+    },
+    "quoteToken": {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "priceUsd": "2.50",
+    "liquidity": {
+      "usd": 250000,
+      "base": 50000,
+      "quote": 125000
+    },
+    "pairCreatedAt": 1706000000000
+  },
+  "pumpswap": {
+    "chainId": "solana",
+    "dexId": "pumpswap",
+    "url": "https://dexscreener.com/solana/9QENPAsLYG6ysiUiJyGDAHj1RNocGAZbga28wEMYm9Nq",
+    "pairAddress": "9QENPAsLYG6ysiUiJyGDAHj1RNocGAZbga28wEMYm9Nq",
+    "baseToken": {
+      "address": "GuEDZL2y6rtrF2GFve2unhRUUPEpDrargKoNpJazZSQd",
+      "name": "Pump Token",
+      "symbol": "PUMP"
+    },
+    "quoteToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "priceNative": "0.00001",
+    "priceUsd": "0.0017",
+    "liquidity": {
+      "usd": 45000,
+      "base": 15000000,
+      "quote": 135
+    },
+    "pairCreatedAt": 1707000000000
+  },
+  "unsupported_phoenix": {
+    "chainId": "solana",
+    "dexId": "phoenix",
+    "url": "https://dexscreener.com/solana/PhoenixPoolAddress111111111111111111111111111",
+    "pairAddress": "PhoenixPoolAddress111111111111111111111111111",
+    "baseToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "quoteToken": {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "priceNative": "1.000",
+    "priceUsd": "169.50",
+    "liquidity": {
+      "usd": 1000000,
+      "base": 3000,
+      "quote": 508500
+    },
+    "pairCreatedAt": 1695000000000
+  },
+  "low_liquidity": {
+    "chainId": "solana",
+    "dexId": "raydium",
+    "url": "https://dexscreener.com/solana/LowLiquidityPool11111111111111111111111111111",
+    "pairAddress": "LowLiquidityPool11111111111111111111111111111",
+    "labels": ["CLMM"],
+    "baseToken": {
+      "address": "LowLiqMint1111111111111111111111111111111111",
+      "name": "Low Liquidity Token",
+      "symbol": "LOWLIQ"
+    },
+    "quoteToken": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Wrapped SOL",
+      "symbol": "SOL"
+    },
+    "priceNative": "0.00000001",
+    "priceUsd": "0.0000017",
+    "liquidity": {
+      "usd": 50,
+      "base": 10000000,
+      "quote": 0.15
+    },
+    "pairCreatedAt": 1707500000000
+  }
+}

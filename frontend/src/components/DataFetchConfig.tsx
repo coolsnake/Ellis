@@ -25,9 +25,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     poolRefreshMinGapMs: 3000,
     tokenUniverseMode: 'union',
     jupiterTopTokens_category: 'toptraded',
-    jupiterTopTokens_interval: '24h',
+    jupiterTopTokens_interval: '5m',
     jupiterTopTokens_limit: 100,
-    jupiterTopTokens_cacheTtlMs: 300000,
+    jupiterTopTokens_cacheTtlMs: 60000,
     scopePoolsMode: 'none',
     anchorMints: 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     includeAnchorsInUniverse: true,
@@ -169,9 +169,15 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     pumpswap_graphqlPageSize: 1000,
     pumpswap_graphqlMaxPages: 50,
     // Jupiter
+    jupiter_apiKey: '',
     jupiterApiUrl: '',
     jupiterPauseApi: false,
     jupiterLimiterTargetMs: 2000,
+    // Discovery
+    discovery_enabled: false,
+    discovery_intervalMs: 300000,
+    discovery_minLiquidityUsd: 1000,
+    discovery_maxPoolsPerToken: 20,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -180,7 +186,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   useEffect(() => {
     const sanitized = {
       ...cfg,
-      pumpswap_shyftApiKey: '', // Don't persist API keys
+      jupiter_apiKey: '', // Don't persist API keys
+      pumpswap_shyftApiKey: '',
       shyft_apiKey: '',
       raydium_shyftApiKey: '',
       orca_shyftApiKey: '',
@@ -207,9 +214,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             poolRefreshMinGapMs: Number(j?.system?.poolRefreshMinGapMs ?? prev.poolRefreshMinGapMs),
             tokenUniverseMode: j?.system?.tokenUniverseMode || prev.tokenUniverseMode,
             jupiterTopTokens_category: j?.system?.jupiterTopTokens?.category || prev.jupiterTopTokens_category || 'toptraded',
-            jupiterTopTokens_interval: j?.system?.jupiterTopTokens?.interval || prev.jupiterTopTokens_interval || '24h',
+            jupiterTopTokens_interval: j?.system?.jupiterTopTokens?.interval || prev.jupiterTopTokens_interval || '5m',
             jupiterTopTokens_limit: Number(j?.system?.jupiterTopTokens?.limit ?? prev.jupiterTopTokens_limit ?? 100),
-            jupiterTopTokens_cacheTtlMs: Number(j?.system?.jupiterTopTokens?.cacheTtlMs ?? prev.jupiterTopTokens_cacheTtlMs ?? 300000),
+            jupiterTopTokens_cacheTtlMs: Number(j?.system?.jupiterTopTokens?.cacheTtlMs ?? prev.jupiterTopTokens_cacheTtlMs ?? 60000),
             scopePoolsMode: j?.system?.scopePoolsMode || prev.scopePoolsMode,
             anchorMints: Array.isArray(j?.system?.anchorMints) ? j.system.anchorMints.join(',') : (prev.anchorMints || ''),
             includeAnchorsInUniverse: (j?.system?.includeAnchorsInUniverse ?? true) !== false,
@@ -223,6 +230,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             maxInactivePoolMs: Number(j?.system?.maxInactivePoolMs ?? prev.maxInactivePoolMs ?? (12 * 60 * 60 * 1000)),
             universePrefilterOrca: !!j?.system?.universePrefilterOrca,
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
+            jupiter_apiKey: j?.system?.jupiterTopTokens?.apiKey || prev.jupiter_apiKey || '',
+            // Discovery
+            discovery_enabled: j?.discovery?.enabled ?? prev.discovery_enabled ?? false,
+            discovery_intervalMs: Number(j?.discovery?.intervalMs ?? prev.discovery_intervalMs ?? 300000),
+            discovery_minLiquidityUsd: Number(j?.discovery?.minLiquidityUsd ?? prev.discovery_minLiquidityUsd ?? 1000),
+            discovery_maxPoolsPerToken: Number(j?.discovery?.maxPoolsPerToken ?? prev.discovery_maxPoolsPerToken ?? 20),
             // WS attach rate
             wsAttachPerSec: Number(j?.system?.wsAttachPerSec ?? prev.wsAttachPerSec ?? 10),
             // RPC Rate Limiter
@@ -419,10 +432,11 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         wsAttachPerSec: Number(cfg.wsAttachPerSec),
         tokenUniverseMode: cfg.tokenUniverseMode,
         jupiterTopTokens: {
+          apiKey: String(cfg.jupiter_apiKey || ''),
           category: String(cfg.jupiterTopTokens_category || 'toptraded'),
-          interval: String(cfg.jupiterTopTokens_interval || '24h'),
-          limit: Math.max(1, Math.min(100, Number(cfg.jupiterTopTokens_limit) || 1)),
-          cacheTtlMs: Math.max(30000, Number(cfg.jupiterTopTokens_cacheTtlMs) || 300000),
+          interval: String(cfg.jupiterTopTokens_interval || '5m'),
+          limit: Math.max(1, Math.min(100, Number(cfg.jupiterTopTokens_limit) || 100)),
+          cacheTtlMs: Math.max(30000, Number(cfg.jupiterTopTokens_cacheTtlMs) || 60000),
         },
         scopePoolsMode: cfg.scopePoolsMode,
         anchorMints: String(cfg.anchorMints || '').split(',').map(s => s.trim()).filter(Boolean),
@@ -566,6 +580,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         sanity_applyRaydiumAmm: !!cfg.sanity_applyRaydiumAmm,
         sanity_applyRaydiumClmm: !!cfg.sanity_applyRaydiumClmm,
         sanity_applyOrcaClmm: !!cfg.sanity_applyOrcaClmm,
+      },
+      discovery: {
+        enabled: !!cfg.discovery_enabled,
+        intervalMs: Math.max(60000, Number(cfg.discovery_intervalMs) || 300000),
+        minLiquidityUsd: Math.max(0, Number(cfg.discovery_minLiquidityUsd) || 1000),
+        maxPoolsPerToken: Math.max(1, Number(cfg.discovery_maxPoolsPerToken) || 20),
       },
     };
     try {
@@ -1781,10 +1801,39 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             <h3 className="text-lg font-semibold mb-3">Jupiter</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm mb-1">API URL</label>
+                <label className="block text-sm mb-1">API Key (for Top Tokens)</label>
+                <input type="password" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.jupiter_apiKey || ''} onChange={(e)=>set('jupiter_apiKey', e.target.value)} placeholder="Get from portal.jup.ag" />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Quote API URL</label>
                 <input type="url" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.jupiterApiUrl} onChange={(e)=>set('jupiterApiUrl', e.target.value)} placeholder="https://quote-api.jup.ag/v6" />
               </div>
-              <div className="col-span-2 text-xs text-gray-300">Limiting is controlled by the backend rate limiter; API pause is exposed via terminal commands today.</div>
+              <div className="text-xs text-gray-300 flex items-center">API key required for Jupiter Top Tokens fetch. Get one at portal.jup.ag</div>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Token Discovery</h3>
+            <p className="text-xs text-gray-400 mb-3">Automatically discover new tokens from Jupiter top traded list and their pools via DexScreener. Requires Jupiter API key.</p>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={!!cfg.discovery_enabled} onChange={(e)=>set('discovery_enabled', e.target.checked)} />
+                  <span className="text-sm">Enable Discovery</span>
+                </label>
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Interval (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.discovery_intervalMs || 300000} onChange={(e)=>set('discovery_intervalMs', Number(e.target.value))} min={60000} step={60000} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Min Liquidity (USD)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.discovery_minLiquidityUsd || 1000} onChange={(e)=>set('discovery_minLiquidityUsd', Number(e.target.value))} min={0} step={100} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Max Pools/Token</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.discovery_maxPoolsPerToken || 20} onChange={(e)=>set('discovery_maxPoolsPerToken', Number(e.target.value))} min={1} max={100} />
+              </div>
             </div>
           </div>
 

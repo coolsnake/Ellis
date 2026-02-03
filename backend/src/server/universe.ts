@@ -8,11 +8,11 @@ export type UniverseMode = 'intersection' | 'union' | 'jupiter' | 'jupiterTop' |
 
 const SOL = 'So11111111111111111111111111111111111111112';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const JUPITER_CATEGORY_BASE = 'https://lite-api.jup.ag/tokens/v2';
+const JUPITER_CATEGORY_BASE = 'https://api.jup.ag/tokens/v2';
 
 type JupiterCategory = 'toporganicscore' | 'toptraded' | 'toptrending';
 type JupiterInterval = '5m' | '1h' | '6h' | '24h';
-type JupiterTopTokenOptions = { category: JupiterCategory; interval: JupiterInterval; limit: number; cacheTtlMs: number };
+type JupiterTopTokenOptions = { category: JupiterCategory; interval: JupiterInterval; limit: number; cacheTtlMs: number; apiKey?: string };
 type JupiterTopCache = { key: string; ts: number; data: Set<string> };
 
 let jupiterTopCache: JupiterTopCache | null = null;
@@ -52,12 +52,13 @@ function resolveJupiterTopOptions(): JupiterTopTokenOptions {
   const intervals: JupiterInterval[] = ['5m', '1h', '6h', '24h'];
   const rawCategory = String(raw.category || 'toptraded').toLowerCase();
   const category = (categories as readonly string[]).includes(rawCategory) ? (rawCategory as JupiterCategory) : 'toptraded';
-  const rawInterval = String(raw.interval || '24h').toLowerCase();
-  const interval = (intervals as readonly string[]).includes(rawInterval) ? (rawInterval as JupiterInterval) : '24h';
+  const rawInterval = String(raw.interval || '5m').toLowerCase();
+  const interval = (intervals as readonly string[]).includes(rawInterval) ? (rawInterval as JupiterInterval) : '5m';
   let limit = Number.isFinite(raw.limit) ? Number(raw.limit) : 100;
   limit = Math.max(1, Math.min(100, Math.floor(limit)));
-  const cacheTtlMs = Math.max(30_000, Number(raw.cacheTtlMs ?? 300_000));
-  return { category, interval, limit, cacheTtlMs };
+  const cacheTtlMs = Math.max(30_000, Number(raw.cacheTtlMs ?? 60_000));
+  const apiKey = typeof raw.apiKey === 'string' ? raw.apiKey : '';
+  return { category, interval, limit, cacheTtlMs, apiKey };
 }
 
 export async function getJupiterTopTokenSet(): Promise<Set<string>> {
@@ -70,7 +71,12 @@ export async function getJupiterTopTokenSet(): Promise<Set<string>> {
   try {
     const url = `${JUPITER_CATEGORY_BASE}/${opts.category}/${opts.interval}?limit=${opts.limit}`;
     await jupiterLimiter.acquire(false);
-    const res = await fetch(url, { headers: { accept: 'application/json' } as any } as any);
+    // Build headers with x-api-key if configured
+    const headers: Record<string, string> = { accept: 'application/json' };
+    if (opts.apiKey) {
+      headers['x-api-key'] = opts.apiKey;
+    }
+    const res = await fetch(url, { headers } as any);
     if (!res.ok) throw new Error(`jupiter category http ${res.status}`);
     const payload: any = await res.json();
     const arr: any[] = Array.isArray(payload)
