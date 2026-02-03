@@ -264,23 +264,81 @@ async function triggerGraphRebuild(): Promise<void> {
 }
 
 /**
- * Trigger WebSocket retarget to subscribe to newly discovered pools
+ * Subscribe to newly discovered pools incrementally (without full retarget)
+ * 
+ * @param enrichmentResult The enriched pools to subscribe to
  */
-async function triggerPoolRetarget(): Promise<void> {
+async function subscribeToNewPools(enrichmentResult: any): Promise<void> {
   try {
-    const { retargetPoolWebsockets } = await import('../pools.js');
+    const { subscribeToDiscoveredPools } = await import('../pools.websockets.js');
     
-    // Small delay to let the graph rebuild complete
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Collect pool IDs by DEX from enrichment result
+    const poolsByDex: {
+      raydium?: { amm?: string[]; clmm?: string[]; cpmm?: string[] };
+      orca?: { clmm?: string[] };
+      meteora?: { clmm?: string[] };
+      pumpswap?: { amm?: string[] };
+    } = {};
     
-    const result = await retargetPoolWebsockets();
+    // Raydium pools
+    const rayPools = enrichmentResult.pools.raydium;
+    if (rayPools.amm.length > 0 || rayPools.clmm.length > 0 || rayPools.cpmm.length > 0) {
+      poolsByDex.raydium = {
+        amm: rayPools.amm.map((p: any) => p.id).filter(Boolean),
+        clmm: rayPools.clmm.map((p: any) => p.id).filter(Boolean),
+        cpmm: rayPools.cpmm.map((p: any) => p.id).filter(Boolean),
+      };
+    }
     
-    logger.info('discovery.pools.retarget_complete', { 
-      attached: result.attached,
+    // Orca pools
+    const orcaPools = enrichmentResult.pools.orca;
+    if (orcaPools.clmm.length > 0) {
+      poolsByDex.orca = {
+        clmm: orcaPools.clmm.map((p: any) => p.id).filter(Boolean),
+      };
+    }
+    
+    // Meteora pools
+    const meteoraPools = enrichmentResult.pools.meteora;
+    if (meteoraPools.clmm.length > 0) {
+      poolsByDex.meteora = {
+        clmm: meteoraPools.clmm.map((p: any) => p.id).filter(Boolean),
+      };
+    }
+    
+    // PumpSwap pools (not yet supported in enrichment, but ready for future)
+    const pumpswapPools = enrichmentResult.pools.pumpswap;
+    if (pumpswapPools.amm.length > 0) {
+      poolsByDex.pumpswap = {
+        amm: pumpswapPools.amm.map((p: any) => p.id).filter(Boolean),
+      };
+    }
+    
+    // Check if there are any pools to subscribe to
+    const totalPools = 
+      (poolsByDex.raydium?.amm?.length || 0) +
+      (poolsByDex.raydium?.clmm?.length || 0) +
+      (poolsByDex.raydium?.cpmm?.length || 0) +
+      (poolsByDex.orca?.clmm?.length || 0) +
+      (poolsByDex.meteora?.clmm?.length || 0) +
+      (poolsByDex.pumpswap?.amm?.length || 0);
+    
+    if (totalPools === 0) {
+      logger.debug('discovery.subscribe.no_pools', { cat: 'discovery' });
+      return;
+    }
+    
+    // Subscribe incrementally (no full retarget needed)
+    const result = await subscribeToDiscoveredPools(poolsByDex);
+    
+    logger.info('discovery.subscribe.complete', { 
+      subscribed: result.subscribed,
+      errors: result.errors.length,
       cat: 'discovery' 
     });
+    
   } catch (err: any) {
-    logger.error('discovery.pools.retarget_error', { 
+    logger.error('discovery.subscribe.error', { 
       error: String(err?.message || err),
       cat: 'discovery' 
     });
@@ -513,10 +571,10 @@ export async function runDiscoveryCycle(options?: {
         // Rebuild graph with new pools
         await triggerGraphRebuild();
         
-        // Retarget WebSocket subscriptions to include new pools
+        // Subscribe to new pools incrementally (no full retarget needed)
         // This runs in background to not block the discovery cycle
-        triggerPoolRetarget().catch(err => {
-          logger.warn('discovery.cycle.retarget_background_error', { 
+        subscribeToNewPools(enrichmentResult).catch(err => {
+          logger.warn('discovery.cycle.subscribe_background_error', { 
             error: String(err?.message || err),
             cat: 'discovery' 
           });

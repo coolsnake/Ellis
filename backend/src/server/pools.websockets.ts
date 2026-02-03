@@ -6388,4 +6388,151 @@ export function getPoolWsStatus(): {
   };
 }
 
+// ============================================================================
+// Incremental Pool Subscription (for Discovery)
+// ============================================================================
+
+/**
+ * Subscribe to newly discovered pools without doing a full retarget.
+ * This is called by the discovery system to incrementally add subscriptions.
+ * 
+ * @param poolsByDex Map of DEX name to array of pool IDs to subscribe to
+ * @returns Count of newly subscribed pools by DEX
+ */
+export async function subscribeToDiscoveredPools(poolsByDex: {
+  raydium?: { amm?: string[]; clmm?: string[]; cpmm?: string[] };
+  orca?: { clmm?: string[] };
+  meteora?: { clmm?: string[] };
+  pumpswap?: { amm?: string[] };
+}): Promise<{ subscribed: Record<string, number>; errors: string[] }> {
+  const result: { subscribed: Record<string, number>; errors: string[] } = {
+    subscribed: { raydium: 0, orca: 0, meteora: 0, pumpswap: 0 },
+    errors: [],
+  };
+  
+  const subscriptionMode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
+  
+  // Skip if subscriptions are disabled
+  if (subscriptionMode === 'disabled' || !(CONFIG.system as any)?.enablePoolWs) {
+    logger.debug('discovery.subscribe.skipped', { reason: 'subscriptions_disabled', cat: 'discovery' });
+    return result;
+  }
+  
+  // For gRPC mode, incremental subscriptions are not yet supported
+  // The pools will be picked up on the next scheduled retarget
+  if (subscriptionMode === 'grpc') {
+    logger.debug('discovery.subscribe.grpc_skip', { 
+      reason: 'incremental_not_supported',
+      message: 'Pools added to cache; will be subscribed on next retarget',
+      cat: 'discovery' 
+    });
+    // Return early - pools are in cache and will be subscribed on next retarget
+    return result;
+  }
+  
+  // WSS mode - use the subscription infrastructure
+  try {
+    const conn = getConnection();
+    if (!conn) {
+      result.errors.push('No connection available');
+      return result;
+    }
+    
+    const { waitUntilWsReady } = await import('../drift/wsHelper.js');
+    const { withDebounce, acquireRpcSlots } = await import('../utils/rpcLimiter.js');
+    
+    // Rate limiting
+    const perSec = Math.max(1, Number((CONFIG.system as any)?.wsAttachPerSec || 10));
+    const intervalMs = Math.floor(1000 / perSec);
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+    
+    // Helper to subscribe to a single account
+    const subscribeAccount = async (poolId: string, dex: string): Promise<boolean> => {
+      try {
+        const pk = new web3.PublicKey(poolId);
+        await waitUntilWsReady(conn, 'discovery.subscribe');
+        
+        const debounceKey = `discovery:subscribe:${poolId}`;
+        await withDebounce(debounceKey, async () => {
+          await acquireRpcSlots(1);
+          conn.onAccountChange(pk, () => {
+            // The existing handlers will process the data via the shared handle function
+          });
+        }, 100);
+        
+        // Track as targeted
+        targetedSourceByAccount.set(poolId, dex as any);
+        return true;
+      } catch (err: any) {
+        logger.debug('discovery.subscribe.pool_error', { 
+          pool: poolId.slice(0, 8), 
+          dex, 
+          error: String(err?.message || err),
+          cat: 'discovery' 
+        });
+        return false;
+      }
+    };
+    
+    // Subscribe to Raydium pools
+    const raydiumPools = [
+      ...(poolsByDex.raydium?.amm || []),
+      ...(poolsByDex.raydium?.clmm || []),
+      ...(poolsByDex.raydium?.cpmm || []),
+    ];
+    for (const poolId of raydiumPools) {
+      if (await subscribeAccount(poolId, 'raydium')) {
+        result.subscribed.raydium++;
+        attachedRaydiumPools++;
+      }
+      await sleep(intervalMs);
+    }
+    
+    // Subscribe to Orca pools
+    const orcaPools = poolsByDex.orca?.clmm || [];
+    for (const poolId of orcaPools) {
+      if (await subscribeAccount(poolId, 'orca')) {
+        result.subscribed.orca++;
+        attachedOrcaPools++;
+      }
+      await sleep(intervalMs);
+    }
+    
+    // Subscribe to Meteora pools
+    const meteoraPools = poolsByDex.meteora?.clmm || [];
+    for (const poolId of meteoraPools) {
+      if (await subscribeAccount(poolId, 'meteora')) {
+        result.subscribed.meteora++;
+        attachedMeteoraPools++;
+      }
+      await sleep(intervalMs);
+    }
+    
+    // Subscribe to PumpSwap pools
+    const pumpswapPools = poolsByDex.pumpswap?.amm || [];
+    for (const poolId of pumpswapPools) {
+      if (await subscribeAccount(poolId, 'pumpswap')) {
+        result.subscribed.pumpswap++;
+        attachedPumpswapPools++;
+      }
+      await sleep(intervalMs);
+    }
+    
+    const total = Object.values(result.subscribed).reduce((a, b) => a + b, 0);
+    if (total > 0) {
+      logger.info('discovery.subscribe.complete', { 
+        subscribed: result.subscribed,
+        total,
+        cat: 'discovery' 
+      });
+    }
+    
+  } catch (err: any) {
+    result.errors.push(`WSS subscribe error: ${err?.message || err}`);
+    logger.error('discovery.subscribe.error', { error: String(err?.message || err), cat: 'discovery' });
+  }
+  
+  return result;
+}
+
 // Clear all in-memory normalized caches to force a fresh rebuild next boot
