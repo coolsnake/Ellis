@@ -625,3 +625,50 @@ export function clearCalibrations(): void {
     saveTimer = null;
   }
 }
+
+/**
+ * Reset all calibrations - clears memory and deletes persisted file.
+ * This gives the system a fresh start with no learned data.
+ * 
+ * @returns Number of pools that were cleared
+ */
+export async function resetCalibrations(): Promise<{ clearedPools: number; fileDeleted: boolean }> {
+  const clearedPools = calibrations.size;
+  
+  // Clear in-memory state
+  calibrations.clear();
+  isDirty = false;
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  
+  // Delete persisted file
+  let fileDeleted = false;
+  try {
+    const fs = await import('fs/promises');
+    const filePath = getCalibrationFilePath();
+    await fs.unlink(filePath);
+    fileDeleted = true;
+    logger.info('capacity.calibration.reset', {
+      cat: 'sizing',
+      clearedPools,
+      fileDeleted: true,
+    });
+  } catch (err: any) {
+    // File might not exist, which is fine
+    if (err.code !== 'ENOENT') {
+      logger.warn('capacity.calibration.reset.file_error', {
+        cat: 'sizing',
+        error: err.message,
+      });
+    }
+    logger.info('capacity.calibration.reset', {
+      cat: 'sizing',
+      clearedPools,
+      fileDeleted: false,
+    });
+  }
+  
+  return { clearedPools, fileDeleted };
+}

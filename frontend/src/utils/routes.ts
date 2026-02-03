@@ -54,6 +54,9 @@ export const ROUTES = {
     metrics: '/arb/metrics',
     metricsJson: '/arb/metrics/json',
     opportunities: '/arb/opportunities',
+    // Calibration endpoints
+    calibrationStats: '/arb/calibration/stats',
+    calibrationReset: '/arb/calibration/reset',
     txHistory: '/arb/tx-history',
     simulate: '/arb/simulate',
     simulateSend: '/arb/simulate-send',

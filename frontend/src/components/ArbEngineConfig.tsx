@@ -74,6 +74,8 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   }, [cfg]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [calibrationResetting, setCalibrationResetting] = useState(false);
+  const [calibrationResetMsg, setCalibrationResetMsg] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -426,8 +428,45 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                           disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
                         <span className="text-sm">Disable learned calibration</span>
                       </label>
-                      <div className="text-xs text-gray-400 ml-6">
+                      <div className="text-xs text-gray-400 ml-6 mb-2">
                         Prevents 6007 errors from causing sizes to drift down over time
+                      </div>
+                      
+                      {/* Calibration Reset Button */}
+                      <div className="flex items-center gap-3 mt-2">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!confirm('Reset all learned calibration data? This will restore default sizing behavior.')) return;
+                            setCalibrationResetting(true);
+                            try {
+                              const res = await fetch(`${apiBase}${ROUTES.arb.calibrationReset}`, { method: 'POST' });
+                              const data = await res.json();
+                              if (data.ok) {
+                                setCalibrationResetMsg(`Cleared ${data.clearedPools} pools`);
+                                setTimeout(() => setCalibrationResetMsg(null), 3000);
+                              } else {
+                                setCalibrationResetMsg(`Error: ${data.error || 'Unknown'}`);
+                              }
+                            } catch (e: any) {
+                              setCalibrationResetMsg(`Error: ${e.message || e}`);
+                            } finally {
+                              setCalibrationResetting(false);
+                            }
+                          }}
+                          disabled={calibrationResetting}
+                          className="px-3 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white text-sm rounded"
+                        >
+                          {calibrationResetting ? 'Resetting...' : 'Reset Calibration Data'}
+                        </button>
+                        {calibrationResetMsg && (
+                          <span className={`text-sm ${calibrationResetMsg.startsWith('Error') ? 'text-red-400' : 'text-green-400'}`}>
+                            {calibrationResetMsg}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-400 mt-1">
+                        Clears all learned pool sizing data and resets to default behavior
                       </div>
 
                       {/* Slippage Model Parameters */}

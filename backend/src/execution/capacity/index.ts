@@ -70,6 +70,7 @@ export {
   getCalibrationStats,
   getCalibratedPoolCount,
   clearCalibrations,
+  resetCalibrations,
   type SlippageObservation,
   type PoolCalibration,
 } from './calibrationStore.js';

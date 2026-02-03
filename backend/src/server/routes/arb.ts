@@ -215,6 +215,34 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Calibration endpoints
+  api.get('/arb/calibration/stats', async (_req, res) => {
+    try {
+      const { getCalibrationStats, getCalibratedPoolCount } = await import('../../execution/capacity/index.js');
+      const stats = getCalibrationStats();
+      res.status(200).json({ ok: true, ...stats });
+    } catch (e: any) {
+      logger.warn('arb.calibration.stats.error', { cat: 'arb', error: toErrString(e) });
+      res.status(500).json({ ok: false, error: toErrString(e) });
+    }
+  });
+
+  api.post('/arb/calibration/reset', async (_req, res) => {
+    try {
+      const { resetCalibrations } = await import('../../execution/capacity/index.js');
+      const result = await resetCalibrations();
+      logger.info('arb.calibration.reset.success', { 
+        cat: 'arb', 
+        clearedPools: result.clearedPools,
+        fileDeleted: result.fileDeleted 
+      });
+      res.status(200).json({ ok: true, ...result });
+    } catch (e: any) {
+      logger.warn('arb.calibration.reset.error', { cat: 'arb', error: toErrString(e) });
+      res.status(500).json({ ok: false, error: toErrString(e) });
+    }
+  });
+
   api.get('/arb/metrics', async (_req, res) => {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
