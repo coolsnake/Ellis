@@ -186,7 +186,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   useEffect(() => {
     const sanitized = {
       ...cfg,
-      jupiter_apiKey: '', // Don't persist API keys
+      // Exclude sensitive API keys from localStorage persistence (security)
+      // Note: jupiter_apiKey IS persisted since it's needed for discovery
       pumpswap_shyftApiKey: '',
       shyft_apiKey: '',
       raydium_shyftApiKey: '',
