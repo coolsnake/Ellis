@@ -58,6 +58,7 @@ import {
   getSubstitutionStats,
   type PoolSubstitutionConfig,
 } from './poolSubstitutionStore.js';
+import { setCalibrationDisabled } from './skipSimFeedback.js';
 import { deriveVaultPda, fetchVault } from '../router/sdk.js';
 import { PublicKey } from '@solana/web3.js';
 import { resolveDecimals } from '../server/pools/decimals.js';
@@ -263,6 +264,11 @@ export class ArbExecutor {
       failedExecutions: 0,
       lastUpwardRetry: new Map(),
     };
+    
+    // Initialize calibration disabled flag based on multi-hop settings
+    const disableCalibration = config.sizingConfig?.multiHopOptimization?.enabled &&
+                               config.sizingConfig?.multiHopOptimization?.disableCalibration !== false;
+    setCalibrationDisabled(disableCalibration);
   }
 
   async start(): Promise<void> {
@@ -1469,15 +1475,22 @@ export class ArbExecutor {
         const condensedReport = formatSimReportForLog(simReport);
         
         // Record calibration feedback for capacity learning
+        // Skip feedback when multi-hop mode has disableCalibration enabled
+        const shouldSkipCalibrationFeedback = this.config.sizingConfig?.multiHopOptimization?.enabled &&
+                                               this.config.sizingConfig?.multiHopOptimization?.disableCalibration !== false;
         try {
           if (simAnalysis.profitCheckFailed) {
             // 6007/NoProfitFromRoute - slippage was worse than expected
-            recordSlippageFeedback(simReport, '6007', effectiveSizeUsd);
+            if (!shouldSkipCalibrationFeedback) {
+              recordSlippageFeedback(simReport, '6007', effectiveSizeUsd);
+            }
             // OPTIMIZATION: Mark pools as validated - 6007 means all swaps executed successfully
             validatedPoolsCache.markAllValidated(plan.hops, '6007');
           } else if (!simResult.err) {
             // Successful simulation - validates current calibration
-            recordSlippageFeedback(simReport, 'success', effectiveSizeUsd);
+            if (!shouldSkipCalibrationFeedback) {
+              recordSlippageFeedback(simReport, 'success', effectiveSizeUsd);
+            }
             // OPTIMIZATION: Mark pools as validated for skip-simulation optimization
             validatedPoolsCache.markAllValidated(plan.hops, 'success');
           }
@@ -1881,9 +1894,12 @@ export class ArbExecutor {
             }
             
             // Record success feedback for capacity learning
+            // Skip feedback when multi-hop mode has disableCalibration enabled
             try {
-              const successSimReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
-              recordSlippageFeedback(successSimReport, 'success', currentSizeUsd);
+              if (!shouldSkipCalibrationFeedback) {
+                const successSimReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
+                recordSlippageFeedback(successSimReport, 'success', currentSizeUsd);
+              }
               // OPTIMIZATION: Mark pools as validated for skip-simulation optimization
               validatedPoolsCache.markAllValidated(currentPlan.hops, 'success');
             } catch (feedbackErr) {
@@ -2128,8 +2144,9 @@ export class ArbExecutor {
           const lastSimErrStr = serializeSimError(lastSimResult.err);
           
           // Record calibration feedback for capacity learning
+          // Skip feedback when multi-hop mode has disableCalibration enabled
           try {
-            if (lastSimAnalysis!.profitCheckFailed) {
+            if (lastSimAnalysis!.profitCheckFailed && !shouldSkipCalibrationFeedback) {
               recordSlippageFeedback(simReport, '6007', currentSizeUsd);
             }
             // Note: non-6007 errors are not used for calibration
@@ -3103,6 +3120,10 @@ export class ArbExecutor {
     const hopPoolIds = opp.hop_pool_ids || [];
     const hopDexes = opp.hop_dexes || opp.dexes || [];
     
+    // Check if we should skip calibration (when multi-hop mode has disableCalibration enabled)
+    const skipCalibration = config.multiHopOptimization?.enabled && 
+                            config.multiHopOptimization?.disableCalibration !== false;
+    
     let minCapacity = Infinity;
     let bottleneckCurve: ReturnType<typeof lookupCapacity> | null = null;
     let bottleneckHopIdx = -1;
@@ -3116,7 +3137,8 @@ export class ArbExecutor {
       const hot = executionCache.getHot(poolId) || {};
       
       // Look up capacity curve (instant if cached, or generates Tier 1 fallback)
-      const curve = lookupCapacity(poolId, poolType, hot, config);
+      // Skip calibration if multi-hop mode has disableCalibration enabled
+      const curve = lookupCapacity(poolId, poolType, hot, config, true, skipCalibration);
       
       // Track the bottleneck (lowest break-even capacity)
       if (curve.breakEvenSizeUsd < minCapacity) {
@@ -3499,6 +3521,10 @@ export class ArbExecutor {
       // Pass sizing config to execution cache for capacity curve computation
       if (updates.sizingConfig && this.config.sizingConfig) {
         executionCache.setSizingConfig(this.config.sizingConfig);
+        // Update calibration disabled flag based on multi-hop settings
+        const disableCalibration = this.config.sizingConfig.multiHopOptimization?.enabled &&
+                                   this.config.sizingConfig.multiHopOptimization?.disableCalibration !== false;
+        setCalibrationDisabled(disableCalibration);
       }
       // Update validated pools cache configuration
       if (updates.skipSimulation && this.config.skipSimulation) {
@@ -3613,11 +3639,17 @@ export class ArbExecutor {
       
       const simAnalysis = parseSimulationLogs(simResult.logs, simResult.err);
       
+      // Check if calibration feedback should be skipped (multi-hop mode with disableCalibration)
+      const skipCalibrationFeedback = this.config.sizingConfig?.multiHopOptimization?.enabled &&
+                                       this.config.sizingConfig?.multiHopOptimization?.disableCalibration !== false;
+      
       if (!simResult.err) {
         // Success! Larger size works - record feedback to update capacity curves
         try {
-          const simReport = buildSimulationReport(opp, testPlan, simAnalysis);
-          recordSlippageFeedback(simReport, 'success', testSizeUsd);
+          if (!skipCalibrationFeedback) {
+            const simReport = buildSimulationReport(opp, testPlan, simAnalysis);
+            recordSlippageFeedback(simReport, 'success', testSizeUsd);
+          }
           
           logger.info('arb.executor.upward_retry.success', {
             cat: 'arb',
@@ -3645,7 +3677,7 @@ export class ArbExecutor {
         });
         
         // If it was a 6007 (profit check failed), still record as useful feedback
-        if (simAnalysis.profitCheckFailed) {
+        if (simAnalysis.profitCheckFailed && !skipCalibrationFeedback) {
           try {
             const simReport = buildSimulationReport(opp, testPlan, simAnalysis);
             recordSlippageFeedback(simReport, '6007', testSizeUsd);

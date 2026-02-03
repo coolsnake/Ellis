@@ -21,6 +21,35 @@ import { getPoolTypeFromDex } from './capacity/types.js';
 import type { TxRecord } from '../server/txHistory.js';
 
 // ============================================================================
+// Calibration Disable Flag
+// ============================================================================
+
+/**
+ * Module-level flag to disable calibration feedback recording.
+ * When true, skip-sim feedback will not record capacity calibration data.
+ * Set by the arbExecutor when multi-hop mode has disableCalibration enabled.
+ */
+let calibrationDisabled = false;
+
+/**
+ * Set whether calibration feedback should be disabled.
+ * Call this when sizing config changes.
+ */
+export function setCalibrationDisabled(disabled: boolean): void {
+  calibrationDisabled = disabled;
+  if (disabled) {
+    logger.info('skipSimFeedback.calibration_disabled', { cat: 'feedback' });
+  }
+}
+
+/**
+ * Check if calibration feedback is currently disabled.
+ */
+export function isCalibrationDisabled(): boolean {
+  return calibrationDisabled;
+}
+
+// ============================================================================
 // Transaction Log Fetching
 // ============================================================================
 
@@ -140,16 +169,18 @@ function handleSuccess(
     validatedPoolsCache.markValidated(hop.poolId, hop.dex, hop.variant, 'success');
   }
   
-  // Record POSITIVE capacity feedback for each pool
+  // Record POSITIVE capacity feedback for each pool (unless calibration is disabled)
   // Success on skip-sim is a strong signal - the trade worked without simulation
   // This helps recover from overly conservative calibrations
-  const perHopSize = sizeUsd / Math.max(1, hops.length);
-  
-  for (const hop of hops) {
-    const poolType = getPoolTypeFromDex(hop.dex, hop.variant);
-    // Record positive delta to signal "we could potentially trade larger"
-    // This is key for recovering from the minimum-size trap
-    recordPoolFeedback(hop.poolId, poolType, SKIP_SIM_SUCCESS_DELTA_BPS, perHopSize, 'success');
+  if (!calibrationDisabled) {
+    const perHopSize = sizeUsd / Math.max(1, hops.length);
+    
+    for (const hop of hops) {
+      const poolType = getPoolTypeFromDex(hop.dex, hop.variant);
+      // Record positive delta to signal "we could potentially trade larger"
+      // This is key for recovering from the minimum-size trap
+      recordPoolFeedback(hop.poolId, poolType, SKIP_SIM_SUCCESS_DELTA_BPS, perHopSize, 'success');
+    }
   }
   
   // Update stats
@@ -190,17 +221,19 @@ function handleProfitCheckFailure(
     validatedPoolsCache.markValidated(hop.poolId, hop.dex, hop.variant, '6007');
   }
   
-  // Calculate estimated slippage delta
+  // Record capacity feedback (unless calibration is disabled)
   // Profit check failed means actual profit was below expected
   // We use expectedProfitBps as a conservative estimate of the error
   // (actual slippage was at least expectedProfitBps worse than quoted)
-  const estimatedDeltaBps = -expectedProfitBps;
-  const perHopSize = sizeUsd / Math.max(1, hops.length);
-  const perHopDelta = estimatedDeltaBps / Math.max(1, hops.length);
-  
-  for (const hop of hops) {
-    const poolType = getPoolTypeFromDex(hop.dex, hop.variant);
-    recordPoolFeedback(hop.poolId, poolType, perHopDelta, perHopSize, '6007');
+  if (!calibrationDisabled) {
+    const estimatedDeltaBps = -expectedProfitBps;
+    const perHopSize = sizeUsd / Math.max(1, hops.length);
+    const perHopDelta = estimatedDeltaBps / Math.max(1, hops.length);
+    
+    for (const hop of hops) {
+      const poolType = getPoolTypeFromDex(hop.dex, hop.variant);
+      recordPoolFeedback(hop.poolId, poolType, perHopDelta, perHopSize, '6007');
+    }
   }
   
   // Update stats

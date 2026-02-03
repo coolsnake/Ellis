@@ -267,6 +267,21 @@ export interface MultiHopOptimizationConfig {
   fallbackToBottleneck: boolean;
   
   /**
+   * Disable learned calibration from feedback (6007 errors, etc.).
+   * 
+   * When true:
+   * - Multi-hop sizing uses only its slippage models (no learned adjustments)
+   * - Bottleneck fallback ignores calibration scale factors
+   * - Simulation feedback is not recorded for calibration
+   * 
+   * This prevents the downward drift where repeated 6007 errors cause
+   * sizes to shrink toward the minimum over time.
+   * 
+   * Default: true (when multi-hop enabled, trust the models not learned data)
+   */
+  disableCalibration: boolean;
+  
+  /**
    * Slippage model parameters for each pool type.
    * Controls how slippage is estimated during multi-hop simulation.
    */
@@ -319,6 +334,7 @@ export const DEFAULT_MULTIHOP_CONFIG: MultiHopOptimizationConfig = {
   searchPrecisionUsd: 0.10,
   maxIterations: 20,
   fallbackToBottleneck: true,
+  disableCalibration: true, // When multi-hop enabled, trust models not learned data
   slippageParams: DEFAULT_SLIPPAGE_PARAMS,
 };
 

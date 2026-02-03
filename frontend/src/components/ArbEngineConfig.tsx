@@ -61,6 +61,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     multiHopFixedCostUsd: 0.001,
     multiHopSafetyMargin: 0.80,
     multiHopFallbackToBottleneck: true,
+    multiHopDisableCalibration: true, // Disable learned calibration when multi-hop enabled
     // Slippage model params
     ammReserveMultiplier: 0.95,
     clmmLiquidityDecay: 0.70,
@@ -111,6 +112,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           multiHopFixedCostUsd: execCfg?.sizingConfig?.multiHopOptimization?.fixedCostUsd ?? p.multiHopFixedCostUsd,
           multiHopSafetyMargin: execCfg?.sizingConfig?.multiHopOptimization?.safetyMargin ?? p.multiHopSafetyMargin,
           multiHopFallbackToBottleneck: execCfg?.sizingConfig?.multiHopOptimization?.fallbackToBottleneck ?? p.multiHopFallbackToBottleneck,
+          multiHopDisableCalibration: execCfg?.sizingConfig?.multiHopOptimization?.disableCalibration ?? p.multiHopDisableCalibration,
           // Slippage model params
           ammReserveMultiplier: execCfg?.sizingConfig?.multiHopOptimization?.slippageParams?.amm?.reserveMultiplier ?? p.ammReserveMultiplier,
           clmmLiquidityDecay: execCfg?.sizingConfig?.multiHopOptimization?.slippageParams?.clmm?.liquidityDecayPerTick ?? p.clmmLiquidityDecay,
@@ -199,6 +201,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           searchPrecisionUsd: 0.10,
           maxIterations: 20,
           fallbackToBottleneck: cfg.multiHopFallbackToBottleneck !== false,
+          disableCalibration: cfg.multiHopDisableCalibration !== false,
           slippageParams: {
             amm: { reserveMultiplier: Math.max(0.5, Math.min(1.0, Number(cfg.ammReserveMultiplier) || 0.95)) },
             clmm: { liquidityDecayPerTick: Math.max(0.3, Math.min(0.99, Number(cfg.clmmLiquidityDecay) || 0.70)), maxTickSimulation: 50 },
@@ -416,6 +419,16 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                           disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
                         <span className="text-sm">Fallback to bottleneck method on insufficient data</span>
                       </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" 
+                          checked={cfg.multiHopDisableCalibration !== false} 
+                          onChange={(e)=>set('multiHopDisableCalibration', e.target.checked)}
+                          disabled={!cfg.multiHopEnabled || !cfg.sizingEnabled} />
+                        <span className="text-sm">Disable learned calibration</span>
+                      </label>
+                      <div className="text-xs text-gray-400 ml-6">
+                        Prevents 6007 errors from causing sizes to drift down over time
+                      </div>
 
                       {/* Slippage Model Parameters */}
                       <div className="border-t border-gray-600 pt-3 mt-3">

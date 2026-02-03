@@ -161,32 +161,37 @@ interface PoolStaticData {
  * @param hot - Hot data from ExecutionCache
  * @param config - Sizing configuration
  * @param triggerCompute - Whether to trigger async curve computation on miss
+ * @param skipCalibration - Whether to skip learned calibration (for multi-hop mode)
  */
 export function lookupCapacity(
   poolId: string,
   poolType: PoolType,
   hot: PoolHotData,
   config: SizingConfig = DEFAULT_SIZING_CONFIG,
-  triggerCompute: boolean = true
+  triggerCompute: boolean = true,
+  skipCalibration: boolean = false
 ): CapacityCurve {
-  // 1. Check cache first (instant)
-  const cached = getCapacityCurve(poolId);
-  if (cached) {
-    logger.debug('capacity.lookup.cache_hit', {
-      cat: 'sizing',
-      poolId: poolId.slice(0, 12) + '...',
-      poolType,
-      breakEvenSizeUsd: cached.breakEvenSizeUsd.toFixed(2),
-      confidence: cached.confidence,
-      hasCalibration: !!cached.metadata?.calibration,
-    });
-    return cached;
+  // 1. Check cache first (instant) - but only if we're not skipping calibration
+  // When skipping calibration, we need fresh computation without learned factors
+  if (!skipCalibration) {
+    const cached = getCapacityCurve(poolId);
+    if (cached) {
+      logger.debug('capacity.lookup.cache_hit', {
+        cat: 'sizing',
+        poolId: poolId.slice(0, 12) + '...',
+        poolType,
+        breakEvenSizeUsd: cached.breakEvenSizeUsd.toFixed(2),
+        confidence: cached.confidence,
+        hasCalibration: !!cached.metadata?.calibration,
+      });
+      return cached;
+    }
   }
   
   // 2. No cache - try SYNCHRONOUS full computation first for accurate sizing
   // This ensures the first call gets the best possible estimate with calibration
   if (triggerCompute) {
-    const fullCurve = computeAndCacheCapacityCurve(poolId, poolType, hot, config);
+    const fullCurve = computeAndCacheCapacityCurve(poolId, poolType, hot, config, DEFAULT_BREAK_EVEN_SLIPPAGE_BPS, skipCalibration);
     if (fullCurve) {
       logger.debug('capacity.lookup.computed', {
         cat: 'sizing',
@@ -196,14 +201,15 @@ export function lookupCapacity(
         confidence: fullCurve.confidence,
         hasCalibration: !!fullCurve.metadata?.calibration,
         hotDataAvailable: !!(hot.liquidity || hot.sqrtPriceX64),
+        skipCalibration,
       });
       return fullCurve;
     }
   }
   
   // 3. Fall back to Tier 1 estimate if full computation failed
-  // Tier 1 now also applies calibration if available
-  const tier1Curve = generateTier1Curve(poolId, poolType, hot, config);
+  // Tier 1 now also applies calibration if available (unless skipped)
+  const tier1Curve = generateTier1Curve(poolId, poolType, hot, config, DEFAULT_BREAK_EVEN_SLIPPAGE_BPS, skipCalibration);
   
   logger.debug('capacity.lookup.tier1_fallback', {
     cat: 'sizing',
@@ -212,10 +218,14 @@ export function lookupCapacity(
     breakEvenSizeUsd: tier1Curve.breakEvenSizeUsd.toFixed(2),
     hasCalibration: !!tier1Curve.metadata?.calibration,
     reason: 'full_computation_failed_or_disabled',
+    skipCalibration,
   });
   
   // Cache the Tier 1 curve so future lookups don't recompute
-  setCapacityCurve(poolId, tier1Curve);
+  // But only cache if we didn't skip calibration (calibration-free curves shouldn't pollute cache)
+  if (!skipCalibration) {
+    setCapacityCurve(poolId, tier1Curve);
+  }
   
   return tier1Curve;
 }
@@ -330,24 +340,33 @@ export function getOptimalSizeFromCurve(
  * @param hot - Hot data from execution cache
  * @param config - Sizing configuration
  * @param profitBps - Optional profit margin in bps (defaults to 50)
+ * @param skipCalibration - Whether to skip learned calibration
  */
 export function computeAndCacheCapacityCurve(
   poolId: string,
   poolType: PoolType,
   hot: PoolHotData,
   config: SizingConfig = DEFAULT_SIZING_CONFIG,
-  profitBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS
+  profitBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS,
+  skipCalibration: boolean = false
 ): CapacityCurve | null {
   try {
     // Get user-configured adjustment
     const userAdjustment = config.poolTypeAdjustments[poolType];
     
     // Get calibration with fallback to pool-type aggregate for cold start
-    const calibration = getCalibrationWithFallback(poolId, poolType);
-    const learnedFactor = calibration && calibration.confidence > 0.2 
-      ? calibration.scaleFactor 
-      : 1.0;
-    const isFallbackCalibration = calibration && (calibration as any).isFallback === true;
+    // Skip calibration if requested (e.g., when multi-hop mode is enabled)
+    let calibration: ReturnType<typeof getCalibrationWithFallback> = undefined;
+    let learnedFactor = 1.0;
+    let isFallbackCalibration = false;
+    
+    if (!skipCalibration) {
+      calibration = getCalibrationWithFallback(poolId, poolType);
+      learnedFactor = calibration && calibration.confidence > 0.2 
+        ? calibration.scaleFactor 
+        : 1.0;
+      isFallbackCalibration = calibration && (calibration as any).isFallback === true;
+    }
     
     // Combine adjustments: user preference * learned correction
     const adjustment = userAdjustment * learnedFactor;
@@ -418,8 +437,8 @@ export function computeAndCacheCapacityCurve(
       }
     }
     
-    // Add calibration info to curve metadata
-    if (calibration && calibration.confidence > 0.2) {
+    // Add calibration info to curve metadata (only if calibration was used)
+    if (!skipCalibration && calibration && calibration.confidence > 0.2) {
       const poolCal = calibration as any;
       curve.metadata = {
         ...curve.metadata,
@@ -444,8 +463,10 @@ export function computeAndCacheCapacityCurve(
       });
     }
     
-    // Cache the result
-    setCapacityCurve(poolId, curve);
+    // Cache the result (only if calibration wasn't skipped to avoid polluting cache)
+    if (!skipCalibration) {
+      setCapacityCurve(poolId, curve);
+    }
     
     return curve;
   } catch (e) {
@@ -494,13 +515,15 @@ export function recomputeCapacityCurve(
  * @param hot - Hot data from execution cache
  * @param config - Sizing configuration
  * @param profitBps - Optional profit margin in bps (defaults to 50)
+ * @param skipCalibration - Whether to skip learned calibration
  */
 function generateTier1Curve(
   poolId: string,
   poolType: PoolType,
   hot: PoolHotData,
   config: SizingConfig,
-  profitBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS
+  profitBps: number = DEFAULT_BREAK_EVEN_SLIPPAGE_BPS,
+  skipCalibration: boolean = false
 ): CapacityCurve {
   const now = Date.now();
   
@@ -508,11 +531,18 @@ function generateTier1Curve(
   const userAdjustment = config.poolTypeAdjustments[poolType];
   
   // Get calibration with fallback to pool-type aggregate for cold start
-  const calibration = getCalibrationWithFallback(poolId, poolType);
-  const learnedFactor = calibration && calibration.confidence > 0.2 
-    ? calibration.scaleFactor 
-    : 1.0;
-  const isFallbackCalibration = calibration && (calibration as any).isFallback === true;
+  // Skip calibration if requested (e.g., when multi-hop mode is enabled)
+  let calibration: ReturnType<typeof getCalibrationWithFallback> = undefined;
+  let learnedFactor = 1.0;
+  let isFallbackCalibration = false;
+  
+  if (!skipCalibration) {
+    calibration = getCalibrationWithFallback(poolId, poolType);
+    learnedFactor = calibration && calibration.confidence > 0.2 
+      ? calibration.scaleFactor 
+      : 1.0;
+    isFallbackCalibration = calibration && (calibration as any).isFallback === true;
+  }
   
   // Combine adjustments: user preference * learned correction
   const adjustment = userAdjustment * learnedFactor;
