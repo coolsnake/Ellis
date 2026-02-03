@@ -167,10 +167,16 @@ const MIN_LIQUIDITY = BigInt(1000);
  * Compute output for a CLMM (concentrated liquidity) pool.
  * 
  * CLMM pools have liquidity concentrated around the current tick.
- * As trades move the price, they cross tick boundaries where
- * liquidity may change (usually decreasing away from current price).
  * 
- * This model simulates tick crossing with decaying liquidity.
+ * KEY INSIGHT: Within a tick, slippage is LINEAR (not quadratic like constant product).
+ * - The sqrt_price changes proportionally to trade size / liquidity
+ * - Slippage formula within tick: slippage ≈ input / (2 * liquidity)
+ * - This is much smaller than constant product but NOT zero
+ * - Tick crossings add discrete price jumps of ~tickSpacing bps
+ * 
+ * This model correctly handles:
+ * - Small trades: linear slippage (much smaller than AMM)
+ * - Large trades: linear slippage + discrete tick crossing impacts
  * 
  * @param inputUsd - Input amount in USD
  * @param hop - Hop parameters (should have activeLiquidity, sqrtPriceX64, tickSpacing)
@@ -207,14 +213,17 @@ export function computeClmmOutput(
   const feeMultiplier = 1 - hop.feeBps / 10000;
   const decayFactor = params.liquidityDecayPerTick;
   
-  // Single tick capacity (trade size that causes ~1 tick of price movement)
-  // Each tick is ~1 bps (0.01%) price change, scaled by tickSpacing
+  // Single tick capacity: amount that can be traded before crossing a tick
+  // For a tick range of tickSpacing bps, capacity ≈ L * tickSpacing / 10000
   const singleTickCapacityUsd = activeLiquidityUsd * (tickSpacing / 10000);
   
-  // For very small trades (within half a tick), use AMM-like formula
-  if (inputUsd <= singleTickCapacityUsd * 0.5) {
-    const withinTickSlippage = inputUsd / activeLiquidityUsd;
-    return inputUsd * feeMultiplier * (1 - withinTickSlippage);
+  // Within tick: apply LINEAR slippage (much smaller than constant product)
+  // CLMM slippage formula: slippage ≈ input / (2 * liquidity)
+  // This comes from: delta_sqrt_price = input / L, and price impact = delta_sqrt_price / sqrt_price
+  if (inputUsd <= singleTickCapacityUsd) {
+    // Trade stays within current tick - linear slippage only
+    const linearSlippage = inputUsd / (2 * activeLiquidityUsd);
+    return inputUsd * feeMultiplier * (1 - linearSlippage);
   }
   
   // For larger trades, simulate tick crossing with decaying liquidity
@@ -223,6 +232,7 @@ export function computeClmmOutput(
   let currentLiquidity = activeLiquidityUsd;
   let currentTickCapacity = singleTickCapacityUsd;
   let ticksCrossed = 0;
+  let cumulativePriceImpact = 1.0; // Tracks price degradation from tick crossings
   
   const maxTicks = Math.min(params.maxTickSimulation, Math.ceil(inputUsd / (singleTickCapacityUsd * 0.1)));
   
@@ -230,17 +240,22 @@ export function computeClmmOutput(
     // Amount we can swap in this tick
     const amountInTick = Math.min(remainingInput, currentTickCapacity);
     
-    // Within-tick slippage follows AMM-like behavior
-    const tickSlippage = amountInTick / currentLiquidity;
-    const tickOutput = amountInTick * (1 - tickSlippage) * feeMultiplier;
+    // Within-tick: linear slippage + cumulative impact from prior tick crossings
+    const linearSlippage = amountInTick / (2 * currentLiquidity);
+    const tickOutput = amountInTick * cumulativePriceImpact * feeMultiplier * (1 - linearSlippage);
     
     totalOutput += tickOutput;
     remainingInput -= amountInTick;
     
-    // Move to next tick with decayed liquidity
-    ticksCrossed++;
-    currentLiquidity *= decayFactor;
-    currentTickCapacity = currentLiquidity * (tickSpacing / 10000);
+    // Crossing to next tick causes discrete price impact
+    if (remainingInput > 0) {
+      ticksCrossed++;
+      // Price moves by ~tickSpacing bps when crossing a tick
+      cumulativePriceImpact *= (1 - tickSpacing / 10000);
+      // Liquidity typically decays away from the active price
+      currentLiquidity *= decayFactor;
+      currentTickCapacity = currentLiquidity * (tickSpacing / 10000);
+    }
   }
   
   // Handle overflow (input exceeds simulated liquidity)
@@ -261,10 +276,15 @@ export function computeClmmOutput(
  * Compute output for a DLMM (discrete liquidity bins) pool.
  * 
  * DLMM pools distribute liquidity across discrete price bins.
- * Each bin has a fixed price range, and liquidity is deployed
- * within bins at specific price points.
  * 
- * Similar to CLMM but with discrete bin structure instead of ticks.
+ * KEY INSIGHT: Each bin has a FIXED PRICE.
+ * - Trades within bin liquidity: NO slippage, only fee
+ * - Slippage only occurs when exhausting a bin and moving to the next
+ * - Each bin step changes price by binStep bps
+ * 
+ * This model correctly handles:
+ * - Small trades: fee only, no slippage (executes at bin's fixed price)
+ * - Large trades: accumulates price impact from bin crossings
  * 
  * @param inputUsd - Input amount in USD
  * @param hop - Hop parameters (should have activeBinLiquidity, binStep, tvlUsd)
@@ -293,38 +313,43 @@ export function computeDlmmOutput(
   const feeMultiplier = 1 - hop.feeBps / 10000;
   const decayFactor = params.liquidityDecayPerBin;
   
-  // Single bin capacity
-  // Each bin step is binStep bps price range
-  const singleBinCapacityUsd = activeBinLiquidity * (binStep / 10000);
-  
-  // For small trades within the active bin
-  if (inputUsd <= singleBinCapacityUsd * 0.5) {
-    const withinBinSlippage = inputUsd / activeBinLiquidity;
-    return inputUsd * feeMultiplier * (1 - withinBinSlippage);
+  // CORRECTED: Active bin can handle trades up to its full liquidity at a fixed price
+  // No slippage within bin - only fee applies
+  if (inputUsd <= activeBinLiquidity) {
+    // Trade stays within current bin - no price impact, only fee
+    return inputUsd * feeMultiplier;
   }
   
-  // Simulate bin crossing
+  // For larger trades, simulate bin crossing with decaying liquidity
   let remainingInput = inputUsd;
   let totalOutput = 0;
   let currentBinLiquidity = activeBinLiquidity;
   let binsCrossed = 0;
+  let cumulativePriceImpact = 1.0; // Tracks price degradation from bin crossings
   const maxBins = 30;
   
   while (remainingInput > 0 && currentBinLiquidity > 1 && binsCrossed < maxBins) {
-    const currentBinCapacity = currentBinLiquidity * (binStep / 10000);
-    const amountInBin = Math.min(remainingInput, currentBinCapacity);
+    // Amount we can swap in this bin at its fixed price
+    const amountInBin = Math.min(remainingInput, currentBinLiquidity);
     
-    const binSlippage = amountInBin / currentBinLiquidity;
-    const binOutput = amountInBin * (1 - binSlippage) * feeMultiplier;
+    // CORRECTED: Within-bin execution at fixed price (with cumulative impact from prior crossings)
+    // Only fee is deducted, no slippage within the bin itself
+    const binOutput = amountInBin * cumulativePriceImpact * feeMultiplier;
     
     totalOutput += binOutput;
     remainingInput -= amountInBin;
     
-    binsCrossed++;
-    currentBinLiquidity *= decayFactor;
+    // Crossing to next bin causes price impact
+    if (remainingInput > 0) {
+      binsCrossed++;
+      // Price moves by binStep bps when crossing a bin
+      cumulativePriceImpact *= (1 - binStep / 10000);
+      // Liquidity typically decays in adjacent bins
+      currentBinLiquidity *= decayFactor;
+    }
   }
   
-  // Handle overflow
+  // Handle overflow (input exceeds simulated liquidity)
   if (remainingInput > 0) {
     const overflowPenalty = 0.3 + 0.2 * (1 - remainingInput / inputUsd);
     totalOutput += remainingInput * overflowPenalty * feeMultiplier;
