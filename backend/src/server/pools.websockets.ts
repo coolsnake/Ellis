@@ -6432,12 +6432,14 @@ export async function subscribeToDiscoveredPools(poolsByDex: {
   
   // WSS mode - use the subscription infrastructure
   try {
+    const { getConnection } = await import('../wallet/wallet.js');
     const conn = getConnection();
     if (!conn) {
       result.errors.push('No connection available');
       return result;
     }
     
+    const web3 = await import('@solana/web3.js');
     const { waitUntilWsReady } = await import('../drift/wsHelper.js');
     const { withDebounce, acquireRpcSlots } = await import('../utils/rpcLimiter.js');
     
@@ -6460,8 +6462,6 @@ export async function subscribeToDiscoveredPools(poolsByDex: {
           });
         }, 100);
         
-        // Track as targeted
-        targetedSourceByAccount.set(poolId, dex as any);
         return true;
       } catch (err: any) {
         logger.debug('discovery.subscribe.pool_error', { 
