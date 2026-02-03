@@ -57,14 +57,14 @@ async function calculateActualProfit(
     
     if (!tx?.meta?.logMessages) {
       logger.info('txHistory.actualProfit.no_logs', {
-        signature: signature.slice(0, 16),
+        signature,
         cat: 'notifications',
       });
       return null;
     }
     
     logger.info('txHistory.actualProfit.parsing', {
-      signature: signature.slice(0, 16),
+      signature,
       logCount: tx.meta.logMessages.length,
       cat: 'notifications',
     });
@@ -78,7 +78,7 @@ async function calculateActualProfit(
         log.includes('Profit') || log.includes('executed') || log.includes('Route')
       );
       logger.info('txHistory.actualProfit.no_profit_value', {
-        signature: signature.slice(0, 16),
+        signature,
         hasLogs: tx.meta.logMessages.length,
         relevantLogs: relevantLogs.slice(0, 5),
         cat: 'notifications',
@@ -111,8 +111,8 @@ async function calculateActualProfit(
     const usdPrice = priceData?.usdc ?? 0;
     
     if (usdPrice <= 0) {
-      logger.debug('txHistory.actualProfit.no_price', {
-        signature: signature.slice(0, 16),
+      logger.info('txHistory.actualProfit.no_price', {
+        signature,
         baseMint: baseMint.slice(0, 8),
         profitRaw: profitRaw.toString(),
         cat: 'notifications',
@@ -127,12 +127,13 @@ async function calculateActualProfit(
     const actualProfitUsd = profitAmount * usdPrice;
     
     logger.info('txHistory.actualProfit.calculated', {
-      signature: signature.slice(0, 16),
+      signature,
       baseMint: baseMint.slice(0, 8),
       profitRaw: profitRaw.toString(),
       profitAmount: profitAmount.toFixed(6),
       usdPrice: usdPrice.toFixed(4),
       actualProfitUsd: actualProfitUsd.toFixed(4),
+      decimals,
       cat: 'notifications',
     });
     
@@ -142,7 +143,8 @@ async function calculateActualProfit(
     };
   } catch (e: any) {
     logger.warn('txHistory.actualProfit.error', {
-      signature: signature.slice(0, 16),
+      signature,
+      baseMint,
       error: String(e?.message || e),
       cat: 'notifications',
     });
@@ -264,22 +266,29 @@ export async function startTxConfirmationTask(io?: any): Promise<void> {
           if (result.success && rec.path && rec.path.length > 0) {
             try {
               logger.info('txHistory.confirmation.calculating_profit', {
-                signature: rec.signature.slice(0, 16),
+                traceId: rec.id,
+                txId: rec.id,
+                signature: rec.signature,
                 baseMint: rec.path[0].slice(0, 8),
                 cat: 'notifications',
               });
               actualProfitData = await calculateActualProfit(rec.signature, rec.path[0]);
               logger.info('txHistory.confirmation.profit_result', {
-                signature: rec.signature.slice(0, 16),
+                traceId: rec.id,
+                txId: rec.id,
+                signature: rec.signature,
                 hasActualProfit: !!actualProfitData,
                 actualProfitUsd: actualProfitData?.actualProfitUsd,
+                actualProfitRaw: actualProfitData?.actualProfitRaw,
                 sizeUsd: rec.sizeUsd,
                 expectedProfitBps: rec.expectedProfitBps,
                 cat: 'notifications',
               });
             } catch (profitErr: any) {
               logger.warn('txHistory.confirmation.profit_error', {
-                signature: rec.signature.slice(0, 16),
+                traceId: rec.id,
+                txId: rec.id,
+                signature: rec.signature,
                 error: String(profitErr?.message || profitErr),
                 cat: 'notifications',
               });

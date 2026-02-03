@@ -132,6 +132,10 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
       /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_data|cycle_closed|balance_check_passed|resolving_plan|sizing|capacity_sizing|flashloan|build)/i,
       // Jito execution patterns
       /^arb\.jito\.(bundle|tip|send)/i,
+      // Transaction confirmation and profit calculation patterns
+      /^txHistory\.(confirmation|actualProfit)\./i,
+      // Notification patterns (for mobile push)
+      /^notifications:/i,
     ];
     
     // TIME-WINDOW patterns - now require traceId match since we propagate traceId to these logs

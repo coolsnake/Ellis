@@ -130,13 +130,16 @@ async function buildNotificationPayload(rec: TxRecord): Promise<ArbNotificationP
  * Send push notification for a confirmed arb transaction
  */
 export async function sendArbNotification(rec: TxRecord): Promise<void> {
-  // Log the profit data we have
+  // Log the profit data we have (include full signature for correlation)
   logger.info('notifications: sendArbNotification called', {
-    id: rec.id,
-    signature: rec.signature?.slice(0, 16),
+    traceId: rec.id,
+    txId: rec.id,
+    signature: rec.signature,
     actualProfitUsd: rec.actualProfitUsd,
+    actualProfitRaw: (rec as any).actualProfitRaw,
     sizeUsd: rec.sizeUsd,
     expectedProfitBps: rec.expectedProfitBps,
+    path: rec.path?.slice(0, 2).map(m => m.slice(0, 8)),
     cat: 'notifications',
   });
   
