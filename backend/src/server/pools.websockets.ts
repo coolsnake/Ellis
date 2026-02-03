@@ -1423,6 +1423,78 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
     }
   } catch {}
   
+  // Step 3.6: Run discovery to fetch fresh pools BEFORE setting up subscriptions
+  // This ensures we subscribe to newly discovered pools in the same retarget cycle
+  const discoveryEnabled = (CONFIG as any)?.discovery?.enabled;
+  if (discoveryEnabled) {
+    try {
+      const { runDiscovery, isDiscoveryCycleInProgress } = await import('./tasks/discovery.js');
+      
+      if (!isDiscoveryCycleInProgress()) {
+        logger.info('pools.ws.retarget.discovery_start', { 
+          message: 'Running discovery before subscriptions',
+          cat: 'discovery' 
+        });
+        try {
+          emit('log', {
+            level: 'info',
+            message: 'pools:ws retarget - running token discovery (Jupiter → DexScreener → Enrichment)',
+            timestamp: new Date().toISOString(),
+            context: { cat: 'discovery' }
+          });
+        } catch {}
+        
+        const discoveryStart = Date.now();
+        const discoveryResult = await runDiscovery({ maxTokens: 50 });
+        const discoveryDuration = Date.now() - discoveryStart;
+        
+        logger.info('pools.ws.retarget.discovery_complete', { 
+          tokensChecked: discoveryResult.tokensChecked,
+          newTokensFound: discoveryResult.newTokensFound,
+          poolsDiscovered: discoveryResult.poolsDiscovered,
+          poolsEnriched: discoveryResult.poolsEnriched,
+          poolsAdded: discoveryResult.poolsAdded,
+          durationMs: discoveryDuration,
+          errors: discoveryResult.errors.length,
+          cat: 'discovery' 
+        });
+        
+        try {
+          emit('log', {
+            level: 'info',
+            message: `pools:ws discovery complete: ${discoveryResult.poolsAdded} pools added (${discoveryDuration}ms)`,
+            timestamp: new Date().toISOString(),
+            context: { 
+              cat: 'discovery',
+              tokensChecked: discoveryResult.tokensChecked,
+              poolsDiscovered: discoveryResult.poolsDiscovered,
+              poolsEnriched: discoveryResult.poolsEnriched,
+              poolsAdded: discoveryResult.poolsAdded
+            }
+          });
+        } catch {}
+      } else {
+        logger.info('pools.ws.retarget.discovery_skipped', { 
+          reason: 'cycle_already_in_progress',
+          cat: 'discovery' 
+        });
+      }
+    } catch (err: any) {
+      logger.warn('pools.ws.retarget.discovery_error', { 
+        error: String(err?.message || err),
+        cat: 'discovery' 
+      });
+      try {
+        emit('log', {
+          level: 'warn',
+          message: `pools:ws discovery failed: ${err?.message || err}`,
+          timestamp: new Date().toISOString(),
+          context: { cat: 'discovery' }
+        });
+      } catch {}
+    }
+  }
+  
   // Step 4: Start resubscription in SEQUENTIAL mode (flag tells setup to stagger DEX sources)
   try { 
     // Set sequential mode flag before starting
@@ -1476,22 +1548,6 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
           context: { cat: 'pools', attached } 
         }); 
       } catch {}
-    }
-  } catch {}
-  
-  // Trigger discovery cycle on retarget if enabled
-  // This ensures we fetch fresh pools when subscriptions are set up
-  try {
-    const discoveryEnabled = (CONFIG as any)?.discovery?.enabled;
-    if (discoveryEnabled) {
-      import('./tasks/discovery.js').then(({ runDiscovery, isDiscoveryCycleInProgress }) => {
-        if (!isDiscoveryCycleInProgress()) {
-          logger.info('pools.ws.retarget.discovery_trigger', { cat: 'discovery' });
-          runDiscovery({ maxTokens: 50 }).catch(err => {
-            logger.warn('pools.ws.retarget.discovery_error', { error: String(err?.message || err), cat: 'discovery' });
-          });
-        }
-      }).catch(() => {});
     }
   } catch {}
   

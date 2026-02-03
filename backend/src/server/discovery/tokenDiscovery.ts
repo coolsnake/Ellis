@@ -43,6 +43,16 @@ export async function fetchJupiterTopTokens(): Promise<JupiterTopToken[]> {
     headers['x-api-key'] = cfg.jupiterApiKey;
   }
   
+  logger.info('discovery.jupiter.fetch_start', { 
+    category: cfg.jupiterCategory,
+    interval: cfg.jupiterInterval,
+    limit: cfg.jupiterLimit,
+    hasApiKey: !!cfg.jupiterApiKey,
+    cat: 'discovery' 
+  });
+  
+  const startTime = Date.now();
+  
   try {
     const res = await fetch(url, { headers });
     
@@ -57,18 +67,22 @@ export async function fetchJupiterTopTokens(): Promise<JupiterTopToken[]> {
       ? data 
       : (data?.value || data?.data || data?.tokens || []);
     
-    logger.info('discovery.jupiter.fetched', { 
+    const durationMs = Date.now() - startTime;
+    logger.info('discovery.jupiter.fetch_complete', { 
       count: tokens.length,
       category: cfg.jupiterCategory,
       interval: cfg.jupiterInterval,
+      durationMs,
       cat: 'discovery' 
     });
     
     return tokens;
     
   } catch (err: any) {
-    logger.error('discovery.jupiter.error', { 
+    const durationMs = Date.now() - startTime;
+    logger.error('discovery.jupiter.fetch_error', { 
       error: String(err?.message || err),
+      durationMs,
       cat: 'discovery' 
     });
     return [];
@@ -493,8 +507,30 @@ export async function runDiscoveryCycle(options?: {
     const minLiq = options?.minLiquidityUsd ?? cfg.minLiquidityUsd;
     const maxPoolsPerToken = options?.maxPoolsPerToken ?? cfg.maxPoolsPerToken;
     
+    logger.info('discovery.dexscreener.start', { 
+      tokensToFetch: tokensToCheck.length,
+      minLiquidityUsd: minLiq,
+      maxPoolsPerToken,
+      cat: 'discovery' 
+    });
+    
+    const dexScreenerStart = Date.now();
+    let processedTokens = 0;
+    
     for (const token of tokensToCheck) {
       try {
+        processedTokens++;
+        
+        // Log progress every 10 tokens
+        if (processedTokens % 10 === 0 || processedTokens === tokensToCheck.length) {
+          logger.info('discovery.dexscreener.progress', { 
+            processed: processedTokens,
+            total: tokensToCheck.length,
+            poolsFound: result.poolsDiscovered,
+            cat: 'discovery' 
+          });
+        }
+        
         // Fetch pools from DexScreener
         const rawPools = await fetchDexScreenerPools(token.id);
         result.poolsDiscovered += rawPools.length;
@@ -531,9 +567,13 @@ export async function runDiscoveryCycle(options?: {
       }
     }
     
-    logger.info('discovery.cycle.dexscreener', { 
+    const dexScreenerDuration = Date.now() - dexScreenerStart;
+    logger.info('discovery.dexscreener.complete', { 
+      tokensProcessed: processedTokens,
       poolsDiscovered: result.poolsDiscovered,
       poolsFiltered: result.poolsFiltered,
+      durationMs: dexScreenerDuration,
+      byDex: result.byDex,
       cat: 'discovery' 
     });
     
@@ -544,9 +584,33 @@ export async function runDiscoveryCycle(options?: {
     }
     
     // Step 5-7: Enrich pools (includes normalization)
+    logger.info('discovery.enrichment.start', { 
+      poolsToEnrich: allDiscoveredPools.length,
+      byDex: Object.fromEntries(
+        Object.entries(result.byDex).map(([k, v]) => [k, v.discovered])
+      ),
+      cat: 'discovery' 
+    });
+    
+    const enrichmentStart = Date.now();
     const enrichmentResult = await enrichDiscoveredPools(allDiscoveredPools);
     result.poolsEnriched = getEnrichedPoolCount(enrichmentResult);
     result.errors.push(...enrichmentResult.errors);
+    
+    const enrichmentDuration = Date.now() - enrichmentStart;
+    logger.info('discovery.enrichment.complete', { 
+      poolsEnriched: result.poolsEnriched,
+      failed: enrichmentResult.failed.length,
+      durationMs: enrichmentDuration,
+      byDex: {
+        raydium_amm: enrichmentResult.pools.raydium.amm.length,
+        raydium_clmm: enrichmentResult.pools.raydium.clmm.length,
+        raydium_cpmm: enrichmentResult.pools.raydium.cpmm.length,
+        orca: enrichmentResult.pools.orca.clmm.length,
+        meteora: enrichmentResult.pools.meteora.clmm.length,
+      },
+      cat: 'discovery' 
+    });
     
     // Update per-DEX enriched counts
     for (const dex of Object.keys(result.byDex)) {
