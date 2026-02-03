@@ -8,7 +8,6 @@
 
 import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
-import { canonicalizePools } from '../pools/canonical.js';
 import type { 
   DiscoveryResult, 
   DiscoveredPool,
@@ -165,25 +164,21 @@ async function integratePoolsIntoCaches(enrichmentResult: any): Promise<number> 
       const newClmm = raydiumPools.clmm.filter((p: any) => p.id && !existingIds.has(p.id));
       const newCpmm = raydiumPools.cpmm.filter((p: any) => p.id && !existingIds.has(p.id));
       
-      // Canonicalize new pools
-      const canonAmm = canonicalizePools(newAmm);
-      const canonClmm = canonicalizePools(newClmm);
-      const canonCpmm = canonicalizePools(newCpmm);
-      
+      // Pools are already canonicalized by normalizers
       raydiumCache.data = {
-        amm: [...currentRaydium.amm, ...canonAmm],
-        clmm: [...currentRaydium.clmm, ...canonClmm],
-        cpmm: [...(currentRaydium.cpmm || []), ...canonCpmm],
+        amm: [...currentRaydium.amm, ...newAmm],
+        clmm: [...currentRaydium.clmm, ...newClmm],
+        cpmm: [...(currentRaydium.cpmm || []), ...newCpmm],
       };
       raydiumCache.ts = Date.now();
       
-      addedCount += canonAmm.length + canonClmm.length + canonCpmm.length;
+      addedCount += newAmm.length + newClmm.length + newCpmm.length;
       
-      if (canonAmm.length > 0 || canonClmm.length > 0 || canonCpmm.length > 0) {
+      if (newAmm.length > 0 || newClmm.length > 0 || newCpmm.length > 0) {
         logger.info('discovery.integrate.raydium', { 
-          amm: canonAmm.length,
-          clmm: canonClmm.length,
-          cpmm: canonCpmm.length,
+          amm: newAmm.length,
+          clmm: newClmm.length,
+          cpmm: newCpmm.length,
           cat: 'discovery' 
         });
       }
@@ -192,24 +187,24 @@ async function integratePoolsIntoCaches(enrichmentResult: any): Promise<number> 
     // Add Orca pools
     const orcaPools = enrichmentResult.pools.orca;
     if (orcaPools.clmm.length > 0) {
-      const currentOrca = orcaCache.data || { amm: [], clmm: [] };
+      const currentOrca = orcaCache.data || { amm: [], clmm: [], cpmm: [] };
       
       const existingIds = new Set(currentOrca.clmm.map((p: any) => p.id));
       const newClmm = orcaPools.clmm.filter((p: any) => p.id && !existingIds.has(p.id));
       
-      const canonClmm = canonicalizePools(newClmm);
-      
+      // Pools are already canonicalized by normalizers
       orcaCache.data = {
         amm: currentOrca.amm || [],
-        clmm: [...currentOrca.clmm, ...canonClmm],
+        clmm: [...currentOrca.clmm, ...newClmm],
+        cpmm: (currentOrca as any).cpmm || [],
       };
       orcaCache.ts = Date.now();
       
-      addedCount += canonClmm.length;
+      addedCount += newClmm.length;
       
-      if (canonClmm.length > 0) {
+      if (newClmm.length > 0) {
         logger.info('discovery.integrate.orca', { 
-          clmm: canonClmm.length,
+          clmm: newClmm.length,
           cat: 'discovery' 
         });
       }
@@ -218,24 +213,24 @@ async function integratePoolsIntoCaches(enrichmentResult: any): Promise<number> 
     // Add Meteora pools
     const meteoraPools = enrichmentResult.pools.meteora;
     if (meteoraPools.clmm.length > 0) {
-      const currentMeteora = meteoraCache.data || { amm: [], clmm: [] };
+      const currentMeteora = meteoraCache.data || { amm: [], clmm: [], cpmm: [] };
       
       const existingIds = new Set(currentMeteora.clmm.map((p: any) => p.id));
       const newClmm = meteoraPools.clmm.filter((p: any) => p.id && !existingIds.has(p.id));
       
-      const canonClmm = canonicalizePools(newClmm);
-      
+      // Pools are already canonicalized by normalizers
       meteoraCache.data = {
         amm: currentMeteora.amm || [],
-        clmm: [...currentMeteora.clmm, ...canonClmm],
+        clmm: [...currentMeteora.clmm, ...newClmm],
+        cpmm: (currentMeteora as any).cpmm || [],
       };
       meteoraCache.ts = Date.now();
       
-      addedCount += canonClmm.length;
+      addedCount += newClmm.length;
       
-      if (canonClmm.length > 0) {
+      if (newClmm.length > 0) {
         logger.info('discovery.integrate.meteora', { 
-          clmm: canonClmm.length,
+          clmm: newClmm.length,
           cat: 'discovery' 
         });
       }
@@ -257,7 +252,7 @@ async function integratePoolsIntoCaches(enrichmentResult: any): Promise<number> 
 async function triggerGraphRebuild(): Promise<void> {
   try {
     const { scheduleGraphRebuild } = await import('../graph.js');
-    scheduleGraphRebuild('discovery');
+    scheduleGraphRebuild(undefined, 200);
     
     logger.info('discovery.graph.rebuild_scheduled', { cat: 'discovery' });
   } catch (err: any) {

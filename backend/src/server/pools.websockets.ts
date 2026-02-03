@@ -1479,6 +1479,22 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
     }
   } catch {}
   
+  // Trigger discovery cycle on retarget if enabled
+  // This ensures we fetch fresh pools when subscriptions are set up
+  try {
+    const discoveryEnabled = (CONFIG as any)?.discovery?.enabled;
+    if (discoveryEnabled) {
+      import('./tasks/discovery.js').then(({ runDiscovery, isDiscoveryCycleInProgress }) => {
+        if (!isDiscoveryCycleInProgress()) {
+          logger.info('pools.ws.retarget.discovery_trigger', { cat: 'discovery' });
+          runDiscovery({ maxTokens: 50 }).catch(err => {
+            logger.warn('pools.ws.retarget.discovery_error', { error: String(err?.message || err), cat: 'discovery' });
+          });
+        }
+      }).catch(() => {});
+    }
+  } catch {}
+  
   return { attached: { orca: attachedOrcaPools, raydium: attachedRaydiumPools, raydium_cpmm: attachedRaydiumCpmmPools, meteora: attachedMeteoraPools, meteora_balanced: attachedMeteoraBalancedPools, pumpswap: attachedPumpswapPools } };
 }
 
