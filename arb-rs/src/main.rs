@@ -31,6 +31,7 @@ mod algos;
 use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered, detect_negative_cycles_from_anchors, detect_negative_cycles_spfa, detect_negative_cycles_spfa_filtered};
 mod edge_selection;
 use edge_selection::{select_best_edge_combination, compute_profit_bps, is_profitable};
+mod slippage;
 
 const REJECTED_DEBUG_LIMIT: usize = 15;
 const REJECTED_DEBUG_TTL_MS: u64 = 30_000;
@@ -96,6 +97,14 @@ struct ArbConfig {
     // CRITICAL: This directly impacts execution latency - lower values push opportunities faster
     #[serde(default = "default_ws_broadcast_interval_ms")]
     ws_broadcast_interval_ms: u64,
+    // Enable slippage simulation for cycle validation (default: false for backward compat)
+    // When enabled, cycles are validated using AMM slippage math instead of spot rates
+    #[serde(default)]
+    slippage_simulation_enable: bool,
+    // Minimum simulated profit (bps) after slippage to emit opportunity
+    // Only used when slippage_simulation_enable = true
+    #[serde(default = "default_min_simulated_profit_bps")]
+    min_simulated_profit_bps: i64,
 }
 
 fn default_start_mint_mode() -> String {
@@ -115,6 +124,11 @@ fn default_ws_broadcast_interval_ms() -> u64 {
     // Detection loop can run faster than 100ms, so we match that cadence
     // Can be overridden via ARB_WS_BROADCAST_INTERVAL_MS environment variable
     25
+}
+
+fn default_min_simulated_profit_bps() -> i64 {
+    // Default 10 bps (0.1%) minimum simulated profit after slippage
+    10
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -749,6 +763,7 @@ async fn main() -> anyhow::Result<()> {
                                 e.native_account_b.clone(),
                                 e.native_reserve_a_raw.clone(),
                                 e.native_reserve_b_raw.clone(),
+                                e.pool_kind.clone(),
                             ));
                         }
 
@@ -772,6 +787,7 @@ async fn main() -> anyhow::Result<()> {
                                 native_account_b,
                                 native_reserve_a_raw,
                                 native_reserve_b_raw,
+                                pool_kind,
                             ) in calibrated_edges
                             {
                                 insert_bidirectional_edges(
@@ -792,6 +808,7 @@ async fn main() -> anyhow::Result<()> {
                                     native_account_b,
                                     native_reserve_a_raw,
                                     native_reserve_b_raw,
+                                    pool_kind,
                                 );
                             }
                             s.metrics.graph_updates_applied =
@@ -1072,6 +1089,7 @@ async fn main() -> anyhow::Result<()> {
                     let mut rejected_no_edge: usize = 0;
                     let rejected_timeout: usize = 0;
                     let mut rejected_unprofitable: usize = 0;
+                    let mut rejected_slippage: usize = 0;
                     let mut rejected_misaligned: usize = 0;
                     let mut rejected_duplicate: usize = 0;
                     let mut rejected_too_low_profit: usize = 0;
@@ -1308,9 +1326,22 @@ async fn main() -> anyhow::Result<()> {
                             hop_fee_bps.push(edge.fee_bps);
                             hop_liq_disp.push(edge.liquidity_display);
                             
-                            // Compute hop output
+                            // Compute hop output (with or without slippage simulation)
                             let next_out = if cur_out.is_finite() {
-                                cur_out * edge.rate_effective
+                                if s.config.slippage_simulation_enable {
+                                    slippage::compute_hop_output_simple(
+                                        cur_out,
+                                        &edge.pool_kind,
+                                        &edge.native_reserve_a_raw,
+                                        &edge.native_reserve_b_raw,
+                                        edge.native_decimals_a,
+                                        edge.native_decimals_b,
+                                        edge.fee_bps,
+                                        edge.rate_effective,
+                                    )
+                                } else {
+                                    cur_out * edge.rate_effective
+                                }
                             } else {
                                 0.0
                             };
@@ -1328,6 +1359,33 @@ async fn main() -> anyhow::Result<()> {
                             tracing::info!(path = %path_str, rate_prod, log_rate_prod, "arb.detect.cycle.unprofitable_after_edge_selection");
                             rejected_unprofitable += 1;
                             continue;
+                        }
+
+                        // When slippage simulation is enabled, reject cycles that become unprofitable
+                        // after accounting for price impact. cur_out is the final output after slippage.
+                        if s.config.slippage_simulation_enable {
+                            let starting_value = if start_is_usdc {
+                                s.config.quote_size_usd.max(0.0)
+                            } else {
+                                1.0
+                            };
+                            let simulated_profit_bps = if starting_value > 0.0 {
+                                ((cur_out / starting_value) - 1.0) * 10000.0
+                            } else {
+                                0.0
+                            };
+                            if (simulated_profit_bps as i64) < s.config.min_simulated_profit_bps {
+                                let path_str = labels.join("->");
+                                tracing::info!(
+                                    path = %path_str,
+                                    spot_profit_bps = profit_bps,
+                                    simulated_profit_bps = simulated_profit_bps as i64,
+                                    min_required_bps = s.config.min_simulated_profit_bps,
+                                    "arb.detect.cycle.unprofitable_after_slippage"
+                                );
+                                rejected_slippage += 1;
+                                continue;
+                            }
                         }
 
                         // Build anchor set for canonicalization based on current mode
@@ -1678,6 +1736,7 @@ async fn main() -> anyhow::Result<()> {
                         + rejected_no_edge
                         + rejected_timeout
                         + rejected_unprofitable
+                        + rejected_slippage
                         + rejected_misaligned
                         + rejected_duplicate
                         + rejected_too_low_profit
@@ -1694,6 +1753,7 @@ async fn main() -> anyhow::Result<()> {
                         rejected_no_edge,
                         rejected_timeout,
                         rejected_unprofitable,
+                        rejected_slippage,
                         rejected_misaligned,
                         rejected_duplicate,
                         rejected_too_low_profit,
@@ -1851,8 +1911,22 @@ async fn main() -> anyhow::Result<()> {
                                 hop_fee_bps.push(edge.fee_bps);
                                 hop_liq_disp.push(edge.liquidity_display);
                                 
+                                // Compute hop output (with or without slippage simulation)
                                 let next_out = if cur_out.is_finite() {
-                                    cur_out * edge.rate_effective
+                                    if s.config.slippage_simulation_enable {
+                                        slippage::compute_hop_output_simple(
+                                            cur_out,
+                                            &edge.pool_kind,
+                                            &edge.native_reserve_a_raw,
+                                            &edge.native_reserve_b_raw,
+                                            edge.native_decimals_a,
+                                            edge.native_decimals_b,
+                                            edge.fee_bps,
+                                            edge.rate_effective,
+                                        )
+                                    } else {
+                                        cur_out * edge.rate_effective
+                                    }
                                 } else {
                                     0.0
                                 };
@@ -3672,6 +3746,7 @@ struct StartReqEdge {
     native_account_b: Option<String>,
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
+    pool_kind: Option<String>,
 }
 #[derive(Deserialize, Clone)]
 struct StartReqGraph {
@@ -3710,6 +3785,7 @@ struct GraphDiffEdge {
     native_account_b: Option<String>,
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
+    pool_kind: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3776,6 +3852,7 @@ fn insert_bidirectional_edges(
     native_account_b: Option<String>,
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
+    pool_kind: Option<String>,
 ) {
     if !(price_a_per_b.is_finite() && price_a_per_b > 0.0) {
         return;
@@ -3788,6 +3865,7 @@ fn insert_bidirectional_edges(
     let native_account_b_rev = native_account_b.clone();
     let native_reserve_a_rev = native_reserve_a_raw.clone();
     let native_reserve_b_rev = native_reserve_b_raw.clone();
+    let pool_kind_rev = pool_kind.clone();
     let (_, rate_forward) = edge_rate_effective_local(Some(price_a_per_b), Some(fee_bps));
     graph.upsert_edge(
         dex,
@@ -3808,6 +3886,7 @@ fn insert_bidirectional_edges(
             native_account_b,
             native_reserve_a_raw,
             native_reserve_b_raw,
+            pool_kind,
         },
     );
 
@@ -3840,6 +3919,7 @@ fn insert_bidirectional_edges(
             native_account_b: native_account_b_rev,
             native_reserve_a_raw: native_reserve_a_rev,
             native_reserve_b_raw: native_reserve_b_rev,
+            pool_kind: pool_kind_rev,
         },
     );
 }
@@ -3985,6 +4065,7 @@ async fn handle_graph_snapshot(
             e.native_account_b.clone(),
             e.native_reserve_a_raw.clone(),
             e.native_reserve_b_raw.clone(),
+            e.pool_kind.clone(),
         );
     }
     s.live_graph = new_graph;
@@ -4101,6 +4182,7 @@ async fn arb_graph_update(
                 e.native_account_b.clone(),
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
+                e.pool_kind.clone(),
             );
             changed_mints.push(e.source.clone());
             changed_mints.push(e.target.clone());
@@ -4138,6 +4220,7 @@ async fn arb_graph_update(
                 e.native_account_b.clone(),
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
+                e.pool_kind.clone(),
             );
             changed_mints.push(e.source.clone());
             changed_mints.push(e.target.clone());
@@ -4227,6 +4310,7 @@ async fn arb_start(
                 e.native_account_b.clone(),
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
+                e.pool_kind.clone(),
             );
         }
         let nodes_cnt = new_graph.g.node_count() as u64;
@@ -4913,6 +4997,15 @@ mod tests {
             dex: "X".into(),
             pool_id: String::new(),
             liquidity_display: 1000.0,
+            native_mint_a: None,
+            native_mint_b: None,
+            native_decimals_a: None,
+            native_decimals_b: None,
+            native_account_a: None,
+            native_account_b: None,
+            native_reserve_a_raw: None,
+            native_reserve_b_raw: None,
+            pool_kind: None,
         };
         s.live_graph.upsert_edge("X", sol, usdc, e(1.0));
         s.live_graph.upsert_edge("X", usdc, usdt, e(1.0));
@@ -5560,6 +5653,7 @@ mod e2e_tests {
                     e.native_account_b.clone(),
                     e.native_reserve_a_raw.clone(),
                     e.native_reserve_b_raw.clone(),
+                    e.pool_kind.clone(),
                 );
             };
             for e in added.iter() {
@@ -5711,6 +5805,7 @@ mod e2e_tests {
                     e.native_account_b.clone(),
                     e.native_reserve_a_raw.clone(),
                     e.native_reserve_b_raw.clone(),
+                    e.pool_kind.clone(),
                 );
             };
             for e in added.iter() {

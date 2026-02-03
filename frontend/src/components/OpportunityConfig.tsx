@@ -230,6 +230,9 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           .split(',').map(s => s.trim()).filter(Boolean);
         return mints.length > 0 ? { stable_mints: mints } : {};
       })()),
+      // Slippage simulation settings
+      slippage_simulation_enable: !!det.slippage_simulation_enable,
+      min_simulated_profit_bps: toNum(det.min_simulated_profit_bps) || 10,
     };
     try {
       console.log('[OpportunityConfig] Saving arb config:', body);
@@ -387,6 +390,41 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <div><label className="block mb-1 text-gray-300">Quote Size (USD)</label><input type="number" step="1" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.quote_size_usd ?? ''} onChange={e=>set('quote_size_usd', Number(e.target.value)||0)} /></div>
               <div><label className="block mb-1 text-gray-300">Max Idle (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.max_idle_ms ?? ''} onChange={e=>set('max_idle_ms', Number(e.target.value)||0)} /></div>
             </div>
+          </div>
+
+          {/* Slippage Simulation Section */}
+          <div className="bg-gray-700 rounded p-4 border-2 border-yellow-500/30">
+            <h3 className="text-lg font-semibold text-white mb-2">Slippage Simulation</h3>
+            <p className="text-xs text-gray-400 mb-3">
+              When enabled, cycles are validated using AMM slippage math instead of spot rates.
+              This rejects opportunities that look profitable but would fail due to price impact.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <label className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  checked={!!det.slippage_simulation_enable} 
+                  onChange={e=>set('slippage_simulation_enable', e.target.checked)} 
+                />
+                <span className="text-yellow-400">Enable slippage simulation</span>
+              </label>
+              <div className={!det.slippage_simulation_enable ? 'opacity-50' : ''}>
+                <label className="block mb-1 text-gray-300">Min Simulated Profit (bps)</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.min_simulated_profit_bps ?? 10} 
+                  onChange={e=>set('min_simulated_profit_bps', Number(e.target.value)||0)} 
+                  disabled={!det.slippage_simulation_enable}
+                />
+              </div>
+            </div>
+            {det.slippage_simulation_enable && (
+              <div className="mt-3 p-2 bg-yellow-900/20 rounded text-xs text-gray-400 border border-yellow-700/30">
+                <strong className="text-yellow-300">Active:</strong> Cycles will be simulated with slippage.
+                Opportunities below {det.min_simulated_profit_bps ?? 10} bps simulated profit will be rejected.
+              </div>
+            )}
           </div>
 
           <div className="bg-gray-700 rounded p-4">

@@ -771,6 +771,7 @@ mod tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            pool_kind: None,
         }
     }
 

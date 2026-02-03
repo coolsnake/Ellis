@@ -31,6 +31,9 @@ pub struct EdgeData {
     pub native_reserve_a_raw: Option<String>,
     #[allow(dead_code)]
     pub native_reserve_b_raw: Option<String>,
+    /// Pool type: "amm", "cpmm", "clmm", or "dlmm" - used for slippage simulation
+    #[allow(dead_code)]
+    pub pool_kind: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -203,6 +206,7 @@ mod tests {
                 native_account_b: None,
                 native_reserve_a_raw: None,
                 native_reserve_b_raw: None,
+                pool_kind: None,
             },
         );
         g.upsert_edge(
@@ -224,6 +228,7 @@ mod tests {
                 native_account_b: None,
                 native_reserve_a_raw: None,
                 native_reserve_b_raw: None,
+                pool_kind: None,
             },
         );
         assert!(g.g.node_count() >= 2);
@@ -251,6 +256,7 @@ mod tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            pool_kind: None,
         };
         g.upsert_edge(&dex, "0", "1", e(1.0));
         g.upsert_edge(&dex, "1", "2", e(1.0));
@@ -290,6 +296,7 @@ mod tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            pool_kind: None,
         };
         let edge_synth = EdgeData {
             rate_effective: 1.0,
@@ -306,6 +313,7 @@ mod tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            pool_kind: None,
         };
         g.upsert_edge(&dex, "A", "B", edge_pool);
         g.upsert_edge(&dex, "A", "B", edge_synth);

@@ -75,6 +75,16 @@ pub struct SelectedEdge {
     pub liquidity: f64,
     pub liquidity_display: f64,
     pub fee_bps: i64,
+    /// Pool type: "amm", "cpmm", "clmm", or "dlmm" - used for slippage simulation
+    pub pool_kind: Option<String>,
+    /// Raw reserve of token A in native units (as string to preserve precision)
+    pub native_reserve_a_raw: Option<String>,
+    /// Raw reserve of token B in native units (as string to preserve precision)
+    pub native_reserve_b_raw: Option<String>,
+    /// Decimals for token A
+    pub native_decimals_a: Option<i64>,
+    /// Decimals for token B
+    pub native_decimals_b: Option<i64>,
 }
 
 impl From<&EdgeData> for SelectedEdge {
@@ -86,6 +96,11 @@ impl From<&EdgeData> for SelectedEdge {
             liquidity: data.liquidity,
             liquidity_display: data.liquidity_display,
             fee_bps: data.fee_bps,
+            pool_kind: data.pool_kind.clone(),
+            native_reserve_a_raw: data.native_reserve_a_raw.clone(),
+            native_reserve_b_raw: data.native_reserve_b_raw.clone(),
+            native_decimals_a: data.native_decimals_a,
+            native_decimals_b: data.native_decimals_b,
         }
     }
 }
@@ -364,6 +379,7 @@ mod tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            pool_kind: None,
         }
     }
 
