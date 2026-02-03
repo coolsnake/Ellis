@@ -1895,8 +1895,10 @@ export class ArbExecutor {
             
             // Record success feedback for capacity learning
             // Skip feedback when multi-hop mode has disableCalibration enabled
+            const skipCalibrationFeedbackHere = this.config.sizingConfig?.multiHopOptimization?.enabled &&
+                                                 this.config.sizingConfig?.multiHopOptimization?.disableCalibration !== false;
             try {
-              if (!shouldSkipCalibrationFeedback) {
+              if (!skipCalibrationFeedbackHere) {
                 const successSimReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
                 recordSlippageFeedback(successSimReport, 'success', currentSizeUsd);
               }
@@ -2145,8 +2147,10 @@ export class ArbExecutor {
           
           // Record calibration feedback for capacity learning
           // Skip feedback when multi-hop mode has disableCalibration enabled
+          const skipCalibrationFeedbackHere2 = this.config.sizingConfig?.multiHopOptimization?.enabled &&
+                                                this.config.sizingConfig?.multiHopOptimization?.disableCalibration !== false;
           try {
-            if (lastSimAnalysis!.profitCheckFailed && !shouldSkipCalibrationFeedback) {
+            if (lastSimAnalysis!.profitCheckFailed && !skipCalibrationFeedbackHere2) {
               recordSlippageFeedback(simReport, '6007', currentSizeUsd);
             }
             // Note: non-6007 errors are not used for calibration

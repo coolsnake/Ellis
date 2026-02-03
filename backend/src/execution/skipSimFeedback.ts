@@ -221,12 +221,14 @@ function handleProfitCheckFailure(
     validatedPoolsCache.markValidated(hop.poolId, hop.dex, hop.variant, '6007');
   }
   
+  // Calculate estimated slippage delta for logging
+  const estimatedDeltaBps = -expectedProfitBps;
+  
   // Record capacity feedback (unless calibration is disabled)
   // Profit check failed means actual profit was below expected
   // We use expectedProfitBps as a conservative estimate of the error
   // (actual slippage was at least expectedProfitBps worse than quoted)
   if (!calibrationDisabled) {
-    const estimatedDeltaBps = -expectedProfitBps;
     const perHopSize = sizeUsd / Math.max(1, hops.length);
     const perHopDelta = estimatedDeltaBps / Math.max(1, hops.length);
     
@@ -248,6 +250,7 @@ function handleProfitCheckFailure(
     sizeUsd: sizeUsd.toFixed(2),
     expectedProfitBps,
     estimatedDeltaBps,
+    calibrationDisabled,
     analysis: {
       profitValue: analysis.profitValue?.toString(),
       minProfitRequired: analysis.minProfitRequired?.toString(),
