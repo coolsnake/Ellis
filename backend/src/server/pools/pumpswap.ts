@@ -696,10 +696,10 @@ export async function fetchPumpswapPoolsByAddress(
           throw new Error('429');
         }
         
-        httpLogResponse({ res, cid, source: 'pumpswap' });
+        httpLogResponse({ source: 'pumpswap', url: `${url}?${params}`, cid, status: res?.status || 0, ms: 0 });
         
         if (!res?.ok) {
-          httpLogNonOk({ source: 'pumpswap', url: `${url}?${params}`, statusCode: res?.status, cid });
+          httpLogNonOk({ source: 'pumpswap', url: `${url}?${params}`, status: res?.status || 0, cid });
           if (attempt < retries) {
             await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
             continue;
