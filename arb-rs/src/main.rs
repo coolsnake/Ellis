@@ -574,6 +574,7 @@ async fn main() -> anyhow::Result<()> {
                             Option<String>,
                             Option<String>,
                             Option<String>,
+                            Option<String>, // pool_kind
                         )> = Vec::new();
                         let sol_mint: &str = "So11111111111111111111111111111111111111112";
                         let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -4942,6 +4943,15 @@ fn default_config() -> ArbConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(25), // 25ms default for minimal latency
+        // Slippage simulation - disabled by default for backward compatibility
+        slippage_simulation_enable: std::env::var("ARB_SLIPPAGE_SIM_ENABLE")
+            .ok()
+            .map(|v| v == "true")
+            .unwrap_or(false),
+        min_simulated_profit_bps: std::env::var("ARB_MIN_SIM_PROFIT_BPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10),
     }
 }
 
