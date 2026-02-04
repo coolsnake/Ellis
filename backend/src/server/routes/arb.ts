@@ -2877,7 +2877,7 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Get ALT configuration and status
   api.get('/arb/alt/config', async (_req: Request, res: Response) => {
     try {
-      const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
       const { dexAltManager } = await import('../../execution/utils/altManager.js');
       
       const config = await loadAltConfig();
