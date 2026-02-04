@@ -1555,9 +1555,15 @@ export function createRouterRouter(io: SocketIOServer): Router {
         
         // Extract pool IDs from execution plan (works for all DEXes)
         const poolIds = executionPlan.hops.map(hop => hop.poolId);
+        const routeMints = Array.from(new Set(
+          (executionPlan.path?.length
+            ? executionPlan.path
+            : executionPlan.hops.flatMap(hop => [hop.inputMint, hop.outputMint]))
+            .filter(Boolean)
+        ));
         
-        // Load ALL relevant ALTs (static + pool-specific for any DEX)
-        const altResult = await loadAltsForRoute(poolIds);
+        // Load relevant ALTs (static + pool-specific + user PDA shards)
+        const altResult = await loadAltsForRoute(poolIds, routeMints);
         lookupTables = altResult.lookupTables;
         altCoverage = altResult.coverage;
         missingPools = altResult.missingPools;

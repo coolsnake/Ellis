@@ -146,6 +146,11 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
   // Auto-extend static ALTs
   const [extendingCommon, setExtendingCommon] = useState(false);
   const [extendingUserPdas, setExtendingUserPdas] = useState(false);
+
+  const userPdaShardKeys = (altStatus?.categories || []).filter(c => c.startsWith('userPdas-'));
+  const userPdaShardCount = userPdaShardKeys.length;
+  const hasLegacyUserPdas = !!altStatus?.addresses?.userPdas;
+  const hasUserPdas = userPdaShardCount > 0 || hasLegacyUserPdas;
   
   // Persist pool counts when they change
   useEffect(() => {
@@ -605,10 +610,11 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
         throw new Error(data.error || 'Failed to extend user PDAs ALT');
       }
 
-      if (data.status === 'no_change') {
-        setSuccess(`User PDAs ALT already has all accounts (${data.currentCount} total)`);
+      if (data.status === 'skipped') {
+        setSuccess('User PDA shards not configured yet. Create them first.');
       } else {
-        setSuccess(`Extended user PDAs ALT with ${data.accountsAdded} new account(s). New total: ${data.newTotal}`);
+        const shardCount = data.shardCount ?? data.addresses?.length ?? 0;
+        setSuccess(`Updated user PDA shards: ${data.mintsAdded || 0} mints, ${data.accountsAdded || 0} accounts, ${shardCount} shard(s)`);
       }
       await loadAltStatus();
       await discoverAllAlts();
@@ -1024,26 +1030,26 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
                   )}
                 </div>
 
-                {/* User PDAs ALT */}
+                {/* User PDAs ALT (sharded) */}
                 <div className="bg-gray-800/50 rounded p-3">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-white font-medium">👤 User PDAs</span>
-                    {altStatus?.addresses?.userPdas ? (
+                    {hasUserPdas ? (
                       <span className="text-xs text-green-400">Active</span>
                     ) : (
                       <span className="text-xs text-gray-500">Not Created</span>
                     )}
                   </div>
                   <p className="text-xs text-gray-400 mb-2">
-                    User ATAs for common mints (WSOL, USDC, etc.)
+                    User ATAs for graph mints (sharded across ALTs)
                   </p>
-                  {altStatus?.addresses?.userPdas ? (
+                  {hasUserPdas ? (
                     <button
                       onClick={handleExtendAutoUserPdas}
                       disabled={extendingUserPdas || loading}
                       className="w-full px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
                     >
-                      {extendingUserPdas ? '⏳ Extending...' : '🔄 Extend with New Accounts'}
+                      {extendingUserPdas ? '⏳ Refreshing...' : `🔄 Refresh Shards${userPdaShardCount > 0 ? ` (${userPdaShardCount})` : ''}`}
                     </button>
                   ) : (
                     <button
@@ -1059,7 +1065,8 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
                             throw new Error(data.error || 'Failed to create');
                           }
                           const data = await resp.json();
-                          setSuccess(`Created user PDAs ALT: ${data.address} (${data.accountCount} accounts)`);
+                          const shardCount = data.shardCount ?? data.addresses?.length ?? 0;
+                          setSuccess(`Created user PDA shards: ${shardCount} ALT(s), ${data.totalMints || 0} mints`);
                           await loadAltStatus();
                           await discoverAllAlts();
                         } catch (err: any) {
@@ -1097,9 +1104,9 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
                   >
                     <option value="common">Common (Programs & System)</option>
                     <option value="flashloan">Flashloan (Vaults & PDAs)</option>
-                    <option value="user-pdas">User PDAs</option>
+                    <option value="userPdas">User PDAs (legacy)</option>
                     {altStatus?.categories
-                      .filter(c => !['common', 'flashloan', 'user-pdas'].includes(c))
+                      .filter(c => !['common', 'flashloan', 'userPdas'].includes(c))
                       .map(category => (
                         <option key={category} value={category}>{category}</option>
                       ))

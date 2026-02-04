@@ -81,6 +81,7 @@ function buildSlippageCurveSource(
   feeBps: number,
   spotRate: number,
   computedAt?: number,
+  sourceLabel: string = 'native_reserve',
 ): GraphEdge['slippage_curve'] | undefined {
   if (!(reserveIn > 0 && reserveOut > 0 && spotRate > 0)) return undefined;
   const sizes = NATIVE_SIZE_FRACTIONS
@@ -115,8 +116,43 @@ function buildSlippageCurveSource(
     mults,
     computed_at: Number.isFinite(Number(computedAt)) ? Number(computedAt) : Date.now(),
     confidence: 'low',
-    source: 'native_reserve',
+    source: sourceLabel,
   };
+}
+
+function computeVirtualReservesFromClmm(
+  sqrtPriceX64Raw: bigint,
+  liquidityRaw: bigint,
+  decimalsA: number,
+  decimalsB: number,
+): { reserveA: number; reserveB: number } | undefined {
+  try {
+    if (sqrtPriceX64Raw <= 0n || liquidityRaw <= 0n) return undefined;
+    const sqrtP = Number(sqrtPriceX64Raw) / Number(2n ** 64n);
+    if (!(sqrtP > 0)) return undefined;
+    const L = Number(liquidityRaw);
+    if (!(L > 0)) return undefined;
+    const reserveAAtomic = L / sqrtP;
+    const reserveBAtomic = L * sqrtP;
+    const reserveA = reserveAAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsA)));
+    const reserveB = reserveBAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsB)));
+    if (reserveA > 0 && reserveB > 0) return { reserveA, reserveB };
+  } catch {}
+  return undefined;
+}
+
+function computeHeuristicReservesFromMin(
+  minReserve: number,
+  priceAperB: number,
+): { reserveA: number; reserveB: number } | undefined {
+  if (!(minReserve > 0) || !(priceAperB > 0)) return undefined;
+  // price_a_per_b = A per 1 B
+  if (priceAperB >= 1) {
+    // A is larger, assume B is min
+    return { reserveA: minReserve * priceAperB, reserveB: minReserve };
+  }
+  // A is smaller, assume A is min
+  return { reserveA: minReserve, reserveB: minReserve / priceAperB };
 }
 
 function buildSlippageCurveUsd(poolId: string): GraphEdge['slippage_curve'] | undefined {
@@ -350,14 +386,60 @@ export function edgesFromPoolIncremental(
   const fwd = clampPriceInc(fwdRaw, clampMin, clampMax);
   const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
 
-  const decA = (p as any)?.native_decimals_a ?? (p as any)?.decimals_a;
-  const decB = (p as any)?.native_decimals_b ?? (p as any)?.decimals_b;
-  const reserveA = parseReserveRaw((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw, decA);
-  const reserveB = parseReserveRaw((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw, decB);
+  const wasSwapped = (p as any)?.was_swapped === true;
+  const decA = (p as any)?.decimals_a ?? (p as any)?.native_decimals_a;
+  const decB = (p as any)?.decimals_b ?? (p as any)?.native_decimals_b;
+  const nativeDecA = (p as any)?.native_decimals_a ?? decA;
+  const nativeDecB = (p as any)?.native_decimals_b ?? decB;
+  const canonicalReserveA = parseReserveRaw((p as any)?.reserve_a_raw, decA);
+  const canonicalReserveB = parseReserveRaw((p as any)?.reserve_b_raw, decB);
+  const nativeReserveA = parseReserveRaw((p as any)?.native_reserve_a_raw, nativeDecA);
+  const nativeReserveB = parseReserveRaw((p as any)?.native_reserve_b_raw, nativeDecB);
+  let reserveA = 0;
+  let reserveB = 0;
+  let curveSource = '';
+
+  if (canonicalReserveA > 0 && canonicalReserveB > 0) {
+    reserveA = canonicalReserveA;
+    reserveB = canonicalReserveB;
+    curveSource = 'canonical_reserve';
+  } else if (nativeReserveA > 0 && nativeReserveB > 0) {
+    if (wasSwapped) {
+      reserveA = nativeReserveB;
+      reserveB = nativeReserveA;
+      curveSource = 'native_reserve_swapped';
+    } else {
+      reserveA = nativeReserveA;
+      reserveB = nativeReserveB;
+      curveSource = 'native_reserve';
+    }
+  } else if (kind === 'clmm') {
+    try {
+      const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
+      const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
+      const virt = computeVirtualReservesFromClmm(s64, Lraw, Number(decA || 0), Number(decB || 0));
+      if (virt) {
+        reserveA = virt.reserveA;
+        reserveB = virt.reserveB;
+        curveSource = 'virtual_liquidity';
+      }
+    } catch {}
+  } else if (kind === 'dlmm') {
+    const minLiquidity = Number((p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_display ?? 0);
+    if (minLiquidity > 0 && fwd && fwd > 0) {
+      const heur = computeHeuristicReservesFromMin(minLiquidity, fwd);
+      if (heur) {
+        reserveA = heur.reserveA;
+        reserveB = heur.reserveB;
+        curveSource = 'liquidity_min_heuristic';
+      }
+    }
+  }
+
   const feeMultiplier = 1 - Math.max(0, fee) / 10000;
   const spotRate = fwd && fwd > 0 ? (1 / fwd) * feeMultiplier : 0;
   const slippageCurve =
-    buildSlippageCurveSource(kind, reserveA, reserveB, fee, spotRate, (p as any)?.updated_ms) ||
+    buildSlippageCurveSource(kind, reserveA, reserveB, fee, spotRate, (p as any)?.updated_ms, curveSource || 'native_reserve') ||
     buildSlippageCurveUsd(id);
   
   // Validate pool went through pipeline

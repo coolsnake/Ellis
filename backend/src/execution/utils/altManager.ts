@@ -5,7 +5,7 @@ import { CONFIG } from '../../utils/config.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { logger } from '../../utils/logger.js';
 import { accountCache } from './accountCache.js';
-import { loadAltConfig, saveAltConfig, type AltConfig, type DexAltSet } from './altConfig.js';
+import { loadAltConfig, saveAltConfig, type AltConfig, type DexAltSet, type UserPdaAltSet } from './altConfig.js';
 import { ARB_ROUTER_PROGRAM_ID } from '../../router/types.js';
 
 // Batch size for ALT loading - conservative to avoid rate limits
@@ -16,6 +16,7 @@ const ALT_BATCH_DELAY_MS = 500;
 // ALT operations are low CU (~10-20k), so a modest priority is sufficient
 const ALT_PRIORITY_FEE_MICRO_LAMPORTS = 5000; // 5,000 micro-lamports per CU
 const ALT_COMPUTE_UNIT_LIMIT = 50000; // Conservative limit for ALT operations
+const USER_PDA_ALT_TARGET_ACCOUNTS = 230; // Leave room below 256 for future growth
 
 /**
  * Manages Address Lookup Tables (ALTs) for DEX transactions
@@ -170,6 +171,7 @@ export class DexAltManager {
           // STEP 1: Collect all ALT addresses to load
           const addressToCategory = new Map<string, string>(); // address -> category
           const dexAddressInfo: Array<{ address: string; dex: string; index: number }> = [];
+          const userPdaAddressInfo: Array<{ address: string; index: number }> = [];
           
           // Collect from config.alts
           if (this.altConfig.alts) {
@@ -192,10 +194,21 @@ export class DexAltManager {
               }
             }
           }
+
+          // Collect from userPdaAlts (sharded user PDA ALTs)
+          if (this.altConfig.userPdaAlts?.addresses) {
+            for (let i = 0; i < this.altConfig.userPdaAlts.addresses.length; i++) {
+              const address = this.altConfig.userPdaAlts.addresses[i];
+              if (address && !addressToCategory.has(address)) {
+                userPdaAddressInfo.push({ address, index: i });
+              }
+            }
+          }
           
           const allAddresses = [
             ...Array.from(addressToCategory.keys()),
             ...dexAddressInfo.map(d => d.address),
+            ...userPdaAddressInfo.map(d => d.address),
           ];
           
           try {
@@ -290,6 +303,56 @@ export class DexAltManager {
               });
             } catch {}
           }
+
+          // STEP 5: Process results for user PDA ALT shards
+          if (userPdaAddressInfo.length > 0) {
+            const invalidUserPdaAddresses: string[] = [];
+            let userPdaAltCount = 0;
+
+            for (const { address, index } of userPdaAddressInfo) {
+              if (this.altAccounts.has(address)) {
+                userPdaAltCount++;
+                continue;
+              }
+              const altAccount = loadedAlts.get(address);
+              if (altAccount) {
+                const category = `userPdas-${index + 1}`;
+                this.altAddresses.set(category, altAccount.key);
+                this.altAccounts.set(address, altAccount);
+                userPdaAltCount++;
+              } else {
+                invalidUserPdaAddresses.push(address);
+              }
+            }
+
+            if (invalidUserPdaAddresses.length > 0 && this.altConfig.userPdaAlts) {
+              this.altConfig.userPdaAlts.addresses = this.altConfig.userPdaAlts.addresses.filter(
+                addr => !invalidUserPdaAddresses.includes(addr)
+              );
+              for (const addr of invalidUserPdaAddresses) {
+                if (this.altConfig.userPdaAlts.altContents?.[addr]) {
+                  delete this.altConfig.userPdaAlts.altContents[addr];
+                }
+              }
+              if (this.altConfig.mintToAlt) {
+                for (const [mint, addr] of Object.entries(this.altConfig.mintToAlt)) {
+                  if (invalidUserPdaAddresses.includes(addr)) {
+                    delete this.altConfig.mintToAlt[mint];
+                  }
+                }
+              }
+              await saveAltConfig(this.altConfig);
+            }
+
+            if (userPdaAltCount > 0) {
+              try {
+                logger.info('alt.manager.init.userPdaAlts.loaded', {
+                  cat: 'tx',
+                  ctx: { userPdaAltCount },
+                });
+              } catch {}
+            }
+          }
         } catch (error) {
           // If altConfig loading fails, continue without it
           try {
@@ -350,7 +413,7 @@ export class DexAltManager {
     const connection = getConnection();
     
     // Check common seed variations that might have been created but not extended
-    const seedsToCheck = ['common-alt', 'dex-common-alt', 'pool-alt', 'clmm-alt', 'tokens-alt'];
+    const seedsToCheck = ['common-alt', 'dex-common-alt', 'pool-alt', 'clmm-alt', 'tokens-alt', 'userPdas', 'userPdas-alt'];
     
     for (const seed of seedsToCheck) {
       try {
@@ -1607,6 +1670,282 @@ export class DexAltManager {
     }
 
     return accounts;
+  }
+
+  /**
+   * Collect all mint addresses from the current graph snapshot
+   */
+  private async collectGraphMints(): Promise<string[]> {
+    try {
+      const { getGraphSnapshot } = await import('../../server/graph.js');
+      const snapshot = await getGraphSnapshot(false);
+      const mints = new Set<string>();
+      for (const node of snapshot?.nodes || []) {
+        if (node?.id) mints.add(String(node.id));
+      }
+      return Array.from(mints);
+    } catch (error) {
+      try {
+        logger.warn('alt.manager.collect.graphMints.error', {
+          cat: 'tx',
+          ctx: { error: String((error as any)?.message || error) },
+        });
+      } catch {}
+      return [];
+    }
+  }
+
+  /**
+   * Derive the user's ATA for a mint (SPL Token program by default).
+   * Note: Token-2022 mints are not detected here and will use SPL ATA derivation.
+   */
+  private async deriveUserAta(mint: string, owner: PublicKey): Promise<PublicKey | null> {
+    try {
+      const { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+      const mintPk = new PublicKey(mint);
+      return getAssociatedTokenAddressSync(mintPk, owner, false, TOKEN_PROGRAM_ID);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Create or refresh sharded User PDA ALTs using graph mints.
+   * If mints are provided, performs incremental update for those mints only.
+   */
+  async refreshUserPdaAltShards(options?: {
+    mints?: string[];
+    allowCreate?: boolean;
+    maxAccountsPerAlt?: number;
+  }): Promise<{
+    status: 'skipped' | 'updated' | 'rebuilt';
+    shardCount: number;
+    totalMints: number;
+    mintsAdded: number;
+    accountsAdded: number;
+    altsCreated: number;
+    altsExtended: number;
+    addresses: string[];
+  }> {
+    const { ensureWallet } = await import('../../wallet/wallet.js');
+    const wallet = await ensureWallet(CONFIG.walletPath);
+    const isIncremental = Array.isArray(options?.mints) && options.mints.length > 0;
+    const maxAccountsPerAlt = Math.min(256, options?.maxAccountsPerAlt || USER_PDA_ALT_TARGET_ACCOUNTS);
+
+    const config = await loadAltConfig();
+    this.altConfig = config;
+
+    if (!config.userPdaAlts) {
+      config.userPdaAlts = {
+        addresses: [],
+        altContents: {},
+        totalMints: 0,
+        totalAccounts: 0,
+      } as UserPdaAltSet;
+    }
+    if (!config.mintToAlt) {
+      config.mintToAlt = {};
+    }
+
+    // Resolve target mints
+    let targetMints = isIncremental ? options!.mints! : await this.collectGraphMints();
+    targetMints = Array.from(new Set(targetMints.filter(Boolean)));
+
+    if (targetMints.length === 0) {
+      return {
+        status: 'skipped',
+        shardCount: config.userPdaAlts.addresses.length,
+        totalMints: Object.keys(config.mintToAlt || {}).length,
+        mintsAdded: 0,
+        accountsAdded: 0,
+        altsCreated: 0,
+        altsExtended: 0,
+        addresses: config.userPdaAlts.addresses,
+      };
+    }
+
+    // Include legacy userPdas ALT as a shard if present
+    const legacyUserPdaAlt = config.alts?.userPdas;
+    if (legacyUserPdaAlt && !config.userPdaAlts.addresses.includes(legacyUserPdaAlt)) {
+      config.userPdaAlts.addresses.unshift(legacyUserPdaAlt);
+    }
+
+    if (config.userPdaAlts.addresses.length === 0 && !options?.allowCreate) {
+      return {
+        status: 'skipped',
+        shardCount: 0,
+        totalMints: Object.keys(config.mintToAlt || {}).length,
+        mintsAdded: 0,
+        accountsAdded: 0,
+        altsCreated: 0,
+        altsExtended: 0,
+        addresses: [],
+      };
+    }
+
+    // Clear existing userPdas-* categories to avoid stale entries
+    for (const key of Array.from(this.altAddresses.keys())) {
+      if (key.startsWith('userPdas-')) {
+        this.altAddresses.delete(key);
+      }
+    }
+
+    // Load existing shard ALTs
+    const loadedAlts = await this.batchLoadAlts(config.userPdaAlts.addresses);
+    const validAddresses: string[] = [];
+    const invalidAddresses: string[] = [];
+    const altAccountCounts = new Map<string, number>();
+    const ataToAlt = new Map<string, string>();
+
+    for (const address of config.userPdaAlts.addresses) {
+      const altAccount = loadedAlts.get(address);
+      if (!altAccount) {
+        invalidAddresses.push(address);
+        continue;
+      }
+      validAddresses.push(address);
+      this.altAccounts.set(address, altAccount);
+      altAccountCounts.set(address, altAccount.state.addresses.length);
+      for (const addr of altAccount.state.addresses || []) {
+        ataToAlt.set(addr.toBase58(), address);
+      }
+    }
+
+    if (invalidAddresses.length > 0) {
+      config.userPdaAlts.addresses = validAddresses;
+      for (const addr of invalidAddresses) {
+        if (config.userPdaAlts.altContents?.[addr]) {
+          delete config.userPdaAlts.altContents[addr];
+        }
+      }
+      if (config.mintToAlt) {
+        for (const [mint, addr] of Object.entries(config.mintToAlt)) {
+          if (invalidAddresses.includes(addr)) {
+            delete config.mintToAlt[mint];
+          }
+        }
+      }
+    }
+
+    // Assign categories for existing shards
+    validAddresses.forEach((addr, idx) => {
+      try {
+        this.altAddresses.set(`userPdas-${idx + 1}`, new PublicKey(addr));
+      } catch {}
+    });
+
+    const mintToAlt: Record<string, string> = isIncremental ? { ...(config.mintToAlt || {}) } : {};
+    const altContents: Record<string, string[]> = isIncremental
+      ? { ...(config.userPdaAlts.altContents || {}) }
+      : {};
+
+    let mintsAdded = 0;
+    let accountsAdded = 0;
+    let altsCreated = 0;
+    let altsExtended = 0;
+
+    // Map mints already present in existing ALTs
+    for (const mint of targetMints) {
+      const ata = await this.deriveUserAta(mint, wallet.publicKey);
+      if (!ata) continue;
+      const existingAlt = ataToAlt.get(ata.toBase58());
+      if (existingAlt) {
+        mintToAlt[mint] = existingAlt;
+        if (!altContents[existingAlt]) altContents[existingAlt] = [];
+        if (!altContents[existingAlt].includes(mint)) altContents[existingAlt].push(mint);
+      }
+    }
+
+    // Determine mints that still need to be placed
+    const mintsToAdd = targetMints.filter(mint => !mintToAlt[mint]);
+
+    // Fill existing shards first
+    const shardCategories = validAddresses.map((addr, idx) => ({
+      address: addr,
+      category: `userPdas-${idx + 1}`,
+    }));
+
+    for (const shard of shardCategories) {
+      const currentCount = altAccountCounts.get(shard.address) || 0;
+      let remaining = Math.max(0, maxAccountsPerAlt - currentCount);
+      if (remaining <= 0 || mintsToAdd.length === 0) continue;
+
+      const newAccounts: PublicKey[] = [];
+      const newMints: string[] = [];
+
+      while (remaining > 0 && mintsToAdd.length > 0) {
+        const mint = mintsToAdd.shift() as string;
+        const ata = await this.deriveUserAta(mint, wallet.publicKey);
+        if (!ata) continue;
+        newAccounts.push(ata);
+        newMints.push(mint);
+        mintToAlt[mint] = shard.address;
+        remaining--;
+      }
+
+      if (newAccounts.length > 0) {
+        await this.extendAlt(shard.category, newAccounts);
+        altsExtended += 1;
+        accountsAdded += newAccounts.length;
+        mintsAdded += newMints.length;
+        altAccountCounts.set(shard.address, currentCount + newAccounts.length);
+        if (!altContents[shard.address]) altContents[shard.address] = [];
+        for (const mint of newMints) {
+          if (!altContents[shard.address].includes(mint)) altContents[shard.address].push(mint);
+        }
+      }
+    }
+
+    // Create new shards for remaining mints
+    while (mintsToAdd.length > 0) {
+      const chunk = mintsToAdd.splice(0, maxAccountsPerAlt);
+      const accounts: PublicKey[] = [];
+      const mints: string[] = [];
+      for (const mint of chunk) {
+        const ata = await this.deriveUserAta(mint, wallet.publicKey);
+        if (!ata) continue;
+        accounts.push(ata);
+        mints.push(mint);
+      }
+      if (accounts.length === 0) break;
+
+      const shardIndex = validAddresses.length + altsCreated + 1;
+      const category = `userPdas-${shardIndex}`;
+      const address = await this.createAltOnChain(wallet, accounts, category);
+      const addressStr = address.toBase58();
+
+      this.altAddresses.set(category, address);
+      config.userPdaAlts.addresses.push(addressStr);
+      altContents[addressStr] = mints;
+      altAccountCounts.set(addressStr, accounts.length);
+
+      for (const mint of mints) {
+        mintToAlt[mint] = addressStr;
+      }
+
+      altsCreated += 1;
+      accountsAdded += accounts.length;
+      mintsAdded += mints.length;
+    }
+
+    config.userPdaAlts.altContents = altContents;
+    config.mintToAlt = mintToAlt;
+    config.userPdaAlts.totalMints = Object.keys(mintToAlt).length;
+    config.userPdaAlts.totalAccounts = Array.from(altAccountCounts.values()).reduce((sum, n) => sum + n, 0);
+    config.lastValidated = Date.now();
+
+    await saveAltConfig(config);
+
+    return {
+      status: isIncremental ? 'updated' : 'rebuilt',
+      shardCount: config.userPdaAlts.addresses.length,
+      totalMints: config.userPdaAlts.totalMints,
+      mintsAdded,
+      accountsAdded,
+      altsCreated,
+      altsExtended,
+      addresses: config.userPdaAlts.addresses,
+    };
   }
 
   /**
@@ -3887,6 +4226,7 @@ export class DexAltManager {
         // Collect all ALT addresses for batch loading
         const addressToCategory = new Map<string, string>();
         const dexAddressInfo: Array<{ address: string; dex: string; index: number }> = [];
+        const userPdaAddressInfo: Array<{ address: string; index: number }> = [];
         
         // Collect from config.alts
         if (this.altConfig.alts) {
@@ -3909,10 +4249,21 @@ export class DexAltManager {
             }
           }
         }
+
+        // Collect from userPdaAlts
+        if (this.altConfig.userPdaAlts?.addresses) {
+          for (let i = 0; i < this.altConfig.userPdaAlts.addresses.length; i++) {
+            const address = this.altConfig.userPdaAlts.addresses[i];
+            if (address && !addressToCategory.has(address)) {
+              userPdaAddressInfo.push({ address, index: i });
+            }
+          }
+        }
         
         const allAddresses = [
           ...Array.from(addressToCategory.keys()),
           ...dexAddressInfo.map(d => d.address),
+          ...userPdaAddressInfo.map(d => d.address),
         ];
         
         try {
@@ -3997,6 +4348,64 @@ export class DexAltManager {
               ctx: { dexAltCount, dexes: Object.keys(this.altConfig.dexAlts || {}) },
             });
           } catch {}
+        }
+
+        // Process results for user PDA ALTs
+        if (userPdaAddressInfo.length > 0) {
+          const invalidUserPdaAddresses: string[] = [];
+          let userPdaAltCount = 0;
+
+          for (const { address, index } of userPdaAddressInfo) {
+            if (this.altAccounts.has(address)) {
+              userPdaAltCount++;
+              continue;
+            }
+            const altAccount = loadedAlts.get(address);
+            if (altAccount) {
+              const accountCount = altAccount.state?.addresses?.length || 0;
+              if (accountCount > 0) {
+                const category = `userPdas-${index + 1}`;
+                this.altAddresses.set(category, altAccount.key);
+                this.altAccounts.set(address, altAccount);
+                results[category] = address;
+                userPdaAltCount++;
+              } else {
+                errors.push(`User PDA ALT ${index + 1} (${address}) is empty`);
+                invalidUserPdaAddresses.push(address);
+              }
+            } else {
+              errors.push(`User PDA ALT ${index + 1} (${address}) not found on-chain`);
+              invalidUserPdaAddresses.push(address);
+            }
+          }
+
+          if (invalidUserPdaAddresses.length > 0 && this.altConfig.userPdaAlts) {
+            this.altConfig.userPdaAlts.addresses = this.altConfig.userPdaAlts.addresses.filter(
+              addr => !invalidUserPdaAddresses.includes(addr)
+            );
+            for (const addr of invalidUserPdaAddresses) {
+              if (this.altConfig.userPdaAlts.altContents?.[addr]) {
+                delete this.altConfig.userPdaAlts.altContents[addr];
+              }
+            }
+            if (this.altConfig.mintToAlt) {
+              for (const [mint, addr] of Object.entries(this.altConfig.mintToAlt)) {
+                if (invalidUserPdaAddresses.includes(addr)) {
+                  delete this.altConfig.mintToAlt[mint];
+                }
+              }
+            }
+            await saveAltConfig(this.altConfig);
+          }
+
+          if (userPdaAltCount > 0) {
+            try {
+              logger.info('alt.startup.userPdaAlts.validated', {
+                cat: 'tx',
+                ctx: { userPdaAltCount },
+              });
+            } catch {}
+          }
         }
       }
 
@@ -4405,6 +4814,16 @@ export class DexAltManager {
       }
     }
 
+    // Also check altConfig for user PDA shard addresses
+    if (altConfig.userPdaAlts?.addresses) {
+      for (let i = 0; i < altConfig.userPdaAlts.addresses.length; i++) {
+        const addr = altConfig.userPdaAlts.addresses[i];
+        if (addr && !addressToCategory.has(addr)) {
+          addressToCategory.set(addr, `userPdas-${i + 1}`);
+        }
+      }
+    }
+
     const currentSlot = await withRpcLimit(
       () => connection.getSlot(),
       1,
@@ -4721,6 +5140,30 @@ export class DexAltManager {
           delete this.altConfig.poolToAlt[poolId];
         }
         if (poolsToRemove.length > 0) configChanged = true;
+      }
+
+      // Clean up userPdaAlts and mintToAlt mappings
+      if (this.altConfig.userPdaAlts) {
+        const idx = this.altConfig.userPdaAlts.addresses.indexOf(altAddress);
+        if (idx !== -1) {
+          this.altConfig.userPdaAlts.addresses.splice(idx, 1);
+          if (this.altConfig.userPdaAlts.altContents?.[altAddress]) {
+            delete this.altConfig.userPdaAlts.altContents[altAddress];
+          }
+          configChanged = true;
+          if (!removedCategory) removedCategory = `userPdas-${idx + 1}`;
+        }
+      }
+
+      if (this.altConfig.mintToAlt) {
+        let removed = 0;
+        for (const [mint, addr] of Object.entries(this.altConfig.mintToAlt)) {
+          if (addr === altAddress) {
+            delete this.altConfig.mintToAlt[mint];
+            removed++;
+          }
+        }
+        if (removed > 0) configChanged = true;
       }
 
       // Save updated config

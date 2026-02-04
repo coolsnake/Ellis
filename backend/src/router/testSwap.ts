@@ -1172,6 +1172,13 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     const routePoolIds = [poolId];
     if (secondPoolId) routePoolIds.push(secondPoolId);
     if (thirdPoolId) routePoolIds.push(thirdPoolId);
+    const routeMints = Array.from(new Set(
+      [
+        inMint?.toBase58?.(),
+        outMint?.toBase58?.(),
+        intermediateAta ? outMint?.toBase58?.() : undefined,
+      ].filter(Boolean) as string[]
+    ));
 
     // Build pool accounts metadata for return
     let poolAccounts: Record<string, string>;
@@ -1225,7 +1232,7 @@ export async function runSwapTest(params: TestSwapParams): Promise<TestSwapResul
     if (useVersionedTx && (hops >= 2 || routerProgramId)) {
       // Initialize ALT manager and load ALTs for this route
       await dexAltManager.initialize();
-      const { lookupTables, coverage, missingPools } = await loadAltsForRoute(routePoolIds);
+      const { lookupTables, coverage, missingPools } = await loadAltsForRoute(routePoolIds, routeMints);
       
       // Log ALT coverage
       logger.info('router.test.alt.coverage', {

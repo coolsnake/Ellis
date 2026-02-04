@@ -54,6 +54,9 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
 }) => {
   const [expanded, setExpanded] = React.useState(false);
   const [altConfig, setAltConfig] = React.useState<any>(null);
+  const resolvedConfig = altConfig?.config ? { ...altConfig.config, ...altConfig } : altConfig;
+  const userPdaShardCount = resolvedConfig?.userPdaShardCount ?? resolvedConfig?.userPdaAlts?.addresses?.length ?? 0;
+  const mintToAltCount = resolvedConfig?.mintToAltCount ?? (resolvedConfig?.mintToAlt ? Object.keys(resolvedConfig.mintToAlt).length : 0);
   const [altInfos, setAltInfos] = React.useState<Record<string, AltDetailedInfo>>({});
   const [dexPoolCounts, setDexPoolCounts] = React.useState<Record<DexAltType, number>>({
     raydium: 50,
@@ -164,9 +167,14 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
 
       if (res.ok) {
         const data = await res.json();
+        let message = `Created ${category} ALT: ${data.accountCount || 0} accounts`;
+        if (category === 'userPdas') {
+          const shardCount = data.shardCount ?? data.addresses?.length ?? 0;
+          message = `Created user PDA shards: ${shardCount} ALT(s), ${data.totalMints || 0} mints`;
+        }
         setActionResult({
           type: 'success',
-          message: `Created ${category} ALT: ${data.accountCount || 0} accounts`,
+          message,
         });
         onRefresh();
         loadAltConfig();
@@ -555,7 +563,7 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
   const categoryLabels: Record<AltCategory, { label: string; desc: string; icon: string }> = {
     common: { label: 'Common', desc: 'System programs, DEX programs, common mints', icon: '🔧' },
     flashloan: { label: 'Flashloan', desc: 'Vault PDAs, vault token accounts', icon: '⚡' },
-    userPdas: { label: 'User PDAs', desc: 'User ATAs for common mints', icon: '👤' },
+    userPdas: { label: 'User PDAs', desc: 'User ATAs for graph mints (sharded)', icon: '👤' },
   };
 
   const dexLabels: Record<DexAltType, { label: string; color: string }> = {
@@ -629,7 +637,7 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
       {!expanded && (
         <div className="text-xs text-gray-400">
           Categories: {altStatus.categories?.join(', ') || 'None'} 
-          {altConfig?.poolToAltCount ? ` • ${altConfig.poolToAltCount} pools mapped` : ''}
+          {resolvedConfig?.poolToAltCount ? ` • ${resolvedConfig.poolToAltCount} pools mapped` : ''}
         </div>
       )}
 
@@ -657,8 +665,9 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               {(Object.keys(categoryLabels) as AltCategory[]).map((cat) => {
                 const { label, desc, icon } = categoryLabels[cat];
-                const addr = altConfig?.alts?.[cat];
-                const exists = !!addr;
+                const addr = resolvedConfig?.alts?.[cat];
+                const hasUserPdaShards = cat === 'userPdas' && userPdaShardCount > 0;
+                const exists = !!addr || hasUserPdaShards;
                 const isLoading = altActionLoading === `create-${cat}`;
 
                 return (
@@ -673,8 +682,15 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
                     </div>
                     <div className="text-xs text-gray-500 mb-2">{desc}</div>
                     {exists ? (
-                      <div className="text-xs font-mono text-gray-400 truncate" title={addr}>
-                        {truncAddr(addr)}
+                      <div className="text-xs text-gray-400">
+                        {addr ? (
+                          <div className="font-mono truncate" title={addr}>{truncAddr(addr)}</div>
+                        ) : null}
+                        {hasUserPdaShards ? (
+                          <div className="text-gray-500 mt-0.5">
+                            {userPdaShardCount} shard(s) • {mintToAltCount} mints
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <button
@@ -733,7 +749,7 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
             <div className="space-y-2">
               {(Object.keys(dexLabels) as DexAltType[]).map((dex) => {
                 const { label, color } = dexLabels[dex];
-                const dexAltSet = altConfig?.dexAlts?.[dex];
+                const dexAltSet = resolvedConfig?.dexAlts?.[dex];
                 const altCount = dexAltSet?.addresses?.length || 0;
                 const totalPools = dexAltSet?.totalPools || 0;
                 const totalAccounts = dexAltSet?.totalAccounts || 0;
@@ -823,11 +839,11 @@ const AltManagementSection: React.FC<AltManagementSectionProps> = ({
           </div>
 
           {/* Pool Coverage Stats */}
-          {altConfig?.poolToAltCount > 0 && (
+          {resolvedConfig?.poolToAltCount > 0 && (
             <div className="bg-gray-900/60 rounded p-2 border border-gray-700">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-300">Pool-to-ALT Mappings</span>
-                <span className="text-sm font-mono text-amber-300">{altConfig.poolToAltCount} pools</span>
+                <span className="text-sm font-mono text-amber-300">{resolvedConfig.poolToAltCount} pools</span>
               </div>
               <div className="text-xs text-gray-500 mt-1">
                 Pools with ALT coverage for efficient versioned transactions

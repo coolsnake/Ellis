@@ -197,3 +197,49 @@ export interface GrpcStreamConfig {
   reconnectDelayMs?: number;
 }
 
+// ============================================================================
+// ALT (Address Lookup Table) Config Types
+// ============================================================================
+
+export type DexAltSet = {
+  addresses: string[];
+  altContents: Record<string, string[]>;
+  totalPools: number;
+  totalAccounts: number;
+};
+
+export type UserPdaAltSet = {
+  addresses: string[];
+  altContents: Record<string, string[]>;
+  totalMints: number;
+  totalAccounts: number;
+};
+
+export type AltConfig = {
+  alts: {
+    common?: string;
+    flashloan?: string;
+    userPdas?: string;
+    pools?: string;
+    clmm?: string;
+    tokens?: string;
+  };
+  dexAlts?: {
+    raydium?: DexAltSet;
+    'raydium-amm'?: DexAltSet;
+    'raydium-cpmm'?: DexAltSet;
+    orca?: DexAltSet;
+    meteora?: DexAltSet;
+    'meteora-balanced'?: DexAltSet;
+    'meteora-damm-v1'?: DexAltSet;
+    'meteora-damm-v2'?: DexAltSet;
+    pumpswap?: DexAltSet;
+  };
+  userPdaAlts?: UserPdaAltSet;
+  poolToAlt?: Record<string, string>;
+  mintToAlt?: Record<string, string>;
+  createdAt?: number;
+  lastValidated?: number;
+  walletPublicKey?: string;
+};
+

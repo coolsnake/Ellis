@@ -936,6 +936,18 @@ export const CONFIG = {
     // Loop logging mode: when true, suppress per-loop info logs and emit periodic summaries
     loopSummaryOnly: (process.env.DRIFT_LOOP_SUMMARY_ONLY || 'false') === 'true',
     loopSummaryIntervalMs: Number(process.env.DRIFT_LOOP_SUMMARY_INTERVAL_MS || 10000),
+    // Per-node log controls (trigger/filler)
+    verboseNodeLogs: (process.env.DRIFT_VERBOSE_NODE_LOGS || 'false') === 'true',
+    nodeLogSampleRate: Number(process.env.DRIFT_NODE_LOG_SAMPLE_RATE || 0),
+    // Cooldown/seen map pruning
+    nodeMapTtlMs: Number(process.env.DRIFT_NODE_MAP_TTL_MS || 60000),
+    nodeMapMax: Number(process.env.DRIFT_NODE_MAP_MAX || 20000),
+    // Trigger priority fee floor
+    triggerPriorityFloorMicroLamports: Number(process.env.DRIFT_TRIGGER_PRIORITY_FLOOR_MICRO_LAMPORTS || 10000),
+    // Market list cache TTL for trigger loop
+    marketCacheTtlMs: Number(process.env.DRIFT_MARKET_CACHE_TTL_MS || 2000),
+    // Hot market priority per loop
+    hotMarketsPerLoop: Number(process.env.DRIFT_HOT_MARKETS_PER_LOOP || 25),
     // Prefetch soft-start (currently unused by code paths; reserved)
     prefetchStartDelayMs: Number(process.env.DRIFT_PREFETCH_START_DELAY_MS || 4000),
     // Floor for filler priority fee micro-lamports
@@ -990,10 +1002,14 @@ export const CONFIG = {
       priceTriggerDebounceMs: Number(process.env.DRIFT_LIQ_PRICE_DEBOUNCE_MS || 400),
       httpPollMs: Number(process.env.DRIFT_LIQ_HTTP_POLL_MS || 800),
       maxUsersPerPriceTick: Number(process.env.DRIFT_LIQ_MAX_USERS_PER_PRICE_TICK || 200),
+      hotUsersPerTick: Number(process.env.DRIFT_LIQ_HOT_USERS_PER_TICK || 25),
       targetCooldownMs: Number(process.env.DRIFT_LIQ_TARGET_COOLDOWN_MS || 6000),
       statsIntervalMs: Number(process.env.DRIFT_LIQ_STATS_INTERVAL_MS || 10000),
       usersListLimit: Number(process.env.DRIFT_LIQ_USERS_LIST_LIMIT || 300),
       recoveryBuffer: Number(process.env.DRIFT_LIQ_RECOVERY_BUFFER || 0.03),
+      // Oracle/TWAP guardrails
+      oracleTwapGuardPct: Number(process.env.DRIFT_LIQ_ORACLE_TWAP_GUARD_PCT || 0.5),
+      oracleGuardCooldownMs: Number(process.env.DRIFT_LIQ_ORACLE_GUARD_COOLDOWN_MS || 5000),
       indexSpotExposure: (process.env.DRIFT_LIQ_INDEX_SPOT_EXPOSURE || 'false') === 'true',
       // Re-fetch SDK user accounts at most this often for at-risk users (ms)
       refreshAccountsMs: Number(process.env.DRIFT_LIQ_REFRESH_ACCOUNTS_MS || 12000),

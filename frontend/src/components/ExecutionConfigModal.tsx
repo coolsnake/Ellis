@@ -26,16 +26,47 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
     lastValues: null as any,
   });
   
-  const [form, setForm] = useState<any>(uiPrefs.lastValues || {
-    txSend: { resendEnabled: true, maxResendAttempts: 10, maxConfirmTimeMs: 30000 },
-    jito: { enabled: false, blockEngineUrl: '', tipPayerKeypath: '', bundleTimeoutMs: 1200, tipMode: 'dynamic', fixedTipLamports: 10000, tipShare: 0.3, useDontFrontAccount: false, tipAccount: '' },
-    rpcSend: { secondaryRpcUrls: '', sendTimeoutMs: 1200 },
-    drift: {
-      altRefreshMs: 300000,
-      maxOracleDelaySlots: 40,
-      fillerPriorityFloorMicroLamports: 15000,
-      feeMultipliersText: '{"perp-0":1.0}',
-    },
+  const [form, setForm] = useState<any>(() => {
+    const defaults = {
+      txSend: { resendEnabled: true, maxResendAttempts: 10, maxConfirmTimeMs: 30000 },
+      jito: { enabled: false, blockEngineUrl: '', tipPayerKeypath: '', bundleTimeoutMs: 1200, tipMode: 'dynamic', fixedTipLamports: 10000, tipShare: 0.3, useDontFrontAccount: false, tipAccount: '' },
+      rpcSend: { secondaryRpcUrls: '', sendTimeoutMs: 1200 },
+      drift: {
+        altRefreshMs: 300000,
+        maxOracleDelaySlots: 40,
+        fillerPriorityFloorMicroLamports: 15000,
+        triggerPriorityFloorMicroLamports: 10000,
+        marketCacheTtlMs: 2000,
+        hotMarketsPerLoop: 25,
+        verboseNodeLogs: false,
+        nodeLogSampleRate: 0,
+        nodeMapTtlMs: 60000,
+        nodeMapMax: 20000,
+        liquidator: {
+          oracleTwapGuardPct: 0.5,
+          oracleGuardCooldownMs: 5000,
+          hotUsersPerTick: 25,
+        },
+        feeMultipliersText: '{"perp-0":1.0}',
+      },
+    };
+    const saved = uiPrefs.lastValues;
+    if (!saved) return defaults;
+    return {
+      ...defaults,
+      ...saved,
+      txSend: { ...defaults.txSend, ...(saved.txSend || {}) },
+      jito: { ...defaults.jito, ...(saved.jito || {}), tipPayerKeypath: '' },
+      rpcSend: { ...defaults.rpcSend, ...(saved.rpcSend || {}) },
+      drift: {
+        ...defaults.drift,
+        ...(saved.drift || {}),
+        liquidator: {
+          ...defaults.drift.liquidator,
+          ...((saved.drift || {}).liquidator || {}),
+        },
+      },
+    };
   });
   
   // Save form values to localStorage when they change (excluding sensitive fields)
@@ -63,6 +94,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
         const jito = cfg?.jito || {};
         const rpcSend = cfg?.rpcSend || {};
         const drift = cfg?.drift || {};
+        const liq = drift?.liquidator || {};
         const feeMultipliersText = (() => {
           try { return JSON.stringify(drift?.feeMultipliers || {}, null, 2); } catch { return '{}'; }
         })();
@@ -92,6 +124,18 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
             altRefreshMs: Number.isFinite(Number(drift.altRefreshMs)) ? Number(drift.altRefreshMs) : 300000,
             maxOracleDelaySlots: Number.isFinite(Number(drift.maxOracleDelaySlots)) ? Number(drift.maxOracleDelaySlots) : 40,
             fillerPriorityFloorMicroLamports: Number.isFinite(Number(drift.fillerPriorityFloorMicroLamports)) ? Number(drift.fillerPriorityFloorMicroLamports) : 15000,
+            triggerPriorityFloorMicroLamports: Number.isFinite(Number(drift.triggerPriorityFloorMicroLamports)) ? Number(drift.triggerPriorityFloorMicroLamports) : 10000,
+            marketCacheTtlMs: Number.isFinite(Number(drift.marketCacheTtlMs)) ? Number(drift.marketCacheTtlMs) : 2000,
+            hotMarketsPerLoop: Number.isFinite(Number(drift.hotMarketsPerLoop)) ? Number(drift.hotMarketsPerLoop) : 25,
+            verboseNodeLogs: !!drift.verboseNodeLogs,
+            nodeLogSampleRate: Number.isFinite(Number(drift.nodeLogSampleRate)) ? Number(drift.nodeLogSampleRate) : 0,
+            nodeMapTtlMs: Number.isFinite(Number(drift.nodeMapTtlMs)) ? Number(drift.nodeMapTtlMs) : 60000,
+            nodeMapMax: Number.isFinite(Number(drift.nodeMapMax)) ? Number(drift.nodeMapMax) : 20000,
+            liquidator: {
+              oracleTwapGuardPct: Number.isFinite(Number(liq.oracleTwapGuardPct)) ? Number(liq.oracleTwapGuardPct) : 0.5,
+              oracleGuardCooldownMs: Number.isFinite(Number(liq.oracleGuardCooldownMs)) ? Number(liq.oracleGuardCooldownMs) : 5000,
+              hotUsersPerTick: Number.isFinite(Number(liq.hotUsersPerTick)) ? Number(liq.hotUsersPerTick) : 25,
+            },
             feeMultipliersText,
           },
         });
@@ -144,6 +188,18 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
           altRefreshMs: Math.max(60000, Number(form.drift.altRefreshMs || 300000)),
           maxOracleDelaySlots: Math.max(0, Number(form.drift.maxOracleDelaySlots || 40)),
           fillerPriorityFloorMicroLamports: Math.max(0, Number(form.drift.fillerPriorityFloorMicroLamports || 15000)),
+          triggerPriorityFloorMicroLamports: Math.max(0, Number(form.drift.triggerPriorityFloorMicroLamports || 10000)),
+          marketCacheTtlMs: Math.max(500, Number(form.drift.marketCacheTtlMs || 2000)),
+          hotMarketsPerLoop: Math.max(1, Number(form.drift.hotMarketsPerLoop || 25)),
+          verboseNodeLogs: !!form.drift.verboseNodeLogs,
+          nodeLogSampleRate: Math.max(0, Math.min(1, Number(form.drift.nodeLogSampleRate || 0))),
+          nodeMapTtlMs: Math.max(1000, Number(form.drift.nodeMapTtlMs || 60000)),
+          nodeMapMax: Math.max(1000, Number(form.drift.nodeMapMax || 20000)),
+          liquidator: {
+            oracleTwapGuardPct: Math.max(0, Number(form.drift?.liquidator?.oracleTwapGuardPct ?? 0.5)),
+            oracleGuardCooldownMs: Math.max(1000, Number(form.drift?.liquidator?.oracleGuardCooldownMs ?? 5000)),
+            hotUsersPerTick: Math.max(1, Number(form.drift?.liquidator?.hotUsersPerTick ?? 25)),
+          },
           feeMultipliers,
         },
       };
@@ -327,6 +383,78 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
                   <div className="text-gray-400 mb-1">Filler Priority Floor (µ-lamports)</div>
                   <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.drift.fillerPriorityFloorMicroLamports}
                     onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, fillerPriorityFloorMicroLamports: Number(e.target.value) } }))} />
+                </div>
+                <div>
+                  <div className="text-gray-400 mb-1">Trigger Priority Floor (µ-lamports)</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.drift.triggerPriorityFloorMicroLamports}
+                    onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, triggerPriorityFloorMicroLamports: Number(e.target.value) } }))} />
+                </div>
+                <div>
+                  <div className="text-gray-400 mb-1">Market Cache TTL (ms)</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.drift.marketCacheTtlMs}
+                    onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, marketCacheTtlMs: Number(e.target.value) } }))} />
+                </div>
+                <div>
+                  <div className="text-gray-400 mb-1">Hot Markets per Loop</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.drift.hotMarketsPerLoop}
+                    onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, hotMarketsPerLoop: Number(e.target.value) } }))} />
+                </div>
+                <label className="flex items-center gap-2 md:col-span-2">
+                  <input type="checkbox" className="h-4 w-4" checked={!!form.drift.verboseNodeLogs}
+                    onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, verboseNodeLogs: e.target.checked } }))} />
+                  <span className="text-gray-300">Verbose per-node logs (debug level)</span>
+                </label>
+                <div>
+                  <div className="text-gray-400 mb-1">Node Log Sample Rate (0..1)</div>
+                  <input type="number" step="0.05" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.drift.nodeLogSampleRate}
+                    onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, nodeLogSampleRate: Number(e.target.value) } }))} />
+                </div>
+                <div>
+                  <div className="text-gray-400 mb-1">Node Map TTL (ms)</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.drift.nodeMapTtlMs}
+                    onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, nodeMapTtlMs: Number(e.target.value) } }))} />
+                </div>
+                <div>
+                  <div className="text-gray-400 mb-1">Node Map Max (entries)</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.drift.nodeMapMax}
+                    onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, nodeMapMax: Number(e.target.value) } }))} />
+                </div>
+                <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Liquidator Guardrails</div>
+                <div>
+                  <div className="text-gray-400 mb-1">Oracle/TWAP Guard (pct)</div>
+                  <input type="number" step="0.01" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white"
+                    value={form.drift?.liquidator?.oracleTwapGuardPct}
+                    onChange={(e) => setForm((p: any) => ({
+                      ...p,
+                      drift: {
+                        ...p.drift,
+                        liquidator: { ...(p.drift?.liquidator || {}), oracleTwapGuardPct: Number(e.target.value) }
+                      }
+                    }))} />
+                </div>
+                <div>
+                  <div className="text-gray-400 mb-1">Oracle Guard Cooldown (ms)</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white"
+                    value={form.drift?.liquidator?.oracleGuardCooldownMs}
+                    onChange={(e) => setForm((p: any) => ({
+                      ...p,
+                      drift: {
+                        ...p.drift,
+                        liquidator: { ...(p.drift?.liquidator || {}), oracleGuardCooldownMs: Number(e.target.value) }
+                      }
+                    }))} />
+                </div>
+                <div>
+                  <div className="text-gray-400 mb-1">Hot Users per Tick</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white"
+                    value={form.drift?.liquidator?.hotUsersPerTick}
+                    onChange={(e) => setForm((p: any) => ({
+                      ...p,
+                      drift: {
+                        ...p.drift,
+                        liquidator: { ...(p.drift?.liquidator || {}), hotUsersPerTick: Number(e.target.value) }
+                      }
+                    }))} />
                 </div>
                 <div className="md:col-span-2">
                   <div className="text-gray-400 mb-1">Fee Multipliers (JSON)</div>

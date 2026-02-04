@@ -4,6 +4,8 @@ import { DriftService } from './client.js';
 import { DriftPriceService } from './price.js';
 import { fetchDlobL2 } from './marketdata.js';
 import { getAllowlistIndices, indexToSymbol } from './marketMapping.js';
+import { hotlist } from './hotlist.js';
+import { isOracleTwapOutlier } from './guardrails.js';
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
@@ -401,6 +403,11 @@ export class DriftLiquidator {
     // Unsubscribe all User websocket subscriptions (skip when WS not ready)
     try {
       const drift: any = (DriftService.getInstance() as any).client;
+      let spotDeposit: any | null = null;
+      let spotBorrow: any | null = null;
+      let perpPositionsForPnl: any[] = [];
+      let openOrdersCount = 0;
+      let forceCancelAttempted = false;
       const ws: any = drift?.connection?._rpcWebSocket?._ws;
       const rs: number = Number(ws?.readyState);
       const canRpc = (rs === 0 || rs === 1);
@@ -768,8 +775,16 @@ export class DriftLiquidator {
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       const recoveryBuf = Number(((this.config as any).recoveryBuffer ?? ((CONFIG as any)?.drift?.liquidator?.recoveryBuffer) ?? 0.05));
       const health = maint > 0 ? (total - maint) / maint : Infinity;
+      try {
+        if (this.hasOracleOutlierForUser(user)) {
+          this.applyOracleGuardCooldown(pkStr);
+          try { logger.info('drift.liquidator.skip_target', { user: pkStr, reason: 'ORACLE_TWAP_GUARD', cat: 'drift' }); } catch {}
+          return;
+        }
+      } catch {}
       if (health < riskThresh) {
         this.addOrQueueCandidate({ userPk: pkStr, health, updatedAt: Date.now() } as any);
+        try { hotlist.markUser(pkStr, 'liquidator_risk'); } catch {}
         try { await this.refreshIndexForUser(user, pkStr); } catch {}
         this.state.candidatesQueued = this.heap.size();
         this.maybeEmitQueue();
@@ -935,6 +950,11 @@ export class DriftLiquidator {
         }
       } catch {}
       const newSet = new Set<number>(active);
+      try {
+        for (const m of Array.from(newSet)) {
+          hotlist.markMarket(Number(m), 'liquidator_exposure');
+        }
+      } catch {}
       const prev = this.userToMarkets.get(userPk) || new Set<number>();
       for (const m of Array.from(prev)) {
         if (!newSet.has(m)) {
@@ -1245,7 +1265,14 @@ export class DriftLiquidator {
           this.userCache.set(String(target.userPk), user);
           try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
         }
-        try { await (user as any)?.fetchAccounts?.(); } catch {}
+        try {
+          const last = this.userLastRefresh.get(String(target.userPk)) || 0;
+          const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
+          if ((Date.now() - last) > refreshMs) {
+            await (user as any)?.fetchAccounts?.();
+            this.userLastRefresh.set(String(target.userPk), Date.now());
+          }
+        } catch {}
         try {
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
@@ -1289,7 +1316,14 @@ export class DriftLiquidator {
           this.userCache.set(String(target.userPk), sdkUser);
           try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
         }
-        try { await (sdkUser as any)?.fetchAccounts?.(); } catch {}
+        try {
+          const last = this.userLastRefresh.get(String(target.userPk)) || 0;
+          const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
+          if ((Date.now() - last) > refreshMs) {
+            await (sdkUser as any)?.fetchAccounts?.();
+            this.userLastRefresh.set(String(target.userPk), Date.now());
+          }
+        } catch {}
         // Early bankruptcy handling: skip normal liquidation and optionally resolve
         try {
           const bankrupt = await this.isUserBankrupt(sdkUser);
@@ -1406,6 +1440,16 @@ export class DriftLiquidator {
             } catch {}
           }
         } catch {}
+        try {
+          const ua = (sdkUser as any)?.getUserAccount?.();
+          openOrdersCount = Number(ua?.openOrders || 0);
+        } catch {}
+        try {
+          const spotTargets = await this.getSpotLiqCandidates(sdkUser);
+          spotDeposit = spotTargets.deposit || null;
+          spotBorrow = spotTargets.borrow || null;
+        } catch {}
+        try { perpPositionsForPnl = Array.isArray(positions) ? positions : []; } catch {}
         let userProfit: number | undefined = undefined;
         for (const ps of posSummary) { if (typeof ps.profitability === 'number') userProfit = (typeof userProfit === 'number') ? Math.min(userProfit, ps.profitability) : ps.profitability; }
         const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
@@ -1449,45 +1493,26 @@ export class DriftLiquidator {
           logger.info('drift.liquidator.decision', { user: target.userPk, proceed: true, reason: 'OK', gate: { minNotional, minProfitability, attemptNotional: maxAttemptNotionalLocal, profitability: userProfit }, cat: 'drift' } as any);
         } catch {}
       } catch {}
+      try {
+        const sdkUserGuard = this.userCache.get(String(target.userPk));
+        if (sdkUserGuard && this.hasOracleOutlierForUser(sdkUserGuard)) {
+          try { logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'ORACLE_TWAP_GUARD', cat: 'drift' }); } catch {}
+          this.applyOracleGuardCooldown(target.userPk);
+          return;
+        }
+      } catch {}
       const marketsForUser = Array.from(this.userToMarkets.get(String(target.userPk)) || []);
       const perpMarkets = marketsForUser.length > 0 ? marketsForUser : [0, 1, 2];
+      let anySuccess = false;
       // Step 1: force-cancel orders (best-effort, capped)
       try {
-        const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
-        const batch = Math.min(maxCancels, 10);
-        try { logger.info('drift.liquidator.force_cancel_begin', { user: target.userPk, maxCancels, batch, cat: 'drift' }); } catch {}
-        let batches = 0;
-        let errors = 0;
-        if (typeof drift?.forceCancelOrdersForUsers === 'function' && userPublicKey) {
-          try {
-            await drift.forceCancelOrdersForUsers({ users: [userPublicKey], marketType: 0, maxCancels });
-            batches += 1;
-            try { logger.info('drift.liquidator.force_cancel_batch_ok', { user: target.userPk, batchSize: maxCancels, batches, cat: 'drift' }); } catch {}
-          } catch (e: any) {
-            errors += 1;
-            try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
-          }
-        } else if (typeof drift?.forceCancelOrders === 'function' && userPublicKey) {
-          try {
-            let remaining = maxCancels;
-            while (remaining > 0) {
-              try {
-                await drift.forceCancelOrders({ userPublicKey: userPublicKey, marketType: 0, limit: batch });
-                batches += 1;
-                try { logger.info('drift.liquidator.force_cancel_batch_ok', { user: target.userPk, batchSize: batch, batches, cat: 'drift' }); } catch {}
-              } catch (e: any) {
-                errors += 1;
-                try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
-              }
-              remaining -= batch;
-              if (remaining > 0) { try { await new Promise(r => setTimeout(r, 250)); } catch {} }
-            }
-          } catch {}
+        if (openOrdersCount > 0) {
+          const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
+          await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels);
+          forceCancelAttempted = true;
         } else {
-          try { logger.info('drift.liquidator.force_cancel_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
+          try { logger.info('drift.liquidator.force_cancel_skip_no_orders', { user: target.userPk, cat: 'drift' }); } catch {}
         }
-        try { logger.info('drift.liquidator.force_cancel_summary', { user: target.userPk, requested: maxCancels, batches, errors, cat: 'drift' }); } catch {}
-        try { logger.info('drift.liquidator.force_cancel_end', { user: target.userPk, cat: 'drift' }); } catch {}
       } catch (e: any) {
         this.recordError(e);
       }
@@ -1513,12 +1538,17 @@ export class DriftLiquidator {
             } catch {}
           } catch {}
         }
-        let anySuccess = false;
         if (typeof drift?.liquidatePerp === 'function' && userPublicKey) {
           let attempts = 0;
           for (const idx of perpMarkets) {
             if (attempts >= maxPerp) break;
             const mkt = Number(idx);
+            try {
+              if (this.isOracleOutlier(mkt, 'perp')) {
+                try { logger.info('drift.liquidator.perp_skip_oracle_guard', { user: target.userPk, marketIndex: mkt, cat: 'drift' }); } catch {}
+                continue;
+              }
+            } catch {}
             const posN = Number(posNotionalByMarket.get(mkt) || 0);
             const baseRawAbs = Number(posBaseRawByMarket.get(mkt) || 0);
             if (!Number.isFinite(posN) || posN <= 0) continue;
@@ -1567,20 +1597,23 @@ export class DriftLiquidator {
           try {
             // If we only have batch available, compute a conservative global fraction to obey the cap
             let sizeFraction = baseSizeFrac;
+            const safeMarkets = perpMarkets.filter((mkt: number) => {
+              try { return !this.isOracleOutlier(Number(mkt), 'perp'); } catch { return true; }
+            });
             if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
-              const sumN = perpMarkets.reduce((s: number, idx: number) => s + (Number(posNotionalByMarket.get(Number(idx)) || 0)), 0);
+              const sumN = safeMarkets.reduce((s: number, idx: number) => s + (Number(posNotionalByMarket.get(Number(idx)) || 0)), 0);
               if (sumN > 0) sizeFraction = Math.min(baseSizeFrac, Math.max(0, remainingNotional / sumN));
-              try { logger.info('drift.liquidator.perp_batch_attempt', { user: target.userPk, markets: perpMarkets, sumNotional: sumN, sizeFraction, remainingNotional, cat: 'drift' }); } catch {}
+              try { logger.info('drift.liquidator.perp_batch_attempt', { user: target.userPk, markets: safeMarkets, sumNotional: sumN, sizeFraction, remainingNotional, cat: 'drift' }); } catch {}
             }
             const t0 = Date.now();
             if (sizeFraction > 0) {
               try {
-                const res = await drift.liquidatePerpBatch({ users: [userPublicKey], markets: perpMarkets, sizeFraction });
+                const res = await drift.liquidatePerpBatch({ users: [userPublicKey], markets: safeMarkets, sizeFraction });
                 const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
-                try { logger.info('drift.liquidator.perp_batch_ok', { user: target.userPk, markets: perpMarkets, sizeFraction, sig, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+                try { logger.info('drift.liquidator.perp_batch_ok', { user: target.userPk, markets: safeMarkets, sizeFraction, sig, ms: Date.now() - t0, cat: 'drift' }); } catch {}
                 anySuccess = true;
               } catch (e: any) {
-                try { logger.warn('drift.liquidator.perp_batch_failed', { user: target.userPk, markets: perpMarkets, sizeFraction, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                try { logger.warn('drift.liquidator.perp_batch_failed', { user: target.userPk, markets: safeMarkets, sizeFraction, error: String(e?.message || e), cat: 'drift' }); } catch {}
               }
             }
           } catch {}
@@ -1591,42 +1624,111 @@ export class DriftLiquidator {
         this.recordError(e);
         this.applyCooldownForTarget(target.userPk);
       }
+      // Step 2b: attempt perp/borrow PnL liquidations (v3 instructions)
+      try {
+        const maxPnl = Math.max(1, Math.min(20, Number((this.config as any)?.maxPerpAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) ?? 3)));
+        const sizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05))));
+        let attempts = 0;
+        const sdkUser = this.userCache.get(String(target.userPk));
+        const userAccount = (sdkUser as any)?.getUserAccount?.();
+        const fnBorrowForPnl = (drift as any)?.liquidateBorrowForPerpPnl;
+        const fnPerpPnlForDeposit = (drift as any)?.liquidatePerpPnlForDeposit;
+        if (Array.isArray(perpPositionsForPnl) && (spotDeposit || spotBorrow)) {
+          for (const p of perpPositionsForPnl) {
+            if (attempts >= maxPnl) break;
+            const mkt = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+            const quoteRaw = Number(p?.quoteAssetAmount?.toString?.() || p?.quoteAssetAmount || 0);
+            if (!Number.isFinite(mkt) || !Number.isFinite(quoteRaw) || quoteRaw === 0) continue;
+            if (this.isOracleOutlier(mkt, 'perp')) continue;
+            // Negative PnL: attempt perp pnl for deposit
+            if (quoteRaw < 0 && spotDeposit && typeof fnPerpPnlForDeposit === 'function') {
+              if (this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot')) continue;
+              const depAmount = this.scaleAmount(spotDeposit.amountRaw, sizeFrac);
+              try {
+                const res = await this.callMethodVariants(fnPerpPnlForDeposit, [
+                  [userPublicKey, userAccount, mkt, Number(spotDeposit.marketIndex), depAmount],
+                  [userPublicKey, mkt, Number(spotDeposit.marketIndex), depAmount],
+                ]);
+                attempts += 1;
+                try { logger.info('drift.liquidator.perp_pnl_for_deposit_ok', { user: target.userPk, marketIndex: mkt, depositMarketIndex: Number(spotDeposit.marketIndex), sig: (res as any)?.txSig || (res as any)?.signature || res, cat: 'drift' }); } catch {}
+              } catch (e: any) {
+                try { logger.warn('drift.liquidator.perp_pnl_for_deposit_failed', { user: target.userPk, marketIndex: mkt, error: String(e?.message || e), cat: 'drift' }); } catch {}
+              }
+              continue;
+            }
+            // Positive PnL: attempt borrow for perp pnl
+            if (quoteRaw > 0 && spotBorrow && typeof fnBorrowForPnl === 'function') {
+              if (this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot')) continue;
+              const borrowAmount = this.scaleAmount(spotBorrow.amountRaw, sizeFrac);
+              try {
+                const res = await this.callMethodVariants(fnBorrowForPnl, [
+                  [userPublicKey, userAccount, mkt, Number(spotBorrow.marketIndex), borrowAmount],
+                  [userPublicKey, mkt, Number(spotBorrow.marketIndex), borrowAmount],
+                ]);
+                attempts += 1;
+                try { logger.info('drift.liquidator.borrow_for_perp_pnl_ok', { user: target.userPk, marketIndex: mkt, borrowMarketIndex: Number(spotBorrow.marketIndex), sig: (res as any)?.txSig || (res as any)?.signature || res, cat: 'drift' }); } catch {}
+              } catch (e: any) {
+                try { logger.warn('drift.liquidator.borrow_for_perp_pnl_failed', { user: target.userPk, marketIndex: mkt, error: String(e?.message || e), cat: 'drift' }); } catch {}
+              }
+              continue;
+            }
+          }
+        }
+      } catch (e: any) {
+        try { logger.warn('drift.liquidator.perp_pnl_block_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+      }
       // Step 3: attempt spot liquidation (best-effort, capped)
       try {
         if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity && remainingNotional <= 0) {
           // Cap fully consumed; skip spot
           try { logger.info('drift.liquidator.spot_skip_cap', { user: target.userPk, cat: 'drift' }); } catch {}
-        } else {
-        if (typeof drift?.liquidateSpot === 'function' && userPublicKey && (drift?.liquidateSpot?.length || 0) >= 4) {
-          const maxSpot = Math.max(1, Math.min(50, Number((this.config.maxSpotAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) ?? 2))));
-          const sizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05))));
-          const spots = [0];
-          let attempts = 0;
-          for (const s of spots) {
-            if (attempts >= maxSpot) break;
-              try { logger.info('drift.liquidator.spot_attempt', { user: target.userPk, spotMarketIndex: Number(s), sizeFraction: sizeFrac, cat: 'drift' }); } catch {}
-            const t0 = Date.now();
-            try {
-                // Without liability/asset mapping, skip spot liquidation unless API supports simple signature. Guarded above by arity.
-                // Implementations typically require (user, assetMarketIndex, liabilityMarketIndex, maxAmountBN)
-                // For now, treat as unavailable in most SDKs.
-                throw new Error('SPOT_API_UNSUPPORTED');
-                const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
+        } else if (spotDeposit && spotBorrow && userPublicKey) {
+          if (this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot') || this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot')) {
+            try { logger.info('drift.liquidator.spot_skip_oracle_guard', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), cat: 'drift' }); } catch {}
+          } else {
+            const maxSpot = Math.max(1, Math.min(50, Number((this.config.maxSpotAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) ?? 2))));
+            const sizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05))));
+            const amountToLiq = this.scaleAmount(spotBorrow.amountRaw, sizeFrac);
+            const fnBorrow = (drift as any)?.liquidateBorrow || (drift as any)?.liquidateSpot;
+            let attempts = 0;
+            if (typeof fnBorrow === 'function') {
+              try {
+                const res = await this.callMethodVariants(fnBorrow, [
+                  [userPublicKey, (this.userCache.get(String(target.userPk)) as any)?.getUserAccount?.(), Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
+                  [userPublicKey, Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
+                ]);
                 attempts += 1;
-                try { logger.info('drift.liquidator.spot_ok', { user: target.userPk, spotMarketIndex: Number(s), sizeFraction: sizeFrac, sig, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+                const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
+                try { logger.info('drift.liquidator.spot_ok', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), sizeFraction: sizeFrac, sig, cat: 'drift' }); } catch {}
                 anySuccess = true;
-            } catch (e: any) {
-              try { logger.warn('drift.liquidator.spot_failed', { user: target.userPk, spotMarketIndex: Number(s), sizeFraction: sizeFrac, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
+                  const consumed = Number(spotBorrow.valueUsd || 0) * sizeFrac;
+                  remainingNotional = Math.max(0, remainingNotional - (Number.isFinite(consumed) ? consumed : 0));
+                }
+              } catch (e: any) {
+                if (attempts < maxSpot) {
+                  try { logger.warn('drift.liquidator.spot_failed', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), sizeFraction: sizeFrac, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                }
+              }
+            } else {
+              try { logger.info('drift.liquidator.spot_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
             }
           }
         } else {
           try { logger.info('drift.liquidator.spot_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
         }
-        }
       } catch (e: any) {
         this.recordError(e);
         this.applyCooldownForTarget(target.userPk);
       }
+      // If no liquidation succeeded and we skipped cancels, try a single cancel pass
+      try {
+        if (!anySuccess && !forceCancelAttempted) {
+          const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
+          await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels);
+          forceCancelAttempted = true;
+        }
+      } catch {}
       // Final attempt summary: before/after health and reduced USD by market
       try {
         let beforeHealth: number | null = null;
@@ -1645,7 +1747,14 @@ export class DriftLiquidator {
             const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
             beforeHealth = (isFinite(total) && isFinite(maint) && maint > 0) ? (total - maint) / maint : null;
           } catch {}
-          try { await (sdkUser as any)?.fetchAccounts?.(); } catch {}
+          try {
+            const last = this.userLastRefresh.get(String(target.userPk)) || 0;
+            const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
+            if ((Date.now() - last) > refreshMs) {
+              await (sdkUser as any)?.fetchAccounts?.();
+              this.userLastRefresh.set(String(target.userPk), Date.now());
+            }
+          } catch {}
           try {
             const total2 = Number((sdkUser as any)?.getTotalCollateral?.() || 0);
             const maint2 = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
@@ -1723,6 +1832,132 @@ export class DriftLiquidator {
     } catch {}
   }
 
+  private scaleAmount(amount: any, fraction: number): any {
+    try {
+      const frac = Math.max(0, Math.min(1, Number(fraction || 0)));
+      if (!amount) return amount;
+      if (typeof amount === 'object' && typeof amount.muln === 'function' && typeof amount.divn === 'function') {
+        const scaled = Math.max(0, Math.floor(frac * 1_000_000));
+        return amount.muln(scaled).divn(1_000_000);
+      }
+      const n = Number(amount?.toString?.() || amount || 0);
+      return Math.max(0, n * frac);
+    } catch {
+      return amount;
+    }
+  }
+
+  private async callMethodVariants(fn: any, variants: any[][]): Promise<any> {
+    if (typeof fn !== 'function') throw new Error('METHOD_UNAVAILABLE');
+    let lastErr: any = null;
+    for (const args of variants) {
+      try { return await fn(...args); }
+      catch (e: any) { lastErr = e; }
+    }
+    if (lastErr) throw lastErr;
+    return null;
+  }
+
+  private isOracleOutlier(marketIndex: number, type: 'perp' | 'spot'): boolean {
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const od = (type === 'perp')
+        ? drift?.getOracleDataForPerpMarket?.(Number(marketIndex))
+        : drift?.getOracleDataForSpotMarket?.(Number(marketIndex));
+      const price = Number(od?.price?.toString?.() || od?.price || 0);
+      const twap = Number(
+        od?.twap?.toString?.()
+        || od?.priceTwap?.toString?.()
+        || od?.oraclePriceTwap?.toString?.()
+        || od?.historicalOracleData?.lastOraclePriceTwap?.toString?.()
+        || 0
+      );
+      const guard = Number((this.config as any)?.oracleTwapGuardPct ?? ((CONFIG as any)?.drift?.liquidator?.oracleTwapGuardPct) ?? 0.5);
+      return isOracleTwapOutlier(price, twap, guard);
+    } catch {
+      return false;
+    }
+  }
+
+  private hasOracleOutlierForUser(sdkUser: any): boolean {
+    try {
+      const perps = (sdkUser as any)?.getPerpPositions?.() || (sdkUser as any)?.getUserAccount?.()?.perpPositions || [];
+      for (const p of perps || []) {
+        const idx = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+        const base = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
+        const quote = Number(p?.quoteAssetAmount?.toString?.() || p?.quoteAssetAmount || 0);
+        if (!Number.isFinite(idx) || (!base && !quote)) continue;
+        if (this.isOracleOutlier(idx, 'perp')) return true;
+      }
+      const spots = (sdkUser as any)?.getSpotPositions?.() || (sdkUser as any)?.getUserAccount?.()?.spotPositions || [];
+      for (const sp of spots || []) {
+        const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
+        const raw = Number(sp?.scaledBalance?.toString?.() || sp?.scaledBalance || 0);
+        if (!Number.isFinite(idx) || !raw) continue;
+        if (this.isOracleOutlier(idx, 'spot')) return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private applyOracleGuardCooldown(userPk: string): void {
+    try {
+      const ms = Math.max(1000, Number((this.config as any)?.oracleGuardCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.oracleGuardCooldownMs) ?? 5000));
+      this.healthyUntil.set(String(userPk), Date.now() + ms);
+    } catch {}
+  }
+
+  private async getSpotLiqCandidates(sdkUser: any): Promise<{ deposit?: any; borrow?: any }> {
+    const out: { deposit?: any; borrow?: any } = {};
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const sdk: any = await import('@drift-labs/sdk');
+      const getVariant = (sdk as any)?.getVariant;
+      const isVariant = (sdk as any)?.isVariant;
+      const getTokenAmount = (sdk as any)?.getTokenAmount;
+      const PRICE_PREC = Number((sdk as any)?.PRICE_PRECISION ?? 1_000_000);
+      const spots = (sdkUser as any)?.getSpotPositions?.() || (sdkUser as any)?.getUserAccount?.()?.spotPositions || [];
+      let bestDeposit: any = null;
+      let bestBorrow: any = null;
+      for (const sp of spots || []) {
+        const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
+        if (!Number.isFinite(idx)) continue;
+        const market = drift?.getSpotMarketAccount?.(idx);
+        if (!market) continue;
+        const balanceType = sp?.balanceType;
+        let isBorrow = false;
+        try {
+          if (typeof isVariant === 'function') isBorrow = isVariant(balanceType, 'borrow');
+          else if (typeof getVariant === 'function') isBorrow = String(getVariant(balanceType)).toLowerCase().includes('borrow');
+          else isBorrow = String(balanceType || '').toLowerCase().includes('borrow');
+        } catch {}
+        let amountToken: any = null;
+        try {
+          if (typeof getTokenAmount === 'function') amountToken = getTokenAmount(sp?.scaledBalance, market, balanceType);
+        } catch {}
+        const amountRaw = amountToken ?? sp?.scaledBalance ?? sp?.balance ?? sp?.depositBalance ?? sp?.borrowBalance ?? 0;
+        const decimals = Number(market?.decimals ?? 6);
+        const amountUi = Number(amountRaw?.toString?.() || amountRaw || 0) / Math.pow(10, decimals);
+        if (!Number.isFinite(amountUi) || amountUi === 0) continue;
+        const oracle = drift?.getOracleDataForSpotMarket?.(idx);
+        const priceRaw = Number(oracle?.price?.toString?.() || oracle?.price || 0);
+        const priceUi = priceRaw > 0 ? priceRaw / PRICE_PREC : 0;
+        const valueUsd = Math.abs(amountUi) * (priceUi || 0);
+        const entry = { marketIndex: idx, amountRaw, amountUi, valueUsd, isBorrow, decimals };
+        if (isBorrow) {
+          if (!bestBorrow || valueUsd > Number(bestBorrow?.valueUsd || 0)) bestBorrow = entry;
+        } else {
+          if (!bestDeposit || valueUsd > Number(bestDeposit?.valueUsd || 0)) bestDeposit = entry;
+        }
+      }
+      if (bestDeposit) out.deposit = bestDeposit;
+      if (bestBorrow) out.borrow = bestBorrow;
+    } catch {}
+    return out;
+  }
+
   private computeDistanceToLiquidation(userPk: string, marketIndex: number): number | null {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
@@ -1793,6 +2028,46 @@ export class DriftLiquidator {
       const until = Date.now() + baseMs + jitter;
       this.targetCooldownUntil.set(String(userPk), until);
     } catch {}
+  }
+
+  private async forceCancelOrdersForUser(drift: any, userPublicKey: any, userPk: string, maxCancels: number): Promise<{ batches: number; errors: number }> {
+    let batches = 0;
+    let errors = 0;
+    try {
+      const batch = Math.min(Math.max(1, maxCancels), 10);
+      try { logger.info('drift.liquidator.force_cancel_begin', { user: userPk, maxCancels, batch, cat: 'drift' }); } catch {}
+      if (typeof drift?.forceCancelOrdersForUsers === 'function' && userPublicKey) {
+        try {
+          await drift.forceCancelOrdersForUsers({ users: [userPublicKey], marketType: 0, maxCancels });
+          batches += 1;
+          try { logger.info('drift.liquidator.force_cancel_batch_ok', { user: userPk, batchSize: maxCancels, batches, cat: 'drift' }); } catch {}
+        } catch (e: any) {
+          errors += 1;
+          try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+        }
+      } else if (typeof drift?.forceCancelOrders === 'function' && userPublicKey) {
+        try {
+          let remaining = maxCancels;
+          while (remaining > 0) {
+            try {
+              await drift.forceCancelOrders({ userPublicKey, marketType: 0, limit: batch });
+              batches += 1;
+              try { logger.info('drift.liquidator.force_cancel_batch_ok', { user: userPk, batchSize: batch, batches, cat: 'drift' }); } catch {}
+            } catch (e: any) {
+              errors += 1;
+              try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+            }
+            remaining -= batch;
+            if (remaining > 0) { try { await new Promise(r => setTimeout(r, 250)); } catch {} }
+          }
+        } catch {}
+      } else {
+        try { logger.info('drift.liquidator.force_cancel_unavailable', { user: userPk, cat: 'drift' }); } catch {}
+      }
+    } catch {}
+    try { logger.info('drift.liquidator.force_cancel_summary', { user: userPk, requested: maxCancels, batches, errors, cat: 'drift' }); } catch {}
+    try { logger.info('drift.liquidator.force_cancel_end', { user: userPk, cat: 'drift' }); } catch {}
+    return { batches, errors };
   }
 
   private maybeEmitQueue(): void {
@@ -2001,6 +2276,16 @@ export class DriftLiquidator {
       const capCfg = Math.max(1, Math.min(200, Number((this.config.maxProbesPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxProbesPerTick) ?? 40))));
       const perTickCap = Math.max(1, Math.floor(this.getProbeRps() * Math.max(200, Number(this.currentPollMs || 1000)) / 1000));
       const cap = Math.min(capCfg, perTickCap);
+      try {
+        const hotUsers = hotlist.getHotUsers({
+          limit: Math.max(1, Number((CONFIG as any)?.drift?.liquidator?.hotUsersPerTick ?? 25)),
+          consumerId: 'liquidator',
+        });
+        if (hotUsers.length > 0) {
+          try { logger.debug('drift.liquidator.hotlist_users', { count: hotUsers.length, cat: 'drift' }); } catch {}
+        }
+        for (const pk of hotUsers) this.enqueueProbe(String(pk));
+      } catch {}
       const slice = this.pendingProbeQueue.splice(0, cap);
       let probed = 0;
       let flagged = 0;
@@ -2044,10 +2329,21 @@ export class DriftLiquidator {
           } catch {}
           // Rate-limit the HTTP RPC call
           await this.acquireProbeToken();
-          const exists = await (user as any).exists?.();
+          let exists = true;
+          try {
+            const ua = (user as any)?.getUserAccount?.();
+            if (!ua) exists = await (user as any).exists?.();
+          } catch {}
           if (!exists) { this.inProbeQueue.delete(key); continue; }
           // Ensure fresh accounts snapshot after subscribe (WS may take a moment to push first state)
-          try { if (typeof (user as any)?.fetchAccounts === 'function') { await (user as any).fetchAccounts(); } } catch {}
+          try {
+            const last = this.userLastRefresh.get(String(key)) || 0;
+            const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
+            if ((Date.now() - last) > refreshMs) {
+              if (typeof (user as any)?.fetchAccounts === 'function') { await (user as any).fetchAccounts(); }
+              this.userLastRefresh.set(String(key), Date.now());
+            }
+          } catch {}
           // Compute health early; if already under threshold, flag immediately
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
@@ -2056,6 +2352,13 @@ export class DriftLiquidator {
           // Positions for scoping and indexing
           let positions = (user as any)?.getPerpPositions?.() || [];
           try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (user as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch {}
+          try {
+            if (this.hasOracleOutlierForUser(user)) {
+              this.applyOracleGuardCooldown(key);
+              this.inProbeQueue.delete(key);
+              continue;
+            }
+          } catch {}
           let hasActive = false;
           let inScope = false;
           const allowedMarkets: Set<number> | null = Array.isArray(this.config.probeMarketIndices) && this.config.probeMarketIndices.length > 0
@@ -2177,6 +2480,7 @@ export class DriftLiquidator {
           if (health < riskThresh) {
             // Aggregate a user-level profitability (min across positions)
             let userProfit: number | undefined = undefined;
+            try { hotlist.markUser(key, 'liquidator_risk'); } catch {}
             try {
               for (const ps of posSummary) {
                 if (typeof ps.profitability === 'number') {
@@ -2251,7 +2555,14 @@ export class DriftLiquidator {
             this.userCache.set(key, user);
             try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(key); } catch {}
           }
-          try { await (user as any)?.fetchAccounts?.(); } catch {}
+          try {
+            const last = this.userLastRefresh.get(String(key)) || 0;
+            const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
+            if ((Date.now() - last) > refreshMs) {
+              await (user as any)?.fetchAccounts?.();
+              this.userLastRefresh.set(String(key), Date.now());
+            }
+          } catch {}
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));

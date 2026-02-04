@@ -264,7 +264,11 @@ export async function buildDirectArbTx(
           
           // Load ALTs for accurate size calculation - this is critical for multi-hop CLMM transactions
           const poolIds = plan.hops.map(h => h.poolId);
-          const altResult = await loadAltsForRoute(poolIds);
+          const routeMints = Array.from(new Set(
+            (plan.path?.length ? plan.path : plan.hops.flatMap(h => [h.inputMint, h.outputMint]))
+              .filter(Boolean)
+          ));
+          const altResult = await loadAltsForRoute(poolIds, routeMints);
           const lookupTables = altResult.lookupTables;
           const altAddresses = altResult.altAddresses;
           
@@ -880,7 +884,11 @@ export async function buildDirectArbTx(
         
         // Use pool-specific ALT selection for compute measurement
         const poolIds = plan.hops.map(h => h.poolId);
-        const altResult = shouldUseAlts ? await loadAltsForRoute(poolIds) : { altAddresses: [] };
+        const routeMints = Array.from(new Set(
+          (plan.path?.length ? plan.path : plan.hops.flatMap(h => [h.inputMint, h.outputMint]))
+            .filter(Boolean)
+        ));
+        const altResult = shouldUseAlts ? await loadAltsForRoute(poolIds, routeMints) : { altAddresses: [] };
         const altAddresses = altResult.altAddresses || [];
         
         // If we have real instructions, measure them
@@ -1016,9 +1024,13 @@ export async function buildDirectArbTx(
     if (shouldUseAlts) {
       // Extract pool IDs from hops for pool-specific ALT lookup
       const poolIds = plan.hops.map(h => h.poolId);
+      const routeMints = Array.from(new Set(
+        (plan.path?.length ? plan.path : plan.hops.flatMap(h => [h.inputMint, h.outputMint]))
+          .filter(Boolean)
+      ));
       
       // Use loadAltsForRoute for proper poolToAlt mapping lookup
-      const altResult = await loadAltsForRoute(poolIds);
+      const altResult = await loadAltsForRoute(poolIds, routeMints);
       altAddresses = altResult.altAddresses;
       
       // Log ALT coverage for monitoring

@@ -17,6 +17,20 @@ export type DexAltSet = {
   totalAccounts: number;
 };
 
+/**
+ * User PDA ALT set for tracking multiple ALTs by mint coverage
+ */
+export type UserPdaAltSet = {
+  /** Array of ALT addresses for user PDAs */
+  addresses: string[];
+  /** Which mints are in each ALT (ALT address -> mint list) */
+  altContents: Record<string, string[]>;
+  /** Total mints tracked across all ALTs */
+  totalMints: number;
+  /** Total accounts across all ALTs */
+  totalAccounts: number;
+};
+
 export type AltConfig = {
   // Static ALTs (rarely change)
   alts: {
@@ -42,8 +56,13 @@ export type AltConfig = {
     pumpswap?: DexAltSet;
   };
 
+  // User PDA ALTs (multiple shards)
+  userPdaAlts?: UserPdaAltSet;
+
   // Reverse lookup: poolId -> ALT address (O(1) lookup)
   poolToAlt?: Record<string, string>;
+  // Reverse lookup: mint -> ALT address (O(1) lookup for user PDAs)
+  mintToAlt?: Record<string, string>;
 
   // Metadata
   createdAt?: number;
@@ -58,6 +77,7 @@ const defaults: AltConfig = {
   alts: {},
   dexAlts: {},
   poolToAlt: {},
+  mintToAlt: {},
 };
 
 /**
@@ -70,6 +90,15 @@ function migrateConfig(config: AltConfig): AltConfig {
   }
   if (!config.poolToAlt) {
     config.poolToAlt = {};
+  }
+  if (!config.mintToAlt) {
+    config.mintToAlt = {};
+  }
+  if (config.userPdaAlts) {
+    if (!config.userPdaAlts.addresses) config.userPdaAlts.addresses = [];
+    if (!config.userPdaAlts.altContents) config.userPdaAlts.altContents = {};
+    if (!Number.isFinite(config.userPdaAlts.totalMints)) config.userPdaAlts.totalMints = 0;
+    if (!Number.isFinite(config.userPdaAlts.totalAccounts)) config.userPdaAlts.totalAccounts = 0;
   }
   return config;
 }

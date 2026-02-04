@@ -38,16 +38,17 @@ const ACCOUNTS_PER_HOP: Record<number, number> = {
 
 /**
  * Select optimal ALTs for a route
- * Always includes common/flashloan/userPdas ALTs plus pool-specific ALTs
- * Falls back to including all DEX ALTs when pool-specific coverage is low
+ * Always includes common/flashloan ALTs plus pool-specific ALTs and user PDA shards for route mints
  * 
  * @param poolIds Array of pool addresses in the route
  * @param config ALT configuration (optional, will load if not provided)
+ * @param routeMints Optional route mint list for selecting user PDA shards
  * @returns Array of ALT addresses to use
  */
 export function selectAltsForRoute(
   poolIds: string[],
-  config: AltConfig
+  config: AltConfig,
+  routeMints?: string[]
 ): string[] {
   const altAddresses = new Set<string>();
 
@@ -58,12 +59,21 @@ export function selectAltsForRoute(
   if (config.alts.flashloan) {
     altAddresses.add(config.alts.flashloan);
   }
-  if (config.alts.userPdas) {
+
+  // Include user PDA shards only for route mints (if mapping exists)
+  const hasUserPdaShards = !!(config.userPdaAlts?.addresses && config.userPdaAlts.addresses.length > 0);
+  if (routeMints && routeMints.length > 0 && config.mintToAlt) {
+    const uniqueMints = [...new Set(routeMints)];
+    for (const mint of uniqueMints) {
+      const altAddress = config.mintToAlt[mint];
+      if (altAddress) {
+        altAddresses.add(altAddress);
+      }
+    }
+  } else if (!hasUserPdaShards && config.alts.userPdas) {
+    // Legacy single userPdas ALT (fallback if shards not configured)
     altAddresses.add(config.alts.userPdas);
   }
-
-  // Track how many pools have specific ALT coverage
-  let poolsCovered = 0;
 
   // Add pool-specific ALTs from poolToAlt mapping (O(1) per pool)
   if (config.poolToAlt) {
@@ -73,38 +83,6 @@ export function selectAltsForRoute(
       const altAddress = config.poolToAlt[cleanPoolId];
       if (altAddress) {
         altAddresses.add(altAddress);
-        poolsCovered++;
-      }
-    }
-  }
-
-  // Fallback: If pool-specific coverage is low, include ALL DEX ALTs
-  // This ensures partial coverage even for unmapped pools
-  const staticAltCount = (config.alts.common ? 1 : 0) + 
-                         (config.alts.flashloan ? 1 : 0) + 
-                         (config.alts.userPdas ? 1 : 0);
-  const hasLowCoverage = poolIds.length > 0 && poolsCovered < poolIds.length;
-  
-  if (hasLowCoverage || altAddresses.size <= staticAltCount) {
-    // Include all DEX ALTs as fallback - covers all DEX variants
-    const dexKeys: (keyof NonNullable<AltConfig['dexAlts']>)[] = [
-      'raydium',
-      'raydium-amm',
-      'raydium-cpmm',
-      'orca',
-      'meteora',
-      'meteora-balanced',
-      'meteora-damm-v1',
-      'meteora-damm-v2',
-      'pumpswap',
-    ];
-    
-    for (const dexKey of dexKeys) {
-      const dexAltSet = config.dexAlts?.[dexKey];
-      if (dexAltSet?.addresses) {
-        for (const addr of dexAltSet.addresses) {
-          altAddresses.add(addr);
-        }
       }
     }
   }
@@ -148,13 +126,14 @@ export interface LoadAltsResult {
  */
 export async function loadAltsForRoute(
   poolIds: string[],
+  routeMints?: string[],
   config?: AltConfig
 ): Promise<LoadAltsResult> {
   // Load config if not provided
   const altConfig = config || await loadAltConfig();
   
   // Select ALTs for this route
-  const selectedAlts = selectAltsForRoute(poolIds, altConfig);
+  const selectedAlts = selectAltsForRoute(poolIds, altConfig, routeMints);
   
   // Load ALT accounts from cache, with on-demand fallback for uncached ALTs
   const lookupTables: AddressLookupTableAccount[] = [];
@@ -353,7 +332,9 @@ export async function getStaticAlts(): Promise<string[]> {
   
   if (config.alts.common) alts.push(config.alts.common);
   if (config.alts.flashloan) alts.push(config.alts.flashloan);
-  if (config.alts.userPdas) alts.push(config.alts.userPdas);
+  if (!config.userPdaAlts?.addresses?.length && config.alts.userPdas) {
+    alts.push(config.alts.userPdas);
+  }
   
   return alts;
 }
@@ -407,12 +388,13 @@ export interface RouteAltAnalysis {
  */
 export async function analyzeRouteAlts(
   poolIds: string[],
-  dexTypes: DexType[]
+  dexTypes: DexType[],
+  routeMints?: string[]
 ): Promise<RouteAltAnalysis> {
   const config = await loadAltConfig();
   
   // Load ALTs for route
-  const loadResult = await loadAltsForRoute(poolIds, config);
+  const loadResult = await loadAltsForRoute(poolIds, routeMints, config);
   
   // Estimate fit
   const sizeEstimate = estimateRouteFit(

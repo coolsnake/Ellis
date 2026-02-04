@@ -1,6 +1,8 @@
 import { PublicKey, ComputeBudgetProgram, Transaction, TransactionMessage, VersionedTransaction, AddressLookupTableAccount } from '@solana/web3.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
+import { hotlist } from './hotlist.js';
+import { computeTriggerPriorityFee } from './triggerUtils.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
@@ -57,6 +59,10 @@ export class DriftTriggerRunner {
 
   private nodesCooldown: Map<string, number> = new Map();
   private triggersInWindow: number[] = [];
+  private lastPruneAtMs: number = 0;
+  private marketsCacheTs: number = 0;
+  private cachedPerpMarkets: any[] | null = null;
+  private cachedSpotMarkets: any[] | null = null;
 
   constructor(cfg: TriggerConfig) {
     const allowlist = Array.isArray(cfg?.marketsAllowlist)
@@ -266,10 +272,51 @@ export class DriftTriggerRunner {
     return list.includes(Number(idx));
   }
 
+  private pruneMaps(): void {
+    try {
+      const now = Date.now();
+      if ((now - this.lastPruneAtMs) < 5000) return;
+      this.lastPruneAtMs = now;
+      const driftCfg: any = (CONFIG as any)?.drift || {};
+      const ttlMs = Math.max(1000, Number(driftCfg.nodeMapTtlMs ?? 60000));
+      const maxSize = Math.max(1000, Number(driftCfg.nodeMapMax ?? 20000));
+      for (const [k, ts] of this.nodesCooldown.entries()) {
+        const t = Number(ts || 0);
+        if (!Number.isFinite(t) || (now - t) > ttlMs) this.nodesCooldown.delete(k);
+      }
+      if (this.nodesCooldown.size > maxSize) {
+        const entries = Array.from(this.nodesCooldown.entries()).sort((a, b) => (a[1] || 0) - (b[1] || 0));
+        const overflow = this.nodesCooldown.size - maxSize;
+        for (let i = 0; i < overflow; i += 1) this.nodesCooldown.delete(entries[i][0]);
+      }
+    } catch {}
+  }
+
+  private async getMarketLists(): Promise<{ perps: any[]; spots: any[] }> {
+    const now = Date.now();
+    const driftCfg: any = (CONFIG as any)?.drift || {};
+    const ttlMs = Math.max(500, Number(driftCfg.marketCacheTtlMs ?? 2000));
+    if (this.cachedPerpMarkets && this.cachedSpotMarkets && (now - this.marketsCacheTs) < ttlMs) {
+      return { perps: this.cachedPerpMarkets, spots: this.cachedSpotMarkets };
+    }
+    const perps = await this.client.getPerpMarketAccounts?.();
+    const spots = await this.client.getSpotMarketAccounts?.();
+    this.cachedPerpMarkets = Array.isArray(perps) ? perps : [];
+    this.cachedSpotMarkets = Array.isArray(spots) ? spots : [];
+    this.marketsCacheTs = now;
+    return { perps: this.cachedPerpMarkets, spots: this.cachedSpotMarkets };
+  }
+
   private async loop(): Promise<void> {
     if (this.abort) return;
+    this.pruneMaps();
     const t0 = Date.now();
     this.state.lastRunAt = t0;
+    const driftCfg: any = (CONFIG as any)?.drift || {};
+    const verboseNodeLogs = driftCfg?.verboseNodeLogs === true;
+    const nodeLogSampleRate = Math.max(0, Math.min(1, Number(driftCfg?.nodeLogSampleRate ?? 0)));
+    const shouldLogNode = () => verboseNodeLogs || (nodeLogSampleRate > 0 && Math.random() < nodeLogSampleRate);
+    const nodeLogger = verboseNodeLogs ? logger.info : logger.debug;
 
     try {
 			const dlob = this.dlobSubscriber?.getDLOB?.();
@@ -279,17 +326,15 @@ export class DriftTriggerRunner {
 
 			const slot = this.slotSubscriber?.getSlot?.() ?? 0;
 			const stateAcc = this.client.getStateAccount?.();
-
-			const perp = await this.client.getPerpMarketAccounts?.();
-			const spot = await this.client.getSpotMarketAccounts?.();
+			const { perps, spots } = await this.getMarketLists();
 
 			const userCount = typeof this.userMap?.size === 'function' ? Number(this.userMap.size()) : 0;
 			logger.debug('drift.trigger.markets', {
 				cat: TRIGGER_CAT,
 				subcat: TRIGGER_SUBCAT,
 				slot,
-				perpCount: Array.isArray(perp) ? perp.length : 0,
-				spotCount: Array.isArray(spot) ? spot.length : 0,
+				perpCount: Array.isArray(perps) ? perps.length : 0,
+				spotCount: Array.isArray(spots) ? spots.length : 0,
 				allowlistSize: Array.isArray(this.state.marketsAllowlist) ? this.state.marketsAllowlist.length : 0,
 				users: userCount,
 			});
@@ -409,7 +454,11 @@ export class DriftTriggerRunner {
             const sig = this.signatureForNode(node);
             const last = this.nodesCooldown.get(sig) || 0;
             if (last + COOLDOWN_MS > Date.now()) {
-							logger.info('drift.trigger.cooldown_skip', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, signature: sig });
+							try {
+								if (shouldLogNode()) {
+									nodeLogger('drift.trigger.cooldown_skip', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, signature: sig });
+								}
+							} catch {}
               continue;
             }
             this.nodesCooldown.set(sig, Date.now());
@@ -430,7 +479,11 @@ export class DriftTriggerRunner {
 							});
 						}
 
-            logger.info('drift.trigger.try', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId, onChainPrice: String(oracleData?.price?.toString?.() || '') });
+            try {
+              if (shouldLogNode()) {
+                nodeLogger('drift.trigger.try', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId, onChainPrice: String(oracleData?.price?.toString?.() || '') });
+              }
+            } catch {}
 
             let user: any = null;
             try { user = await this.userMap.mustGet(userPkStr); } catch {}
@@ -466,7 +519,8 @@ export class DriftTriggerRunner {
             const subPriority = Number(this.priorityFeeSubscriber?.getCustomStrategyResult?.() || 0);
             const baseCfg = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
             const mul = Number(this.config.triggerPriorityFeeMultiplier ?? 1.0);
-            const priority = Math.floor(Math.max(baseCfg, subPriority * suggestedMul) * mul);
+            const floor = Math.max(0, Number(driftCfg?.triggerPriorityFloorMicroLamports ?? (CONFIG as any)?.fees?.triggerPriorityFloorMicroLamports ?? 10000));
+            const priority = computeTriggerPriorityFee({ baseCfg, subPriority, suggestedMul, multiplier: mul, floor });
 
             // Build ixs
             let ixs: any[] = [
@@ -594,6 +648,10 @@ export class DriftTriggerRunner {
               this.triggersInWindow.push(Date.now());
               logger.info('drift.trigger.ok', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, sig: sigTx, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId });
               try {
+                hotlist.markMarket(idx, 'trigger');
+                hotlist.markUser(userPkStr, 'trigger');
+              } catch {}
+              try {
                 const { trackDriftAttempt } = await import('./txTracker.js');
                 trackDriftAttempt(this.connection as any, {
                   sig: sigTx,
@@ -616,9 +674,32 @@ export class DriftTriggerRunner {
         }
       };
 
+      const hotMarkets = hotlist.getHotMarkets({
+        limit: Math.max(1, Number(driftCfg?.hotMarketsPerLoop ?? 25)),
+        consumerId: 'trigger',
+      });
+      if (hotMarkets.length > 0) {
+        try { logger.debug('drift.trigger.hotlist', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, count: hotMarkets.length }); } catch {}
+      }
+      const processed = new Set<number>();
+      const perpByIndex = new Map<number, any>();
+      const spotByIndex = new Map<number, any>();
+      for (const m of (Array.isArray(perps) ? perps : [])) {
+        perpByIndex.set(Number(m?.marketIndex || 0), m);
+      }
+      for (const m of (Array.isArray(spots) ? spots : [])) {
+        spotByIndex.set(Number(m?.marketIndex || 0), m);
+      }
+      for (const idx of hotMarkets) {
+        if (!Number.isFinite(Number(idx))) continue;
+        const perpM = perpByIndex.get(Number(idx));
+        const spotM = spotByIndex.get(Number(idx));
+        if (perpM) { await tryOneMarket(perpM, MarketType.PERP); processed.add(Number(idx)); continue; }
+        if (spotM) { await tryOneMarket(spotM, MarketType.SPOT); processed.add(Number(idx)); continue; }
+      }
       await Promise.all([
-        ...(Array.isArray(perp) ? perp.map((m: any) => tryOneMarket(m, MarketType.PERP)) : []),
-        ...(Array.isArray(spot) ? spot.map((m: any) => tryOneMarket(m, MarketType.SPOT)) : []),
+        ...(Array.isArray(perps) ? perps.filter((m: any) => !processed.has(Number(m?.marketIndex || 0))).map((m: any) => tryOneMarket(m, MarketType.PERP)) : []),
+        ...(Array.isArray(spots) ? spots.filter((m: any) => !processed.has(Number(m?.marketIndex || 0))).map((m: any) => tryOneMarket(m, MarketType.SPOT)) : []),
       ]);
 
 			const dur = Date.now() - t0;

@@ -2883,7 +2883,15 @@ export function createArbRouter(io: SocketIOServer): Router {
       const config = await loadAltConfig();
       const cachedAlts = dexAltManager.getCachedAltAccounts();
       
+      const poolToAltCount = Object.keys(config.poolToAlt || {}).length;
+      const mintToAltCount = Object.keys(config.mintToAlt || {}).length;
+      const userPdaShardCount = config.userPdaAlts?.addresses?.length || 0;
+      
       res.json({
+        ...config,
+        poolToAltCount,
+        mintToAltCount,
+        userPdaShardCount,
         config,
         cache: {
           altCount: cachedAlts.length,
@@ -2901,7 +2909,7 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.post('/arb/alt/create/common', async (_req: Request, res: Response) => {
     try {
       const { dexAltManager } = await import('../../execution/utils/altManager.js');
-      const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
       const { ensureWallet } = await import('../../wallet/wallet.js');
       
       await dexAltManager.initialize();
@@ -3014,44 +3022,35 @@ export function createArbRouter(io: SocketIOServer): Router {
     try {
       const { dexAltManager } = await import('../../execution/utils/altManager.js');
       const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
-      const { ensureWallet } = await import('../../wallet/wallet.js');
       
       await dexAltManager.initialize();
-      const wallet = await ensureWallet(CONFIG.walletPath);
       
       // Check if userPdas ALT already exists
       const config = await loadAltConfig();
-      if (config.alts.userPdas) {
+      if (config.userPdaAlts?.addresses?.length) {
         return res.status(400).json({ 
-          error: 'User PDAs ALT already exists', 
-          address: config.alts.userPdas,
+          error: 'User PDA shard ALTs already exist', 
+          addresses: config.userPdaAlts.addresses,
         });
       }
       
-      // Collect user PDA accounts
-      const accounts = await dexAltManager.collectUserPdaAccounts(wallet.publicKey);
-      const address = await (dexAltManager as any).createAltOnChain(wallet, accounts, 'userPdas');
-      
-      // Update config
-      config.alts.userPdas = address.toBase58();
-      await saveAltConfig(config);
+      // Build or refresh sharded user PDA ALTs using graph mints
+      const result = await dexAltManager.refreshUserPdaAltShards({ allowCreate: true });
       
       // Refresh cache
       await dexAltManager.preloadAllAltAccounts();
       
       logger.info('arb.alt.api.userPdas_created', { 
         cat: 'tx', 
-        address: address.toBase58(),
-        accountCount: accounts.length,
-        wallet: wallet.publicKey.toBase58(),
+        shardCount: result.shardCount,
+        totalMints: result.totalMints,
+        accountsAdded: result.accountsAdded,
       });
       
       res.json({ 
         status: 'created', 
         category: 'userPdas',
-        address: address.toBase58(),
-        accountCount: accounts.length,
-        wallet: wallet.publicKey.toBase58(),
+        ...result,
       });
     } catch (e: any) {
       logger.error('arb.alt.api.userPdas_create_failed', { cat: 'tx', error: String(e?.message || e) });
@@ -3151,81 +3150,34 @@ export function createArbRouter(io: SocketIOServer): Router {
     try {
       const { dexAltManager } = await import('../../execution/utils/altManager.js');
       const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
-      const { ensureWallet } = await import('../../wallet/wallet.js');
       
       await dexAltManager.initialize();
-      const wallet = await ensureWallet(CONFIG.walletPath);
       
       // Check if userPdas ALT exists
       const config = await loadAltConfig();
-      if (!config.alts.userPdas) {
+      if (!config.userPdaAlts?.addresses?.length && !config.alts.userPdas) {
         return res.status(400).json({ 
-          error: 'User PDAs ALT does not exist. Create it first using /arb/alt/create/userPdas',
+          error: 'User PDA ALTs do not exist. Create them first using /arb/alt/create/user-pdas',
         });
       }
-      
-      // Collect fresh user PDA accounts
-      const allAccounts = await dexAltManager.collectUserPdaAccounts(wallet.publicKey);
-      
-      // Get existing accounts in the ALT
-      const existingAlt = dexAltManager.getCachedAltByAddress(config.alts.userPdas);
-      if (!existingAlt) {
-        return res.status(400).json({ 
-          error: 'User PDAs ALT not found in cache. Run refresh first.',
-        });
-      }
-      
-      const existingAddrs = new Set(
-        (existingAlt.state?.addresses || []).map(a => a.toBase58())
-      );
-      
-      // Filter to only new accounts
-      const newAccounts = allAccounts.filter(
-        (pk: any) => !existingAddrs.has(pk.toBase58())
-      );
-      
-      if (newAccounts.length === 0) {
-        return res.json({ 
-          status: 'no_change', 
-          message: 'User PDAs ALT already has all accounts',
-          currentCount: existingAlt.state?.addresses?.length || 0,
-        });
-      }
-      
-      // Check capacity
-      const currentCount = existingAlt.state?.addresses?.length || 0;
-      const remainingCapacity = 256 - currentCount;
-      
-      if (newAccounts.length > remainingCapacity) {
-        return res.status(400).json({ 
-          error: `Not enough capacity. Need ${newAccounts.length} slots but only ${remainingCapacity} available.`,
-          currentCount,
-          newAccountsCount: newAccounts.length,
-          remainingCapacity,
-        });
-      }
-      
-      // Extend the ALT
-      const result = await dexAltManager.extendAlt('userPdas', newAccounts);
-      
+
+      // Refresh shard ALTs from graph mints (full refresh)
+      const result = await dexAltManager.refreshUserPdaAltShards({ allowCreate: true });
+
       // Refresh cache
       await dexAltManager.preloadAllAltAccounts();
-      
+
       logger.info('arb.alt.api.userPdas_extended', { 
         cat: 'tx', 
-        address: config.alts.userPdas,
-        accountsAdded: newAccounts.length,
-        newTotal: result.accountCount,
-        wallet: wallet.publicKey.toBase58(),
+        shardCount: result.shardCount,
+        accountsAdded: result.accountsAdded,
+        totalMints: result.totalMints,
       });
       
       res.json({ 
         status: 'extended', 
         category: 'userPdas',
-        address: config.alts.userPdas,
-        accountsAdded: newAccounts.length,
-        newTotal: result.accountCount,
-        wallet: wallet.publicKey.toBase58(),
+        ...result,
       });
     } catch (e: any) {
       logger.error('arb.alt.api.userPdas_extend_failed', { cat: 'tx', error: String(e?.message || e) });
@@ -3283,12 +3235,13 @@ export function createArbRouter(io: SocketIOServer): Router {
       
       const poolIds = req.body.poolIds as string[];
       const dexTypes = (req.body.dexTypes as number[]) || poolIds.map(() => DexType.Raydium);
+      const routeMints = req.body.routeMints as string[] | undefined;
       
       if (!poolIds || !Array.isArray(poolIds) || poolIds.length === 0) {
         return res.status(400).json({ error: 'poolIds array required' });
       }
       
-      const analysis = await analyzeRouteAlts(poolIds, dexTypes);
+      const analysis = await analyzeRouteAlts(poolIds, dexTypes, routeMints);
       
       res.json(analysis);
     } catch (e: any) {

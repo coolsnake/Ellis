@@ -688,6 +688,25 @@ export async function runDiscoveryCycle(options?: {
         });
       }
     }
+
+    // Background refresh: extend user PDA shards for newly discovered mints
+    if (!options?.dryRun && tokensToCheck.length > 0) {
+      const newMintIds = tokensToCheck.map(t => t.id).filter(Boolean);
+      if (newMintIds.length > 0) {
+        void (async () => {
+          try {
+            const { dexAltManager } = await import('../../execution/utils/altManager.js');
+            await dexAltManager.initialize();
+            await dexAltManager.refreshUserPdaAltShards({ mints: newMintIds, allowCreate: false });
+          } catch (err: any) {
+            logger.warn('discovery.userPdaAlts.refresh_failed', {
+              error: String(err?.message || err),
+              cat: 'discovery',
+            });
+          }
+        })();
+      }
+    }
     
   } catch (err: any) {
     result.errors.push(`Cycle error: ${err?.message || err}`);

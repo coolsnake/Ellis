@@ -7,6 +7,7 @@ import { sendToBlockEngine } from '../execution/jitoClient.js';
 import { getCachedBlockhash } from '../utils/blockhash.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
+import { hotlist } from './hotlist.js';
 import { OracleUpdater } from './oracles/oracleUpdater.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
@@ -83,6 +84,7 @@ export class DriftFillerRunner {
   private bhWarmTimer: any | null = null;
   private bhCacheStr: string | undefined = undefined;
   private bhCacheTs: number = 0;
+  private lastPruneAtMs: number = 0;
   private beFailCount: number = 0;
   private beCoolUntilMs: number = 0;
   private lastUpdateFillerMs: number = 0;
@@ -369,9 +371,47 @@ export class DriftFillerRunner {
     return list.includes(Number(idx));
   }
 
+  private pruneMaps(): void {
+    try {
+      const now = Date.now();
+      if ((now - this.lastPruneAtMs) < 5000) return;
+      this.lastPruneAtMs = now;
+      const driftCfg: any = (CONFIG as any)?.drift || {};
+      const ttlMs = Math.max(1000, Number(driftCfg.nodeMapTtlMs ?? 60000));
+      const maxSize = Math.max(1000, Number(driftCfg.nodeMapMax ?? 20000));
+      const pruneByTs = <T>(map: Map<string, T>, getTs: (v: T) => number) => {
+        for (const [k, v] of map.entries()) {
+          const ts = Number(getTs(v) || 0);
+          if (!Number.isFinite(ts) || (now - ts) > ttlMs) map.delete(k);
+        }
+        if (map.size > maxSize) {
+          const entries = Array.from(map.entries()).sort((a, b) => (getTs(a[1]) || 0) - (getTs(b[1]) || 0));
+          const overflow = map.size - maxSize;
+          for (let i = 0; i < overflow; i += 1) map.delete(entries[i][0]);
+        }
+      };
+      const pruneByExpiry = (map: Map<string, number>) => {
+        for (const [k, untilMs] of map.entries()) {
+          const until = Number(untilMs || 0);
+          if (!Number.isFinite(until) || (until + ttlMs) < now) map.delete(k);
+        }
+        if (map.size > maxSize) {
+          const entries = Array.from(map.entries()).sort((a, b) => (a[1] || 0) - (b[1] || 0));
+          const overflow = map.size - maxSize;
+          for (let i = 0; i < overflow; i += 1) map.delete(entries[i][0]);
+        }
+      };
+      pruneByTs(this.nodesCooldown as any, (v: any) => Number(v || 0));
+      pruneByTs(this.nodeSeenAtMs as any, (v: any) => Number(v || 0));
+      pruneByExpiry(this.jitTakerCooldown as any);
+      pruneByTs(this.skipLogCount as any, (v: any) => Number(v?.ts || 0));
+    } catch {}
+  }
+
   private async tryFillNode(marketIndex: number, nodeToFill: any): Promise<boolean> {
     try {
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
+      try { hotlist.markUser(takerPkStr, 'filler_try'); } catch {}
       const { getUserAccountPublicKey } = this.sdk;
       const t0 = Date.now();
       const timings: any = { t0, hyd: 0, mk: 0, fillPri: 0, fillFb: 0, bh: 0, upd: 0, rev: 0, tip: 0, compile: 0 };
@@ -998,6 +1038,7 @@ export class DriftFillerRunner {
 
   private async loop(): Promise<void> {
     if (this.abort) return;
+    this.pruneMaps();
     const t0 = Date.now();
     this.state.lastRunAt = t0;
 
@@ -1029,6 +1070,11 @@ export class DriftFillerRunner {
       },
     };
     this._loopStatsTmp = loopStats;
+    const driftCfg: any = (CONFIG as any)?.drift || {};
+    const verboseNodeLogs = driftCfg?.verboseNodeLogs === true;
+    const nodeLogSampleRate = Math.max(0, Math.min(1, Number(driftCfg?.nodeLogSampleRate ?? 0)));
+    const shouldLogNode = () => verboseNodeLogs || (nodeLogSampleRate > 0 && Math.random() < nodeLogSampleRate);
+    const nodeLogger = verboseNodeLogs ? logger.info : logger.debug;
 
     try {
       const dlob = this.dlobSubscriber?.getDLOB?.();
@@ -1079,7 +1125,6 @@ export class DriftFillerRunner {
       const perps = await this.client.getPerpMarketAccounts?.();
 
       try {
-        const driftCfg: any = (CONFIG as any)?.drift || {};
         if (!driftCfg?.loopSummaryOnly) {
           logger.info('drift.filler.loop_begin', {
             cat: FILLER_CAT,
@@ -1099,7 +1144,35 @@ export class DriftFillerRunner {
       let sent = 0;
       const sample: Array<{ m: number; taker: string; id: string; makers: number }> = [];
 
-      for (const market of (Array.isArray(perps) ? perps : [])) {
+      const hotMarkets = hotlist.getHotMarkets({
+        limit: Math.max(1, Number(driftCfg?.hotMarketsPerLoop ?? 25)),
+        consumerId: 'filler',
+      });
+      if (hotMarkets.length > 0) {
+        try { logger.debug('drift.filler.hotlist', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, count: hotMarkets.length }); } catch {}
+      }
+      const seen = new Set<number>();
+      const perpsArr = Array.isArray(perps) ? perps : [];
+      const perpByIndex = new Map<number, any>();
+      for (const m of perpsArr) {
+        perpByIndex.set(Number(m?.marketIndex || 0), m);
+      }
+      const marketsOrdered: any[] = [];
+      for (const idx of hotMarkets) {
+        const market = perpByIndex.get(Number(idx));
+        if (!market) continue;
+        const midx = Number(market?.marketIndex || 0);
+        if (seen.has(midx)) continue;
+        seen.add(midx);
+        marketsOrdered.push(market);
+      }
+      for (const market of perpsArr) {
+        const idx = Number(market?.marketIndex || 0);
+        if (seen.has(idx)) continue;
+        marketsOrdered.push(market);
+      }
+
+      for (const market of marketsOrdered) {
         if (budgetExceeded) break;
         const mStart = Date.now();
         const idx = Number(market?.marketIndex || 0);
@@ -1160,6 +1233,9 @@ export class DriftFillerRunner {
         const prefiltered = nodesToFill.filter((n: any) => !isTriggerNode(n));
         const droppedTriggers = nodesToFill.length - prefiltered.length;
         if (droppedTriggers > 0) { loopStats.skips.triggerOrder += droppedTriggers; }
+        if (prefiltered.length > 0) {
+          try { hotlist.markMarket(idx, 'filler_nodes'); } catch {}
+        }
 
         totalPlanned += prefiltered.length;
         loopStats.nodesPlanned += prefiltered.length;
@@ -1342,6 +1418,8 @@ export class DriftFillerRunner {
             const o = node?.node?.order;
             let orderTypeStr: string | undefined = undefined;
             try { orderTypeStr = o?.orderType ? String(getVariant(o.orderType)) : undefined; } catch {}
+            let triggerCondStr: string | undefined = undefined;
+            try { triggerCondStr = o?.triggerCondition ? String(getVariant(o.triggerCondition)) : undefined; } catch {}
             const isTriggerType = !!orderTypeStr && ['triggermarket', 'triggerlimit'].includes(orderTypeStr.toLowerCase());
             if (isTriggerType) {
               try {
@@ -1398,30 +1476,34 @@ export class DriftFillerRunner {
 
             // Node info extra logging to aid diagnosis
             try {
-              logger.info('drift.filler.node_info', {
-                cat: FILLER_CAT,
-                subcat: FILLER_SUBCAT,
-                marketIndex: idx,
-                taker: String(node?.node?.userAccount || ''),
-                orderId: String(node?.node?.order?.orderId || ''),
-                makerCount: Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0,
-                orderType: orderTypeStr,
-                triggerCondition: triggerCondStr,
-              });
+              if (shouldLogNode()) {
+                nodeLogger('drift.filler.node_info', {
+                  cat: FILLER_CAT,
+                  subcat: FILLER_SUBCAT,
+                  marketIndex: idx,
+                  taker: String(node?.node?.userAccount || ''),
+                  orderId: String(node?.node?.order?.orderId || ''),
+                  makerCount: Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0,
+                  orderType: orderTypeStr,
+                  triggerCondition: triggerCondStr,
+                });
+              }
             } catch {}
 
             try {
-              logger.info('drift.filler.try_fill', {
-                cat: FILLER_CAT,
-                subcat: FILLER_SUBCAT,
-                marketIndex: idx,
-                taker: String(node?.node?.userAccount || ''),
-                orderId: String(node?.node?.order?.orderId || ''),
-                makerCount: Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0,
-                cuLimit: Math.max(220_000, Math.min(800_000, Number(this.config.cuLimit ?? 300_000))),
-                priority: Math.max(10_000, Number(((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000)),
-                dryRun: !!this.state.dryRun,
-              });
+              if (shouldLogNode()) {
+                nodeLogger('drift.filler.try_fill', {
+                  cat: FILLER_CAT,
+                  subcat: FILLER_SUBCAT,
+                  marketIndex: idx,
+                  taker: String(node?.node?.userAccount || ''),
+                  orderId: String(node?.node?.order?.orderId || ''),
+                  makerCount: Array.isArray(node?.makerNodes) ? node?.makerNodes.length : 0,
+                  cuLimit: Math.max(220_000, Math.min(800_000, Number(this.config.cuLimit ?? 300_000))),
+                  priority: Math.max(10_000, Number(((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000)),
+                  dryRun: !!this.state.dryRun,
+                });
+              }
             } catch {}
 
             // Count budget once node is eligible for a send attempt
