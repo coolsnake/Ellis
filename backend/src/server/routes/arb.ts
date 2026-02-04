@@ -2909,7 +2909,7 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.post('/arb/alt/create/common', async (_req: Request, res: Response) => {
     try {
       const { dexAltManager } = await import('../../execution/utils/altManager.js');
-      const { loadAltConfig } = await import('../../execution/utils/altConfig.js');
+      const { loadAltConfig, saveAltConfig } = await import('../../execution/utils/altConfig.js');
       const { ensureWallet } = await import('../../wallet/wallet.js');
       
       await dexAltManager.initialize();
