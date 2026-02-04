@@ -27,6 +27,14 @@ export type ExecConfig = {
   priorityFeeRefreshMs?: number;       // polling interval, default: 10000
   priorityFeeMinFloor?: number;        // minimum fee floor in micro-lamports, default: 1000
   priorityFeeMaxCap?: number;          // maximum fee cap in micro-lamports, default: 2000000
+  driftBots?: {
+    enabled?: boolean;
+    port?: number;
+    respawn?: boolean;
+    useTsx?: boolean;
+    callbackUrl?: string;
+    secret?: string;
+  };
 };
 
 const file = resolve(CONFIG.cacheDir, 'exec-config.json');
@@ -56,6 +64,14 @@ const defaults: ExecConfig = {
   priorityFeeRefreshMs: 10_000,
   priorityFeeMinFloor: 1_000,
   priorityFeeMaxCap: 2_000_000,
+  driftBots: {
+    enabled: (CONFIG as any)?.driftBots?.enabled,
+    port: (CONFIG as any)?.driftBots?.port,
+    respawn: (CONFIG as any)?.driftBots?.respawn,
+    useTsx: (CONFIG as any)?.driftBots?.useTsx,
+    callbackUrl: (CONFIG as any)?.driftBots?.callbackUrl,
+    secret: (CONFIG as any)?.driftBots?.secret,
+  },
 };
 
 export async function loadExecConfig(): Promise<ExecConfig> {

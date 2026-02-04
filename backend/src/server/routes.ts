@@ -35,6 +35,7 @@ import { createLeveragedGridRouter } from './routes/strategies/leveragedGrid.js'
 import { createLiquidatorRouter } from './routes/strategies/liquidator.js';
 import { createTriggerRouter } from './routes/strategies/trigger.js';
 import { createFillerRouter } from './routes/strategies/filler.js';
+import { createDriftBotsProxyRouter } from './routes/strategies/driftBotsProxy.js';
 import { createPoolsRouter } from './routes/pools.js';
 import { createArbRouter } from './routes/arb.js';
 import { createRouterRouter } from './routes/router.js';
@@ -138,21 +139,76 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createSwapRouter(io));
   api.use(createDriftRouter(io));
   api.use(createLeveragedGridRouter(io));
-  api.use(createLiquidatorRouter(io));
-  api.use(createTriggerRouter(io));
-  api.use(createFillerRouter(io));
+  if ((CONFIG as any)?.driftBots?.enabled) {
+    api.use(createDriftBotsProxyRouter());
+  } else {
+    api.use(createLiquidatorRouter(io));
+    api.use(createTriggerRouter(io));
+    api.use(createFillerRouter(io));
+  }
   api.use(createPoolsRouter(io));
   api.use(createArbRouter(io));
   api.use(createRouterRouter(io));
   api.use(createNotificationsRouter(io));
   api.use(createDiscoveryRouter(io));
 
+  const isLocalRequest = (req: Request): boolean => {
+    try {
+      const ipRaw = String((req.socket as any)?.remoteAddress || req.ip || '');
+      const ip = ipRaw.replace('::ffff:', '');
+      return ip === '127.0.0.1' || ip === '::1';
+    } catch {
+      return false;
+    }
+  };
+
+  // Internal event bridge from drift-bots process
+  api.post('/internal/drift-bots/events', async (req: Request, res: Response) => {
+    try {
+      const cfg: any = (CONFIG as any)?.driftBots || {};
+      const expected = String(cfg.secret || '');
+      if (expected) {
+        const got = String(req.headers['x-drift-bots-secret'] || '');
+        if (got !== expected) return res.status(401).json({ error: 'unauthorized' });
+      } else if (!isLocalRequest(req)) {
+        return res.status(403).json({ error: 'forbidden' });
+      }
+      const { event, payload } = (req.body || {}) as any;
+      if (!event) return res.status(400).json({ error: 'event is required' });
+      await emit(String(event), payload);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Health proxy for drift-bots service
+  api.get('/drift-bots/health', async (_req: Request, res: Response) => {
+    try {
+      const cfg: any = (CONFIG as any)?.driftBots || {};
+      if (!cfg.enabled) return res.json({ ok: false, disabled: true });
+      const base = cfg.baseUrl || `http://127.0.0.1:${Number(process.env.DRIFT_BOTS_PORT || cfg.port || 3015)}`;
+      const headers: Record<string, string> = {};
+      if (cfg.secret) headers['x-drift-bots-secret'] = String(cfg.secret);
+      const r = await fetch(`${base}/health`, { headers });
+      const text = await r.text();
+      try { return res.status(r.status).json(JSON.parse(text || '{}')); } catch {}
+      return res.status(r.status).send(text);
+    } catch (e: any) {
+      res.status(502).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
   // --- Direct execution config and routes ---
   api.get('/exec/config', async (_req, res) => {
     try {
       const { loadExecConfig } = await import('./execConfigStore.js');
       const cfg = await loadExecConfig();
-      res.json(cfg);
+      const driftBots = {
+        ...(cfg as any)?.driftBots,
+        ...((CONFIG as any)?.driftBots || {}),
+      };
+      res.json({ ...(cfg as any), driftBots });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
     }
@@ -163,6 +219,26 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const body = req.body || {};
       const { saveExecConfig } = await import('./execConfigStore.js');
       const saved = await saveExecConfig(body);
+      try {
+        if (body?.driftBots && typeof body.driftBots === 'object') {
+          const incoming: any = body.driftBots || {};
+          const next = {
+            ...((CONFIG as any)?.driftBots || {}),
+            enabled: incoming.enabled !== undefined ? !!incoming.enabled : (CONFIG as any)?.driftBots?.enabled,
+            port: Number.isFinite(Number(incoming.port)) ? Math.max(1, Number(incoming.port)) : (CONFIG as any)?.driftBots?.port,
+            respawn: incoming.respawn !== undefined ? !!incoming.respawn : (CONFIG as any)?.driftBots?.respawn,
+            useTsx: incoming.useTsx !== undefined ? !!incoming.useTsx : (CONFIG as any)?.driftBots?.useTsx,
+            callbackUrl: typeof incoming.callbackUrl === 'string' ? String(incoming.callbackUrl) : (CONFIG as any)?.driftBots?.callbackUrl,
+            secret: typeof incoming.secret === 'string' ? String(incoming.secret) : (CONFIG as any)?.driftBots?.secret,
+          };
+          (CONFIG as any).driftBots = next;
+          try {
+            const mod = await import('./driftBotsProcess.js');
+            try { mod.shutdownDriftBotsProcess?.(); } catch {}
+            try { if (next.enabled) mod.setupDriftBotsProcess?.(); } catch {}
+          } catch {}
+        }
+      } catch {}
       // Forward near-miss and debug settings to arb-rs if provided
       try {
         const forward: any = {};

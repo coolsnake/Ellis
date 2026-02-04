@@ -26,6 +26,7 @@ import { startPoolWebsocketsOnlyOnce } from './pools.js';
 import util from 'util';
 import { ensureDir, writeJson } from '../utils/fs.js';
 import { setupRustLogForwarding, shutdownRustProcess } from './arbProcess.js';
+import { setupDriftBotsProcess, shutdownDriftBotsProcess } from './driftBotsProcess.js';
 import { loadClmmCacheFromDisk } from '../execution/clmmCache.js';
 import { startClmmRefreshLoop } from './tasks/refreshClmm.js';
 import { startReactiveValidation, stopReactiveValidation } from '../execution/cacheValidator.js';
@@ -395,6 +396,8 @@ export async function shutdown() {
   try {
     // Shutdown arb-rs process first
     try { shutdownRustProcess(); } catch {}
+    // Shutdown drift-bots process
+    try { shutdownDriftBotsProcess(); } catch {}
 
     // Save pool snapshot BEFORE clearing caches (if persistence enabled)
     try {
@@ -868,6 +871,8 @@ server.listen(CONFIG.port, () => {
   } catch {}
   // Start optional arb-rs stdout/stderr forwarding over WS
   try { setupRustLogForwarding(); } catch {}
+  // Start drift-bots process (if enabled)
+  try { setupDriftBotsProcess(); } catch {}
   
   // Start shared blockhash warmer regardless of Drift - needed for arb executor
   try {

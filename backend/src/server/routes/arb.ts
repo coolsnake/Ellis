@@ -3434,11 +3434,16 @@ export function createArbRouter(io: SocketIOServer): Router {
       const config = await loadAltConfig();
       const snapshot = await getGraphSnapshot();
       
-      // Count pools by DEX
+      // Count pools by DEX (and variant where applicable)
       const dexPools: Record<string, Set<string>> = {
-        raydium: new Set<string>(),
+        raydium: new Set<string>(),        // CLMM
+        'raydium-amm': new Set<string>(),
+        'raydium-cpmm': new Set<string>(),
         orca: new Set<string>(),
-        meteora: new Set<string>(),
+        meteora: new Set<string>(),        // DLMM
+        'meteora-balanced': new Set<string>(),
+        'meteora-damm-v1': new Set<string>(),
+        'meteora-damm-v2': new Set<string>(),
         pumpswap: new Set<string>(),
         other: new Set<string>(),
       };
@@ -3450,12 +3455,39 @@ export function createArbRouter(io: SocketIOServer): Router {
           
           const cleanPoolId = poolId.replace(/-(rev|fwd)$/, '');
           const dex = String(edge.dex || '').toLowerCase();
-          
-          if (dex === 'raydium') dexPools.raydium.add(cleanPoolId);
-          else if (dex === 'orca') dexPools.orca.add(cleanPoolId);
-          else if (dex === 'meteora') dexPools.meteora.add(cleanPoolId);
-          else if (dex === 'pumpswap') dexPools.pumpswap.add(cleanPoolId);
-          else dexPools.other.add(cleanPoolId);
+          const poolKind = String((edge as any).pool_kind || '').toLowerCase();
+
+          if (dex === 'raydium' || dex === 'raydium-amm' || dex === 'raydium-cpmm') {
+            if (poolKind === 'cpmm' || dex.includes('cpmm')) dexPools['raydium-cpmm'].add(cleanPoolId);
+            else if (poolKind === 'amm' || dex.includes('amm')) dexPools['raydium-amm'].add(cleanPoolId);
+            else dexPools.raydium.add(cleanPoolId);
+          } else if (dex === 'orca') {
+            dexPools.orca.add(cleanPoolId);
+          } else if (dex === 'meteora') {
+            dexPools.meteora.add(cleanPoolId);
+          } else if (
+            dex === 'meteora_balanced_v1' ||
+            dex === 'meteorabalanced_v1' ||
+            dex === 'meteora-balanced-v1' ||
+            dex === 'meteora_damm_v1' ||
+            dex === 'meteora-damm-v1'
+          ) {
+            dexPools['meteora-damm-v1'].add(cleanPoolId);
+          } else if (
+            dex === 'meteora_balanced_v2' ||
+            dex === 'meteorabalanced_v2' ||
+            dex === 'meteora-balanced-v2' ||
+            dex === 'meteora_damm_v2' ||
+            dex === 'meteora-damm-v2'
+          ) {
+            dexPools['meteora-damm-v2'].add(cleanPoolId);
+          } else if (dex === 'meteora_balanced' || dex === 'meteora-balanced' || dex === 'meteorabalanced') {
+            dexPools['meteora-balanced'].add(cleanPoolId);
+          } else if (dex === 'pumpswap') {
+            dexPools.pumpswap.add(cleanPoolId);
+          } else {
+            dexPools.other.add(cleanPoolId);
+          }
         }
       }
       
@@ -3493,8 +3525,14 @@ export function createArbRouter(io: SocketIOServer): Router {
         },
         dexAlts: {
           raydium: config.dexAlts?.raydium?.addresses?.length || 0,
+          'raydium-amm': config.dexAlts?.['raydium-amm']?.addresses?.length || 0,
+          'raydium-cpmm': config.dexAlts?.['raydium-cpmm']?.addresses?.length || 0,
           orca: config.dexAlts?.orca?.addresses?.length || 0,
           meteora: config.dexAlts?.meteora?.addresses?.length || 0,
+          'meteora-balanced': config.dexAlts?.['meteora-balanced']?.addresses?.length || 0,
+          'meteora-damm-v1': config.dexAlts?.['meteora-damm-v1']?.addresses?.length || 0,
+          'meteora-damm-v2': config.dexAlts?.['meteora-damm-v2']?.addresses?.length || 0,
+          pumpswap: config.dexAlts?.pumpswap?.addresses?.length || 0,
         },
       });
     } catch (e: any) {

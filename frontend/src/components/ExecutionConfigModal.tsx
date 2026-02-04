@@ -31,6 +31,14 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
       txSend: { resendEnabled: true, maxResendAttempts: 10, maxConfirmTimeMs: 30000 },
       jito: { enabled: false, blockEngineUrl: '', tipPayerKeypath: '', bundleTimeoutMs: 1200, tipMode: 'dynamic', fixedTipLamports: 10000, tipShare: 0.3, useDontFrontAccount: false, tipAccount: '' },
       rpcSend: { secondaryRpcUrls: '', sendTimeoutMs: 1200 },
+      driftBots: {
+        enabled: true,
+        port: 3015,
+        respawn: true,
+        useTsx: true,
+        callbackUrl: '',
+        secret: '',
+      },
       drift: {
         altRefreshMs: 300000,
         maxOracleDelaySlots: 40,
@@ -58,6 +66,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
       txSend: { ...defaults.txSend, ...(saved.txSend || {}) },
       jito: { ...defaults.jito, ...(saved.jito || {}), tipPayerKeypath: '' },
       rpcSend: { ...defaults.rpcSend, ...(saved.rpcSend || {}) },
+      driftBots: { ...defaults.driftBots, ...(saved.driftBots || {}), secret: '' },
       drift: {
         ...defaults.drift,
         ...(saved.drift || {}),
@@ -78,6 +87,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
         tipPayerKeypath: '', // Don't persist keypaths
       },
       rpcSend: form.rpcSend,
+      driftBots: { ...form.driftBots, secret: '' },
       drift: form.drift,
     };
     updateUiPrefs({ lastValues: sanitized });
@@ -94,6 +104,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
         const jito = cfg?.jito || {};
         const rpcSend = cfg?.rpcSend || {};
         const drift = cfg?.drift || {};
+        const driftBots = cfg?.driftBots || {};
         const liq = drift?.liquidator || {};
         const feeMultipliersText = (() => {
           try { return JSON.stringify(drift?.feeMultipliers || {}, null, 2); } catch { return '{}'; }
@@ -119,6 +130,14 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
           rpcSend: {
             secondaryRpcUrls,
             sendTimeoutMs: Number.isFinite(Number(rpcSend.sendTimeoutMs)) ? Number(rpcSend.sendTimeoutMs) : 1200,
+          },
+          driftBots: {
+            enabled: driftBots.enabled !== false,
+            port: Number.isFinite(Number(driftBots.port)) ? Number(driftBots.port) : 3015,
+            respawn: driftBots.respawn !== false,
+            useTsx: driftBots.useTsx !== false,
+            callbackUrl: String(driftBots.callbackUrl || ''),
+            secret: String(driftBots.secret || ''),
           },
           drift: {
             altRefreshMs: Number.isFinite(Number(drift.altRefreshMs)) ? Number(drift.altRefreshMs) : 300000,
@@ -183,6 +202,14 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
         rpcSend: {
           secondaryRpcUrls,
           sendTimeoutMs: Math.max(250, Number(form.rpcSend.sendTimeoutMs || 1200)),
+        },
+        driftBots: {
+          enabled: !!form.driftBots?.enabled,
+          port: Math.max(1, Number(form.driftBots?.port || 3015)),
+          respawn: !!form.driftBots?.respawn,
+          useTsx: !!form.driftBots?.useTsx,
+          callbackUrl: String(form.driftBots?.callbackUrl || ''),
+          secret: String(form.driftBots?.secret || ''),
         },
         drift: {
           altRefreshMs: Math.max(60000, Number(form.drift.altRefreshMs || 300000)),
@@ -418,6 +445,37 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
                   <div className="text-gray-400 mb-1">Node Map Max (entries)</div>
                   <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.drift.nodeMapMax}
                     onChange={(e) => setForm((p: any) => ({ ...p, drift: { ...p.drift, nodeMapMax: Number(e.target.value) } }))} />
+                </div>
+                <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Drift Bots Process</div>
+                <label className="flex items-center gap-2 md:col-span-2">
+                  <input type="checkbox" className="h-4 w-4" checked={!!form.driftBots?.enabled}
+                    onChange={(e) => setForm((p: any) => ({ ...p, driftBots: { ...p.driftBots, enabled: e.target.checked } }))} />
+                  <span className="text-gray-300">Enable separate drift-bots process</span>
+                </label>
+                <div>
+                  <div className="text-gray-400 mb-1">Bot Port</div>
+                  <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.driftBots?.port}
+                    onChange={(e) => setForm((p: any) => ({ ...p, driftBots: { ...p.driftBots, port: Number(e.target.value) } }))} />
+                </div>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" className="h-4 w-4" checked={!!form.driftBots?.respawn}
+                    onChange={(e) => setForm((p: any) => ({ ...p, driftBots: { ...p.driftBots, respawn: e.target.checked } }))} />
+                  <span className="text-gray-300">Respawn on exit</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" className="h-4 w-4" checked={!!form.driftBots?.useTsx}
+                    onChange={(e) => setForm((p: any) => ({ ...p, driftBots: { ...p.driftBots, useTsx: e.target.checked } }))} />
+                  <span className="text-gray-300">Use tsx in dev</span>
+                </label>
+                <div className="md:col-span-2">
+                  <div className="text-gray-400 mb-1">Callback URL</div>
+                  <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.driftBots?.callbackUrl}
+                    onChange={(e) => setForm((p: any) => ({ ...p, driftBots: { ...p.driftBots, callbackUrl: e.target.value } }))} placeholder="http://127.0.0.1:3001/api/internal/drift-bots/events" />
+                </div>
+                <div className="md:col-span-2">
+                  <div className="text-gray-400 mb-1">Shared Secret (optional)</div>
+                  <input type="password" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.driftBots?.secret}
+                    onChange={(e) => setForm((p: any) => ({ ...p, driftBots: { ...p.driftBots, secret: e.target.value } }))} placeholder="leave blank for localhost-only" />
                 </div>
                 <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Liquidator Guardrails</div>
                 <div>
