@@ -1,5 +1,6 @@
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
@@ -37,14 +38,24 @@ export function setupDriftBotsProcess(): void {
     if (!enabled) return;
     if (child) return;
 
-    const useTsx = cfg.useTsx !== false && String(process.env.NODE_ENV || '').toLowerCase() !== 'production';
-    const bin = useTsx ? 'tsx' : 'node';
-    const entry = useTsx ? 'src/drift/botServer.ts' : 'dist/drift/botServer.js';
-    const absEntry = resolve(process.cwd(), entry);
-    if (!existsSync(absEntry)) {
-      try { logger.warn('drift.bots.entry_missing', { entry: absEntry }); } catch {}
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const BACKEND_ROOT = resolve(__dirname, '..', '..');
+    const devEntry = resolve(BACKEND_ROOT, 'src/drift/botServer.ts');
+    const prodEntry = resolve(BACKEND_ROOT, 'dist/drift/botServer.js');
+    const devExists = existsSync(devEntry);
+    const prodExists = existsSync(prodEntry);
+    const preferDev = (cfg.useTsx !== undefined)
+      ? !!cfg.useTsx
+      : (String(process.env.NODE_ENV || '').toLowerCase() !== 'production');
+    const absEntry = (preferDev && devExists)
+      ? devEntry
+      : (prodExists ? prodEntry : (devExists ? devEntry : ''));
+    if (!absEntry) {
+      try { logger.warn('drift.bots.entry_missing', { devEntry, prodEntry }); } catch {}
       return;
     }
+    const useTsx = absEntry === devEntry;
+    const bin = useTsx ? 'tsx' : 'node';
 
     const port = Math.max(1, Number(process.env.DRIFT_BOTS_PORT || cfg.port || 3015));
     const callbackUrl = String(
