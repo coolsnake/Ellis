@@ -109,6 +109,7 @@ interface Opportunity {
   profit_bps: number;
   net_bps?: number;
   est_profit_usd?: number;
+  sizeUsd?: number;
   hop_count?: number;
   hop_pool_ids?: string[];
   hop_rates?: number[];
@@ -2998,6 +2999,36 @@ export class ArbExecutor {
     const startToken = opp.path[0];
     const isFlashloanable = startToken === SOL_MINT || startToken === USDC_MINT;
     const flashloanEnabled = this.config.flashloanSettings?.enabled ?? false;
+
+    // If arb-rs already provided a size, prefer it (subject to wallet/flashloan caps later)
+    const directSizeUsd = Number((opp as any)?.sizeUsd);
+    if (Number.isFinite(directSizeUsd) && directSizeUsd > 0) {
+      const randomnessFactor = this.config.sizeRandomnessFactor ?? 0.1;
+      let finalSize = directSizeUsd;
+      let randomMultiplier = 1.0;
+
+      if (randomnessFactor > 0) {
+        randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
+        finalSize = finalSize * randomMultiplier;
+      }
+
+      (opp as any)._sizingInfo = {
+        method: 'arb_rs',
+        rawSizeUsd: directSizeUsd,
+        finalSizeUsd: finalSize,
+        randomMultiplier: randomnessFactor > 0 ? randomMultiplier : undefined,
+      };
+
+      logger.debug('arb.executor.sizing.arb_rs', {
+        cat: 'arb',
+        path: opp.path.join('->'),
+        rawSizeUsd: directSizeUsd,
+        finalSizeUsd: finalSize,
+        randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
+      });
+
+      return finalSize;
+    }
     
     // Use capacity-based sizing system
     const sizingCfg = this.config.sizingConfig;

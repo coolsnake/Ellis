@@ -85,6 +85,10 @@ pub struct SelectedEdge {
     pub native_decimals_a: Option<i64>,
     /// Decimals for token B
     pub native_decimals_b: Option<i64>,
+    /// Optional USD- or source-based slippage curve
+    pub slippage_curve: Option<crate::slippage::SlippageCurve>,
+    pub source_price_usd: Option<f64>,
+    pub target_price_usd: Option<f64>,
 }
 
 impl From<&EdgeData> for SelectedEdge {
@@ -101,6 +105,9 @@ impl From<&EdgeData> for SelectedEdge {
             native_reserve_b_raw: data.native_reserve_b_raw.clone(),
             native_decimals_a: data.native_decimals_a,
             native_decimals_b: data.native_decimals_b,
+            slippage_curve: data.slippage_curve.clone(),
+            source_price_usd: data.source_price_usd,
+            target_price_usd: data.target_price_usd,
         }
     }
 }
