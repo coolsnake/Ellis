@@ -67,7 +67,7 @@ export const CONFIG = {
     enabled: (process.env.DRIFT_BOTS_ENABLED || 'true') !== 'false',
     port: Number(process.env.DRIFT_BOTS_PORT || 3015),
     respawn: (process.env.DRIFT_BOTS_RESPAWN || 'true') !== 'false',
-    useTsx: (process.env.DRIFT_BOTS_USE_TSX || (process.env.NODE_ENV !== 'production' ? 'true' : 'false')) === 'true',
+    useTsx: (process.env.DRIFT_BOTS_USE_TSX || 'false') === 'true',
     secret: process.env.DRIFT_BOTS_SECRET || '',
     callbackUrl: process.env.DRIFT_BOTS_CALLBACK_URL || `http://127.0.0.1:${Number(process.env.PORT || 3001)}/api/internal/drift-bots/events`,
   },

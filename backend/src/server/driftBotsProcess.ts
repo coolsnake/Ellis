@@ -44,18 +44,33 @@ export function setupDriftBotsProcess(): void {
     const prodEntry = resolve(BACKEND_ROOT, 'dist/drift/botServer.js');
     const devExists = existsSync(devEntry);
     const prodExists = existsSync(prodEntry);
-    const preferDev = (cfg.useTsx !== undefined)
-      ? !!cfg.useTsx
-      : (String(process.env.NODE_ENV || '').toLowerCase() !== 'production');
-    const absEntry = (preferDev && devExists)
+    const preferDev = !!cfg.useTsx;
+    const tsxBinCandidates = [
+      resolve(BACKEND_ROOT, 'node_modules/.bin/tsx'),
+      resolve(BACKEND_ROOT, 'node_modules/.bin/tsx.cmd'),
+    ];
+    const tsxBin = tsxBinCandidates.find((p) => existsSync(p)) || '';
+    const canUseTsx = preferDev && devExists && !!tsxBin;
+    if (preferDev && devExists && !tsxBin) {
+      try { logger.warn('drift.bots.tsx_missing', { expected: tsxBinCandidates[0] }); } catch {}
+    }
+    const absEntry = canUseTsx
       ? devEntry
-      : (prodExists ? prodEntry : (devExists ? devEntry : ''));
+      : (prodExists ? prodEntry : '');
     if (!absEntry) {
-      try { logger.warn('drift.bots.entry_missing', { devEntry, prodEntry }); } catch {}
+      try {
+        logger.warn('drift.bots.entry_missing', { devEntry, prodEntry, preferDev });
+        if (!preferDev && devExists) {
+          logger.warn('drift.bots.build_required', { reason: 'DRIFT_BOTS_USE_TSX=false', prodEntry });
+        }
+      } catch {}
       return;
     }
-    const useTsx = absEntry === devEntry;
-    const bin = useTsx ? 'tsx' : 'node';
+    const useTsx = absEntry === devEntry && canUseTsx;
+    const bin = useTsx ? tsxBin : 'node';
+    if (absEntry === devEntry && !canUseTsx && prodExists) {
+      try { logger.warn('drift.bots.fallback_node', { reason: 'tsx_missing', entry: prodEntry }); } catch {}
+    }
 
     const port = Math.max(1, Number(process.env.DRIFT_BOTS_PORT || cfg.port || 3015));
     const callbackUrl = String(
