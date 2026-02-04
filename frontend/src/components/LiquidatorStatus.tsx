@@ -30,10 +30,23 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
       inflightRef.current = false;
     }
   };
+  const loadRef = useRef(load);
 
   useEffect(() => {
     load();
     return () => { try { abortRef.current?.abort(); } catch {} };
+  }, [apiBase]);
+
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
+  // Background refresh (fallback if socket updates are missing)
+  useEffect(() => {
+    const id = setInterval(() => {
+      try { loadRef.current?.(); } catch {}
+    }, 30000);
+    return () => { try { clearInterval(id); } catch {} };
   }, [apiBase]);
 
   const act = async (kind: 'start' | 'stop' | 'remove', key: string) => {

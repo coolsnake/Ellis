@@ -224,6 +224,21 @@ export const App: React.FC = () => {
   }, [apiBase, credentials, driftSelectedSubId]);
 
   useEffect(() => {
+    if (!credentials) return;
+    let id: any = null;
+    const loadLiq = async () => {
+      try {
+        const res = await fetch(`${apiBase}${ROUTES.strategies.liquidator.status}`);
+        const data = await res.json().catch(() => ({}));
+        setLiqStatus(data || null);
+      } catch {}
+    };
+    loadLiq();
+    id = setInterval(loadLiq, 15000);
+    return () => { try { clearInterval(id); } catch {} };
+  }, [apiBase, credentials]);
+
+  useEffect(() => {
     const sel = driftSubaccounts.find((s: any) => Number(s.id) === Number(driftSelectedSubId));
     setDriftRenameSubName(sel?.name || '');
   }, [driftSelectedSubId, driftSubaccounts]);

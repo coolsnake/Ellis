@@ -68,6 +68,10 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
             await DriftLiquidatorRegistry.start(key);
           }
           emit('log', { level: 'info', message: `drift: liquidator started ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+          try {
+            const listNow = (DriftLiquidatorRegistry as any).list?.();
+            _io.emit('liquidator-update', { liquidators: listNow });
+          } catch {}
         } catch (e: any) {
           logger.error('drift-liq: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: liquidator start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
@@ -90,6 +94,10 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       }
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const ok = await DriftLiquidatorRegistry.stop(key);
+      try {
+        const listNow = (DriftLiquidatorRegistry as any).list?.();
+        _io.emit('liquidator-update', { liquidators: listNow });
+      } catch {}
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-liq: stop failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -107,6 +115,10 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       }
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const ok = await DriftLiquidatorRegistry.remove(key);
+      try {
+        const listNow = (DriftLiquidatorRegistry as any).list?.();
+        _io.emit('liquidator-update', { liquidators: listNow });
+      } catch {}
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-liq: remove failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -129,6 +141,10 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
           DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name, enabled: true } as any);
           try { await DriftLiquidatorRegistry.start(key); } catch {}
           emit('log', { level: 'info', message: `drift: liquidator updated ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+          try {
+            const listNow = (DriftLiquidatorRegistry as any).list?.();
+            _io.emit('liquidator-update', { liquidators: listNow });
+          } catch {}
         } catch (e: any) {
           logger.error('drift-liq: update async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: liquidator update failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}

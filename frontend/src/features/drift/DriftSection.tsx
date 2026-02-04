@@ -36,6 +36,7 @@ export const DriftSection: React.FC<{
   const [txSummary, setTxSummary] = useState<any>(null);
   const [txHistory, setTxHistory] = useState<any[]>([]);
   const [txBusy, setTxBusy] = useState<boolean>(false);
+  const [botHealth, setBotHealth] = useState<{ liq?: any; trig?: any; fill?: any }>({});
 
   const selected = useMemo(
     () => p.driftSubaccounts.find((s: any) => Number(s.id) === Number(p.driftSelectedSubId)),
@@ -109,6 +110,33 @@ export const DriftSection: React.FC<{
     }
   };
 
+  const checkBotHealth = async () => {
+    const mark = (kind: 'liq' | 'trig' | 'fill', ok: boolean, status?: number, error?: string) => {
+      setBotHealth((prev) => ({
+        ...prev,
+        [kind]: { ok, status, error, lastAt: Date.now() },
+      }));
+    };
+    try {
+      const r = await fetch(`${p.apiBase}${ROUTES.strategies.liquidator.status}`);
+      mark('liq', r.ok, r.status);
+    } catch (e: any) {
+      mark('liq', false, undefined, String(e?.message || e));
+    }
+    try {
+      const r = await fetch(`${p.apiBase}${ROUTES.strategies.trigger.status}`);
+      mark('trig', r.ok, r.status);
+    } catch (e: any) {
+      mark('trig', false, undefined, String(e?.message || e));
+    }
+    try {
+      const r = await fetch(`${p.apiBase}${ROUTES.strategies.filler.status}`);
+      mark('fill', r.ok, r.status);
+    } catch (e: any) {
+      mark('fill', false, undefined, String(e?.message || e));
+    }
+  };
+
   useEffect(() => { loadStatusAndSubs(); loadSubaccounts(); }, []);
   useEffect(() => { loadTxSummary(); loadTxHistory(); }, [p.apiBase]);
   useEffect(() => {
@@ -136,6 +164,13 @@ export const DriftSection: React.FC<{
     let id: any = null;
     const tick = async () => { try { await loadTxHistory(); } catch {} };
     id = setInterval(tick, 30000);
+    return () => { try { clearInterval(id); } catch {} };
+  }, [p.apiBase]);
+  useEffect(() => {
+    let id: any = null;
+    const tick = async () => { try { await checkBotHealth(); } catch {} };
+    id = setInterval(tick, 15000);
+    tick();
     return () => { try { clearInterval(id); } catch {} };
   }, [p.apiBase]);
   useEffect(() => { loadBalances(p.driftSelectedSubId); }, [p.apiBase, p.driftSelectedSubId]);
@@ -357,6 +392,25 @@ export const DriftSection: React.FC<{
     return `${Math.round(n)}ms`;
   };
   const shortPk = (s: string) => (s && s.length > 10 ? `${s.slice(0, 4)}…${s.slice(-4)}` : (s || '-'));
+  const renderHealthBadge = (h: any) => {
+    const ok = !!h?.ok;
+    const label = ok ? 'API OK' : 'API ERR';
+    const meta = [
+      h?.status ? `status=${h.status}` : '',
+      h?.error ? `err=${h.error}` : '',
+      h?.lastAt ? `last=${formatAgo(h.lastAt)}` : '',
+    ].filter(Boolean).join(' ');
+    return (
+      <span
+        className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${ok ? 'bg-green-700 text-white' : 'bg-red-700 text-white'}`}
+        title={meta || label}
+      >
+        {label}
+      </span>
+    );
+  };
+  const txDisplayLimit = 100;
+  const txDisplay = txHistory.slice(Math.max(0, txHistory.length - txDisplayLimit));
 
   return (
     <div className="grid grid-cols-1 gap-4">
@@ -558,126 +612,12 @@ export const DriftSection: React.FC<{
         </div>
       </div>
 
-      {/* Performance summary */}
-      <div className="bg-gray-800 rounded">
-        <div className="p-3 flex items-center justify-between">
-          <div className="text-white font-semibold">Performance Summary</div>
-          <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={loadTxSummary}>Refresh</button>
-        </div>
-        <div className="px-3 pb-3 overflow-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-gray-400">
-                <th className="text-left">Window</th>
-                <th className="text-left">Action</th>
-                <th className="text-left">Attempts</th>
-                <th className="text-left">Success</th>
-                <th className="text-left">Cost (SOL)</th>
-                <th className="text-left">Revenue (q)</th>
-                <th className="text-left">Build p50/p95</th>
-                <th className="text-left">Send p50/p95</th>
-                <th className="text-left">Confirm p50/p95</th>
-              </tr>
-            </thead>
-            <tbody>
-              {txSummary ? (
-                (['5m', '1h', '24h'] as const).flatMap((win) =>
-                  (['all', 'fill', 'trigger', 'liquidate'] as const).map((action) => {
-                    const m = txSummary?.[win]?.[action];
-                    const attempts = Number(m?.attempts ?? 0);
-                    const successes = Number(m?.successes ?? 0);
-                    const successRate = attempts > 0 ? ((successes / attempts) * 100).toFixed(1) : '0.0';
-                    const costSol = Number(m?.costSol ?? 0);
-                    const revenue = Number(m?.revenueQuote ?? 0);
-                    return (
-                      <tr key={`${win}-${action}`} className="text-gray-300">
-                        <td>{win}</td>
-                        <td className="uppercase">{action}</td>
-                        <td>{attempts}</td>
-                        <td>{successRate}%</td>
-                        <td>{costSol.toFixed(4)}</td>
-                        <td>{action === 'fill' || action === 'all' ? revenue.toLocaleString() : '-'}</td>
-                        <td>{formatMs(m?.timings?.buildMs?.p50)} / {formatMs(m?.timings?.buildMs?.p95)}</td>
-                        <td>{formatMs(m?.timings?.sendMs?.p50)} / {formatMs(m?.timings?.sendMs?.p95)}</td>
-                        <td>{formatMs(m?.timings?.confirmMs?.p50)} / {formatMs(m?.timings?.confirmMs?.p95)}</td>
-                      </tr>
-                    );
-                  })
-                )
-              ) : (
-                <tr><td colSpan={9} className="text-gray-500">No summary data</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Transactions */}
-      <div className="bg-gray-800 rounded">
-        <div className="p-3 flex items-center justify-between">
-          <div className="text-white font-semibold">Transactions</div>
-          <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={loadTxHistory} disabled={txBusy}>{txBusy ? 'Loading…' : 'Refresh'}</button>
-        </div>
-        <div className="px-3 pb-3 overflow-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-gray-400">
-                <th className="text-left">Time</th>
-                <th className="text-left">Action</th>
-                <th className="text-left">Bot</th>
-                <th className="text-left">Market</th>
-                <th className="text-left">User</th>
-                <th className="text-left">Cost (SOL)</th>
-                <th className="text-left">Revenue (q)</th>
-                <th className="text-left">Build/Send/Confirm</th>
-                <th className="text-left">Status</th>
-                <th className="text-left">Tx</th>
-              </tr>
-            </thead>
-            <tbody>
-              {txHistory.map((row: any, i: number) => {
-                const sig = String(row?.sig || '');
-                const cluster = String(status?.cluster || 'mainnet-beta');
-                const clusterQs = cluster === 'devnet' ? '?cluster=devnet' : (cluster === 'localnet' ? '?cluster=localnet' : '');
-                const solscan = sig && sig !== 'FAILED' ? `https://solscan.io/tx/${sig}${clusterQs}` : null;
-                const st = row?.status || null;
-                const conf = st?.confirmationStatus || '';
-                const err = st?.err ? 'err' : '';
-                const statusLabel = err ? 'error' : (conf || (row?.success ? 'confirmed' : 'unknown'));
-                return (
-                  <tr key={`${sig}-${i}`} className="text-gray-300">
-                    <td>{row?.ts ? new Date(Number(row.ts)).toLocaleTimeString() : '-'}</td>
-                    <td className="uppercase">{row?.action || '-'}</td>
-                    <td>{row?.bot || '-'}</td>
-                    <td>{Number.isFinite(Number(row?.marketIndex)) ? row.marketIndex : '-'}</td>
-                    <td className="font-mono" title={row?.taker || ''}>{shortPk(String(row?.taker || ''))}</td>
-                    <td>{Number(row?.lamportsPaid ?? 0) / 1_000_000_000}</td>
-                    <td>{Number(row?.fillerRewardQuote ?? 0) ? Number(row?.fillerRewardQuote ?? 0).toLocaleString() : '-'}</td>
-                    <td>{formatMs(row?.buildMs)} / {formatMs(row?.sendMs)} / {formatMs(row?.confirmMs)}</td>
-                    <td className={err ? 'text-red-300' : 'text-gray-300'}>{statusLabel}</td>
-                    <td>
-                      {solscan ? (
-                        <a className="text-blue-300 hover:underline" href={solscan} target="_blank" rel="noreferrer">solscan</a>
-                      ) : (
-                        <span className="text-gray-500">-</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {txHistory.length === 0 && (
-                <tr><td colSpan={10} className="text-gray-500">No transactions</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
       {/* Liquidators section */}
       <div className="bg-gray-800 rounded">
         <div className="p-3 flex items-center justify-between">
           <div className="text-white font-semibold">Liquidators</div>
           <div className="flex items-center gap-2">
+            {renderHealthBadge(botHealth.liq)}
             {!!p.onOpenLiqRunner && (
               <button className="px-2 py-1 bg-purple-600 text-white rounded text-sm" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</button>
             )}
@@ -865,6 +805,7 @@ export const DriftSection: React.FC<{
         <div className="p-3 flex items-center justify-between">
           <div className="text-white font-semibold">Triggers</div>
           <div className="flex items-center gap-2">
+            {renderHealthBadge(botHealth.trig)}
             {!!p.onOpenTriggerRunner && (
               <button className="px-2 py-1 bg-amber-600 text-white rounded text-sm" onClick={() => p.onOpenTriggerRunner?.()}>+ New Trigger Bot</button>
             )}
@@ -883,6 +824,7 @@ export const DriftSection: React.FC<{
         <div className="p-3 flex items-center justify-between">
           <div className="text-white font-semibold">Fillers</div>
           <div className="flex items-center gap-2">
+            {renderHealthBadge(botHealth.fill)}
             {!!p.onOpenFillerRunner && (
               <button className="px-2 py-1 bg-sky-600 text-white rounded text-sm" onClick={() => p.onOpenFillerRunner?.()}>+ New Filler Bot</button>
             )}
@@ -894,6 +836,124 @@ export const DriftSection: React.FC<{
             <FillerStatus apiBase={p.apiBase} hideHeader />
           </div>
         )}
+      </div>
+
+      {/* Performance summary */}
+      <div className="bg-gray-800 rounded">
+        <div className="p-3 flex items-center justify-between">
+          <div className="text-white font-semibold">Performance Summary</div>
+          <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={loadTxSummary}>Refresh</button>
+        </div>
+        <div className="px-3 pb-3 overflow-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gray-400">
+                <th className="text-left">Window</th>
+                <th className="text-left">Action</th>
+                <th className="text-left">Attempts</th>
+                <th className="text-left">Success</th>
+                <th className="text-left">Cost (SOL)</th>
+                <th className="text-left">Revenue (q)</th>
+                <th className="text-left">Build p50/p95</th>
+                <th className="text-left">Send p50/p95</th>
+                <th className="text-left">Confirm p50/p95</th>
+              </tr>
+            </thead>
+            <tbody>
+              {txSummary ? (
+                (['5m', '1h', '24h'] as const).flatMap((win) =>
+                  (['all', 'fill', 'trigger', 'liquidate'] as const).map((action) => {
+                    const m = txSummary?.[win]?.[action];
+                    const attempts = Number(m?.attempts ?? 0);
+                    const successes = Number(m?.successes ?? 0);
+                    const successRate = attempts > 0 ? ((successes / attempts) * 100).toFixed(1) : '0.0';
+                    const costSol = Number(m?.costSol ?? 0);
+                    const revenue = Number(m?.revenueQuote ?? 0);
+                    return (
+                      <tr key={`${win}-${action}`} className="text-gray-300">
+                        <td>{win}</td>
+                        <td className="uppercase">{action}</td>
+                        <td>{attempts}</td>
+                        <td>{successRate}%</td>
+                        <td>{costSol.toFixed(4)}</td>
+                        <td>{action === 'fill' || action === 'all' ? revenue.toLocaleString() : '-'}</td>
+                        <td>{formatMs(m?.timings?.buildMs?.p50)} / {formatMs(m?.timings?.buildMs?.p95)}</td>
+                        <td>{formatMs(m?.timings?.sendMs?.p50)} / {formatMs(m?.timings?.sendMs?.p95)}</td>
+                        <td>{formatMs(m?.timings?.confirmMs?.p50)} / {formatMs(m?.timings?.confirmMs?.p95)}</td>
+                      </tr>
+                    );
+                  })
+                )
+              ) : (
+                <tr><td colSpan={9} className="text-gray-500">No summary data</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Transactions */}
+      <div className="bg-gray-800 rounded">
+        <div className="p-3 flex items-center justify-between">
+          <div className="text-white font-semibold">Transactions</div>
+          <div className="flex items-center gap-2">
+            <div className="text-xs text-gray-400">Showing last {txDisplayLimit}</div>
+            <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={loadTxHistory} disabled={txBusy}>{txBusy ? 'Loading…' : 'Refresh'}</button>
+          </div>
+        </div>
+        <div className="px-3 pb-3 overflow-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gray-400">
+                <th className="text-left">Time</th>
+                <th className="text-left">Action</th>
+                <th className="text-left">Bot</th>
+                <th className="text-left">Market</th>
+                <th className="text-left">User</th>
+                <th className="text-left">Cost (SOL)</th>
+                <th className="text-left">Revenue (q)</th>
+                <th className="text-left">Build/Send/Confirm</th>
+                <th className="text-left">Status</th>
+                <th className="text-left">Tx</th>
+              </tr>
+            </thead>
+            <tbody>
+              {txDisplay.map((row: any, i: number) => {
+                const sig = String(row?.sig || '');
+                const cluster = String(status?.cluster || 'mainnet-beta');
+                const clusterQs = cluster === 'devnet' ? '?cluster=devnet' : (cluster === 'localnet' ? '?cluster=localnet' : '');
+                const solscan = sig && sig !== 'FAILED' ? `https://solscan.io/tx/${sig}${clusterQs}` : null;
+                const st = row?.status || null;
+                const conf = st?.confirmationStatus || '';
+                const err = st?.err ? 'err' : '';
+                const statusLabel = err ? 'error' : (conf || (row?.success ? 'confirmed' : 'unknown'));
+                return (
+                  <tr key={`${sig}-${i}`} className="text-gray-300">
+                    <td>{row?.ts ? new Date(Number(row.ts)).toLocaleTimeString() : '-'}</td>
+                    <td className="uppercase">{row?.action || '-'}</td>
+                    <td>{row?.bot || '-'}</td>
+                    <td>{Number.isFinite(Number(row?.marketIndex)) ? row.marketIndex : '-'}</td>
+                    <td className="font-mono" title={row?.taker || ''}>{shortPk(String(row?.taker || ''))}</td>
+                    <td>{Number(row?.lamportsPaid ?? 0) / 1_000_000_000}</td>
+                    <td>{Number(row?.fillerRewardQuote ?? 0) ? Number(row?.fillerRewardQuote ?? 0).toLocaleString() : '-'}</td>
+                    <td>{formatMs(row?.buildMs)} / {formatMs(row?.sendMs)} / {formatMs(row?.confirmMs)}</td>
+                    <td className={err ? 'text-red-300' : 'text-gray-300'}>{statusLabel}</td>
+                    <td>
+                      {solscan ? (
+                        <a className="text-blue-300 hover:underline" href={solscan} target="_blank" rel="noreferrer">solscan</a>
+                      ) : (
+                        <span className="text-gray-500">-</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {txDisplay.length === 0 && (
+                <tr><td colSpan={10} className="text-gray-500">No transactions</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
