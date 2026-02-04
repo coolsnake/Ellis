@@ -33,6 +33,9 @@ export const DriftSection: React.FC<{
   const [liqUsers, setLiqUsers] = useState<Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; base: number }> }>>([]);
   const [infra, setInfra] = useState<any>(null);
   const [infraBusy, setInfraBusy] = useState<boolean>(false);
+  const [txSummary, setTxSummary] = useState<any>(null);
+  const [txHistory, setTxHistory] = useState<any[]>([]);
+  const [txBusy, setTxBusy] = useState<boolean>(false);
 
   const selected = useMemo(
     () => p.driftSubaccounts.find((s: any) => Number(s.id) === Number(p.driftSelectedSubId)),
@@ -87,7 +90,27 @@ export const DriftSection: React.FC<{
     } catch {}
   };
 
+  const loadTxSummary = async () => {
+    try {
+      const r = await fetch(`${p.apiBase}${ROUTES.drift.txSummary}`);
+      const j = await r.json().catch(() => ({}));
+      setTxSummary(j?.summary || null);
+    } catch {}
+  };
+
+  const loadTxHistory = async () => {
+    try {
+      setTxBusy(true);
+      const r = await fetch(`${p.apiBase}${ROUTES.drift.txHistory}?limit=200&includeStatus=1`);
+      const j = await r.json().catch(() => ({}));
+      setTxHistory(Array.isArray(j?.items) ? j.items : []);
+    } catch {} finally {
+      setTxBusy(false);
+    }
+  };
+
   useEffect(() => { loadStatusAndSubs(); loadSubaccounts(); }, []);
+  useEffect(() => { loadTxSummary(); loadTxHistory(); }, [p.apiBase]);
   useEffect(() => {
     // Poll infra status occasionally for live indicators
     // Reduced frequency since this is just for indicators, not critical data
@@ -101,6 +124,18 @@ export const DriftSection: React.FC<{
     };
     id = setInterval(tick, 15000); // Increased from 5s to 15s - less critical data
     tick();
+    return () => { try { clearInterval(id); } catch {} };
+  }, [p.apiBase]);
+  useEffect(() => {
+    let id: any = null;
+    const tick = async () => { try { await loadTxSummary(); } catch {} };
+    id = setInterval(tick, 60000);
+    return () => { try { clearInterval(id); } catch {} };
+  }, [p.apiBase]);
+  useEffect(() => {
+    let id: any = null;
+    const tick = async () => { try { await loadTxHistory(); } catch {} };
+    id = setInterval(tick, 30000);
     return () => { try { clearInterval(id); } catch {} };
   }, [p.apiBase]);
   useEffect(() => { loadBalances(p.driftSelectedSubId); }, [p.apiBase, p.driftSelectedSubId]);
@@ -308,6 +343,20 @@ export const DriftSection: React.FC<{
   };
 
   const [open, setOpen] = useState<{ liq: boolean; trig: boolean; fill: boolean }>({ liq: true, trig: true, fill: true });
+  const formatAgo = (ts?: number) => {
+    if (!ts || !Number.isFinite(Number(ts))) return '-';
+    const d = Date.now() - Number(ts);
+    if (!Number.isFinite(d)) return '-';
+    if (d < 60000) return `${Math.max(0, Math.floor(d / 1000))}s ago`;
+    if (d < 3600000) return `${Math.floor(d / 60000)}m ago`;
+    return `${Math.floor(d / 3600000)}h ago`;
+  };
+  const formatMs = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return '-';
+    return `${Math.round(n)}ms`;
+  };
+  const shortPk = (s: string) => (s && s.length > 10 ? `${s.slice(0, 4)}…${s.slice(-4)}` : (s || '-'));
 
   return (
     <div className="grid grid-cols-1 gap-4">
@@ -351,6 +400,45 @@ export const DriftSection: React.FC<{
           </div>
         </div>
         {error && <div className="mb-2 text-sm text-red-300">{error}</div>}
+        <div className="mb-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+          <div className="bg-gray-700 rounded p-2">
+            <div className="text-gray-400">Total users</div>
+            <div className="text-white font-mono">
+              {(() => {
+                const u = infra?.userCount;
+                const total = Number(u?.total || 0);
+                if (u?.error) return 'unavailable';
+                if (!Number.isFinite(total) || total <= 0) return u?.refreshing ? 'loading…' : '-';
+                return `${total.toLocaleString()}${u?.capped ? '+' : ''}`;
+              })()}
+            </div>
+            <div className="text-gray-500">{formatAgo(Number(infra?.userCount?.updatedAtMs || 0))}</div>
+          </div>
+          <div className="bg-gray-700 rounded p-2">
+            <div className="text-gray-400">At-risk users</div>
+            <div className="text-white font-mono">{liqUsers.length.toLocaleString()}</div>
+            <div className="text-gray-500">queue snapshot</div>
+          </div>
+          <div className="bg-gray-700 rounded p-2">
+            <div className="text-gray-400">Markets</div>
+            <div className="text-white font-mono">
+              {Array.isArray(status?.markets) ? status.markets.length : 0} perp · {spotMarkets.length} spot
+            </div>
+            <div className="text-gray-500">tracked</div>
+          </div>
+          <div className="bg-gray-700 rounded p-2">
+            <div className="text-gray-400">Bots / Subs</div>
+            <div className="text-white font-mono">{infra?.bots ?? 0} bots · {(p.driftSubaccounts || []).length} subs</div>
+            <div className="text-gray-500">
+              {(() => {
+                const pos = Array.isArray(status?.subaccounts)
+                  ? status.subaccounts.reduce((s: number, sa: any) => s + (Array.isArray(sa?.positions) ? sa.positions.length : 0), 0)
+                  : 0;
+                return `${pos} positions`;
+              })()}
+            </div>
+          </div>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <label className="block text-sm text-gray-300 mb-1">Select Subaccount</label>
@@ -467,6 +555,121 @@ export const DriftSection: React.FC<{
         <div className="mt-4 text-xs text-gray-400">
           {status?.cluster ? `Cluster: ${status.cluster}` : null}
           {status?.programId ? ` — Program: ${status.programId}` : null}
+        </div>
+      </div>
+
+      {/* Performance summary */}
+      <div className="bg-gray-800 rounded">
+        <div className="p-3 flex items-center justify-between">
+          <div className="text-white font-semibold">Performance Summary</div>
+          <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={loadTxSummary}>Refresh</button>
+        </div>
+        <div className="px-3 pb-3 overflow-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gray-400">
+                <th className="text-left">Window</th>
+                <th className="text-left">Action</th>
+                <th className="text-left">Attempts</th>
+                <th className="text-left">Success</th>
+                <th className="text-left">Cost (SOL)</th>
+                <th className="text-left">Revenue (q)</th>
+                <th className="text-left">Build p50/p95</th>
+                <th className="text-left">Send p50/p95</th>
+                <th className="text-left">Confirm p50/p95</th>
+              </tr>
+            </thead>
+            <tbody>
+              {txSummary ? (
+                (['5m', '1h', '24h'] as const).flatMap((win) =>
+                  (['all', 'fill', 'trigger', 'liquidate'] as const).map((action) => {
+                    const m = txSummary?.[win]?.[action];
+                    const attempts = Number(m?.attempts ?? 0);
+                    const successes = Number(m?.successes ?? 0);
+                    const successRate = attempts > 0 ? ((successes / attempts) * 100).toFixed(1) : '0.0';
+                    const costSol = Number(m?.costSol ?? 0);
+                    const revenue = Number(m?.revenueQuote ?? 0);
+                    return (
+                      <tr key={`${win}-${action}`} className="text-gray-300">
+                        <td>{win}</td>
+                        <td className="uppercase">{action}</td>
+                        <td>{attempts}</td>
+                        <td>{successRate}%</td>
+                        <td>{costSol.toFixed(4)}</td>
+                        <td>{action === 'fill' || action === 'all' ? revenue.toLocaleString() : '-'}</td>
+                        <td>{formatMs(m?.timings?.buildMs?.p50)} / {formatMs(m?.timings?.buildMs?.p95)}</td>
+                        <td>{formatMs(m?.timings?.sendMs?.p50)} / {formatMs(m?.timings?.sendMs?.p95)}</td>
+                        <td>{formatMs(m?.timings?.confirmMs?.p50)} / {formatMs(m?.timings?.confirmMs?.p95)}</td>
+                      </tr>
+                    );
+                  })
+                )
+              ) : (
+                <tr><td colSpan={9} className="text-gray-500">No summary data</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Transactions */}
+      <div className="bg-gray-800 rounded">
+        <div className="p-3 flex items-center justify-between">
+          <div className="text-white font-semibold">Transactions</div>
+          <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={loadTxHistory} disabled={txBusy}>{txBusy ? 'Loading…' : 'Refresh'}</button>
+        </div>
+        <div className="px-3 pb-3 overflow-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gray-400">
+                <th className="text-left">Time</th>
+                <th className="text-left">Action</th>
+                <th className="text-left">Bot</th>
+                <th className="text-left">Market</th>
+                <th className="text-left">User</th>
+                <th className="text-left">Cost (SOL)</th>
+                <th className="text-left">Revenue (q)</th>
+                <th className="text-left">Build/Send/Confirm</th>
+                <th className="text-left">Status</th>
+                <th className="text-left">Tx</th>
+              </tr>
+            </thead>
+            <tbody>
+              {txHistory.map((row: any, i: number) => {
+                const sig = String(row?.sig || '');
+                const cluster = String(status?.cluster || 'mainnet-beta');
+                const clusterQs = cluster === 'devnet' ? '?cluster=devnet' : (cluster === 'localnet' ? '?cluster=localnet' : '');
+                const solscan = sig && sig !== 'FAILED' ? `https://solscan.io/tx/${sig}${clusterQs}` : null;
+                const st = row?.status || null;
+                const conf = st?.confirmationStatus || '';
+                const err = st?.err ? 'err' : '';
+                const statusLabel = err ? 'error' : (conf || (row?.success ? 'confirmed' : 'unknown'));
+                return (
+                  <tr key={`${sig}-${i}`} className="text-gray-300">
+                    <td>{row?.ts ? new Date(Number(row.ts)).toLocaleTimeString() : '-'}</td>
+                    <td className="uppercase">{row?.action || '-'}</td>
+                    <td>{row?.bot || '-'}</td>
+                    <td>{Number.isFinite(Number(row?.marketIndex)) ? row.marketIndex : '-'}</td>
+                    <td className="font-mono" title={row?.taker || ''}>{shortPk(String(row?.taker || ''))}</td>
+                    <td>{Number(row?.lamportsPaid ?? 0) / 1_000_000_000}</td>
+                    <td>{Number(row?.fillerRewardQuote ?? 0) ? Number(row?.fillerRewardQuote ?? 0).toLocaleString() : '-'}</td>
+                    <td>{formatMs(row?.buildMs)} / {formatMs(row?.sendMs)} / {formatMs(row?.confirmMs)}</td>
+                    <td className={err ? 'text-red-300' : 'text-gray-300'}>{statusLabel}</td>
+                    <td>
+                      {solscan ? (
+                        <a className="text-blue-300 hover:underline" href={solscan} target="_blank" rel="noreferrer">solscan</a>
+                      ) : (
+                        <span className="text-gray-500">-</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {txHistory.length === 0 && (
+                <tr><td colSpan={10} className="text-gray-500">No transactions</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

@@ -2,6 +2,7 @@ import { PublicKey, ComputeBudgetProgram, Transaction, TransactionMessage, Versi
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
 import { hotlist } from './hotlist.js';
+import { driftEventIndex } from './eventIndex.js';
 import { computeTriggerPriorityFee } from './triggerUtils.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
@@ -63,6 +64,9 @@ export class DriftTriggerRunner {
   private marketsCacheTs: number = 0;
   private cachedPerpMarkets: any[] | null = null;
   private cachedSpotMarkets: any[] | null = null;
+  private lastFullScanAt: number = 0;
+  private eventIndexSweepTimer: any | null = null;
+  private eventIndexBound: boolean = false;
 
   constructor(cfg: TriggerConfig) {
     const allowlist = Array.isArray(cfg?.marketsAllowlist)
@@ -168,6 +172,7 @@ export class DriftTriggerRunner {
     this.state.running = false;
     this.abort = true;
     try { if ((this as any)._condStatsTimer) { clearInterval((this as any)._condStatsTimer); (this as any)._condStatsTimer = null; } } catch {}
+    try { if (this.eventIndexSweepTimer) { clearInterval(this.eventIndexSweepTimer); this.eventIndexSweepTimer = null; } } catch {}
     logger.info('drift.trigger.stopped', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
     try { (DriftService.getInstance() as any).unregisterBot?.(this.botKey); } catch {}
   }
@@ -183,6 +188,7 @@ export class DriftTriggerRunner {
 
     // Warm user prefetcher once shared infra is ready
     try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
+    try { this.setupEventIndex(); } catch {}
 
     // Initialize priority fee strategy
     try {
@@ -225,6 +231,24 @@ export class DriftTriggerRunner {
 
     // Start Jito tip feed cache (non-blocking)
     try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch {}
+  }
+
+  private setupEventIndex(): void {
+    if (this.eventIndexBound) return;
+    this.eventIndexBound = true;
+    const driftCfg: any = (CONFIG as any)?.drift || {};
+    try { driftEventIndex.bindEventSubscriber(this.eventSubscriber); } catch {}
+    try {
+      const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));
+      driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: true, reason: 'trigger_bootstrap' });
+    } catch {}
+    try {
+      const sweepMs = Math.max(10_000, Number(driftCfg.eventIndexSweepMs ?? 45_000));
+      const limit = Math.max(100, Number(driftCfg.eventIndexSweepUsers ?? 1000));
+      this.eventIndexSweepTimer = setInterval(() => {
+        try { driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: true, reason: 'trigger_sweep' }); } catch {}
+      }, sweepMs);
+    } catch {}
   }
 
   private async reportConditionalOrderStats(): Promise<void> {
@@ -464,6 +488,7 @@ export class DriftTriggerRunner {
             this.nodesCooldown.set(sig, Date.now());
             const orderId = String(node?.node?.order?.orderId || '');
             const userPkStr = String(node?.node?.userAccount || '');
+            try { if (userPkStr) driftEventIndex.updateUserMarkets(userPkStr, [idx], 'trigger_node'); } catch {}
 						if (nodeSamples.length < 5) {
 							const o = node?.node?.order;
 							nodeSamples.push({
@@ -523,6 +548,7 @@ export class DriftTriggerRunner {
             const priority = computeTriggerPriorityFee({ baseCfg, subPriority, suggestedMul, multiplier: mul, floor });
 
             // Build ixs
+            const buildStart = Date.now();
             let ixs: any[] = [
               ComputeBudgetProgram.setComputeUnitLimit({ units: cuUnits }),
               ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priority }),
@@ -578,6 +604,7 @@ export class DriftTriggerRunner {
             const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bhStr, instructions: ixs }).compileToV0Message(this.lookupTableAccounts || []);
             const vtx = new VersionedTransaction(msg);
             vtx.sign([this.client.wallet.payer]);
+            const buildMs = Math.max(0, Date.now() - buildStart);
 
             // Sender/Jito/RPC send path
             const raw = vtx.serialize();
@@ -609,6 +636,8 @@ export class DriftTriggerRunner {
             const raceRpc = !!((CONFIG as any)?.jito?.raceRpc);
 
             try {
+              const tSend = Date.now();
+              const sentAtMs = tSend;
               let sigTx: string;
               if (preferSender) {
                 try { sigTx = await senderSend(); }
@@ -644,6 +673,7 @@ export class DriftTriggerRunner {
               } else {
                 sigTx = await rpcSend();
               }
+              const sendMs = Math.max(0, Date.now() - tSend);
 
               this.triggersInWindow.push(Date.now());
               logger.info('drift.trigger.ok', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, sig: sigTx, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId });
@@ -662,6 +692,9 @@ export class DriftTriggerRunner {
                   priorityFeeMicroLamports: priority,
                   cuLimit: cuUnits,
                   bot: (this as any)?.state?.name ? `trg#${(this as any).state.name}` : undefined,
+                  buildMs,
+                  sendMs,
+                  sentAtMs,
                 }).catch(() => {});
               } catch {}
             } catch (e: any) {
@@ -678,8 +711,18 @@ export class DriftTriggerRunner {
         limit: Math.max(1, Number(driftCfg?.hotMarketsPerLoop ?? 25)),
         consumerId: 'trigger',
       });
+      const condMarkets = driftEventIndex.getMarketsWithConditionalOrders(Math.max(1, Number(driftCfg?.condMarketsPerLoop ?? 50)));
+      const prioritySet = new Set<number>();
+      for (const idx of hotMarkets) prioritySet.add(Number(idx));
+      for (const idx of condMarkets) prioritySet.add(Number(idx));
+      const fullScanEveryMs = Math.max(10_000, Number(driftCfg?.eventIndexFullScanMs ?? 30_000));
+      const doFullScan = prioritySet.size === 0 || ((Date.now() - this.lastFullScanAt) > fullScanEveryMs);
+      if (doFullScan) this.lastFullScanAt = Date.now();
       if (hotMarkets.length > 0) {
         try { logger.debug('drift.trigger.hotlist', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, count: hotMarkets.length }); } catch {}
+      }
+      if (condMarkets.length > 0) {
+        try { logger.debug('drift.trigger.cond_markets', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, count: condMarkets.length }); } catch {}
       }
       const processed = new Set<number>();
       const perpByIndex = new Map<number, any>();
@@ -690,17 +733,19 @@ export class DriftTriggerRunner {
       for (const m of (Array.isArray(spots) ? spots : [])) {
         spotByIndex.set(Number(m?.marketIndex || 0), m);
       }
-      for (const idx of hotMarkets) {
+      for (const idx of prioritySet) {
         if (!Number.isFinite(Number(idx))) continue;
         const perpM = perpByIndex.get(Number(idx));
         const spotM = spotByIndex.get(Number(idx));
         if (perpM) { await tryOneMarket(perpM, MarketType.PERP); processed.add(Number(idx)); continue; }
         if (spotM) { await tryOneMarket(spotM, MarketType.SPOT); processed.add(Number(idx)); continue; }
       }
-      await Promise.all([
-        ...(Array.isArray(perps) ? perps.filter((m: any) => !processed.has(Number(m?.marketIndex || 0))).map((m: any) => tryOneMarket(m, MarketType.PERP)) : []),
-        ...(Array.isArray(spots) ? spots.filter((m: any) => !processed.has(Number(m?.marketIndex || 0))).map((m: any) => tryOneMarket(m, MarketType.SPOT)) : []),
-      ]);
+      if (doFullScan) {
+        await Promise.all([
+          ...(Array.isArray(perps) ? perps.filter((m: any) => !processed.has(Number(m?.marketIndex || 0))).map((m: any) => tryOneMarket(m, MarketType.PERP)) : []),
+          ...(Array.isArray(spots) ? spots.filter((m: any) => !processed.has(Number(m?.marketIndex || 0))).map((m: any) => tryOneMarket(m, MarketType.SPOT)) : []),
+        ]);
+      }
 
 			const dur = Date.now() - t0;
 			logger.info('drift.trigger.loop', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, ms: dur, name: this.state.name });
@@ -712,6 +757,9 @@ export class DriftTriggerRunner {
 				users: userCount,
 				totalNodesPlanned,
 				marketsWithNodes,
+				scanMode: doFullScan ? 'full' : 'targeted',
+				priorityMarkets: prioritySet.size,
+				index: driftEventIndex.getStats(),
 				triggersLastMin: this.getStatus().triggersLastMin,
 				sample: nodeSamples,
 			});

@@ -5,6 +5,7 @@ import { DriftPriceService } from './price.js';
 import { fetchDlobL2 } from './marketdata.js';
 import { getAllowlistIndices, indexToSymbol } from './marketMapping.js';
 import { hotlist } from './hotlist.js';
+import { driftEventIndex } from './eventIndex.js';
 import { isOracleTwapOutlier } from './guardrails.js';
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
@@ -145,6 +146,8 @@ export class DriftLiquidator {
   private marketToUsers: Map<number, Set<string>> = new Map();
   private userToMarkets: Map<string, Set<number>> = new Map();
   private inHeap: Set<string> = new Set();
+  private eventIndexSweepTimer: any | null = null;
+  private eventIndexBound: boolean = false;
   private accountLoader: any | null = null; // deprecated (no longer used)
   private marketScanInFlight: Set<number> = new Set();
   private userCache: Map<string, any> = new Map();
@@ -311,6 +314,7 @@ export class DriftLiquidator {
             trackedUsers: this.userCache.size,
             exposureUsers: exposure.exposureUsers,
             exposureMarkets: exposure.exposureMarkets,
+            index: driftEventIndex.getStats(),
             cat: 'drift'
           });
           emit('drift-liquidation', { type: 'stats', ...snapshot }).catch(() => {});
@@ -344,6 +348,7 @@ export class DriftLiquidator {
     this.timer = null;
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
     if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} this.discoveryTimer = null; }
+    if (this.eventIndexSweepTimer) { try { (globalThis as any).clearInterval(this.eventIndexSweepTimer); } catch {} this.eventIndexSweepTimer = null; }
     // Do not unsubscribe shared event subscriber owned by DriftService
     try { this.eventSub = null; } catch {}
     // Cleanup DLOB helpers and periodic seed timer
@@ -714,8 +719,10 @@ export class DriftLiquidator {
       if (this.config?.useEventSubscriptions === false) return;
       const infra = await DriftService.getInstance().getSharedInfra({ includeIdle: true });
       const sub = (infra as any).eventSubscriber;
+      const userMap = (infra as any).userMap;
       if (!sub) return;
       this.eventSub = sub;
+      try { this.setupEventIndex(userMap); } catch {}
       // Listen for position updates and order events to prioritize scanning affected users
       const onUserEvent = async (ev: any) => {
         try {
@@ -727,6 +734,24 @@ export class DriftLiquidator {
       try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch {}
       try { sub.eventEmitter?.on?.('OrderRecord', onUserEvent); } catch {}
       try { sub.eventEmitter?.on?.('LiquidationRecord', onUserEvent); } catch {}
+    } catch {}
+  }
+
+  private setupEventIndex(userMap?: any): void {
+    if (this.eventIndexBound) return;
+    this.eventIndexBound = true;
+    const driftCfg: any = (CONFIG as any)?.drift || {};
+    try { driftEventIndex.bindEventSubscriber(this.eventSub); } catch {}
+    try {
+      const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));
+      driftEventIndex.bootstrapFromUserMap(userMap, { limit, includeOrders: false, reason: 'liquidator_bootstrap' });
+    } catch {}
+    try {
+      const sweepMs = Math.max(10_000, Number(driftCfg.eventIndexSweepMs ?? 45_000));
+      const limit = Math.max(100, Number(driftCfg.eventIndexSweepUsers ?? 1000));
+      this.eventIndexSweepTimer = (globalThis as any).setInterval(() => {
+        try { driftEventIndex.bootstrapFromUserMap(userMap, { limit, includeOrders: false, reason: 'liquidator_sweep' }); } catch {}
+      }, sweepMs);
     } catch {}
   }
 
@@ -971,6 +996,7 @@ export class DriftLiquidator {
         }
       }
       this.userToMarkets.set(userPk, prev);
+      try { driftEventIndex.updateUserMarkets(userPk, Array.from(newSet), 'liquidator_exposure'); } catch {}
       // Dynamically ensure price triggers for newly active markets
       try {
         for (const m of Array.from(prev)) {
@@ -992,7 +1018,11 @@ export class DriftLiquidator {
         const pollMs = Math.max(800, Number((this.config.httpPollMs ?? ((CONFIG as any)?.drift?.liquidator?.httpPollMs ?? 1200))));
         svc.trackMarket(idx, pollMs);
       } catch {}
-      const users = Array.from(this.marketToUsers.get(idx) || []);
+      const eventUsers = driftEventIndex.getUsersForMarket(idx, Math.max(50, Number((this.config.maxUsersPerPriceTick ?? ((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) ?? 40)) * 4));
+      const users = Array.from(new Set<string>([
+        ...Array.from(this.marketToUsers.get(idx) || []),
+        ...eventUsers,
+      ]));
       if (users.length === 0) { this.marketScanInFlight.delete(idx); return; }
       const drift: any = (DriftService.getInstance() as any).client;
       // Cap per event to avoid long stalls
@@ -1585,6 +1615,20 @@ export class DriftLiquidator {
               try {
                 logger.info('drift.liquidator.perp_ok', { user: target.userPk, marketIndex: mkt, sizeFraction: sizeFrac, consumedUsd, remainingNotional: (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) ? remainingNotional : null, sig, ms: Date.now() - t0, cat: 'drift' });
               } catch {}
+              try {
+                if (sig) {
+                  const { trackDriftAttempt } = await import('./txTracker.js');
+                  trackDriftAttempt((DriftService.getInstance() as any).connection, {
+                    sig: String(sig),
+                    action: 'liquidate',
+                    marketIndex: mkt,
+                    taker: String(target.userPk),
+                    bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                    sendMs: Math.max(0, Date.now() - t0),
+                    sentAtMs: t0,
+                  }).catch(() => {});
+                }
+              } catch {}
               anySuccess = true;
               if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity && remainingNotional <= 0) break;
             } catch (e: any) {
@@ -1611,6 +1655,20 @@ export class DriftLiquidator {
                 const res = await drift.liquidatePerpBatch({ users: [userPublicKey], markets: safeMarkets, sizeFraction });
                 const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
                 try { logger.info('drift.liquidator.perp_batch_ok', { user: target.userPk, markets: safeMarkets, sizeFraction, sig, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+                try {
+                  if (sig) {
+                    const { trackDriftAttempt } = await import('./txTracker.js');
+                    trackDriftAttempt((DriftService.getInstance() as any).connection, {
+                      sig: String(sig),
+                      action: 'liquidate',
+                      marketIndex: safeMarkets?.[0] ?? 0,
+                      taker: String(target.userPk),
+                      bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                      sendMs: Math.max(0, Date.now() - t0),
+                      sentAtMs: t0,
+                    }).catch(() => {});
+                  }
+                } catch {}
                 anySuccess = true;
               } catch (e: any) {
                 try { logger.warn('drift.liquidator.perp_batch_failed', { user: target.userPk, markets: safeMarkets, sizeFraction, error: String(e?.message || e), cat: 'drift' }); } catch {}
@@ -1645,12 +1703,28 @@ export class DriftLiquidator {
               if (this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot')) continue;
               const depAmount = this.scaleAmount(spotDeposit.amountRaw, sizeFrac);
               try {
+                const tSend = Date.now();
                 const res = await this.callMethodVariants(fnPerpPnlForDeposit, [
                   [userPublicKey, userAccount, mkt, Number(spotDeposit.marketIndex), depAmount],
                   [userPublicKey, mkt, Number(spotDeposit.marketIndex), depAmount],
                 ]);
                 attempts += 1;
-                try { logger.info('drift.liquidator.perp_pnl_for_deposit_ok', { user: target.userPk, marketIndex: mkt, depositMarketIndex: Number(spotDeposit.marketIndex), sig: (res as any)?.txSig || (res as any)?.signature || res, cat: 'drift' }); } catch {}
+                const sig = typeof res === 'string' ? res : ((res as any)?.txSig || (res as any)?.signature || null);
+                try { logger.info('drift.liquidator.perp_pnl_for_deposit_ok', { user: target.userPk, marketIndex: mkt, depositMarketIndex: Number(spotDeposit.marketIndex), sig, cat: 'drift' }); } catch {}
+                try {
+                  if (sig) {
+                    const { trackDriftAttempt } = await import('./txTracker.js');
+                    trackDriftAttempt((DriftService.getInstance() as any).connection, {
+                      sig: String(sig),
+                      action: 'liquidate',
+                      marketIndex: mkt,
+                      taker: String(target.userPk),
+                      bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                      sendMs: Math.max(0, Date.now() - tSend),
+                      sentAtMs: tSend,
+                    }).catch(() => {});
+                  }
+                } catch {}
               } catch (e: any) {
                 try { logger.warn('drift.liquidator.perp_pnl_for_deposit_failed', { user: target.userPk, marketIndex: mkt, error: String(e?.message || e), cat: 'drift' }); } catch {}
               }
@@ -1661,12 +1735,28 @@ export class DriftLiquidator {
               if (this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot')) continue;
               const borrowAmount = this.scaleAmount(spotBorrow.amountRaw, sizeFrac);
               try {
+                const tSend = Date.now();
                 const res = await this.callMethodVariants(fnBorrowForPnl, [
                   [userPublicKey, userAccount, mkt, Number(spotBorrow.marketIndex), borrowAmount],
                   [userPublicKey, mkt, Number(spotBorrow.marketIndex), borrowAmount],
                 ]);
                 attempts += 1;
-                try { logger.info('drift.liquidator.borrow_for_perp_pnl_ok', { user: target.userPk, marketIndex: mkt, borrowMarketIndex: Number(spotBorrow.marketIndex), sig: (res as any)?.txSig || (res as any)?.signature || res, cat: 'drift' }); } catch {}
+                const sig = typeof res === 'string' ? res : ((res as any)?.txSig || (res as any)?.signature || null);
+                try { logger.info('drift.liquidator.borrow_for_perp_pnl_ok', { user: target.userPk, marketIndex: mkt, borrowMarketIndex: Number(spotBorrow.marketIndex), sig, cat: 'drift' }); } catch {}
+                try {
+                  if (sig) {
+                    const { trackDriftAttempt } = await import('./txTracker.js');
+                    trackDriftAttempt((DriftService.getInstance() as any).connection, {
+                      sig: String(sig),
+                      action: 'liquidate',
+                      marketIndex: mkt,
+                      taker: String(target.userPk),
+                      bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                      sendMs: Math.max(0, Date.now() - tSend),
+                      sentAtMs: tSend,
+                    }).catch(() => {});
+                  }
+                } catch {}
               } catch (e: any) {
                 try { logger.warn('drift.liquidator.borrow_for_perp_pnl_failed', { user: target.userPk, marketIndex: mkt, error: String(e?.message || e), cat: 'drift' }); } catch {}
               }
@@ -1693,6 +1783,7 @@ export class DriftLiquidator {
             let attempts = 0;
             if (typeof fnBorrow === 'function') {
               try {
+                const tSend = Date.now();
                 const res = await this.callMethodVariants(fnBorrow, [
                   [userPublicKey, (this.userCache.get(String(target.userPk)) as any)?.getUserAccount?.(), Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
                   [userPublicKey, Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
@@ -1700,6 +1791,20 @@ export class DriftLiquidator {
                 attempts += 1;
                 const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
                 try { logger.info('drift.liquidator.spot_ok', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), sizeFraction: sizeFrac, sig, cat: 'drift' }); } catch {}
+                try {
+                  if (sig) {
+                    const { trackDriftAttempt } = await import('./txTracker.js');
+                    trackDriftAttempt((DriftService.getInstance() as any).connection, {
+                      sig: String(sig),
+                      action: 'liquidate',
+                      marketIndex: Number(spotBorrow.marketIndex),
+                      taker: String(target.userPk),
+                      bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                      sendMs: Math.max(0, Date.now() - tSend),
+                      sentAtMs: tSend,
+                    }).catch(() => {});
+                  }
+                } catch {}
                 anySuccess = true;
                 if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
                   const consumed = Number(spotBorrow.valueUsd || 0) * sizeFrac;

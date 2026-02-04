@@ -8,6 +8,7 @@ import { getCachedBlockhash } from '../utils/blockhash.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
 import { hotlist } from './hotlist.js';
+import { driftEventIndex } from './eventIndex.js';
 import { OracleUpdater } from './oracles/oracleUpdater.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
@@ -88,9 +89,12 @@ export class DriftFillerRunner {
   private beFailCount: number = 0;
   private beCoolUntilMs: number = 0;
   private lastUpdateFillerMs: number = 0;
+  private lastFullScanAt: number = 0;
+  private eventIndexSweepTimer: any | null = null;
+  private eventIndexBound: boolean = false;
   // Per-loop stats
   private _loopStatsTmp: any | null = null;
-  private _summary: { since: number; loops: number; planned: number; sent: number; processed: number; skipped: Record<string, number>; markets: { total: number; paused: number; oracleStale: number } } | null = null;
+  private _summary: { since: number; loops: number; planned: number; sent: number; processed: number; skipped: Record<string, number>; markets: { total: number; paused: number; oracleStale: number }; scanModes?: { full: number; targeted: number }; indexStats?: { users: number; markets: number; marketToOrders: number } } | null = null;
   private _summaryTimer: any | null = null;
 
   constructor(cfg: FillerConfig) {
@@ -197,7 +201,7 @@ export class DriftFillerRunner {
         const every = Math.max(2000, Number(driftCfg?.loopSummaryIntervalMs ?? 10000));
         if (summaryOnly) {
           if (this._summaryTimer) { try { clearInterval(this._summaryTimer); } catch {} this._summaryTimer = null; }
-          if (!this._summary) this._summary = { since: Date.now(), loops: 0, planned: 0, sent: 0, processed: 0, skipped: {}, markets: { total: 0, paused: 0, oracleStale: 0 } };
+          if (!this._summary) this._summary = { since: Date.now(), loops: 0, planned: 0, sent: 0, processed: 0, skipped: {}, markets: { total: 0, paused: 0, oracleStale: 0 }, scanModes: { full: 0, targeted: 0 } };
           this._summaryTimer = setInterval(() => {
             try {
               const s = this._summary!;
@@ -212,8 +216,10 @@ export class DriftFillerRunner {
                 sent: s.sent,
                 skipped: s.skipped,
                 markets: s.markets,
+                scanModes: s.scanModes,
+                index: s.indexStats,
               });
-              this._summary = { since: Date.now(), loops: 0, planned: 0, sent: 0, processed: 0, skipped: {}, markets: { total: 0, paused: 0, oracleStale: 0 } };
+              this._summary = { since: Date.now(), loops: 0, planned: 0, sent: 0, processed: 0, skipped: {}, markets: { total: 0, paused: 0, oracleStale: 0 }, scanModes: { full: 0, targeted: 0 } };
             } catch {}
           }, every);
         }
@@ -238,6 +244,7 @@ export class DriftFillerRunner {
     if (this.bhWarmTimer) { try { clearInterval(this.bhWarmTimer); } catch {} this.bhWarmTimer = null; }
     if (this.altRefreshTimer) { try { clearInterval(this.altRefreshTimer); } catch {} this.altRefreshTimer = null; }
     if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch {} this.wsNudgeTimer = null; }
+    if (this.eventIndexSweepTimer) { try { clearInterval(this.eventIndexSweepTimer); } catch {} this.eventIndexSweepTimer = null; }
     this.state.running = false;
     this.abort = true;
     logger.info('drift.filler.stopped', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
@@ -260,6 +267,7 @@ export class DriftFillerRunner {
     } catch {}
     // Start user prefetcher once shared infra is ready
     try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
+    try { this.setupEventIndex(); } catch {}
     // Initialize blockhash subscriber and priority fee strategy
     try {
       const { BlockhashSubscriber, PriorityFeeSubscriber } = this.sdk || {};
@@ -408,6 +416,24 @@ export class DriftFillerRunner {
     } catch {}
   }
 
+  private setupEventIndex(): void {
+    if (this.eventIndexBound) return;
+    this.eventIndexBound = true;
+    const driftCfg: any = (CONFIG as any)?.drift || {};
+    try { driftEventIndex.bindEventSubscriber(this.eventSubscriber); } catch {}
+    try {
+      const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));
+      driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: false, reason: 'filler_bootstrap' });
+    } catch {}
+    try {
+      const sweepMs = Math.max(10_000, Number(driftCfg.eventIndexSweepMs ?? 45_000));
+      const limit = Math.max(100, Number(driftCfg.eventIndexSweepUsers ?? 1000));
+      this.eventIndexSweepTimer = setInterval(() => {
+        try { driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: false, reason: 'filler_sweep' }); } catch {}
+      }, sweepMs);
+    } catch {}
+  }
+
   private async tryFillNode(marketIndex: number, nodeToFill: any): Promise<boolean> {
     try {
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
@@ -415,6 +441,9 @@ export class DriftFillerRunner {
       const { getUserAccountPublicKey } = this.sdk;
       const t0 = Date.now();
       const timings: any = { t0, hyd: 0, mk: 0, fillPri: 0, fillFb: 0, bh: 0, upd: 0, rev: 0, tip: 0, compile: 0 };
+      let buildMs: number | undefined = undefined;
+      let sendMs: number | undefined = undefined;
+      let sentAtMs: number | undefined = undefined;
       // Bounded, non-blocking taker hydration
       const getTakerUaQuick = async (): Promise<any | null> => {
         // Warm cache first
@@ -821,6 +850,7 @@ export class DriftFillerRunner {
       const dispatch = async () => {
         try {
           const vtxPrimary = toV0Tx((updateFillerIx ? ixsWithUpdate : ixsFillOnly) as any);
+          buildMs = Math.max(0, (timings.compile || Date.now()) - t0);
           try {
             const bhSource = cachedBh ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown'));
             const lookupCount = Array.isArray(this.lookupTableAccounts) ? this.lookupTableAccounts.length : 0;
@@ -842,7 +872,10 @@ export class DriftFillerRunner {
           } catch {}
           const preferJito = !!((CONFIG as any)?.jito?.enabled);
           const hadTip = !!(plannedTipLamports && plannedTipAccount);
+          const tSend = Date.now();
+          sentAtMs = tSend;
           const sigTx = await sendV0(vtxPrimary, preferJito, hadTip);
+          sendMs = Math.max(0, Date.now() - tSend);
           this.fillsInWindow.push(Date.now());
           logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
           try {
@@ -858,6 +891,9 @@ export class DriftFillerRunner {
               priorityFeeMicroLamports: priorityForSend,
               cuLimit,
               bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+              buildMs,
+              sendMs,
+              sentAtMs,
             }).catch(() => {});
           } catch {}
         } catch (e: any) {
@@ -884,7 +920,9 @@ export class DriftFillerRunner {
               const vRetry = new VersionedTransaction(msgRetry);
               vRetry.sign([this.client.wallet.payer]);
               try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: priorityForSend, reason: 'blockhash_refresh' }); } catch {}
+              const tSend = Date.now();
               const sigTx = await sendV0(vRetry);
+              const retrySendMs = Math.max(0, Date.now() - tSend);
               this.fillsInWindow.push(Date.now());
               logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
               try {
@@ -900,6 +938,8 @@ export class DriftFillerRunner {
                   priorityFeeMicroLamports: priorityForSend,
                   cuLimit,
                   bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+                  sendMs: retrySendMs,
+                  sentAtMs: tSend,
                 }).catch(() => {});
               } catch {}
               return;
@@ -925,6 +965,8 @@ export class DriftFillerRunner {
               const boosted = Math.max(priorityForSend, 30_000);
               const bh2Str = String((globalThis as any).__bh_shared_cached || this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
               let sigTx: string;
+              let retrySendMs: number | undefined = undefined;
+              let retrySentAtMs: number | undefined = undefined;
               if (upd2 || updateFillerIx) {
                 const ixsUpd = [
                   ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
@@ -937,7 +979,9 @@ export class DriftFillerRunner {
                 const vUpd = new VersionedTransaction(msgUpd);
                 vUpd.sign([this.client.wallet.payer]);
                 try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: boosted, reason: 'revert_retry' }); } catch {}
+                retrySentAtMs = Date.now();
                 sigTx = await sendV0(vUpd);
+                retrySendMs = Math.max(0, Date.now() - retrySentAtMs);
               } else {
                 const msgFo = new TransactionMessage({
                   payerKey: this.client.wallet.publicKey,
@@ -951,7 +995,9 @@ export class DriftFillerRunner {
                 const vFill = new VersionedTransaction(msgFo);
                 vFill.sign([this.client.wallet.payer]);
                 try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: boosted, reason: 'revert_retry' }); } catch {}
+                retrySentAtMs = Date.now();
                 sigTx = await sendV0(vFill);
+                retrySendMs = Math.max(0, Date.now() - retrySentAtMs);
               }
               this.fillsInWindow.push(Date.now());
               logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
@@ -968,6 +1014,8 @@ export class DriftFillerRunner {
                   priorityFeeMicroLamports: boosted,
                   cuLimit,
                   bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+                  sendMs: retrySendMs,
+                  sentAtMs: retrySentAtMs,
                 }).catch(() => {});
               } catch {}
             } catch (e2: any) {
@@ -1148,8 +1196,25 @@ export class DriftFillerRunner {
         limit: Math.max(1, Number(driftCfg?.hotMarketsPerLoop ?? 25)),
         consumerId: 'filler',
       });
+      const indexMarkets = driftEventIndex.getActiveMarkets(Math.max(1, Number(driftCfg?.eventIndexMarketsPerLoop ?? 50)));
+      const prioritySet = new Set<number>();
+      for (const idx of hotMarkets) prioritySet.add(Number(idx));
+      for (const idx of indexMarkets) prioritySet.add(Number(idx));
+      const fullScanEveryMs = Math.max(10_000, Number(driftCfg?.eventIndexFullScanMs ?? 30_000));
+      const doFullScan = prioritySet.size === 0 || ((Date.now() - this.lastFullScanAt) > fullScanEveryMs);
+      if (doFullScan) this.lastFullScanAt = Date.now();
+      try {
+        if (this._summary) {
+          if (!this._summary.scanModes) this._summary.scanModes = { full: 0, targeted: 0 };
+          this._summary.scanModes[doFullScan ? 'full' : 'targeted'] += 1;
+          this._summary.indexStats = driftEventIndex.getStats();
+        }
+      } catch {}
       if (hotMarkets.length > 0) {
         try { logger.debug('drift.filler.hotlist', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, count: hotMarkets.length }); } catch {}
+      }
+      if (indexMarkets.length > 0) {
+        try { logger.debug('drift.filler.index_markets', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, count: indexMarkets.length }); } catch {}
       }
       const seen = new Set<number>();
       const perpsArr = Array.isArray(perps) ? perps : [];
@@ -1158,7 +1223,7 @@ export class DriftFillerRunner {
         perpByIndex.set(Number(m?.marketIndex || 0), m);
       }
       const marketsOrdered: any[] = [];
-      for (const idx of hotMarkets) {
+      for (const idx of prioritySet) {
         const market = perpByIndex.get(Number(idx));
         if (!market) continue;
         const midx = Number(market?.marketIndex || 0);
@@ -1166,10 +1231,12 @@ export class DriftFillerRunner {
         seen.add(midx);
         marketsOrdered.push(market);
       }
-      for (const market of perpsArr) {
-        const idx = Number(market?.marketIndex || 0);
-        if (seen.has(idx)) continue;
-        marketsOrdered.push(market);
+      if (doFullScan) {
+        for (const market of perpsArr) {
+          const idx = Number(market?.marketIndex || 0);
+          if (seen.has(idx)) continue;
+          marketsOrdered.push(market);
+        }
       }
 
       for (const market of marketsOrdered) {
@@ -1235,6 +1302,7 @@ export class DriftFillerRunner {
         if (droppedTriggers > 0) { loopStats.skips.triggerOrder += droppedTriggers; }
         if (prefiltered.length > 0) {
           try { hotlist.markMarket(idx, 'filler_nodes'); } catch {}
+          try { driftEventIndex.markMarket(idx, 'filler_nodes'); } catch {}
         }
 
         totalPlanned += prefiltered.length;
@@ -1258,6 +1326,12 @@ export class DriftFillerRunner {
             const mks = Array.isArray(n?.makerNodes) ? n.makerNodes : [];
             for (const mn of mks) { const mk = String(mn?.userAccount || ''); if (mk) keys.push(mk); }
           }
+          try {
+            for (const k of keys) {
+              if (!k) continue;
+              driftEventIndex.updateUserMarkets(k, [idx], 'filler_node');
+            }
+          } catch {}
           svc.enqueueUsersForPrefetch?.(keys);
         } catch {}
 

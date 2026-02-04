@@ -82,6 +82,10 @@ export class DriftService {
   private lastWarmupAtMs: number = 0;
   // Cleanup tracking to prevent race conditions between shutdown and startup
   private cleanupPromise: Promise<void> | null = null;
+  // Cached total user count (Helius GPA)
+  private userCountCache: { total?: number; updatedAtMs?: number; capped?: boolean; error?: string; source?: string } | null = null;
+  private userCountInFlight: Promise<void> | null = null;
+  private userCountTimer: any | null = null;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -825,6 +829,89 @@ export class DriftService {
       },
       lastSlotAtMs: this.lastSlotTs || undefined,
       slotStale: !!(this.lastSlotTs && (Date.now() - this.lastSlotTs) > slotStaleMs),
+    };
+  }
+
+  private getUserCountRefreshMs(): number {
+    const driftCfg: any = ((CONFIG as any)?.drift || {});
+    return Math.max(60_000, Number(driftCfg?.userCountRefreshMs ?? 1_800_000)); // default 30m
+  }
+
+  private getUserCountLimit(): number {
+    const driftCfg: any = ((CONFIG as any)?.drift || {});
+    const raw = driftCfg?.userCountGpaLimit ?? driftCfg?.prefetchGpaLimit ?? 200_000;
+    const n = Number(raw);
+    return Math.max(10_000, Number.isFinite(n) ? n : 200_000);
+  }
+
+  private ensureUserCountTimer(): void {
+    if (this.userCountTimer) return;
+    const refreshMs = this.getUserCountRefreshMs();
+    this.userCountTimer = setInterval(() => {
+      this.refreshUserCount('timer').catch(() => {});
+    }, refreshMs);
+    // Kick an initial refresh shortly after first request
+    setTimeout(() => { this.refreshUserCount('initial').catch(() => {}); }, 250);
+  }
+
+  private async refreshUserCount(reason: string): Promise<void> {
+    if (this.userCountInFlight) return this.userCountInFlight;
+    this.userCountInFlight = (async () => {
+      const prev = this.userCountCache || {};
+      try {
+        await this.init();
+        const heliusConn: any = this.getHeliusConn();
+        const endpoint: string = String(heliusConn?._rpcEndpoint || heliusConn?.rpcEndpoint || '');
+        if (!/helius/i.test(endpoint)) {
+          this.userCountCache = { ...prev, error: 'helius_required' };
+          return;
+        }
+        const limit = this.getUserCountLimit();
+        const keys = await this.enumerateUserPubkeysViaHeliusGpaV2(limit, false);
+        const total = Array.isArray(keys) ? keys.length : 0;
+        const capped = total >= limit;
+        this.userCountCache = {
+          total,
+          capped,
+          updatedAtMs: Date.now(),
+          source: 'helius-gpa',
+        };
+        try { logger.info('drift.user_count.refresh', { total, capped, reason, cat: 'drift' }); } catch {}
+      } catch (e: any) {
+        this.userCountCache = { ...prev, error: String(e?.message || e) };
+      }
+    })();
+    try {
+      await this.userCountInFlight;
+    } finally {
+      this.userCountInFlight = null;
+    }
+  }
+
+  async getUserCountCached(opts?: { force?: boolean; wait?: boolean }): Promise<{ total?: number; updatedAtMs?: number; capped?: boolean; error?: string; source?: string; refreshMs: number; stale: boolean; refreshing: boolean }> {
+    this.ensureUserCountTimer();
+    const refreshMs = this.getUserCountRefreshMs();
+    const cache = this.userCountCache;
+    const stale = !cache?.updatedAtMs || (Date.now() - cache.updatedAtMs) > refreshMs;
+    if (opts?.force) {
+      await this.refreshUserCount('force');
+    } else if (stale && !this.userCountInFlight) {
+      if (opts?.wait) {
+        await this.refreshUserCount('stale_wait');
+      } else {
+        this.refreshUserCount('stale').catch(() => {});
+      }
+    }
+    const latest = this.userCountCache || {};
+    return {
+      total: latest.total,
+      updatedAtMs: latest.updatedAtMs,
+      capped: latest.capped,
+      error: latest.error,
+      source: latest.source,
+      refreshMs,
+      stale: !latest.updatedAtMs || (Date.now() - latest.updatedAtMs) > refreshMs,
+      refreshing: !!this.userCountInFlight,
     };
   }
 

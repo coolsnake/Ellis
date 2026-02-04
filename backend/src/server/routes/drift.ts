@@ -14,7 +14,9 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const { DriftService } = await import('../../drift/client.js');
       const svc = DriftService.getInstance() as any;
       const s = svc.getInfraStatus?.() || { active: false, forceActive: false, bots: 0, has: {} };
-      res.json(s);
+      let userCount: any = null;
+      try { if (typeof svc.getUserCountCached === 'function') userCount = await svc.getUserCountCached({ wait: false }); } catch {}
+      res.json({ ...s, userCount });
     } catch (e: any) {
       logger.error('drift: infra status failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
@@ -659,6 +661,76 @@ export function createDriftRouter(io: SocketIOServer): Router {
       res.json(fr || { lastFundingRate: 0, cumulativeFunding: 0 });
     } catch (e: any) {
       logger.error('drift: funding failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Drift tx history from JSONL
+  api.get('/drift/tx-history', async (req: Request, res: Response) => {
+    try {
+      const q = req.query as any;
+      const limit = Math.max(1, Math.min(5000, Number(q.limit ?? 200)));
+      const maxBytes = Math.max(64 * 1024, Number(q.maxBytes ?? ((CONFIG as any)?.drift?.txHistoryMaxBytes ?? 2_000_000)));
+      const sinceMs = Number(q.sinceMs ?? 0);
+      const action = (typeof q.action === 'string' ? String(q.action) : undefined) as any;
+      const bot = (typeof q.bot === 'string' ? String(q.bot) : undefined);
+      const includeStatus = String(q.includeStatus ?? '1') !== '0';
+      const { readAttemptHistory } = await import('../../drift/txTracker.js');
+      const items = await readAttemptHistory({ limit, maxBytes, sinceMs, action, bot });
+
+      let statusMap: Record<string, any> = {};
+      if (includeStatus && items.length > 0) {
+        try {
+          const { DriftService } = await import('../../drift/client.js');
+          const svc = DriftService.getInstance() as any;
+          const conn = svc.getReadConnection?.() || svc.connection;
+          const sigs = Array.from(new Set(items.map((r: any) => String(r.sig || '')).filter((s: string) => s && s !== 'FAILED')));
+          if (conn && sigs.length > 0) {
+            const st = await conn.getSignatureStatuses(sigs, { searchTransactionHistory: true });
+            const vals = (st as any)?.value || [];
+            for (let i = 0; i < sigs.length; i += 1) {
+              statusMap[sigs[i]] = vals[i] || null;
+            }
+          }
+        } catch {}
+      }
+
+      const out = items.map((r: any) => ({
+        ...r,
+        status: statusMap[String(r.sig || '')] || null,
+      }));
+      res.json({ items: out });
+    } catch (e: any) {
+      logger.error('drift: tx-history failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Drift tx summary (JSONL-based)
+  api.get('/drift/tx-summary', async (req: Request, res: Response) => {
+    try {
+      const q = req.query as any;
+      const maxBytes = Math.max(256 * 1024, Number(q.maxBytes ?? ((CONFIG as any)?.drift?.txSummaryMaxBytes ?? 10_000_000)));
+      const limit = Math.max(1000, Number(q.limit ?? 50_000));
+      const { readAttemptHistory, summarizeAttemptRecords } = await import('../../drift/txTracker.js');
+      const records = await readAttemptHistory({ limit, maxBytes });
+      const windows: Record<string, number> = {
+        '5m': 5 * 60_000,
+        '1h': 60 * 60_000,
+        '24h': 24 * 60 * 60_000,
+      };
+      const actions = ['fill', 'trigger', 'liquidate'] as const;
+      const summary: any = {};
+      for (const [label, ms] of Object.entries(windows)) {
+        const byAction: any = { all: summarizeAttemptRecords(records, ms) };
+        for (const a of actions) {
+          byAction[a] = summarizeAttemptRecords(records, ms, a);
+        }
+        summary[label] = byAction;
+      }
+      res.json({ summary, count: records.length });
+    } catch (e: any) {
+      logger.error('drift: tx-summary failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
     }
   });

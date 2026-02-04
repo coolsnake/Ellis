@@ -8,7 +8,7 @@ import { promises as fs } from 'fs';
 
 export type DriftAttemptIn = {
   sig: string;
-  action: 'fill' | 'trigger';
+  action: 'fill' | 'trigger' | 'liquidate';
   marketIndex?: number;
   taker?: string;
   makers?: string[];
@@ -16,6 +16,9 @@ export type DriftAttemptIn = {
   priorityFeeMicroLamports?: number;
   cuLimit?: number;
   bot?: string; // registry key e.g. fil#name or trg#name
+  buildMs?: number;
+  sendMs?: number;
+  sentAtMs?: number;
 };
 
 export type DriftAttemptOut = {
@@ -27,10 +30,15 @@ export type DriftAttemptOut = {
   fillerRewardQuote?: number; // quote precision units
   baseFilled?: number;
   quoteFilled?: number;
+  confirmMs?: number;
+  slot?: number;
+  confirmationStatus?: string;
+  err?: any;
 };
 
 export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Promise<DriftAttemptOut | null> {
   try {
+    const tConfirm0 = Date.now();
     const tx = await withRpcLimit(() => conn.getTransaction(a.sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' }));
     if (!tx || !tx.meta) return null;
     const logs: string[] = tx.meta.logMessages || [];
@@ -42,6 +50,7 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
 
     const parsed = extractDriftFillStats(logs);
     const success = parsed.success;
+    const confirmMs = Number.isFinite(Number(a.sentAtMs)) ? Math.max(0, Date.now() - Number(a.sentAtMs)) : Math.max(0, Date.now() - tConfirm0);
     const out: DriftAttemptOut = {
       success,
       feeLamports,
@@ -51,6 +60,10 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
       fillerRewardQuote: parsed.fillerRewardQuote,
       baseFilled: parsed.baseFilled,
       quoteFilled: parsed.quoteFilled,
+      confirmMs,
+      slot: Number(tx?.slot || 0) || undefined,
+      confirmationStatus: String((tx as any)?.confirmationStatus || (tx as any)?.meta?.confirmationStatus || ''),
+      err: (tx as any)?.meta?.err,
     };
 
     try {
@@ -71,6 +84,11 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
         baseFilled: out.baseFilled,
         quoteFilled: out.quoteFilled,
         fillerRewardQuote: out.fillerRewardQuote,
+        buildMs: a.buildMs,
+        sendMs: a.sendMs,
+        confirmMs: out.confirmMs,
+        slot: out.slot,
+        confirmationStatus: out.confirmationStatus,
       });
     } catch {}
 
@@ -95,6 +113,11 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
         lamportsPaid: out.lamportsPaid,
         cuConsumed: out.cuConsumed ?? null,
         bot: a.bot,
+        buildMs: a.buildMs,
+        sendMs: a.sendMs,
+        confirmMs: out.confirmMs ?? null,
+        slot: out.slot ?? null,
+        confirmationStatus: out.confirmationStatus || null,
       });
     } catch {}
 
@@ -142,6 +165,106 @@ async function appendJsonl(obj: any) {
 export function recordAttempt(rec: AttemptRecord): void {
   try { attemptsStore.push(rec); } catch {}
   try { appendJsonl(rec).catch(() => {}); } catch {}
+}
+
+async function readJsonlTail(filePath: string, maxBytes: number): Promise<string[]> {
+  try {
+    const st = await fs.stat(filePath);
+    const size = Number(st?.size || 0);
+    if (!size) return [];
+    const bytes = Math.max(1, Math.min(size, Math.max(1024, Number(maxBytes || 2_000_000))));
+    const start = Math.max(0, size - bytes);
+    const fh = await fs.open(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      await fh.read(buf, 0, buf.length, start);
+      const text = buf.toString('utf8');
+      const lines = text.split('\n');
+      if (start > 0) lines.shift(); // drop partial line
+      return lines.filter((l) => l && l.trim().length > 0);
+    } finally {
+      try { await fh.close(); } catch {}
+    }
+  } catch {
+    return [];
+  }
+}
+
+export async function readAttemptHistory(params: { limit?: number; maxBytes?: number; sinceMs?: number; action?: 'fill' | 'trigger' | 'liquidate'; bot?: string }): Promise<AttemptRecord[]> {
+  const maxBytes = Math.max(64 * 1024, Number(params.maxBytes || 2_000_000));
+  const rawLines = await readJsonlTail(fsPath, maxBytes);
+  const items: AttemptRecord[] = [];
+  for (const line of rawLines) {
+    try {
+      const obj = JSON.parse(line);
+      if (obj && typeof obj === 'object' && Number.isFinite(Number(obj.ts || 0))) {
+        items.push(obj as AttemptRecord);
+      }
+    } catch {}
+  }
+  const sinceMs = Number(params.sinceMs || 0);
+  let filtered = items;
+  if (sinceMs > 0) filtered = filtered.filter((r) => Number(r.ts || 0) >= sinceMs);
+  if (params.action) filtered = filtered.filter((r) => r.action === params.action);
+  if (params.bot) filtered = filtered.filter((r) => String(r.bot || '') === String(params.bot));
+  // Ensure chronological order
+  filtered.sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
+  const limit = Math.max(1, Number(params.limit || 200));
+  if (filtered.length > limit) filtered = filtered.slice(filtered.length - limit);
+  return filtered;
+}
+
+function pct(values: number[], q: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.floor((q / 100) * (sorted.length - 1)));
+  return Number(sorted[idx] || 0);
+}
+
+export function summarizeAttemptRecords(records: AttemptRecord[], windowMs: number, action?: 'fill' | 'trigger' | 'liquidate'): {
+  attempts: number;
+  successes: number;
+  failures: number;
+  failureRate: number;
+  costLamports: number;
+  costSol: number;
+  revenueQuote: number;
+  timings: { buildMs: { n: number; p50: number; p95: number }; sendMs: { n: number; p50: number; p95: number }; confirmMs: { n: number; p50: number; p95: number } };
+} {
+  const cutoff = Date.now() - Math.max(1000, Number(windowMs || 60000));
+  const slice = records.filter((r) => Number(r.ts || 0) >= cutoff && (!action || r.action === action));
+  let attempts = slice.length;
+  let successes = 0;
+  let costLamports = 0;
+  let revenueQuote = 0;
+  const buildVals: number[] = [];
+  const sendVals: number[] = [];
+  const confirmVals: number[] = [];
+  for (const r of slice) {
+    if (r.success) successes += 1;
+    costLamports += Number((r as any).lamportsPaid || 0);
+    if (r.action === 'fill') revenueQuote += Number((r as any).fillerRewardQuote || 0);
+    if (Number.isFinite(Number((r as any).buildMs))) buildVals.push(Number((r as any).buildMs));
+    if (Number.isFinite(Number((r as any).sendMs))) sendVals.push(Number((r as any).sendMs));
+    if (Number.isFinite(Number((r as any).confirmMs))) confirmVals.push(Number((r as any).confirmMs));
+  }
+  const failures = Math.max(0, attempts - successes);
+  const failureRate = attempts > 0 ? failures / attempts : 0;
+  const costSol = costLamports / 1_000_000_000;
+  return {
+    attempts,
+    successes,
+    failures,
+    failureRate,
+    costLamports,
+    costSol,
+    revenueQuote,
+    timings: {
+      buildMs: { n: buildVals.length, p50: pct(buildVals, 50), p95: pct(buildVals, 95) },
+      sendMs: { n: sendVals.length, p50: pct(sendVals, 50), p95: pct(sendVals, 95) },
+      confirmMs: { n: confirmVals.length, p50: pct(confirmVals, 50), p95: pct(confirmVals, 95) },
+    },
+  };
 }
 
 export function getMetrics(params: { windowMs: number; action?: 'fill' | 'trigger'; bot?: string }): {

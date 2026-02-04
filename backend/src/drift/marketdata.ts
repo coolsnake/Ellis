@@ -1,5 +1,6 @@
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { driftEventIndex } from './eventIndex.js';
 
 export type Dl2Level = { price: number; size: number };
 export type DlobL2 = { bid: Dl2Level[]; ask: Dl2Level[]; oracle?: number; symbol?: string };
@@ -130,6 +131,7 @@ export async function fetchDlobTopMakers(marketIndex: number): Promise<DlobTopMa
           const maker = String(m?.maker || m?.pubkey || m?.user || '').trim();
           if (maker) out.makers.push({ maker, marketIndex, size: Number(m?.size || m?.qty || 0) || undefined });
         }
+        try { driftEventIndex.ingestMakers(marketIndex, out.makers.map((m) => m.maker), 'dlob_top'); } catch {}
         return out;
       } catch (e: any) {
         lastError = e;
@@ -183,6 +185,7 @@ export async function fetchDlobL3Makers(marketIndex: number): Promise<string[]> 
           }
         };
         dig(bids); dig(asks);
+        try { driftEventIndex.ingestMakers(marketIndex, Array.from(makers), 'dlob_l3'); } catch {}
         return Array.from(makers);
       } catch (e: any) {
         lastError = e;

@@ -157,6 +157,8 @@ export const ROUTES = {
     subaccountWithdraw: '/drift/subaccount/withdraw',
     subaccountTransfer: '/drift/subaccount/transfer',
     spotMarkets: '/drift/spot-markets',
+    txHistory: '/drift/tx-history',
+    txSummary: '/drift/tx-summary',
   },
   strategies: {
     leveragedGrid: {

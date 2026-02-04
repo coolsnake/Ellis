@@ -2,6 +2,7 @@ import { logger } from '../utils/logger.js';
 import { fetchDlobL2 } from './marketdata.js';
 import { getDriftConfig } from '../utils/driftConfig.js';
 import { DriftDlobWs } from './priceWs.js';
+import { driftEventIndex } from './eventIndex.js';
 import { emit } from '../server/realtime.js';
 
 type PriceSample = {
@@ -196,6 +197,7 @@ export class DriftPriceService {
   }
 
   private notify(idx: number, sample: PriceSample): void {
+    try { driftEventIndex.markMarket(idx, 'price_update'); } catch {}
     const ls = this.priceListeners.get(idx);
     if (!ls || ls.size === 0) return;
     for (const fn of Array.from(ls)) {
