@@ -47,7 +47,7 @@ describe('graph multi-hop pricing consistency across mixed DEXes', () => {
       decimals_b: 8,
     }];
     const metClmm = [{
-      id: 'MET_CLMM_BTC_USDC', dex: 'Meteora', pool_kind: 'clmm',
+      id: 'MET_CLMM_BTC_USDC', dex: 'Meteora', pool_kind: 'dlmm',
       mint_a: BTC, mint_b: USDC,
       fee_bps: 10,
       price_a_per_b: pBTCperUSDC,

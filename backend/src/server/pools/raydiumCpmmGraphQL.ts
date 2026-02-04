@@ -11,7 +11,7 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { CpmmPool, SummaryPool } from './types.js';
-import { resolveManyDecimals } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsGuaranteed } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
@@ -587,9 +587,36 @@ export async function normalizeRaydiumCpmmGraphQL(raw: RaydiumCpmmPoolApiRespons
       
       if (!mint_a || !mint_b) continue;
       
-      // Get decimals with fallback
-      const decA = pool.mint0Decimals ?? decimalsMap.get(mint_a) ?? 9;
-      const decB = pool.mint1Decimals ?? decimalsMap.get(mint_b) ?? 9;
+      // Get decimals (avoid silent defaults)
+      let decA = pool.mint0Decimals ?? decimalsMap.get(mint_a);
+      let decB = pool.mint1Decimals ?? decimalsMap.get(mint_b);
+
+      if (!Number.isFinite(decA)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_a, id, 'RaydiumCpmm');
+        decA = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('raydium.cpmm.decimals.fallback_default', {
+            mint: mint_a.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            defaultDecimals: decA,
+            warning: 'Token decimals unknown - price may be incorrect',
+            cat: 'raydium-cpmm'
+          });
+        }
+      }
+      if (!Number.isFinite(decB)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_b, id, 'RaydiumCpmm');
+        decB = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('raydium.cpmm.decimals.fallback_default', {
+            mint: mint_b.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            defaultDecimals: decB,
+            warning: 'Token decimals unknown - price may be incorrect',
+            cat: 'raydium-cpmm'
+          });
+        }
+      }
       
       // Parse token programs
       const tokenProgramA = pool.token0Program === TOKEN_2022_PROGRAM_ID ? 'token-2022' : 'spl-token';

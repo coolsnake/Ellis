@@ -5,7 +5,19 @@
 //!
 //! Currently supports:
 //! - AMM/CPMM (constant product xy=k) - full support
-//! - CLMM/DLMM - simplified approximation (falls back to spot rate with penalty)
+//! - CLMM/DLMM - adaptive blend using trade-size-weighted AMM approximation
+
+use serde::Deserialize;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SlippageCurve {
+    pub unit: Option<String>, // expected "usd" or "source"
+    pub sizes: Option<Vec<f64>>,
+    pub mults: Option<Vec<f64>>,
+    pub computed_at: Option<u64>,
+    pub confidence: Option<String>,
+    pub source: Option<String>,
+}
 
 /// Parse reserve string to f64, accounting for decimals.
 /// Raw reserves are stored as string to preserve precision for large values.
@@ -67,6 +79,119 @@ pub fn compute_amm_output(input: f64, reserve_in: f64, reserve_out: f64, fee_bps
     output.max(0.0)
 }
 
+/// Blend spot and AMM outputs using an adaptive weight based on trade size.
+///
+/// This provides a more accurate slippage approximation for CLMM/DLMM than
+/// fixed ratios by scaling the AMM contribution with trade size vs reserves.
+fn blend_spot_amm_output(
+    input: f64,
+    reserve_in: f64,
+    reserve_out: f64,
+    fee_bps: i64,
+    spot_rate: f64,
+    curve_exponent: f64,
+) -> f64 {
+    if input <= 0.0 || reserve_in <= 0.0 || reserve_out <= 0.0 || spot_rate <= 0.0 {
+        return input * spot_rate;
+    }
+
+    let spot_output = input * spot_rate;
+    let amm_output = compute_amm_output(input, reserve_in, reserve_out, fee_bps);
+
+    // Trade ratio normalized to [0,1): larger trades get more AMM-like slippage.
+    let ratio = (input / (reserve_in + input)).max(0.0).min(1.0);
+    let weight = ratio.powf(curve_exponent).min(1.0);
+
+    spot_output * (1.0 - weight) + amm_output * weight
+}
+
+fn interpolate_curve(curve: &SlippageCurve, input: f64) -> Option<f64> {
+    if !(input.is_finite() && input > 0.0) {
+        return None;
+    }
+    let sizes = curve.sizes.as_ref()?;
+    let mults = curve.mults.as_ref()?;
+    if sizes.len() < 2 || sizes.len() != mults.len() {
+        return None;
+    }
+
+    // Assume sizes are sorted ascending in backend
+    if input <= sizes[0] {
+        return Some(mults[0]);
+    }
+    let last = sizes.len() - 1;
+    if input >= sizes[last] {
+        return Some(mults[last]);
+    }
+
+    for i in 0..last {
+        let s0 = sizes[i];
+        let s1 = sizes[i + 1];
+        if input <= s1 {
+            let m0 = mults[i];
+            let m1 = mults[i + 1];
+            let denom = (s1 - s0);
+            if denom.abs() < f64::EPSILON {
+                return Some(m0);
+            }
+            let t = (input - s0) / denom;
+            return Some(m0 + t * (m1 - m0));
+        }
+    }
+
+    None
+}
+
+fn compute_curve_output(
+    input: f64,
+    curve: &SlippageCurve,
+    spot_rate: f64,
+    source_price_usd: f64,
+    target_price_usd: f64,
+) -> Option<f64> {
+    if !(input.is_finite() && input > 0.0) {
+        return None;
+    }
+    match curve.unit.as_deref() {
+        Some("source") => {
+            if !(spot_rate.is_finite() && spot_rate > 0.0) {
+                return None;
+            }
+            let mult = interpolate_curve(curve, input)?;
+            if !(mult.is_finite() && mult > 0.0) {
+                return None;
+            }
+            let output = input * spot_rate * mult;
+            if output.is_finite() && output > 0.0 {
+                Some(output)
+            } else {
+                None
+            }
+        }
+        Some("usd") => {
+            if !(source_price_usd.is_finite() && source_price_usd > 0.0) {
+                return None;
+            }
+            if !(target_price_usd.is_finite() && target_price_usd > 0.0) {
+                return None;
+            }
+            let input_usd = input * source_price_usd;
+            let mult = interpolate_curve(curve, input_usd)?;
+            if !(mult.is_finite() && mult > 0.0) {
+                return None;
+            }
+            let output_usd = input_usd * mult;
+            let output = output_usd / target_price_usd;
+            if output.is_finite() && output > 0.0 {
+                Some(output)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Compute the slippage multiplier for an AMM trade.
 /// Returns the ratio: actual_output / theoretical_output
 /// where theoretical_output = input * (reserve_out / reserve_in) * (1 - fee)
@@ -125,9 +250,21 @@ pub fn compute_hop_output(
     fee_bps: i64,
     spot_rate: f64,
     is_a_to_b: bool,
+    slippage_curve: &Option<SlippageCurve>,
+    source_price_usd: Option<f64>,
+    target_price_usd: Option<f64>,
 ) -> f64 {
     if input <= 0.0 {
         return 0.0;
+    }
+
+    // Prefer slippage curve when available (native or USD-based)
+    if let Some(curve) = slippage_curve.as_ref() {
+        let sp = source_price_usd.unwrap_or(0.0);
+        let tp = target_price_usd.unwrap_or(0.0);
+        if let Some(out) = compute_curve_output(input, curve, spot_rate, sp, tp) {
+            return out;
+        }
     }
 
     // Parse reserves
@@ -156,31 +293,20 @@ pub fn compute_hop_output(
             }
         }
         "clmm" => {
-            // CLMM: Concentrated liquidity - within a tick range, slippage is linear
-            // For now, use a conservative approximation: apply 90% of spot rate
-            // This accounts for within-tick linear slippage without full tick simulation
             if has_reserves {
-                // Use AMM formula as approximation but with reduced slippage
-                // CLMM typically has less slippage than AMM for same reserves
-                let amm_output = compute_amm_output(input, reserve_in, reserve_out, fee_bps);
-                let spot_output = input * spot_rate;
-                // Blend: CLMM should be between spot and AMM slippage
-                // Use 80% spot, 20% AMM slippage as approximation
-                spot_output * 0.8 + amm_output * 0.2
+                // CLMM: within a tick range, slippage is linear; approximate by
+                // blending spot vs AMM based on trade size vs reserves.
+                // Lower exponent -> closer to spot for small trades.
+                blend_spot_amm_output(input, reserve_in, reserve_out, fee_bps, spot_rate, 0.7)
             } else {
                 input * spot_rate
             }
         }
         "dlmm" => {
-            // DLMM: Discrete bins - no slippage within bin, discrete jumps between bins
-            // For small trades relative to bin liquidity, almost no slippage
-            // For now, use a very conservative approximation
             if has_reserves {
-                let amm_output = compute_amm_output(input, reserve_in, reserve_out, fee_bps);
-                let spot_output = input * spot_rate;
-                // DLMM has even less slippage than CLMM within active bin
-                // Use 90% spot, 10% AMM slippage as approximation
-                spot_output * 0.9 + amm_output * 0.1
+                // DLMM: even less slippage than CLMM within active bin; use
+                // a higher exponent to bias toward spot unless trade is large.
+                blend_spot_amm_output(input, reserve_in, reserve_out, fee_bps, spot_rate, 1.5)
             } else {
                 input * spot_rate
             }
@@ -206,6 +332,9 @@ pub fn compute_hop_output_simple(
     decimals_b: Option<i64>,
     fee_bps: i64,
     spot_rate: f64,
+    slippage_curve: &Option<SlippageCurve>,
+    source_price_usd: Option<f64>,
+    target_price_usd: Option<f64>,
 ) -> f64 {
     // For edges, the rate_effective is already A->B direction
     // So we use A as input reserve, B as output reserve
@@ -219,6 +348,9 @@ pub fn compute_hop_output_simple(
         fee_bps,
         spot_rate,
         true, // A->B direction (matching rate_effective convention)
+        slippage_curve,
+        source_price_usd,
+        target_price_usd,
     )
 }
 
@@ -303,6 +435,9 @@ mod tests {
             Some(9),
             30,
             0.997, // spot rate with fee
+            &None,
+            None,
+            None,
         );
         // Should use AMM formula
         assert!(output > 0.0);
@@ -321,6 +456,9 @@ mod tests {
             Some(9),
             30,
             0.997,
+            &None,
+            None,
+            None,
         );
         // Should be input * spot_rate
         assert!((output - 99.7).abs() < 0.01);
@@ -338,6 +476,9 @@ mod tests {
             Some(9),
             30,
             0.997,
+            &None,
+            None,
+            None,
         );
         assert!((output - 99.7).abs() < 0.01);
     }

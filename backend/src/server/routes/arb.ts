@@ -428,7 +428,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const dex = String(req.query.dex || 'raydium') as 
         'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 
         'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap';
-      const poolType = String(req.query.poolType || 'both') as 'amm' | 'clmm' | 'cpmm' | 'both';
+      const poolType = String(req.query.poolType || 'both') as 'amm' | 'clmm' | 'dlmm' | 'cpmm' | 'both';
       const maxPools = Math.min(100, Math.max(1, Number(req.query.maxPools) || 30));
 
       // Import graph to get pool data
@@ -549,7 +549,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const dex = String(body.dex || 'raydium') as 
         'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' |
         'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap';
-      const poolType = String(body.poolType || 'both') as 'amm' | 'clmm' | 'cpmm' | 'both';
+      const poolType = String(body.poolType || 'both') as 'amm' | 'clmm' | 'dlmm' | 'cpmm' | 'both';
       const maxPools = Math.min(100, Math.max(1, Number(body.maxPools) || 50));
       const category = String(body.category || `${dex}-${poolType === 'both' ? 'all' : poolType}`);
 

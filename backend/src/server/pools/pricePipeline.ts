@@ -32,7 +32,7 @@ export interface RawPriceInput {
   decimalsB: number;       // Decimals for mint B
   poolId?: string;         // Pool ID for diagnostics
   dex?: string;            // DEX name for diagnostics
-  poolType?: 'amm' | 'clmm' | 'cpmm';
+  poolType?: 'amm' | 'clmm' | 'dlmm' | 'cpmm';
 
   // Add raw data fields for direct calculation inside pipeline
   sqrtPriceX64?: bigint | number;
@@ -126,7 +126,7 @@ export function processPriceThroughPipeline(
 ): ProcessedPrice | undefined {
   // STEP 0: Calculate raw price from formula if not provided
   if (input.rawPrice == null || !Number.isFinite(input.rawPrice)) {
-    if (input.dex === 'Meteora' && input.poolType === 'clmm' && input.activeId != null && input.binStep != null && input.tokenXMint && input.tokenYMint) {
+    if (input.dex === 'Meteora' && (input.poolType === 'clmm' || input.poolType === 'dlmm') && input.activeId != null && input.binStep != null && input.tokenXMint && input.tokenYMint) {
       input.rawPrice = calculateMeteoraPrice(input.activeId, input.binStep, input.tokenXMint, input.tokenYMint, input.mintA, input.mintB, input.decimalsA, input.decimalsB);
     } else if (input.poolType === 'clmm' && input.sqrtPriceX64) {
       input.rawPrice = calculateClmmPrice(input.sqrtPriceX64, input.decimalsA, input.decimalsB, input.mintA, input.mintB);

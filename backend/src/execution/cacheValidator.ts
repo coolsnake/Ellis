@@ -2362,7 +2362,7 @@ export async function refreshInvalidPools(
               ...existingStatic,
               programId: validatedState.programId,
               dex: pool.dex === 'orca' ? 'Orca' : pool.dex === 'raydium' ? 'Raydium' : 'Meteora',
-              pool_kind: 'clmm',
+              pool_kind: pool.dex === 'meteora' ? 'dlmm' : 'clmm',
             };
             
             if (validatedState.tickSpacing) staticUpdate.tick_spacing = validatedState.tickSpacing;

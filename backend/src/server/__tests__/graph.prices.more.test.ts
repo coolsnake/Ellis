@@ -3,14 +3,14 @@ import { getGraphSnapshot } from '../graph.js';
 import { CONFIG } from '../../utils/config.js';
 
 describe('graph prices orientation - Meteora and Orca are reciprocal', () => {
-  it('Meteora CLMM forward/reverse product ~ 1', async () => {
+  it('Meteora DLMM forward/reverse product ~ 1', async () => {
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const SOL  = 'So11111111111111111111111111111111111111112';
     (globalThis as any).__graphTestPools = {
       raydium: { amm: [], clmm: [] },
       orca:    { amm: [], clmm: [] },
       meteora: { amm: [], clmm: [{
-        id: 'met-clmm-1', dex: 'Meteora', pool_kind: 'clmm',
+        id: 'met-clmm-1', dex: 'Meteora', pool_kind: 'dlmm',
         mint_a: SOL, mint_b: USDC, fee_bps: 30,
         price_a_per_b: 0.0066666667,
         decimals_a: 9, decimals_b: 6,

@@ -9,6 +9,7 @@ import { GrpcStreamAdapter, GrpcAdapterConfig, PoolSubscription, DexMetrics, Dex
 import { CONFIG } from '../../../utils/config.js';
 import { logger } from '../../../utils/logger.js';
 import { isValidPublicKey } from '../../../execution/builder/utils.js';
+import { isLazyActivationEnabled } from '../pools.activation.js';
 import {
   raydiumCache,
   orcaCache,
@@ -208,15 +209,29 @@ export async function getPoolTargetsForGrpc(): Promise<PoolSubscription[]> {
       pumpswap: 0,
     };
 
+    const addPoolTarget = (poolId: string, dexType: PoolSubscription['dex']) => {
+      if (!poolId || !isValidPublicKey(poolId)) return;
+      if (seen.has(poolId)) return;
+      seen.add(poolId);
+
+      const derivedAccounts = getDerivedAccountsForPool(poolId, dexType);
+      if (derivedAccounts.length > 0) {
+        totalVaults += derivedAccounts.length;
+        vaultsByDex[dexType] += derivedAccounts.length;
+      }
+
+      pools.push({
+        poolId,
+        dex: dexType,
+        derivedAccounts: derivedAccounts.length > 0 ? derivedAccounts : undefined,
+      });
+    };
+
+    // Primary source: graph snapshot edges
     for (const e of (snap?.edges || [])) {
       const pid = String((e as any)?.pool_id || '');
       if (!pid) continue;
       const base = pid.replace(/[#-]rev$/, '');
-
-      // Skip if already seen or not a valid public key
-      if (seen.has(base)) continue;
-      if (!isValidPublicKey(base)) continue;
-      seen.add(base);
 
       const dex = String((e as any)?.dex || '');
       let dexType: PoolSubscription['dex'] | null = null;
@@ -229,20 +244,25 @@ export async function getPoolTargetsForGrpc(): Promise<PoolSubscription[]> {
       else if (dex === 'Pumpswap') dexType = 'pumpswap';
 
       if (!dexType) continue;
+      addPoolTarget(base, dexType);
+    }
 
-      // Get derived accounts (vaults) for this pool
-      const derivedAccounts = getDerivedAccountsForPool(base, dexType);
-
-      if (derivedAccounts.length > 0) {
-        totalVaults += derivedAccounts.length;
-        vaultsByDex[dexType] += derivedAccounts.length;
+    // Fallback: if graph is empty or lazy activation is enabled, use caches
+    if (pools.length === 0 || isLazyActivationEnabled()) {
+      try {
+        for (const p of (raydiumCache.data?.amm || [])) addPoolTarget(String(p.id), 'raydium');
+        for (const p of (raydiumCache.data?.clmm || [])) addPoolTarget(String(p.id), 'raydium');
+        for (const p of (cpmmCache.data?.cpmm || [])) addPoolTarget(String(p.id), 'raydium-cpmm');
+        for (const p of (orcaCache.data?.clmm || [])) addPoolTarget(String(p.id), 'orca');
+        for (const p of (meteoraCache.data?.clmm || [])) addPoolTarget(String(p.id), 'meteora');
+        for (const p of (metbalCache.data?.amm || [])) addPoolTarget(String(p.id), 'meteora_balanced');
+        for (const p of (pumpswapCache.data?.amm || [])) addPoolTarget(String(p.id), 'pumpswap');
+      } catch (e) {
+        logger.warn('grpc.targets.cache_fallback_failed', {
+          error: String((e as Error)?.message || e),
+          cat: 'grpc'
+        });
       }
-
-      pools.push({
-        poolId: base,
-        dex: dexType,
-        derivedAccounts: derivedAccounts.length > 0 ? derivedAccounts : undefined,
-      });
     }
 
     logger.info('grpc.targets.computed', {

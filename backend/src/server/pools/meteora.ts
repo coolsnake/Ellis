@@ -5,7 +5,7 @@ import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
 import { validateHttpUrl, swapABFields } from './common.js';
 import { canonicalizePools } from './canonical.js';
-import { resolveManyDecimals } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsGuaranteed } from './decimals.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { getTokenMeta } from '../../execution/resolver/tokenMeta.js';
@@ -203,8 +203,32 @@ export async function normalizeMeteoraHttp(raw: MeteoraApiListResponse | Meteora
     let decA = decimalsMap.get(mint_a) ?? apiDecA;
     let decB = decimalsMap.get(mint_b) ?? apiDecB;
 
-    if (!Number.isFinite(decA)) decA = 6;
-    if (!Number.isFinite(decB)) decB = 6;
+    if (!Number.isFinite(decA) && mint_a) {
+      const resolved = await resolveDecimalsGuaranteed(mint_a, id, 'Meteora');
+      decA = resolved.decimals;
+      if (resolved.source === 'default' && !resolved.validated) {
+        logger.warn('meteora.decimals.fallback_default', {
+          mint: mint_a.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          defaultDecimals: decA,
+          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+          cat: 'meteora'
+        });
+      }
+    }
+    if (!Number.isFinite(decB) && mint_b) {
+      const resolved = await resolveDecimalsGuaranteed(mint_b, id, 'Meteora');
+      decB = resolved.decimals;
+      if (resolved.source === 'default' && !resolved.validated) {
+        logger.warn('meteora.decimals.fallback_default', {
+          mint: mint_b.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          defaultDecimals: decB,
+          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+          cat: 'meteora'
+        });
+      }
+    }
 
     // Clamp to reasonable integer bounds
     decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
@@ -325,7 +349,7 @@ export async function normalizeMeteoraHttp(raw: MeteoraApiListResponse | Meteora
       account_a,
       account_b,
       bin_array_bitmap_extension,
-      pool_kind: 'clmm',
+      pool_kind: 'dlmm',
       pool_liquidity_raw,
       tvl_usd,
       liquidity_display: tvl_usd ?? pool_liquidity_raw,
@@ -795,7 +819,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   ...existingStatic,
                   programId: existingStatic.programId || programId.toBase58(),
                   dex: existingStatic.dex || 'meteora',
-                  pool_kind: existingStatic.pool_kind || 'clmm',
+                  pool_kind: existingStatic.pool_kind || 'dlmm',
                   mint_a: (pool as any).mint_a ?? existingStatic.mint_a,
                   mint_b: (pool as any).mint_b ?? existingStatic.mint_b,
                   decimals_a: (pool as any).decimals_a ?? existingStatic.decimals_a,
@@ -848,7 +872,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                       ...existingStatic,
                       programId: existingStatic.programId || programId.toBase58(),
                       dex: existingStatic.dex || 'meteora',
-                      pool_kind: existingStatic.pool_kind || 'clmm',
+                      pool_kind: existingStatic.pool_kind || 'dlmm',
                       mint_a: (pool as any).mint_a ?? existingStatic.mint_a,
                       mint_b: (pool as any).mint_b ?? existingStatic.mint_b,
                       decimals_a: (pool as any).decimals_a ?? existingStatic.decimals_a,
@@ -871,7 +895,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                     ...existingStatic,
                     programId: existingStatic.programId || programId.toBase58(),
                     dex: existingStatic.dex || 'meteora',
-                    pool_kind: existingStatic.pool_kind || 'clmm',
+                    pool_kind: existingStatic.pool_kind || 'dlmm',
                     mint_a: (pool as any).mint_a ?? existingStatic.mint_a,
                     mint_b: (pool as any).mint_b ?? existingStatic.mint_b,
                     decimals_a: (pool as any).decimals_a ?? existingStatic.decimals_a,
@@ -903,7 +927,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                   ...existingStatic,
                   programId: existingStatic.programId || programId.toBase58(),
                   dex: existingStatic.dex || 'meteora',
-                  pool_kind: existingStatic.pool_kind || 'clmm',
+                  pool_kind: existingStatic.pool_kind || 'dlmm',
                   mint_a: (pool as any).mint_a ?? existingStatic.mint_a,
                   mint_b: (pool as any).mint_b ?? existingStatic.mint_b,
                   decimals_a: (pool as any).decimals_a ?? existingStatic.decimals_a,

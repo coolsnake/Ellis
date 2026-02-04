@@ -21,15 +21,25 @@ export type GraphEdge = {
   native_reserve_a_raw?: string;
   native_reserve_b_raw?: string;
   fee_bps?: number;
+  source_price_usd?: number; // USD price for source mint (if known)
+  target_price_usd?: number; // USD price for target mint (if known)
   liquidity?: number;    // normalized liquidity signal (used for layout/weight)
   liquidity_display?: number; // display: prefer USD TVL, else raw pool liquidity
   weight?: number;       // layout weight (derived from liquidity / fee)
   price_a_per_b?: number; // A per 1 B
   tvl_usd?: number;       // approximate TVL in USD for layout/inspection
-  pool_kind?: 'amm' | 'clmm' | 'cpmm'; // explicit pool kind
+  pool_kind?: 'amm' | 'clmm' | 'dlmm' | 'cpmm'; // explicit pool kind
   direction?: 'canonical'; // edges are stored in canonical orientation only
   pool_liquidity_raw?: number; // raw pool liquidity metric when provided by the source (e.g., CLMM liquidity)
   was_swapped?: boolean; // Track if pool was swapped during canonicalization
+  slippage_curve?: {
+    unit: 'usd' | 'source';
+    sizes: number[];   // size points (USD or source token units)
+    mults: number[];   // output multipliers (dimensionless; source-unit uses spot_rate * mult)
+    computed_at: number;
+    confidence?: 'low' | 'medium' | 'high';
+    source?: string;
+  };
 };
 
 export type GraphSnapshot = {

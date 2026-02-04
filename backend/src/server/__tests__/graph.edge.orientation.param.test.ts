@@ -89,7 +89,7 @@ describe('Edge orientation and reciprocity across DEXes', () => {
     vi.resetModules(); vi.restoreAllMocks();
     (cfgMod.CONFIG.system as any).stableMints = [USDC, USD1];
     await stubUsd({ [SOL]: 200 });
-    const pack = { raydium: { amm: [], clmm: [] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [{ id: 'met1', mint_a: SOL, mint_b: USD1, price_a_per_b: 210, fee_bps: 20, pool_kind: 'clmm', decimals_a: 9, decimals_b: 6 }] }, meteora_balanced: { amm: [] } };
+    const pack = { raydium: { amm: [], clmm: [] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [{ id: 'met1', mint_a: SOL, mint_b: USD1, price_a_per_b: 210, fee_bps: 20, pool_kind: 'dlmm', decimals_a: 9, decimals_b: 6 }] }, meteora_balanced: { amm: [] } };
     const snap = await buildSnap(pack);
     const { fwd, rev } = findEdges(snap, SOL, USD1, 'Meteora');
     expect(!!fwd && !!rev).toBe(true);
@@ -107,7 +107,7 @@ describe('Edge orientation and reciprocity across DEXes', () => {
     const vi = (mod as any).vi as any;
     vi.resetModules(); vi.restoreAllMocks();
     await stubUsd({ [SOL]: 200, [USDC]: 1 });
-    const pack = { raydium: { amm: [{ id: 'pivot1', mint_a: USDC, mint_b: SOL, price_a_per_b: 200, fee_bps: 30, pool_kind: 'amm' }], clmm: [] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [{ id: 'met2', mint_a: PUMP, mint_b: SOL, price_a_per_b: 0.0001, fee_bps: 20, pool_kind: 'clmm', decimals_a: 6, decimals_b: 9 }] }, meteora_balanced: { amm: [] } };
+    const pack = { raydium: { amm: [{ id: 'pivot1', mint_a: USDC, mint_b: SOL, price_a_per_b: 200, fee_bps: 30, pool_kind: 'amm' }], clmm: [] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [{ id: 'met2', mint_a: PUMP, mint_b: SOL, price_a_per_b: 0.0001, fee_bps: 20, pool_kind: 'dlmm', decimals_a: 6, decimals_b: 9 }] }, meteora_balanced: { amm: [] } };
     const snap = await buildSnap(pack);
     const { fwd, rev } = findEdges(snap, PUMP, SOL, 'Meteora');
     expect(!!fwd && !!rev).toBe(true);

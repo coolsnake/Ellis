@@ -7,6 +7,8 @@ pub struct Opportunity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_bps: Option<i64>,
     pub est_profit_usd: f64,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "sizeUsd")]
+    pub size_usd: Option<f64>,
     pub dexes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hop_dexes: Option<Vec<String>>,

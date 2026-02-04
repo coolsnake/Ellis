@@ -11,7 +11,7 @@ describe('graph triangle diagnostics', () => {
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const X = 'CBBTC';
     const amm = { id: 'usdc-sol-amm', dex: 'Raydium', mint_a: USDC, mint_b: SOL, fee_bps: 25, price_a_per_b: 500, pool_kind: 'amm' };
-    const usdcX = { id: 'usdc-x', dex: 'Meteora', mint_a: USDC, mint_b: X, fee_bps: 100, price_a_per_b: 0.2, pool_kind: 'clmm' };
+    const usdcX = { id: 'usdc-x', dex: 'Meteora', mint_a: USDC, mint_b: X, fee_bps: 100, price_a_per_b: 0.2, pool_kind: 'dlmm' };
     // X->SOL chosen to make product dev ~ (0.2 * 40) / 500 = 0.016 => ~62.5x dev (logs)
     const xSol = { id: 'x-sol', dex: 'Raydium', mint_a: X, mint_b: SOL, fee_bps: 3, price_a_per_b: 40, pool_kind: 'clmm' };
     vi.spyOn(console, 'debug').mockImplementation(() => {});

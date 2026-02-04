@@ -5,7 +5,7 @@ import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, PoolsPayload } from './types.js';
 import { validateHttpUrl } from './common.js';
 import { canonicalizePools } from './canonical.js';
-import { resolveManyDecimals, validateDecimalsForMint } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsGuaranteed, validateDecimalsForMint } from './decimals.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { PublicKey } from '@solana/web3.js';
 import { anyToBigInt } from './precision.js';
@@ -302,16 +302,26 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
       // Get decimals from centralized resolver with smart fallback chain:
       // 1. API response decimals (a?.decimals)
       // 2. Batch-resolved decimals from resolveManyDecimals (includes RPC + Jupiter + known tokens)
-      // 3. Default to 9 (most common on Solana) - NOT 6 which causes 1000x errors for SOL
+      // 3. resolveDecimalsGuaranteed (RPC/Jupiter/default)
       // Note: resolveManyDecimals already handles known tokens via KNOWN_TOKEN_DECIMALS and persists RPC results
-      let decA = toDec(a?.decimals ?? it?.decimalsA) ?? decimalsMap.get(mint_a) ?? 9;
-      let decB = toDec(b?.decimals ?? it?.decimalsB) ?? decimalsMap.get(mint_b) ?? 9;
+      let decA = toDec(a?.decimals ?? it?.decimalsA) ?? decimalsMap.get(mint_a);
+      let decB = toDec(b?.decimals ?? it?.decimalsB) ?? decimalsMap.get(mint_b);
 
-      // Log warning if we had to use fallback (indicates resolution failure)
-      const decASource = toDec(a?.decimals ?? it?.decimalsA) !== undefined ? 'api' :
-                         decimalsMap.has(mint_a) ? 'resolved' : 'default';
-      const decBSource = toDec(b?.decimals ?? it?.decimalsB) !== undefined ? 'api' :
-                         decimalsMap.has(mint_b) ? 'resolved' : 'default';
+      let decASource = toDec(a?.decimals ?? it?.decimalsA) !== undefined ? 'api' :
+                       decimalsMap.has(mint_a) ? 'resolved' : 'unknown';
+      let decBSource = toDec(b?.decimals ?? it?.decimalsB) !== undefined ? 'api' :
+                       decimalsMap.has(mint_b) ? 'resolved' : 'unknown';
+
+      if (!Number.isFinite(decA)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_a, id, dex);
+        decA = resolved.decimals;
+        decASource = resolved.source;
+      }
+      if (!Number.isFinite(decB)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_b, id, dex);
+        decB = resolved.decimals;
+        decBSource = resolved.source;
+      }
 
       if (decASource === 'default' || decBSource === 'default') {
         logger.warn('meteora.balanced.decimals.fallback_used', {
@@ -322,7 +332,7 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
           decB,
           decASource,
           decBSource,
-          warning: 'Using default decimals (9) - resolveManyDecimals did not resolve this mint',
+          warning: 'Using default decimals - resolveManyDecimals/resolveDecimalsGuaranteed did not resolve this mint',
           cat: 'meteora'
         });
       }
@@ -422,23 +432,23 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
         }
       }
       
-      // Fallback: AMM price formula (correct for V1, fallback for V2 without sqrtPrice)
+      // V2 pools require sqrtPrice for correct pricing - skip if missing
+      if (!(price_a_per_b > 0) && isV2Pool) {
+        logger.warn('meteora.balanced.v2.missing_sqrtprice', {
+          pool_id: id.slice(0, 12),
+          mint_a: mint_a.slice(0, 8),
+          mint_b: mint_b.slice(0, 8),
+          hasSqrtPrice: !!sqrtPriceStr,
+          warning: 'V2 pool missing sqrtPrice - skipping to avoid incorrect pricing',
+          cat: 'meteora'
+        });
+        continue;
+      }
+
+      // Fallback: AMM price formula (correct for V1 pools)
       if (!(price_a_per_b > 0) && Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeA as number) > 0) {
         price_a_per_b = (wholeB as number) / (wholeA as number);
-        priceSource = isV2Pool ? 'reserves_fallback' : 'reserves';
-        
-        // Warn if V2 pool is using reserve fallback (likely incorrect price)
-        if (isV2Pool) {
-          logger.warn('meteora.balanced.v2.reserve_fallback', {
-            pool_id: id.slice(0, 12),
-            mint_a: mint_a.slice(0, 8),
-            mint_b: mint_b.slice(0, 8),
-            price_a_per_b,
-            hasSqrtPrice: !!sqrtPriceStr,
-            warning: 'V2 pool using reserve-based pricing (likely incorrect) - sqrtPrice not available',
-            cat: 'meteora'
-          });
-        }
+        priceSource = 'reserves';
         
         // DIAGNOSTIC: Log price calculation details for problematic prices
         if (price_a_per_b > 100000 || price_a_per_b < 0.00001) {
@@ -739,13 +749,22 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       const dex = 'MeteoraBalanced_v1';
       
       // Get decimals from centralized resolver (includes RPC + Jupiter + known tokens with persistence)
-      // Default to 9 (most common on Solana) if not resolved
-      const decimalsA = decimalsMap.get(mint_a) ?? 9;
-      const decimalsB = decimalsMap.get(mint_b) ?? 9;
+      let decimalsA = decimalsMap.get(mint_a);
+      let decimalsB = decimalsMap.get(mint_b);
 
-      // Log warning if we had to use fallback
-      const decASource = decimalsMap.has(mint_a) ? 'resolved' : 'default';
-      const decBSource = decimalsMap.has(mint_b) ? 'resolved' : 'default';
+      let decASource = decimalsMap.has(mint_a) ? 'resolved' : 'unknown';
+      let decBSource = decimalsMap.has(mint_b) ? 'resolved' : 'unknown';
+
+      if (!Number.isFinite(decimalsA)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_a, id, dex);
+        decimalsA = resolved.decimals;
+        decASource = resolved.source;
+      }
+      if (!Number.isFinite(decimalsB)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_b, id, dex);
+        decimalsB = resolved.decimals;
+        decBSource = resolved.source;
+      }
 
       if (decASource === 'default' || decBSource === 'default') {
         logger.warn('meteora.balanced.v1.decimals.fallback_used', {
@@ -756,7 +775,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
           decimalsB,
           decASource,
           decBSource,
-          warning: 'Using default decimals (9) - resolveManyDecimals did not resolve this mint',
+          warning: 'Using default decimals - resolveManyDecimals/resolveDecimalsGuaranteed did not resolve this mint',
           cat: 'meteora'
         });
       }

@@ -10,10 +10,10 @@ const EPSILON = 1e-9;
 function poolChanged(prev: Pool | undefined, next: Pool): boolean {
   if (!prev) return true;
   const poolKind = (next as any)?.pool_kind;
-  const kind = (poolKind === 'clmm' || poolKind === 'cpmm' || poolKind === 'amm') 
+  const kind = (poolKind === 'clmm' || poolKind === 'dlmm' || poolKind === 'cpmm' || poolKind === 'amm') 
     ? poolKind 
-    : (((next as any)?.sqrt_price_x64_raw != null || typeof (next as any)?.sqrt_price_x64 === 'number') ? 'clmm' : 'amm') as 'amm' | 'clmm' | 'cpmm';
-  if (kind === 'clmm') {
+    : (((next as any)?.sqrt_price_x64_raw != null || typeof (next as any)?.sqrt_price_x64 === 'number') ? 'clmm' : 'amm') as 'amm' | 'clmm' | 'dlmm' | 'cpmm';
+  if (kind === 'clmm' || kind === 'dlmm') {
     if ((prev as any).sqrt_price_x64_raw && (next as any).sqrt_price_x64_raw && (prev as any).sqrt_price_x64_raw !== (next as any).sqrt_price_x64_raw) return true;
     if ((prev as any).price_a_per_b_num && (prev as any).price_a_per_b_den && (next as any).price_a_per_b_num && (next as any).price_a_per_b_den) {
       if ((prev as any).price_a_per_b_num !== (next as any).price_a_per_b_num || (prev as any).price_a_per_b_den !== (next as any).price_a_per_b_den) return true;
@@ -125,7 +125,7 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
     const prevPool = prevPoolsById.get(id);
     const changed = poolChanged(prevPool, pool);
     const dex = String((pool as any)?.dex || '');
-    const kind = ((pool as any)?.pool_kind || (typeof (pool as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm' | 'clmm' | 'cpmm';
+    const kind = ((pool as any)?.pool_kind || (typeof (pool as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm' | 'clmm' | 'dlmm' | 'cpmm';
     
     if (!isDexKindAllowed(dex, kind, edgeAllow || {})) continue;
     

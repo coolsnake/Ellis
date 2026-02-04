@@ -54,7 +54,7 @@ interface PoolOrientation {
   nativeDecimalsA: number;
   nativeDecimalsB: number;
   dex: string;
-  poolKind: 'amm' | 'clmm' | 'cpmm';
+  poolKind: 'amm' | 'clmm' | 'dlmm' | 'cpmm';
   updatedAt: number;
 }
 

@@ -140,7 +140,7 @@ interface PoolHotData {
 }
 
 interface PoolStaticData {
-  pool_kind?: 'amm' | 'clmm' | 'cpmm';
+  pool_kind?: 'amm' | 'clmm' | 'dlmm' | 'cpmm';
   dex?: string;
 }
 

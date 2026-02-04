@@ -5,7 +5,7 @@ import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
 import { validateHttpUrl, swapABFields } from './common.js';
 import { canonicalizePools } from './canonical.js';
-import { resolveManyDecimals } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsGuaranteed } from './decimals.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
@@ -270,10 +270,36 @@ export async function normalizeOrcaHttp(raw: OrcaPoolApiResponse[] | { data?: Or
     let decB = decimalsMap.get(mint_b) ?? apiDecB;
     
     if (!Number.isFinite(decA)) {
-      decA = symbolToMintCache.get(tokenA?.symbol?.trim())?.decimals ?? 6;
+      decA = symbolToMintCache.get(tokenA?.symbol?.trim())?.decimals;
     }
     if (!Number.isFinite(decB)) {
-      decB = symbolToMintCache.get(tokenB?.symbol?.trim())?.decimals ?? 6;
+      decB = symbolToMintCache.get(tokenB?.symbol?.trim())?.decimals;
+    }
+    if (!Number.isFinite(decA) && mint_a) {
+      const resolved = await resolveDecimalsGuaranteed(mint_a, id, 'Orca');
+      decA = resolved.decimals;
+      if (resolved.source === 'default' && !resolved.validated) {
+        logger.warn('orca.decimals.fallback_default', {
+          mint: mint_a.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          defaultDecimals: decA,
+          warning: 'Token decimals unknown - price may be incorrect',
+          cat: 'orca'
+        });
+      }
+    }
+    if (!Number.isFinite(decB) && mint_b) {
+      const resolved = await resolveDecimalsGuaranteed(mint_b, id, 'Orca');
+      decB = resolved.decimals;
+      if (resolved.source === 'default' && !resolved.validated) {
+        logger.warn('orca.decimals.fallback_default', {
+          mint: mint_b.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          defaultDecimals: decB,
+          warning: 'Token decimals unknown - price may be incorrect',
+          cat: 'orca'
+        });
+      }
     }
 
     // Clamp to reasonable integer bounds

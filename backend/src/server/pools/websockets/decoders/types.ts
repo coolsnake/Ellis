@@ -20,7 +20,7 @@ export type DexSource =
 /**
  * Pool type identifier
  */
-export type PoolType = 'amm' | 'clmm' | 'cpmm';
+export type PoolType = 'amm' | 'clmm' | 'dlmm' | 'cpmm';
 
 /**
  * Decoded pool result from a WebSocket update

@@ -2,7 +2,7 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload, SummaryPool } from './types.js';
-import { resolveManyDecimals, getDecimalsFromCache } from './decimals.js';
+import { resolveManyDecimals, getDecimalsFromCache, resolveDecimalsGuaranteed } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
@@ -1686,29 +1686,34 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
         ? (pool.mintDecimals1 ?? decimalsMap.get(mint_b) ?? getDecimalsFromCache(mint_b))
         : (pool.quoteDecimal ?? decimalsMap.get(mint_b) ?? getDecimalsFromCache(mint_b));
       
-      // CRITICAL: Log warnings when falling back to default decimals
-      // This indicates potential 10x-1000x price errors
+      // CRITICAL: Ensure decimals are resolved (avoid silent defaults)
       if (decA === undefined) {
-        decA = 9;
-        logger.warn('raydium.decimals.fallback_default', {
-          mint: mint_a.slice(0, 8) + '…',
-          pool: id.slice(0, 8) + '…',
-          type: isClmm ? 'CLMM' : 'AMM',
-          defaultDecimals: 9,
-          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
-          cat: 'raydium'
-        });
+        const resolved = await resolveDecimalsGuaranteed(mint_a, id, 'Raydium');
+        decA = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('raydium.decimals.fallback_default', {
+            mint: mint_a.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            type: isClmm ? 'CLMM' : 'AMM',
+            defaultDecimals: decA,
+            warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+            cat: 'raydium'
+          });
+        }
       }
       if (decB === undefined) {
-        decB = 9;
-        logger.warn('raydium.decimals.fallback_default', {
-          mint: mint_b.slice(0, 8) + '…',
-          pool: id.slice(0, 8) + '…',
-          type: isClmm ? 'CLMM' : 'AMM',
-          defaultDecimals: 9,
-          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
-          cat: 'raydium'
-        });
+        const resolved = await resolveDecimalsGuaranteed(mint_b, id, 'Raydium');
+        decB = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('raydium.decimals.fallback_default', {
+            mint: mint_b.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            type: isClmm ? 'CLMM' : 'AMM',
+            defaultDecimals: decB,
+            warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+            cat: 'raydium'
+          });
+        }
       }
       
       // Parse fee based on pool type

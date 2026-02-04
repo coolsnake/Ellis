@@ -77,7 +77,7 @@ describe('meteora scoping/filtering', () => {
       meteora: {
         amm: [],
         clmm: [
-          { id: 'MET_ONLY', dex: 'Meteora', mint_a: META_X, mint_b: META_Y, pool_kind: 'clmm', price_a_per_b: 1.05, fee_bps: 30, liquidity: 0, tick_spacing: 16, updated_ms: Date.now() },
+          { id: 'MET_ONLY', dex: 'Meteora', mint_a: META_X, mint_b: META_Y, pool_kind: 'dlmm', price_a_per_b: 1.05, fee_bps: 30, liquidity: 0, tick_spacing: 16, updated_ms: Date.now() },
         ],
       },
       meteora_balanced: { amm: [], clmm: [] },

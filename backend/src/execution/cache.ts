@@ -8,7 +8,7 @@ import { METEORA_BIN_ARRAY_SIZE } from './constants.js';
 type PoolStatic = {
   programId?: string;
   dex?: string;
-  pool_kind?: 'amm' | 'clmm' | 'cpmm';
+  pool_kind?: 'amm' | 'clmm' | 'dlmm' | 'cpmm';
   vaults?: { a?: string; b?: string };
   // Common execution accounts
   authorities?: Record<string, string>;
@@ -355,6 +355,7 @@ export class ExecutionCache {
     // Check static cache for pool_kind
     const staticData = this.staticByPool.get(poolId)?.value;
     if (staticData?.pool_kind === 'clmm') return 'clmm';
+    if (staticData?.pool_kind === 'dlmm') return 'dlmm';
     if (staticData?.pool_kind === 'amm') return 'amm';
     
     // Check dex string

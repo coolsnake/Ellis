@@ -883,17 +883,19 @@ export async function handleMeteoraBalancedVaultUpdate(
       }
     }
     
-    // Fallback to reserve-based pricing (V1 pools, or V2 if sqrtPrice unavailable)
+    // Fallback to reserve-based pricing (V1 pools only)
     if (!processedPrice) {
-      // WARN: V2 pools using reserve-based pricing is INCORRECT and will give wrong prices
-      // This should only happen if the on-demand sqrtPrice fetch failed
+      // V2 pools require sqrtPrice for correct pricing - skip if unavailable
       if (isV2Pool) {
-        logger.warn('meteora_balanced.vault.v2.reserve_fallback', {
+        logger.warn('meteora_balanced.vault.v2.missing_sqrtprice', {
           poolId: poolId.slice(0, 8) + '…',
-          warning: 'V2 pool using reserve-based pricing (likely incorrect ~5x error)',
+          warning: 'V2 pool missing sqrtPrice - skipping vault-based pricing',
           hasSqrtPrice: !!storedSqrtPrice,
           cat: 'pools'
         });
+        wsDeltaStats.meteora_damm_v2.skipped += 1;
+        incrementSkipReason('meteora_damm_v2', 'missing_sqrt_price');
+        return { success: false, error: 'missing_sqrt_price', skipped: true };
       }
       
       processedPrice = processPriceThroughPipeline({

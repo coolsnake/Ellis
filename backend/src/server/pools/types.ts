@@ -95,7 +95,7 @@ export type ClmmPool = {
   // Optional token vault accounts for CLMM pool
   account_a?: string;
   account_b?: string;
-  pool_kind?: 'clmm';
+  pool_kind?: 'clmm' | 'dlmm';
   pool_liquidity_raw?: number;
   tvl_usd?: number;
   amount_a_whole?: number;
@@ -188,7 +188,7 @@ export type SummaryPool = {
   mint_a: string;
   mint_b: string;
   dex: 'raydium' | 'raydium-clmm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap';
-  type: 'amm' | 'clmm' | 'cpmm';
+  type: 'amm' | 'clmm' | 'dlmm' | 'cpmm';
   _updatedAt?: string;
 };
 

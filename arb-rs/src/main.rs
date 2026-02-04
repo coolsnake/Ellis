@@ -105,6 +105,10 @@ struct ArbConfig {
     // Only used when slippage_simulation_enable = true
     #[serde(default = "default_min_simulated_profit_bps")]
     min_simulated_profit_bps: i64,
+    // Optional list of USD sizes to sweep when slippage simulation is enabled
+    size_sweep_usd: Option<Vec<f64>>,
+    // Optional list of source-token sizes to sweep when slippage simulation is enabled
+    size_sweep_tokens: Option<Vec<f64>>,
 }
 
 fn default_start_mint_mode() -> String {
@@ -575,6 +579,9 @@ async fn main() -> anyhow::Result<()> {
                             Option<String>,
                             Option<String>,
                             Option<String>, // pool_kind
+                            Option<slippage::SlippageCurve>,
+                            Option<f64>, // source_price_usd
+                            Option<f64>, // target_price_usd
                         )> = Vec::new();
                         let sol_mint: &str = "So11111111111111111111111111111111111111112";
                         let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -765,6 +772,9 @@ async fn main() -> anyhow::Result<()> {
                                 e.native_reserve_a_raw.clone(),
                                 e.native_reserve_b_raw.clone(),
                                 e.pool_kind.clone(),
+                                e.slippage_curve.clone(),
+                                e.source_price_usd,
+                                e.target_price_usd,
                             ));
                         }
 
@@ -789,6 +799,9 @@ async fn main() -> anyhow::Result<()> {
                                 native_reserve_a_raw,
                                 native_reserve_b_raw,
                                 pool_kind,
+                                slippage_curve,
+                                source_price_usd,
+                                target_price_usd,
                             ) in calibrated_edges
                             {
                                 insert_bidirectional_edges(
@@ -810,6 +823,9 @@ async fn main() -> anyhow::Result<()> {
                                     native_reserve_a_raw,
                                     native_reserve_b_raw,
                                     pool_kind,
+                                    slippage_curve,
+                                    source_price_usd,
+                                    target_price_usd,
                                 );
                             }
                             s.metrics.graph_updates_applied =
@@ -1293,13 +1309,19 @@ async fn main() -> anyhow::Result<()> {
                         let mut hop_liq_disp: Vec<f64> = Vec::with_capacity(nlen);
                         let mut hop_outs: Vec<f64> = Vec::with_capacity(nlen);
                         let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> = None;
-                        
-                        let mut cur_out: f64 = if start_is_usdc {
-                            s.config.quote_size_usd.max(0.0)
-                        } else {
-                            1.0
-                        };
+                        let mut cur_out: f64 = 0.0;
+                        let mut chosen_size_tokens: f64 = 0.0;
+                        let mut chosen_size_usd: Option<f64> = None;
+                        let mut simulated_profit_bps: Option<f64> = None;
 
+                        // Use first edge's source price as start mint USD price (if available)
+                        let start_price_usd: Option<f64> = selection
+                            .edges
+                            .first()
+                            .and_then(|e| e.source_price_usd)
+                            .or_else(|| if start_is_usdc { Some(1.0) } else { None });
+
+                        // Build static hop metadata
                         for (w, edge) in selection.edges.iter().enumerate() {
                             let u_idx = c.nodes[w];
                             let v_idx = c.nodes[(w + 1) % c.nodes.len()];
@@ -1333,31 +1355,136 @@ async fn main() -> anyhow::Result<()> {
                             hop_pool_ids.push(edge.pool_id.clone());
                             hop_fee_bps.push(edge.fee_bps);
                             hop_liq_disp.push(edge.liquidity_display);
-                            
-                            // Compute hop output (with or without slippage simulation)
-                            let next_out = if cur_out.is_finite() {
-                                if s.config.slippage_simulation_enable {
-                                    slippage::compute_hop_output_simple(
-                                        cur_out,
-                                        &edge.pool_kind,
-                                        &edge.native_reserve_a_raw,
-                                        &edge.native_reserve_b_raw,
-                                        edge.native_decimals_a,
-                                        edge.native_decimals_b,
-                                        edge.fee_bps,
-                                        edge.rate_effective,
-                                    )
-                                } else {
-                                    cur_out * edge.rate_effective
+                        }
+
+                        let mut size_candidates_tokens: Vec<f64> = Vec::new();
+                        if s.config.slippage_simulation_enable {
+                            if let Some(list) = &s.config.size_sweep_tokens {
+                                size_candidates_tokens = list.clone();
+                            } else if let Some(curve) = selection.edges.first().and_then(|e| e.slippage_curve.as_ref()) {
+                                if curve.unit.as_deref() == Some("source") {
+                                    if let Some(sizes) = curve.sizes.as_ref() {
+                                        size_candidates_tokens = sizes.clone();
+                                    }
                                 }
+                            } else if let Some(list) = &s.config.size_sweep_usd {
+                                if let Some(sp) = start_price_usd {
+                                    size_candidates_tokens = list.iter().map(|usd| usd / sp).collect();
+                                } else if start_is_usdc {
+                                    size_candidates_tokens = list.clone();
+                                }
+                            }
+                        }
+
+                        size_candidates_tokens.retain(|v| v.is_finite() && *v > 0.0);
+                        if let Some(sp) = start_price_usd {
+                            if s.config.min_notional_usd > 0.0 {
+                                size_candidates_tokens.retain(|v| *v * sp >= s.config.min_notional_usd);
+                            }
+                        }
+                        if size_candidates_tokens.is_empty() {
+                            let default_size = if start_is_usdc {
+                                s.config.quote_size_usd.max(0.0)
+                            } else if let Some(sp) = start_price_usd {
+                                s.config.quote_size_usd.max(0.0) / sp
                             } else {
-                                0.0
+                                1.0
                             };
-                            hop_outs.push(next_out);
-                            cur_out = next_out;
-                            
-                            // Track reserve availability for diagnostic logging (first few per cycle)
-                            if s.config.slippage_simulation_enable && w == 0 {
+                            size_candidates_tokens.push(default_size);
+                        }
+
+                        let mut best_profit: f64 = f64::NEG_INFINITY;
+                        for size_tokens in size_candidates_tokens {
+                            let start_input = size_tokens;
+
+                            let mut temp_out = start_input;
+                            let mut temp_hop_outs: Vec<f64> = Vec::with_capacity(nlen);
+
+                            for edge in selection.edges.iter() {
+                                let next_out = if temp_out.is_finite() {
+                                    if s.config.slippage_simulation_enable {
+                                        slippage::compute_hop_output_simple(
+                                            temp_out,
+                                            &edge.pool_kind,
+                                            &edge.native_reserve_a_raw,
+                                            &edge.native_reserve_b_raw,
+                                            edge.native_decimals_a,
+                                            edge.native_decimals_b,
+                                            edge.fee_bps,
+                                            edge.rate_effective,
+                                            &edge.slippage_curve,
+                                            edge.source_price_usd,
+                                            edge.target_price_usd,
+                                        )
+                                    } else {
+                                        temp_out * edge.rate_effective
+                                    }
+                                } else {
+                                    0.0
+                                };
+                                temp_hop_outs.push(next_out);
+                                temp_out = next_out;
+                            }
+
+                            let sim_profit_bps = if size_tokens > 0.0 {
+                                ((temp_out / size_tokens) - 1.0) * 10000.0
+                            } else {
+                                f64::NEG_INFINITY
+                            };
+
+                            if sim_profit_bps > best_profit {
+                                best_profit = sim_profit_bps;
+                                chosen_size_tokens = size_tokens;
+                                hop_outs = temp_hop_outs;
+                                cur_out = temp_out;
+                                simulated_profit_bps = Some(sim_profit_bps);
+                            }
+                        }
+
+                        if chosen_size_tokens > 0.0 {
+                            chosen_size_usd = start_price_usd.map(|sp| chosen_size_tokens * sp);
+                        }
+
+                        if hop_outs.is_empty() {
+                            // Fallback: compute outputs at default size
+                            let start_input = if chosen_size_tokens > 0.0 {
+                                chosen_size_tokens
+                            } else if start_is_usdc {
+                                s.config.quote_size_usd.max(0.0)
+                            } else {
+                                1.0
+                            };
+                            cur_out = start_input;
+                            for edge in selection.edges.iter() {
+                                let next_out = if cur_out.is_finite() {
+                                    if s.config.slippage_simulation_enable {
+                                        slippage::compute_hop_output_simple(
+                                            cur_out,
+                                            &edge.pool_kind,
+                                            &edge.native_reserve_a_raw,
+                                            &edge.native_reserve_b_raw,
+                                            edge.native_decimals_a,
+                                            edge.native_decimals_b,
+                                            edge.fee_bps,
+                                            edge.rate_effective,
+                                            &edge.slippage_curve,
+                                            edge.source_price_usd,
+                                            edge.target_price_usd,
+                                        )
+                                    } else {
+                                        cur_out * edge.rate_effective
+                                    }
+                                } else {
+                                    0.0
+                                };
+                                hop_outs.push(next_out);
+                                cur_out = next_out;
+                            }
+                        }
+
+                        // Track reserve availability for diagnostic logging (first hop per cycle)
+                        if s.config.slippage_simulation_enable {
+                            if let Some(edge) = selection.edges.first() {
                                 let has_reserves = edge.native_reserve_a_raw.is_some() && edge.native_reserve_b_raw.is_some();
                                 let has_pool_kind = edge.pool_kind.is_some();
                                 tracing::info!(
@@ -1389,16 +1516,20 @@ async fn main() -> anyhow::Result<()> {
                         // When slippage simulation is enabled, reject cycles that become unprofitable
                         // after accounting for price impact. cur_out is the final output after slippage.
                         if s.config.slippage_simulation_enable {
-                            let starting_value = if start_is_usdc {
+                            let starting_value = if chosen_size_tokens > 0.0 {
+                                chosen_size_tokens
+                            } else if start_is_usdc {
                                 s.config.quote_size_usd.max(0.0)
                             } else {
                                 1.0
                             };
-                            let simulated_profit_bps = if starting_value > 0.0 {
-                                ((cur_out / starting_value) - 1.0) * 10000.0
-                            } else {
-                                0.0
-                            };
+                            let simulated_profit_bps = simulated_profit_bps.unwrap_or_else(|| {
+                                if starting_value > 0.0 {
+                                    ((cur_out / starting_value) - 1.0) * 10000.0
+                                } else {
+                                    0.0
+                                }
+                            });
                             if (simulated_profit_bps as i64) < s.config.min_simulated_profit_bps {
                                 let path_str = labels.join("->");
                                 tracing::info!(
@@ -1621,8 +1752,17 @@ async fn main() -> anyhow::Result<()> {
                                         fee_bps: *fee,
                                     })
                                 });
-                        // Compute estimated USD profit if cycle notionally started at USDC
-                        let est_profit_usd_val: f64 = if start_is_usdc {
+                        // Compute estimated USD profit using chosen size when possible
+                        let size_usd_opt: Option<f64> = chosen_size_usd;
+                        let est_profit_usd_val: f64 = if let Some(size_usd) = size_usd_opt {
+                            if let Some(sim_bps) = simulated_profit_bps {
+                                size_usd * (sim_bps / 10000.0)
+                            } else if start_is_usdc {
+                                size_usd * (rate_prod - 1.0)
+                            } else {
+                                0.0
+                            }
+                        } else if start_is_usdc {
                             s.config.quote_size_usd.max(0.0) * (rate_prod - 1.0)
                         } else {
                             0.0
@@ -1635,6 +1775,7 @@ async fn main() -> anyhow::Result<()> {
                                     profit_bps,
                                     net_bps: Some(net_bps),
                                     est_profit_usd: est_profit_usd_val,
+                                    size_usd: size_usd_opt,
                                     dexes: dexes.clone(),
                                     hop_dexes: Some(hop_dexes.clone()),
                                     hop_rates: Some(hop_rates.clone()),
@@ -1728,6 +1869,7 @@ async fn main() -> anyhow::Result<()> {
                             profit_bps,
                             net_bps: Some(net_bps),
                             est_profit_usd: est_profit_usd_val,
+                            size_usd: size_usd_opt,
                             dexes,
                             hop_dexes: Some(hop_dexes),
                             hop_rates: Some(hop_rates),
@@ -1948,6 +2090,9 @@ async fn main() -> anyhow::Result<()> {
                                             edge.native_decimals_b,
                                             edge.fee_bps,
                                             edge.rate_effective,
+                                            &edge.slippage_curve,
+                                            edge.source_price_usd,
+                                            edge.target_price_usd,
                                         )
                                     } else {
                                         cur_out * edge.rate_effective
@@ -2075,6 +2220,7 @@ async fn main() -> anyhow::Result<()> {
                                 profit_bps,
                                 net_bps: Some(net_bps),
                                 est_profit_usd: 1.0,
+                                size_usd: None,
                                 dexes,
                                 hop_dexes: Some(hop_dexes),
                                 hop_rates: Some(hop_rates),
@@ -2450,6 +2596,7 @@ async fn main() -> anyhow::Result<()> {
                                     profit_bps,
                                     net_bps: Some(net_bps),
                                     est_profit_usd: 1.0,
+                                    size_usd: None,
                                     dexes,
                                     hop_dexes: Some(hop_dexes),
                                     hop_rates: Some(hop_rates),
@@ -2759,6 +2906,7 @@ async fn main() -> anyhow::Result<()> {
                                             profit_bps,
                                             net_bps: Some(net_bps),
                                             est_profit_usd: 1.0,
+                                            size_usd: None,
                                             dexes,
                                             hop_dexes: Some(hop_dexes),
                                             hop_rates: Some(hop_rates),
@@ -2811,6 +2959,7 @@ async fn main() -> anyhow::Result<()> {
                                         profit_bps,
                                         net_bps: Some(net_bps),
                                         est_profit_usd: 1.0,
+                                        size_usd: None,
                                         dexes,
                                         hop_dexes: Some(hop_dexes),
                                         hop_rates: Some(hop_rates),
@@ -3772,6 +3921,9 @@ struct StartReqEdge {
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
     pool_kind: Option<String>,
+    slippage_curve: Option<slippage::SlippageCurve>,
+    source_price_usd: Option<f64>,
+    target_price_usd: Option<f64>,
 }
 #[derive(Deserialize, Clone)]
 struct StartReqGraph {
@@ -3811,6 +3963,9 @@ struct GraphDiffEdge {
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
     pool_kind: Option<String>,
+    slippage_curve: Option<slippage::SlippageCurve>,
+    source_price_usd: Option<f64>,
+    target_price_usd: Option<f64>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3878,6 +4033,9 @@ fn insert_bidirectional_edges(
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
     pool_kind: Option<String>,
+    slippage_curve: Option<slippage::SlippageCurve>,
+    source_price_usd: Option<f64>,
+    target_price_usd: Option<f64>,
 ) {
     if !(price_a_per_b.is_finite() && price_a_per_b > 0.0) {
         return;
@@ -3891,6 +4049,12 @@ fn insert_bidirectional_edges(
     let native_reserve_a_rev = native_reserve_a_raw.clone();
     let native_reserve_b_rev = native_reserve_b_raw.clone();
     let pool_kind_rev = pool_kind.clone();
+    let slippage_curve_rev = match slippage_curve.as_ref().and_then(|c| c.unit.as_deref()) {
+        Some("source") => None,
+        _ => slippage_curve.clone(),
+    };
+    let source_price_usd_rev = target_price_usd;
+    let target_price_usd_rev = source_price_usd;
     let (_, rate_forward) = edge_rate_effective_local(Some(price_a_per_b), Some(fee_bps));
     graph.upsert_edge(
         dex,
@@ -3912,6 +4076,9 @@ fn insert_bidirectional_edges(
             native_reserve_a_raw,
             native_reserve_b_raw,
             pool_kind,
+            slippage_curve,
+            source_price_usd,
+            target_price_usd,
         },
     );
 
@@ -3945,6 +4112,9 @@ fn insert_bidirectional_edges(
             native_reserve_a_raw: native_reserve_a_rev,
             native_reserve_b_raw: native_reserve_b_rev,
             pool_kind: pool_kind_rev,
+            slippage_curve: slippage_curve_rev,
+            source_price_usd: source_price_usd_rev,
+            target_price_usd: target_price_usd_rev,
         },
     );
 }
@@ -4091,6 +4261,9 @@ async fn handle_graph_snapshot(
             e.native_reserve_a_raw.clone(),
             e.native_reserve_b_raw.clone(),
             e.pool_kind.clone(),
+            e.slippage_curve.clone(),
+            e.source_price_usd,
+            e.target_price_usd,
         );
     }
     s.live_graph = new_graph;
@@ -4208,6 +4381,9 @@ async fn arb_graph_update(
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
                 e.pool_kind.clone(),
+                e.slippage_curve.clone(),
+                e.source_price_usd,
+                e.target_price_usd,
             );
             changed_mints.push(e.source.clone());
             changed_mints.push(e.target.clone());
@@ -4246,6 +4422,9 @@ async fn arb_graph_update(
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
                 e.pool_kind.clone(),
+                e.slippage_curve.clone(),
+                e.source_price_usd,
+                e.target_price_usd,
             );
             changed_mints.push(e.source.clone());
             changed_mints.push(e.target.clone());
@@ -4336,6 +4515,9 @@ async fn arb_start(
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
                 e.pool_kind.clone(),
+                e.slippage_curve.clone(),
+                e.source_price_usd,
+                e.target_price_usd,
             );
         }
         let nodes_cnt = new_graph.g.node_count() as u64;
@@ -4656,6 +4838,8 @@ struct ConfigReq {
     // Slippage simulation settings
     slippage_simulation_enable: Option<bool>,
     min_simulated_profit_bps: Option<i64>,
+    size_sweep_usd: Option<Vec<f64>>,
+    size_sweep_tokens: Option<Vec<f64>>,
 }
 
 async fn set_config(
@@ -4719,6 +4903,12 @@ async fn set_config(
         }
         if cfg.min_simulated_profit_bps.is_some() {
             keys.push("min_simulated_profit_bps");
+        }
+        if cfg.size_sweep_usd.is_some() {
+            keys.push("size_sweep_usd");
+        }
+        if cfg.size_sweep_tokens.is_some() {
+            keys.push("size_sweep_tokens");
         }
         let keys_str = keys.join(",");
         tracing::info!(
@@ -4847,6 +5037,14 @@ async fn set_config(
     if let Some(v) = cfg.min_simulated_profit_bps {
         s.config.min_simulated_profit_bps = v;
         tracing::info!(target = "arb_rs", min_simulated_profit_bps = v, "arb.config.min_sim_profit_updated");
+    }
+    if let Some(v) = cfg.size_sweep_usd {
+        s.config.size_sweep_usd = Some(v.clone());
+        tracing::info!(target = "arb_rs", sizes = ?v, "arb.config.size_sweep_updated");
+    }
+    if let Some(v) = cfg.size_sweep_tokens {
+        s.config.size_sweep_tokens = Some(v.clone());
+        tracing::info!(target = "arb_rs", sizes = ?v, "arb.config.size_sweep_tokens_updated");
     }
     // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
     // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
@@ -4994,6 +5192,8 @@ fn default_config() -> ArbConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(10),
+        size_sweep_usd: None,
+        size_sweep_tokens: None,
     }
 }
 
@@ -5116,6 +5316,7 @@ mod tests {
             profit_bps: bps,
             net_bps: net,
             est_profit_usd: 0.0,
+            size_usd: None,
             dexes: vec!["X".into(), "Y".into(), "Z".into()],
             hop_dexes: None,
             hop_rates: None,
@@ -5647,6 +5848,10 @@ mod e2e_tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            pool_kind: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         }];
         let req_ok = GraphDiffReq {
             version: Some(2),
@@ -5706,6 +5911,9 @@ mod e2e_tests {
                     e.native_reserve_a_raw.clone(),
                     e.native_reserve_b_raw.clone(),
                     e.pool_kind.clone(),
+                    e.slippage_curve.clone(),
+                    e.source_price_usd,
+                    e.target_price_usd,
                 );
             };
             for e in added.iter() {
@@ -5795,6 +6003,10 @@ mod e2e_tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            pool_kind: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         }; // B per A = 2.0
         let add2 = GraphDiffEdge {
             source: "B".into(),
@@ -5813,6 +6025,10 @@ mod e2e_tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            pool_kind: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         }; // A per B = 1.666.. => B per A = 0.6
         let diff = GraphDiffReq {
             version: Some(2),
@@ -5858,6 +6074,9 @@ mod e2e_tests {
                     e.native_reserve_a_raw.clone(),
                     e.native_reserve_b_raw.clone(),
                     e.pool_kind.clone(),
+                    e.slippage_curve.clone(),
+                    e.source_price_usd,
+                    e.target_price_usd,
                 );
             };
             for e in added.iter() {

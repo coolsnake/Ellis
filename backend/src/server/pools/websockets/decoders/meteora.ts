@@ -544,16 +544,50 @@ export async function handleMeteoraUpdate(
     const sqrtPriceRaw = anyToBigInt(state?.sqrtPriceX64 ?? state?.sqrt_price_x64 ?? 0);
     
     // CRITICAL: Meteora DLMM fee calculation
-    // The base fee formula is: fee_bps = binStep * baseFactor / 10000
+    // Total fee = base fee + variable fee (volatility-based)
     // See: https://docs.meteora.ag/overview/products/dlmm/dlmm-fee-calculation
-    // Priority: 1) Calculate from binStep * baseFactor, 2) Direct fee fields, 3) Cached values
+    // Priority: 1) Calculate from binStep/baseFactor (+ variable fee), 2) Direct fee fields, 3) Cached values
     let feeBps = 0;
 
-    // Try to calculate fee from binStep and baseFactor (most accurate)
-    const baseFactor = Number(state?.parameters?.baseFactor ?? 0);
+    // Try to calculate base + variable fee from on-chain parameters (most accurate)
+    const baseFactor = Number(
+      state?.parameters?.baseFactor ??
+      state?.parameters?.base_factor ??
+      0
+    );
+    const baseFeePowerFactor = Number(
+      state?.parameters?.baseFeePowerFactor ??
+      state?.parameters?.base_fee_power_factor ??
+      0
+    );
+    const variableFeeControl = Number(
+      state?.parameters?.variableFeeControl ??
+      state?.parameters?.variable_fee_control ??
+      0
+    );
+    const volatilityAccumulator = Number(
+      state?.volatilityAccumulator ??
+      state?.volatility_accumulator ??
+      state?.volatility ??
+      0
+    );
+
     if (Number.isFinite(binStep) && binStep > 0 && Number.isFinite(baseFactor) && baseFactor > 0) {
-      // Formula: fee_bps = binStep * baseFactor / 10000
-      feeBps = Math.round((binStep * baseFactor) / 10000);
+      // Base fee: fb = B * s * 10^base_fee_power_factor
+      const powerFactor = Number.isFinite(baseFeePowerFactor) ? baseFeePowerFactor : 0;
+      const baseFee = (binStep * baseFactor * Math.pow(10, powerFactor)) / 10000;
+
+      // Variable fee: fv = A * (va * s)^2
+      let variableFee = 0;
+      if (Number.isFinite(variableFeeControl) && variableFeeControl > 0 && Number.isFinite(volatilityAccumulator)) {
+        const scaledVol = volatilityAccumulator * binStep;
+        variableFee = variableFeeControl * (scaledVol * scaledVol);
+      }
+
+      const totalFee = baseFee + variableFee;
+      if (Number.isFinite(totalFee) && totalFee > 0) {
+        feeBps = Math.round(totalFee);
+      }
     }
 
     // Fallback to direct fee fields if calculation didn't work
@@ -627,7 +661,7 @@ export async function handleMeteoraUpdate(
       liquidity_raw: liquidityRaw?.toString(),
       tick_spacing: tickSpacing,
       updated_ms: Date.now(),
-      pool_kind: 'clmm',
+      pool_kind: 'dlmm',
       price_a_per_b: processedPrice.priceForward,
       decimals_a: processedPrice.decimalsA,
       decimals_b: processedPrice.decimalsB,

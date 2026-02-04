@@ -452,7 +452,7 @@ export function populateExecutionCacheFromPools(
         ...existing,
         programId,
         dex,
-        pool_kind: 'clmm',
+        pool_kind: (pool as any).pool_kind || (dex === 'Meteora' ? 'dlmm' : 'clmm'),
         mint_a: pool.mint_a,
         mint_b: pool.mint_b,
         decimals_a: pool.decimals_a,
@@ -877,7 +877,7 @@ function countSnapshotPools(snapshot: PoolsSnapshot): {
 /**
  * Extract TVL value from a pool object (unified logic for all pool types)
  */
-function getPoolTvl(pool: any, poolKind: 'amm' | 'clmm' | 'cpmm'): number {
+function getPoolTvl(pool: any, poolKind: 'amm' | 'clmm' | 'dlmm' | 'cpmm'): number {
   // Prefer tvl_usd when available
   const tvl = Number(pool?.tvl_usd ?? 0);
   if (Number.isFinite(tvl) && tvl > 0) return tvl;

@@ -5,7 +5,7 @@ import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, PoolsPayload, SummaryPool } from './types.js';
 import { validateHttpUrl, swapABFields } from './common.js';
 import { canonicalizePools } from './canonical.js';
-import { resolveManyDecimals } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsGuaranteed } from './decimals.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { PublicKey } from '@solana/web3.js';
@@ -1261,9 +1261,36 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
         } catch (e) { logCatchError('pools.pumpswap', e); }
       }
       
-      // Get decimals from centralized resolver with fallback to 6
-      const decA = decimalsMap.get(mint_a) ?? 6;
-      const decB = decimalsMap.get(mint_b) ?? 6;
+      // Get decimals from centralized resolver (avoid silent defaults)
+      let decA = decimalsMap.get(mint_a);
+      let decB = decimalsMap.get(mint_b);
+
+      if (!Number.isFinite(decA)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_a, id, 'Pumpswap');
+        decA = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('pumpswap.decimals.fallback_default', {
+            mint: mint_a.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            defaultDecimals: decA,
+            warning: 'Token decimals unknown - price may be incorrect',
+            cat: 'pumpswap'
+          });
+        }
+      }
+      if (!Number.isFinite(decB)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_b, id, 'Pumpswap');
+        decB = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('pumpswap.decimals.fallback_default', {
+            mint: mint_b.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            defaultDecimals: decB,
+            warning: 'Token decimals unknown - price may be incorrect',
+            cat: 'pumpswap'
+          });
+        }
+      }
       
       // Calculate price and liquidity from RPC-enriched reserves
       let price_a_per_b = 0;

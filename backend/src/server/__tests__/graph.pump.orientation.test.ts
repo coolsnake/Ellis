@@ -38,19 +38,20 @@ describe('SOL↔PUMP orientation across DEXes', () => {
     const targetFwd = 1 / 48679.69;
     const tol = 10; // allow wide range; verify only that orientation selects the smaller magnitude (~2e-5 order)
 
-    const common = { fee_bps: 25, pool_kind: 'clmm', liquidity: 1e7 };
+    const commonClmm = { fee_bps: 25, pool_kind: 'clmm', liquidity: 1e7 };
+    const commonDlmm = { fee_bps: 25, pool_kind: 'dlmm', liquidity: 1e7 };
 
     const pack = {
       raydium: { amm: [{ id: 'pivot_usdc_sol', mint_a: USDC, mint_b: SOL, price_a_per_b: 200, fee_bps: 30, pool_kind: 'amm' }], clmm: [
         // Provide price in opposite orientation to force orientation logic
-        { id: 'ray_pump_sol', mint_a: PUMP, mint_b: SOL, price_a_per_b: 50000, decimals_a: 6, decimals_b: 9, ...common },
+        { id: 'ray_pump_sol', mint_a: PUMP, mint_b: SOL, price_a_per_b: 50000, decimals_a: 6, decimals_b: 9, ...commonClmm },
       ] },
       orca: { amm: [], clmm: [
         // Orca sqrt decode should also orient; seed with direct A/B near inverse to test inversion path
-        { id: 'orc_pump_sol', mint_a: PUMP, mint_b: SOL, price_a_per_b: 49000, decimals_a: 6, decimals_b: 9, ...common },
+        { id: 'orc_pump_sol', mint_a: PUMP, mint_b: SOL, price_a_per_b: 49000, decimals_a: 6, decimals_b: 9, ...commonClmm },
       ] },
       meteora: { amm: [], clmm: [
-        { id: 'met_sol_pump', mint_a: SOL, mint_b: PUMP, price_a_per_b: 0.00002, decimals_a: 9, decimals_b: 6, ...common },
+        { id: 'met_sol_pump', mint_a: SOL, mint_b: PUMP, price_a_per_b: 0.00002, decimals_a: 9, decimals_b: 6, ...commonDlmm },
       ] },
       meteora_balanced: { amm: [] },
     };

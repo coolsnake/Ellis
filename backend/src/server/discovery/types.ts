@@ -68,7 +68,7 @@ export type InternalDex = 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 
 /**
  * Pool kind (type) identifiers
  */
-export type PoolKind = 'amm' | 'clmm' | 'cpmm';
+export type PoolKind = 'amm' | 'clmm' | 'dlmm' | 'cpmm';
 
 /**
  * Variant specifier for DEXes with multiple versions (e.g., Meteora DAMM v1/v2)

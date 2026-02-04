@@ -34,6 +34,13 @@ pub struct EdgeData {
     /// Pool type: "amm", "cpmm", "clmm", or "dlmm" - used for slippage simulation
     #[allow(dead_code)]
     pub pool_kind: Option<String>,
+    /// Optional USD-based slippage curve (size -> output multiplier)
+    #[allow(dead_code)]
+    pub slippage_curve: Option<crate::slippage::SlippageCurve>,
+    #[allow(dead_code)]
+    pub source_price_usd: Option<f64>,
+    #[allow(dead_code)]
+    pub target_price_usd: Option<f64>,
 }
 
 #[derive(Clone, Default)]

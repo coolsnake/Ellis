@@ -2,7 +2,7 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload, SummaryPool } from './types.js';
-import { resolveManyDecimals, resolveDecimalsFromRpcBatch } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsFromRpcBatch, resolveDecimalsGuaranteed } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
@@ -76,7 +76,7 @@ export async function fetchMeteoraSummaryOnly(mints: string[]): Promise<SummaryP
           mint_a: pool.tokenXMint,
           mint_b: pool.tokenYMint,
           dex: 'meteora',
-          type: 'clmm',
+          type: 'dlmm',
           _updatedAt: pool._updatedAt,
         });
       }
@@ -121,7 +121,7 @@ export async function fetchMeteoraSummaryOnly(mints: string[]): Promise<SummaryP
           mint_a: pool.tokenXMint,
           mint_b: pool.tokenYMint,
           dex: 'meteora',
-          type: 'clmm',
+          type: 'dlmm',
           _updatedAt: pool._updatedAt,
         });
       }
@@ -1053,27 +1053,32 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         });
       }
       
-      // CRITICAL: Log warnings when falling back to default 9
-      // This indicates potential price calculation errors (10x, 100x, etc.)
+      // Ensure decimals are resolved (avoid silent defaults)
       if (decA === undefined) {
-        decA = 9;
-        logger.warn('meteora.decimals.fallback_default', {
-          mint: mint_a.slice(0, 8) + '…',
-          pool: id.slice(0, 8) + '…',
-          defaultDecimals: 9,
-          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
-          cat: 'meteora'
-        });
+        const resolved = await resolveDecimalsGuaranteed(mint_a, id, 'Meteora');
+        decA = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('meteora.decimals.fallback_default', {
+            mint: mint_a.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            defaultDecimals: decA,
+            warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+            cat: 'meteora'
+          });
+        }
       }
       if (decB === undefined) {
-        decB = 9;
-        logger.warn('meteora.decimals.fallback_default', {
-          mint: mint_b.slice(0, 8) + '…',
-          pool: id.slice(0, 8) + '…',
-          defaultDecimals: 9,
-          warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
-          cat: 'meteora'
-        });
+        const resolved = await resolveDecimalsGuaranteed(mint_b, id, 'Meteora');
+        decB = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('meteora.decimals.fallback_default', {
+            mint: mint_b.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            defaultDecimals: decB,
+            warning: 'Token decimals unknown - price may be 10x-1000x off if actual decimals differ',
+            cat: 'meteora'
+          });
+        }
       }
       
       // NOTE: Meteora DLMM fees are NOT the same as binStep!
@@ -1215,7 +1220,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         updated_ms: now,
         decimals_a: finalDecA,
         decimals_b: finalDecB,
-        pool_kind: 'clmm',
+        pool_kind: 'dlmm',
         bin_step: Number(pool.binStep || 0),
         active_id: Number(pool.activeId || 0),
         liquidity: pool.liquidity,

@@ -5,7 +5,7 @@ import { readJson, writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
 import { validateHttpUrl, swapABFields } from './common.js';
 import { canonicalizePools } from './canonical.js';
-import { resolveManyDecimals } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsGuaranteed } from './decimals.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
 import { verifyCanonicalization } from './validation.js';
 import type { RaydiumPoolApiResponse, RaydiumApiListResponse, RaydiumMintInfo } from './api-types.js';
@@ -722,8 +722,35 @@ export async function normalizeRaydiumPools(raw: RaydiumApiListResponse | { data
     const isClmm = pool.poolType === 'CLMM' || pool.type?.toLowerCase().includes('concentrated') || pool.sqrtPriceX64 != null;
 
     const fee_bps = toFeeBps(pool.feeRate ?? pool.tradeFeeRate ?? pool.feeBps ?? pool.tradeFeeBps);
-    const decA = decimalsMap.get(mintA) ?? extractRaydiumDecimals(pool.mintA);
-    const decB = decimalsMap.get(mintB) ?? extractRaydiumDecimals(pool.mintB);
+    let decA = decimalsMap.get(mintA) ?? extractRaydiumDecimals(pool.mintA);
+    let decB = decimalsMap.get(mintB) ?? extractRaydiumDecimals(pool.mintB);
+    
+    if (!Number.isFinite(decA) && mintA) {
+      const resolved = await resolveDecimalsGuaranteed(mintA, id, 'Raydium');
+      decA = resolved.decimals;
+      if (resolved.source === 'default' && !resolved.validated) {
+        logger.warn('raydium.decimals.fallback_default', {
+          mint: mintA.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          defaultDecimals: decA,
+          warning: 'Token decimals unknown - price may be incorrect',
+          cat: 'raydium'
+        });
+      }
+    }
+    if (!Number.isFinite(decB) && mintB) {
+      const resolved = await resolveDecimalsGuaranteed(mintB, id, 'Raydium');
+      decB = resolved.decimals;
+      if (resolved.source === 'default' && !resolved.validated) {
+        logger.warn('raydium.decimals.fallback_default', {
+          mint: mintB.slice(0, 8) + '…',
+          pool: id.slice(0, 8) + '…',
+          defaultDecimals: decB,
+          warning: 'Token decimals unknown - price may be incorrect',
+          cat: 'raydium'
+        });
+      }
+    }
     
     if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
       continue;

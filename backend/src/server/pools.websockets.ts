@@ -1902,7 +1902,7 @@ function runWebsocketRefreshLoop(): void {
                   // The sqrt_price_x64 field determines price, not vault balances
                   // Vault changes only affect liquidity availability
                   // Just wait for the pool WebSocket update to deliver the actual price change
-                  if (pool.pool_kind === 'clmm') {
+                  if (pool.pool_kind === 'clmm' || pool.pool_kind === 'dlmm') {
                     logger.debug('pools.ws vault.clmm.skip', { 
                       vault: pk58.slice(0,8)+'…', 
                       pool: derivedMeta.poolId.slice(0,8)+'…',
@@ -4345,34 +4345,7 @@ function runWebsocketRefreshLoop(): void {
             // Subscribe to active tick arrays
             const currentTick = state?.tickCurrent ?? state?.tick_current;
             const tickSpacing = state?.tickSpacing ?? state?.tick_spacing;
-            if (currentTick !== undefined && tickSpacing) {
-              try {
-                const clmmProgramId = new web3.PublicKey(String((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'));
-                
-                for (let offset = -1; offset <= 1; offset++) {
-                  try {
-                    const startTickIndex = Math.floor(currentTick / (tickSpacing * 60)) + offset;
-                    const actualStartTick = startTickIndex * tickSpacing * 60;
-                    const startIndexBuffer = Buffer.alloc(4);
-                    startIndexBuffer.writeInt32LE(actualStartTick, 0);
-                    const [tickArrayPda] = web3.PublicKey.findProgramAddressSync(
-                      [Buffer.from('tick_array'), pk.toBuffer(), startIndexBuffer],
-                      clmmProgramId
-                    );
-                    
-                    const id = await subscribeAccountWithRetry(tickArrayPda, handle);
-                    subs.push({ kind: 'account', id });
-                    targetedSourceByAccount.set(tickArrayPda.toBase58(), 'raydium');
-                    debugLogTargeted('raydium', tickArrayPda.toBase58(), { kind: 'tick_array', offset });
-                    derivedAccountToPool.set(tickArrayPda.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
-                  } catch (err) {
-                    logger.info('raydium.clmm.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
-                  }
-                }
-              } catch (err) {
-                logger.info('raydium.clmm.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) });
-              }
-            }
+            // Tick array subscriptions removed: tick arrays are derived/validated on demand
             
             logger.info('raydium.clmm.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
           } catch (err) {
@@ -4716,98 +4689,7 @@ function runWebsocketRefreshLoop(): void {
               logger.info('orca.oracle.subscribe.fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
             }
             
-            // Subscribe to active tick arrays
-            const tickSpacing = whirlpoolData?.tickSpacing;
-            const currentTick = whirlpoolData?.tickCurrentIndex;
-            logger.info('orca.tickarrays.attempting', { pool: poolAddr.slice(0,8)+'…', tickSpacing, currentTick, cat: 'pools' });
-            
-            // Helper: Calculate start tick index manually (same logic as TickUtil.getStartTickIndex)
-            const getStartTickIndexManual = (tick: number, spacing: number, offset: number): number => {
-              const ticksInArray = spacing * 88; // TICK_ARRAY_SIZE = 88
-              let startTickIndex = Math.floor(tick / ticksInArray) * ticksInArray;
-              if (offset !== 0) {
-                startTickIndex += offset * ticksInArray;
-              }
-              return startTickIndex;
-            };
-            
-            // Helper: Derive tick array PDA manually
-            const deriveTickArrayPda = (programId: any, whirlpoolPk: any, startTick: number): any => {
-              try {
-                const startTickBuffer = Buffer.alloc(4);
-                startTickBuffer.writeInt32LE(startTick, 0);
-                const [pda] = web3.PublicKey.findProgramAddressSync(
-                  [Buffer.from('tick_array'), whirlpoolPk.toBuffer(), startTickBuffer],
-                  programId
-                );
-                return pda;
-              } catch {
-                return null;
-              }
-            };
-            
-            if (tickSpacing !== undefined && currentTick !== undefined) {
-              try {
-                let tickArrayCount = 0;
-                const tickArrayAddresses: { lower?: string; center?: string; upper?: string } = {};
-
-                for (let offset = -1; offset <= 1; offset++) {
-                  try {
-                    // Use manual derivation (more reliable than SDK which can fail on import)
-                    const startTick = getStartTickIndexManual(currentTick, tickSpacing, offset);
-                    const tickArrayPk = deriveTickArrayPda(orcaProgramId, pk, startTick);
-
-                    if (tickArrayPk) {
-                      const id = await subscribeAccountWithRetry(tickArrayPk, handle);
-                      subs.push({ kind: 'account', id });
-                      targetedSourceByAccount.set(tickArrayPk.toBase58(), 'orca');
-                      debugLogTargeted('orca', tickArrayPk.toBase58(), { kind: 'tick_array', offset });
-                      derivedAccountToPool.set(tickArrayPk.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
-                      
-                      // Store tick array address by offset
-                      const address = tickArrayPk.toBase58();
-                      if (offset === -1) tickArrayAddresses.lower = address;
-                      else if (offset === 0) tickArrayAddresses.center = address;
-                      else if (offset === 1) tickArrayAddresses.upper = address;
-                      
-                      tickArrayCount++;
-                    }
-                  } catch (err) {
-                    logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
-                  }
-                }
-                
-                // Cache tick array addresses in execution cache
-                // Include tickSpacing for boundary crossing detection
-                if (tickArrayCount > 0) {
-                  try {
-                    const { executionCache } = await import('../execution/cache.js');
-                    const existing = executionCache.getHot(poolAddr);
-                    executionCache.setHot(poolAddr, {
-                      ...existing,
-                      tickSpacing,
-                      currentTickIndex: currentTick,
-                      tickArrays: tickArrayAddresses
-                    });
-                    
-                    logger.info('orca.tickarrays.cached', { 
-                      pool: poolAddr.slice(0,8)+'…', 
-                      count: tickArrayCount,
-                      lower: tickArrayAddresses.lower?.slice(0,8) + '…',
-                      center: tickArrayAddresses.center?.slice(0,8) + '…',
-                      upper: tickArrayAddresses.upper?.slice(0,8) + '…',
-                      cat: 'pools' 
-                    });
-                  } catch {}
-                }
-                
-                logger.info('orca.tickarrays.subscribed', { pool: poolAddr.slice(0,8)+'…', count: tickArrayCount, cat: 'pools' });
-              } catch (err) {
-                logger.info('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) });
-              }
-            } else {
-              logger.info('orca.tickarrays.skipped', { pool: poolAddr.slice(0,8)+'…', reason: !tickSpacing ? 'no_spacing' : 'no_tick', cat: 'pools' });
-            }
+            // Tick array subscriptions removed: tick arrays are derived/validated on demand
             
             logger.info('orca.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
           } catch (err) {
@@ -6474,15 +6356,21 @@ export async function subscribeToDiscoveredPools(poolsByDex: {
     return result;
   }
   
-  // For gRPC mode, incremental subscriptions are not yet supported
-  // The pools will be picked up on the next scheduled retarget
+  // For gRPC mode, trigger an immediate retarget to include newly discovered pools
   if (subscriptionMode === 'grpc') {
-    logger.debug('discovery.subscribe.grpc_skip', { 
-      reason: 'incremental_not_supported',
-      message: 'Pools added to cache; will be subscribed on next retarget',
+    logger.debug('discovery.subscribe.grpc_retarget', { 
+      reason: 'incremental_retarget',
+      message: 'Pools added to cache; triggering gRPC retarget',
       cat: 'discovery' 
     });
-    // Return early - pools are in cache and will be subscribed on next retarget
+    try {
+      await retargetGrpcSubscriptions();
+    } catch (e) {
+      logger.warn('discovery.subscribe.grpc_retarget_failed', {
+        error: String((e as Error)?.message || e),
+        cat: 'discovery'
+      });
+    }
     return result;
   }
   

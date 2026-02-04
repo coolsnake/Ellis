@@ -1618,7 +1618,7 @@ export class DexAltManager {
    */
   async collectDexPoolAccounts(
     dex: 'raydium' | 'raydium-amm' | 'raydium-cpmm' | 'orca' | 'meteora' | 'meteora-balanced' | 'meteora-damm-v1' | 'meteora-damm-v2' | 'pumpswap',
-    poolType: 'amm' | 'clmm' | 'cpmm' | 'both' = 'both',
+    poolType: 'amm' | 'clmm' | 'dlmm' | 'cpmm' | 'both' = 'both',
     maxPools: number = 30
   ): Promise<PublicKey[]> {
     const accounts: PublicKey[] = [];
@@ -1656,8 +1656,8 @@ export class DexAltManager {
           case 'orca':
             return normalizedEdgeDex === 'orca';
           case 'meteora':
-            // Match meteora DLMM only (clmm type)
-            return normalizedEdgeDex === 'meteora' && edgePoolKind === 'clmm';
+            // Match meteora DLMM only (clmm or dlmm type)
+            return normalizedEdgeDex === 'meteora' && (edgePoolKind === 'clmm' || edgePoolKind === 'dlmm');
           case 'meteora-balanced':
             return normalizedEdgeDex === 'meteora_balanced' || normalizedEdgeDex === 'meteorabalanced';
           case 'meteora-damm-v1':
@@ -2149,8 +2149,8 @@ export class DexAltManager {
           case 'orca':
             return normalizedEdgeDex === 'orca';
           case 'meteora':
-            // Match meteora DLMM only (clmm type)
-            return normalizedEdgeDex === 'meteora' && edgePoolKind === 'clmm';
+            // Match meteora DLMM only (clmm or dlmm type)
+            return normalizedEdgeDex === 'meteora' && (edgePoolKind === 'clmm' || edgePoolKind === 'dlmm');
           case 'meteora-balanced':
             return normalizedEdgeDex === 'meteora_balanced' || normalizedEdgeDex === 'meteora-balanced';
           case 'meteora-damm-v1':
@@ -5363,8 +5363,8 @@ export class DexAltManager {
           case 'orca':
             return normalizedEdgeDex === 'orca';
           case 'meteora':
-            // Match meteora DLMM only (clmm type)
-            return normalizedEdgeDex === 'meteora' && edgePoolKind === 'clmm';
+            // Match meteora DLMM only (clmm or dlmm type)
+            return normalizedEdgeDex === 'meteora' && (edgePoolKind === 'clmm' || edgePoolKind === 'dlmm');
           case 'meteora-balanced':
             return normalizedEdgeDex === 'meteora_balanced' || normalizedEdgeDex === 'meteora-balanced';
           case 'meteora-damm-v1':

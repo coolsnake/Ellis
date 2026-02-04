@@ -1,11 +1,12 @@
 import type { GraphEdge } from './graph.types.js';
 import type { AmmPool, ClmmPool, CpmmPool } from './pools/types.js';
 import { logger } from '../utils/logger.js';
+import { getCapacityCurve } from '../execution/capacity/curveCache.js';
 
 export type EdgeAllow = {
   raydium?: { amm?: boolean; clmm?: boolean; cpmm?: boolean };
   orca?: { amm?: boolean; clmm?: boolean };
-  meteora?: { amm?: boolean; clmm?: boolean };
+  meteora?: { amm?: boolean; clmm?: boolean; dlmm?: boolean };
   meteoraBalanced?: { amm?: boolean; v1?: boolean; v2?: boolean };
   pumpswap?: { amm?: boolean };
 };
@@ -37,6 +38,110 @@ function weightFrom(liq?: number, fee_bps?: number): number {
   return Math.max(1, liqv) / Math.max(1, fee);
 }
 
+const NATIVE_SIZE_FRACTIONS = [0.001, 0.003, 0.01, 0.03, 0.1];
+
+function parseReserveRaw(raw: any, decimals?: number): number {
+  try {
+    const d = Number.isFinite(Number(decimals)) ? Number(decimals) : 0;
+    const val = BigInt(String(raw || 0));
+    const scale = 10 ** Math.max(0, Math.min(18, d));
+    return Number(val) / scale;
+  } catch {
+    return 0;
+  }
+}
+
+function computeAmmOutput(input: number, reserveIn: number, reserveOut: number, feeBps: number): number {
+  if (!(input > 0 && reserveIn > 0 && reserveOut > 0)) return 0;
+  const feeMultiplier = 1 - Math.max(0, feeBps) / 10000;
+  const inputAfterFee = input * feeMultiplier;
+  return (reserveOut * inputAfterFee) / (reserveIn + inputAfterFee);
+}
+
+function blendSpotAmmOutput(
+  input: number,
+  reserveIn: number,
+  reserveOut: number,
+  feeBps: number,
+  spotRate: number,
+  curveExponent: number,
+): number {
+  if (!(input > 0 && reserveIn > 0 && reserveOut > 0 && spotRate > 0)) return 0;
+  const ratio = input / (reserveIn + input);
+  const weight = Math.min(1, Math.max(0, Math.pow(ratio, curveExponent)));
+  const spotOutput = input * spotRate;
+  const ammOutput = computeAmmOutput(input, reserveIn, reserveOut, feeBps);
+  return spotOutput * (1 - weight) + ammOutput * weight;
+}
+
+function buildSlippageCurveSource(
+  kind: string,
+  reserveIn: number,
+  reserveOut: number,
+  feeBps: number,
+  spotRate: number,
+  computedAt?: number,
+): GraphEdge['slippage_curve'] | undefined {
+  if (!(reserveIn > 0 && reserveOut > 0 && spotRate > 0)) return undefined;
+  const sizes = NATIVE_SIZE_FRACTIONS
+    .map((f) => reserveIn * f)
+    .filter((s) => Number.isFinite(s) && s > 0)
+    .sort((a, b) => a - b);
+  if (sizes.length === 0) return undefined;
+
+  const mults: number[] = [];
+  for (const size of sizes) {
+    let output = 0;
+    if (kind === 'amm' || kind === 'cpmm') {
+      output = computeAmmOutput(size, reserveIn, reserveOut, feeBps);
+    } else if (kind === 'clmm') {
+      output = blendSpotAmmOutput(size, reserveIn, reserveOut, feeBps, spotRate, 0.7);
+    } else if (kind === 'dlmm') {
+      output = blendSpotAmmOutput(size, reserveIn, reserveOut, feeBps, spotRate, 1.5);
+    } else {
+      output = size * spotRate;
+    }
+    const mult = output > 0 ? output / (size * spotRate) : 0;
+    if (Number.isFinite(mult) && mult > 0) {
+      mults.push(mult);
+    } else {
+      mults.push(0);
+    }
+  }
+
+  return {
+    unit: 'source',
+    sizes,
+    mults,
+    computed_at: Number.isFinite(Number(computedAt)) ? Number(computedAt) : Date.now(),
+    confidence: 'low',
+    source: 'native_reserve',
+  };
+}
+
+function buildSlippageCurveUsd(poolId: string): GraphEdge['slippage_curve'] | undefined {
+  try {
+    const curve = getCapacityCurve(poolId);
+    if (!curve || !curve.curve) return undefined;
+    const entries = Array.from(curve.curve.entries())
+      .filter(([size, mult]) => Number.isFinite(size) && size > 0 && Number.isFinite(mult))
+      .sort((a, b) => a[0] - b[0]);
+    if (entries.length === 0) return undefined;
+    const sizes = entries.map(([size]) => size);
+    const mults = entries.map(([, mult]) => mult);
+    return {
+      unit: 'usd',
+      sizes,
+      mults,
+      computed_at: curve.computedAt,
+      confidence: curve.confidence,
+      source: 'capacity_curve',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export interface PoolValidationConfig {
   feeMin?: number;
   feeMax?: number;
@@ -54,10 +159,10 @@ export function isPoolValidForGraph(
   if (!sanityEnabled) return true;
 
   const fb = Number(p?.fee_bps);
-  if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) {
+    if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) {
     try {
       const kind = String((p as any)?.pool_kind || '');
-      if (kind === 'clmm') {
+      if (kind === 'clmm' || kind === 'dlmm') {
         logger.info('graph.sanity.filter.badFees', {
           dex: String((p as any)?.dex || ''),
           kind,
@@ -91,7 +196,7 @@ export function isPoolValidForGraph(
     if (!clmmCanDerive && !cpmmCanDerive) {
       // Log when we filter out a pool for missing price (use info for CLMM/CPMM to debug)
       try {
-        const logLevel = (kind === 'clmm' || kind === 'cpmm') ? 'info' : 'debug';
+        const logLevel = (kind === 'clmm' || kind === 'dlmm' || kind === 'cpmm') ? 'info' : 'debug';
         logger[logLevel]('graph.sanity.filter.price', {
           dex,
           kind,
@@ -244,6 +349,16 @@ export function edgesFromPoolIncremental(
   // Trust the pipeline price directly - only clamp for safety
   const fwd = clampPriceInc(fwdRaw, clampMin, clampMax);
   const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
+
+  const decA = (p as any)?.native_decimals_a ?? (p as any)?.decimals_a;
+  const decB = (p as any)?.native_decimals_b ?? (p as any)?.decimals_b;
+  const reserveA = parseReserveRaw((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw, decA);
+  const reserveB = parseReserveRaw((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw, decB);
+  const feeMultiplier = 1 - Math.max(0, fee) / 10000;
+  const spotRate = fwd && fwd > 0 ? (1 / fwd) * feeMultiplier : 0;
+  const slippageCurve =
+    buildSlippageCurveSource(kind, reserveA, reserveB, fee, spotRate, (p as any)?.updated_ms) ||
+    buildSlippageCurveUsd(id);
   
   // Validate pool went through pipeline
   const pipelineProcessed = (p as any)?._pipelineProcessed === true;
@@ -276,6 +391,8 @@ export function edgesFromPoolIncremental(
     native_reserve_a_raw: (p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw,
     native_reserve_b_raw: (p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw,
     fee_bps: fee,
+    source_price_usd: getUsd(a),
+    target_price_usd: getUsd(b),
     liquidity: liq,
     liquidity_display: liq,
     weight: w,
@@ -285,6 +402,7 @@ export function edgesFromPoolIncremental(
     direction: 'canonical',
     pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
     was_swapped: (p as any)?.was_swapped, // Preserve swap state
+    slippage_curve: slippageCurve,
   };
   return [forward];
 }
@@ -295,19 +413,28 @@ export function edgeChangedSimple(a: GraphEdge, b: GraphEdge): boolean {
   const liqb = Number(b.liquidity_display ?? b.liquidity ?? 0);
   const pxa = Number(a.price_a_per_b ?? 0);
   const pxb = Number(b.price_a_per_b ?? 0);
+  const spa = Number(a.source_price_usd ?? 0);
+  const spb = Number(b.source_price_usd ?? 0);
+  const tpa = Number(a.target_price_usd ?? 0);
+  const tpb = Number(b.target_price_usd ?? 0);
   const wa = Number(a.weight ?? 0);
   const wb = Number(b.weight ?? 0);
   const eps = 1e-8;
   if (Math.abs(liqa - liqb) > eps) return true;
   if (Math.abs(pxa - pxb) > eps) return true;
+  if (Math.abs(spa - spb) > eps) return true;
+  if (Math.abs(tpa - tpb) > eps) return true;
   if (Math.abs(wa - wb) > eps) return true;
   if (Number(a.fee_bps ?? -1) !== Number(b.fee_bps ?? -1)) return true;
+  const sca = a.slippage_curve?.computed_at ?? 0;
+  const scb = b.slippage_curve?.computed_at ?? 0;
+  if (sca !== scb) return true;
   return false;
 }
 
-export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm' | 'cpmm', allow: EdgeAllow): boolean {
+export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm' | 'dlmm' | 'cpmm', allow: EdgeAllow): boolean {
   const d = String(dex || '').toLowerCase();
-  const k = String(kind || 'amm') as 'amm' | 'clmm' | 'cpmm';
+  const k = String(kind || 'amm') as 'amm' | 'clmm' | 'dlmm' | 'cpmm';
   if (d.includes('raydium')) return (allow.raydium?.[k] !== false);
   if (d.includes('orca')) return (allow.orca?.[k] !== false);
   // Check MeteoraBalanced BEFORE plain Meteora (more specific first)
@@ -342,7 +469,12 @@ export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm' | 'cpmm', all
     // Otherwise, allow if at least one version is allowed
     return v1Allowed || v2Allowed;
   }
-  if (d.includes('meteora')) return (allow.meteora?.[k] !== false);
+  if (d.includes('meteora')) {
+    if (k === 'dlmm' && allow.meteora?.dlmm === undefined) {
+      return allow.meteora?.clmm !== false;
+    }
+    return (allow.meteora?.[k] !== false);
+  }
   if (d.includes('pumpswap')) return (allow.pumpswap?.[k] !== false);
   return true;
 }

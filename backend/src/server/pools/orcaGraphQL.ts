@@ -2,7 +2,7 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload, SummaryPool } from './types.js';
-import { resolveManyDecimals } from './decimals.js';
+import { resolveManyDecimals, resolveDecimalsGuaranteed } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
@@ -921,8 +921,35 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
       
       if (!mint_a || !mint_b) continue;
       
-      const decA = decimalsMap.get(mint_a) ?? 9;
-      const decB = decimalsMap.get(mint_b) ?? 9;
+      let decA = decimalsMap.get(mint_a);
+      let decB = decimalsMap.get(mint_b);
+
+      if (!Number.isFinite(decA)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_a, id, 'Orca');
+        decA = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('orca.decimals.fallback_default', {
+            mint: mint_a.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            defaultDecimals: decA,
+            warning: 'Token decimals unknown - price may be incorrect',
+            cat: 'orca'
+          });
+        }
+      }
+      if (!Number.isFinite(decB)) {
+        const resolved = await resolveDecimalsGuaranteed(mint_b, id, 'Orca');
+        decB = resolved.decimals;
+        if (resolved.source === 'default' && !resolved.validated) {
+          logger.warn('orca.decimals.fallback_default', {
+            mint: mint_b.slice(0, 8) + '…',
+            pool: id.slice(0, 8) + '…',
+            defaultDecimals: decB,
+            warning: 'Token decimals unknown - price may be incorrect',
+            cat: 'orca'
+          });
+        }
+      }
       
       // Parse fee: feeRate is in hundredths of bps (100 = 1 bps)
       let fee_bps = 30;
