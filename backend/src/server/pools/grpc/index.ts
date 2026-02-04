@@ -9,7 +9,7 @@ import { GrpcStreamAdapter, GrpcAdapterConfig, PoolSubscription, DexMetrics, Dex
 import { CONFIG } from '../../../utils/config.js';
 import { logger } from '../../../utils/logger.js';
 import { isValidPublicKey } from '../../../execution/builder/utils.js';
-import { isLazyActivationEnabled } from '../pools.activation.js';
+import { isLazyActivationEnabled } from '../../pools.activation.js';
 import {
   raydiumCache,
   orcaCache,
