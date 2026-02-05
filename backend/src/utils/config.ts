@@ -1054,6 +1054,9 @@ export const CONFIG = {
       indexSpotExposure: (process.env.DRIFT_LIQ_INDEX_SPOT_EXPOSURE || 'false') === 'true',
       // Re-fetch SDK user accounts at most this often for at-risk users (ms)
       refreshAccountsMs: Number(process.env.DRIFT_LIQ_REFRESH_ACCOUNTS_MS || 12000),
+      // Critical-tier: users below this health get slot-speed (400ms) monitoring
+      criticalHealthThreshold: Number(process.env.DRIFT_LIQ_CRITICAL_HEALTH || 0.03),
+      criticalRefreshMs: Number(process.env.DRIFT_LIQ_CRITICAL_REFRESH_MS || 400),
       wsOnlyDiscovery: (process.env.DRIFT_LIQ_WS_ONLY_DISCOVERY || 'true') === 'true',
       limitedHttpDiscovery: (process.env.DRIFT_LIQ_LIMITED_HTTP_DISCOVERY || 'false') === 'true',
       discoveryIntervalMs: Number(process.env.DRIFT_LIQ_DISCOVERY_INTERVAL_MS || 60000),

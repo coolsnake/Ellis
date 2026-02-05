@@ -32,6 +32,8 @@ export type LiquidatorConfig = {
   usersAllowlist?: string[];
   userCacheMax?: number;
   riskHealthThreshold?: number; // health < threshold considered at-risk
+  criticalHealthThreshold?: number; // health < this gets slot-speed (400ms) monitoring
+  criticalRefreshMs?: number; // refresh interval for critical users (default 400ms = 1 Solana slot)
   maxProbesPerTick?: number; // cap number of subscribe+evaluate per tick
   // Position filters
   probeMarketIndices?: Array<number>; // only evaluate users with exposure in these markets
@@ -524,6 +526,11 @@ export class DriftLiquidator {
       }
       this.subscribedUsers.clear();
     } catch {}
+    // Stop all live monitors
+    try {
+      for (const [key] of this.liveMonitors) { try { this.stopLiveMonitor(key); } catch {} }
+      this.liveMonitors.clear();
+    } catch {}
     // Clear internal state to avoid leaks
     try { this.heap.clear(); } catch {}
     try { this.inHeap.clear(); } catch {}
@@ -725,7 +732,7 @@ export class DriftLiquidator {
       const indexLimit = Math.max(200, Number(
         (this.config as any)?.indexSweepLimit
         ?? liqCfg.indexSweepLimit
-        ?? 2000
+        ?? 50000
       ));
       const allUsers = new Set<string>(this.userKeys);
       const beforeSize = allUsers.size;
@@ -1381,7 +1388,7 @@ export class DriftLiquidator {
           } as any;
           this.atRiskUsers.set(String(key), summary);
           try { const { emitUserSummary } = await import('../server/realtime.js'); emitUserSummary({ userPk: String(key), ...summary }); } catch {}
-          this.startLiveMonitor(String(key));
+          this.startLiveMonitor(String(key), health);
           // If still at-risk, queue candidate and drain immediately
           if (health < riskThresh) { this.addOrQueueCandidate({ userPk: String(key), health, updatedAt: Date.now() }); this.requestImmediateDrain(); }
           recomputed += 1;
@@ -1501,6 +1508,8 @@ export class DriftLiquidator {
       }
       try { logger.debug('drift.liquidator.pubkey_ok', { user: target.userPk, pubkey: (userPublicKey as any)?.toBase58?.() || null, cat: 'drift' }); } catch {}
       // Precheck: compute current user health and skip if above execution gate
+      // ALWAYS force a fresh fetchAccounts here (no debounce) -- we're about to send a tx
+      // and need the most current on-chain state to avoid "sufficient collateral" rejections
       try {
         const execGate = Number((this.config.executeHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.executeHealthThreshold) ?? 0));
         let healthNow: number | null = null;
@@ -1513,12 +1522,9 @@ export class DriftLiquidator {
           try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
         }
         try {
-          const last = this.userLastRefresh.get(String(target.userPk)) || 0;
-          const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
-          if ((Date.now() - last) > refreshMs) {
-            await (user as any)?.fetchAccounts?.();
-            this.userLastRefresh.set(String(target.userPk), Date.now());
-          }
+          // Unconditional fetch -- freshest possible data before execution decision
+          await (user as any)?.fetchAccounts?.();
+          this.userLastRefresh.set(String(target.userPk), Date.now());
         } catch {}
         try {
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
@@ -2978,7 +2984,7 @@ export class DriftLiquidator {
               freeUsd: freeUi,
               exposureUsd,
             } as any);
-          this.startLiveMonitor(key);
+          this.startLiveMonitor(key, health);
             this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() });
             flagged += 1;
           } else {
@@ -3004,11 +3010,50 @@ export class DriftLiquidator {
     }
   }
 
-  private startLiveMonitor(userPk: string): void {
+  private getCriticalThreshold(): number {
+    return Number((this.config as any)?.criticalHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.criticalHealthThreshold) ?? 0.03);
+  }
+
+  private getCriticalRefreshMs(): number {
+    return Math.max(200, Number((this.config as any)?.criticalRefreshMs ?? ((CONFIG as any)?.drift?.liquidator?.criticalRefreshMs) ?? 400));
+  }
+
+  private getMonitorIntervalMs(health?: number): number {
+    const criticalThresh = this.getCriticalThreshold();
+    const isCritical = typeof health === 'number' && health < criticalThresh;
+    if (isCritical) {
+      // Slot-speed monitoring for users near liquidation threshold (no 3s floor)
+      return this.getCriticalRefreshMs();
+    }
+    // Standard at-risk monitoring
+    return Math.max(3000, Number(((this.config as any)?.liveMonitorIntervalMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 12000)));
+  }
+
+  /**
+   * Start (or restart at correct tier) a live monitor for an at-risk user.
+   * Critical users (health < criticalHealthThreshold) poll at slot speed (~400ms).
+   * Standard at-risk users poll at the moderate rate (3-12s).
+   * On each tick the monitor re-evaluates whether the tier should change.
+   */
+  private startLiveMonitor(userPk: string, health?: number): void {
     try {
       const key = String(userPk);
-      if (this.liveMonitors.has(key)) return;
-      const intervalMs = Math.max(3000, Number(((this.config as any)?.liveMonitorIntervalMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 12000)));
+      const criticalThresh = this.getCriticalThreshold();
+      const isCritical = typeof health === 'number' && health < criticalThresh;
+      const existing = this.liveMonitors.get(key);
+      // If already monitored, check if tier changed and restart if needed
+      if (existing) {
+        if (isCritical && !existing.critical) {
+          this.stopLiveMonitor(key);
+          // Fall through to create new monitor at critical speed
+        } else if (!isCritical && existing.critical) {
+          this.stopLiveMonitor(key);
+          // Fall through to create new monitor at standard speed
+        } else {
+          return; // Same tier, keep existing monitor
+        }
+      }
+      const intervalMs = this.getMonitorIntervalMs(health);
       const t: any = (globalThis as any).setInterval(async () => {
         try {
           const drift: any = (DriftService.getInstance() as any).client;
@@ -3019,19 +3064,37 @@ export class DriftLiquidator {
             this.userCache.set(key, user);
             try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(key); } catch {}
           }
+          // Refresh: critical users always fetch (every tick = slot speed); standard uses debounce
           try {
+            const currentCritThresh = this.getCriticalThreshold();
+            const prevHealth = this.atRiskUsers.get(key)?.health;
+            const isCurrentlyCritical = typeof prevHealth === 'number' && prevHealth < currentCritThresh;
             const last = this.userLastRefresh.get(String(key)) || 0;
-            const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
-            if ((Date.now() - last) > refreshMs) {
+            if (isCurrentlyCritical) {
+              // Critical: always fetch, no debounce -- state can change every slot
               await (user as any)?.fetchAccounts?.();
               this.userLastRefresh.set(String(key), Date.now());
+            } else {
+              const refreshMs = Math.max(3000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
+              if ((Date.now() - last) > refreshMs) {
+                await (user as any)?.fetchAccounts?.();
+                this.userLastRefresh.set(String(key), Date.now());
+              }
             }
           } catch {}
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
-          const health = maint > 0 ? (total - maint) / maint : Infinity;
-          if (!(health < riskThresh)) { this.stopLiveMonitor(key); this.healthyUntil.set(key, Date.now() + Math.max(8000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 15000)))); return; }
+          const currentHealth = maint > 0 ? (total - maint) / maint : Infinity;
+          if (!(currentHealth < riskThresh)) { this.stopLiveMonitor(key); this.healthyUntil.set(key, Date.now() + Math.max(8000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 15000)))); return; }
+          // Check if tier changed and restart at correct speed
+          const nowCritical = currentHealth < this.getCriticalThreshold();
+          const monitorEntry = this.liveMonitors.get(key);
+          if (monitorEntry && nowCritical !== !!monitorEntry.critical) {
+            // Tier changed -- schedule restart outside this callback to avoid clearing own interval
+            (globalThis as any).setTimeout(() => { try { this.startLiveMonitor(key, currentHealth); } catch {} }, 0);
+            return;
+          }
           // Update cached summary and emit to UI so health changes are visible in realtime
           try {
             let QUOTE_PREC = 1_000_000;
@@ -3045,24 +3108,27 @@ export class DriftLiquidator {
             let freeUi = 0;
             try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch {}
             const prev = (this.atRiskUsers.get(key) as any) || {};
-            const summary = { ...prev, health, updatedAt: Date.now(), collateralUsd: totalUi, maintenanceUsd: maintUi, freeUsd: freeUi };
+            const summary = { ...prev, health: currentHealth, updatedAt: Date.now(), collateralUsd: totalUi, maintenanceUsd: maintUi, freeUsd: freeUi };
             this.atRiskUsers.set(key, summary);
             try { const { emitUserSummary } = await import('../server/realtime.js'); emitUserSummary({ userPk: key, ...summary }); } catch {}
           } catch {}
-          this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() } as any);
+          this.addOrQueueCandidate({ userPk: key, health: currentHealth, updatedAt: Date.now() } as any);
           this.requestImmediateDrain();
           try { this.maybeEmitQueue(); } catch {}
         } catch {}
       }, intervalMs);
-      this.liveMonitors.set(key, t);
+      this.liveMonitors.set(key, { timer: t, critical: isCritical });
     } catch {}
   }
 
   private stopLiveMonitor(userPk: string): void {
     try {
       const key = String(userPk);
-      const t = this.liveMonitors.get(key);
-      if (t) { try { (globalThis as any).clearInterval(t); } catch {} }
+      const entry = this.liveMonitors.get(key);
+      if (entry) {
+        const timer = entry?.timer ?? entry;
+        try { (globalThis as any).clearInterval(timer); } catch {}
+      }
       this.liveMonitors.delete(key);
     } catch {}
   }
