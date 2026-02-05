@@ -2065,8 +2065,8 @@ export class DriftLiquidator {
             const fnBorrow = (fnBorrowRaw as any)?.bind?.(drift) ?? fnBorrowRaw;
             let attempts = 0;
             if (typeof fnBorrow === 'function' && userAccount && BN) {
+              const tSend = Date.now();
               try {
-                const tSend = Date.now();
                 const res = await this.callMethodVariants(fnBorrow, [
                   [userPublicKey, userAccount, Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
                   [userPublicKey, Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
