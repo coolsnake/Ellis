@@ -5,6 +5,7 @@ import { logger } from '../utils/logger.js';
 import { logFillerTx } from '../utils/tradeSummary.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
+import { emit } from '../server/realtime.js';
 
 export type DriftAttemptIn = {
   sig: string;
@@ -230,6 +231,8 @@ async function appendJsonl(obj: any) {
 export function recordAttempt(rec: AttemptRecord): void {
   try { attemptsStore.push(rec); } catch {}
   try { appendJsonl(rec).catch(() => {}); } catch {}
+  // Emit real-time event for frontend
+  try { emit('drift-tx', { type: 'new', record: rec }); } catch {}
 }
 
 /**
@@ -244,6 +247,8 @@ export function updateAttemptRecord(sig: string, update: Partial<DriftAttemptOut
         Object.assign(attemptsStore[i], update);
         // Append the updated record to JSONL for persistence
         try { appendJsonl({ ...attemptsStore[i], _updated: Date.now() }).catch(() => {}); } catch {}
+        // Emit real-time event for frontend
+        try { emit('drift-tx', { type: 'update', record: attemptsStore[i] }); } catch {}
         break;
       }
     }

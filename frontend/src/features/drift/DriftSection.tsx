@@ -175,6 +175,39 @@ export const DriftSection: React.FC<{
     id = setInterval(tick, 30000);
     return () => { try { clearInterval(id); } catch {} };
   }, [p.apiBase]);
+
+  // Real-time transaction updates via WebSocket
+  useEffect(() => {
+    const s = ctxSocket;
+    if (!s) return;
+    const onTx = (evt: any) => {
+      try {
+        if (!evt || typeof evt !== 'object') return;
+        const rec = evt.record;
+        if (!rec || !rec.sig) return;
+        
+        if (evt.type === 'new') {
+          // Add new transaction to the beginning of the list
+          setTxHistory((prev) => {
+            const exists = prev.some((r: any) => r.sig === rec.sig);
+            if (exists) return prev;
+            return [rec, ...prev].slice(0, 200); // Keep max 200
+          });
+        } else if (evt.type === 'update') {
+          // Update existing transaction
+          setTxHistory((prev) => {
+            const idx = prev.findIndex((r: any) => r.sig === rec.sig);
+            if (idx < 0) return prev;
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], ...rec };
+            return updated;
+          });
+        }
+      } catch {}
+    };
+    try { s.on('drift-tx', onTx); } catch {}
+    return () => { try { s.off('drift-tx', onTx); } catch {} };
+  }, [ctxSocket]);
   useEffect(() => {
     let id: any = null;
     const tick = async () => { try { await checkBotHealth(); } catch {} };
@@ -398,7 +431,11 @@ export const DriftSection: React.FC<{
   const shortPk = (s: string) => (s && s.length > 10 ? `${s.slice(0, 4)}...${s.slice(-4)}` : (s || '-'));
   
   const txDisplayLimit = 10;
-  const txDisplay = txHistory.slice(Math.max(0, txHistory.length - txDisplayLimit));
+  // Sort by timestamp descending (most recent first) and take first N
+  const txDisplay = useMemo(() => {
+    const sorted = [...txHistory].sort((a: any, b: any) => Number(b.ts || 0) - Number(a.ts || 0));
+    return sorted.slice(0, txDisplayLimit);
+  }, [txHistory]);
 
   // Render infrastructure status badges
   const renderInfraBadges = () => (
@@ -812,47 +849,6 @@ export const DriftSection: React.FC<{
         </Panel>
       </div>
 
-      {/* Performance Summary Panel */}
-      <Panel
-        title="Performance Summary"
-        collapsible
-        defaultCollapsed
-        actions={<Button onClick={loadTxSummary}>Refresh</Button>}
-      >
-        <DataTable
-          headers={['Window', 'Action', 'Attempts', 'Success', 'Cost (SOL)', 'Revenue (q)', 'Build p50/p95', 'Send p50/p95', 'Confirm p50/p95']}
-          compact
-        >
-          {txSummary ? (
-            (['1h', '24h'] as const).flatMap((win) =>
-              (['all', 'fill', 'trigger', 'liquidate'] as const).map((action) => {
-                const m = txSummary?.[win]?.[action];
-                const attempts = Number(m?.attempts ?? 0);
-                const successes = Number(m?.successes ?? 0);
-                const successRate = attempts > 0 ? ((successes / attempts) * 100).toFixed(1) : '0.0';
-                const costSol = Number(m?.costSol ?? 0);
-                const revenue = Number(m?.revenueQuote ?? 0);
-                return (
-                  <DataTableRow key={`${win}-${action}`}>
-                    <DataTableCell compact>{win}</DataTableCell>
-                    <DataTableCell compact className="uppercase">{action}</DataTableCell>
-                    <DataTableCell compact mono>{attempts}</DataTableCell>
-                    <DataTableCell compact mono>{successRate}%</DataTableCell>
-                    <DataTableCell compact mono>{costSol.toFixed(4)}</DataTableCell>
-                    <DataTableCell compact mono>{action === 'fill' || action === 'all' ? revenue.toLocaleString() : '-'}</DataTableCell>
-                    <DataTableCell compact mono>{formatMs(m?.timings?.buildMs?.p50)} / {formatMs(m?.timings?.buildMs?.p95)}</DataTableCell>
-                    <DataTableCell compact mono>{formatMs(m?.timings?.sendMs?.p50)} / {formatMs(m?.timings?.sendMs?.p95)}</DataTableCell>
-                    <DataTableCell compact mono>{formatMs(m?.timings?.confirmMs?.p50)} / {formatMs(m?.timings?.confirmMs?.p95)}</DataTableCell>
-                  </DataTableRow>
-                );
-              })
-            )
-          ) : (
-            <tr><td colSpan={9}><EmptyState message="No summary data" /></td></tr>
-          )}
-        </DataTable>
-      </Panel>
-
       {/* Transactions Panel */}
       <Panel
         title="Transactions"
@@ -914,6 +910,47 @@ export const DriftSection: React.FC<{
             );
           }) : (
             <tr><td colSpan={10}><EmptyState message="No transactions" /></td></tr>
+          )}
+        </DataTable>
+      </Panel>
+
+      {/* Performance Summary Panel */}
+      <Panel
+        title="Performance Summary"
+        collapsible
+        defaultCollapsed
+        actions={<Button onClick={loadTxSummary}>Refresh</Button>}
+      >
+        <DataTable
+          headers={['Window', 'Action', 'Attempts', 'Success', 'Cost (SOL)', 'Revenue (q)', 'Build p50/p95', 'Send p50/p95', 'Confirm p50/p95']}
+          compact
+        >
+          {txSummary ? (
+            (['1h', '24h'] as const).flatMap((win) =>
+              (['all', 'fill', 'trigger', 'liquidate'] as const).map((action) => {
+                const m = txSummary?.[win]?.[action];
+                const attempts = Number(m?.attempts ?? 0);
+                const successes = Number(m?.successes ?? 0);
+                const successRate = attempts > 0 ? ((successes / attempts) * 100).toFixed(1) : '0.0';
+                const costSol = Number(m?.costSol ?? 0);
+                const revenue = Number(m?.revenueQuote ?? 0);
+                return (
+                  <DataTableRow key={`${win}-${action}`}>
+                    <DataTableCell compact>{win}</DataTableCell>
+                    <DataTableCell compact className="uppercase">{action}</DataTableCell>
+                    <DataTableCell compact mono>{attempts}</DataTableCell>
+                    <DataTableCell compact mono>{successRate}%</DataTableCell>
+                    <DataTableCell compact mono>{costSol.toFixed(4)}</DataTableCell>
+                    <DataTableCell compact mono>{action === 'fill' || action === 'all' ? revenue.toLocaleString() : '-'}</DataTableCell>
+                    <DataTableCell compact mono>{formatMs(m?.timings?.buildMs?.p50)} / {formatMs(m?.timings?.buildMs?.p95)}</DataTableCell>
+                    <DataTableCell compact mono>{formatMs(m?.timings?.sendMs?.p50)} / {formatMs(m?.timings?.sendMs?.p95)}</DataTableCell>
+                    <DataTableCell compact mono>{formatMs(m?.timings?.confirmMs?.p50)} / {formatMs(m?.timings?.confirmMs?.p95)}</DataTableCell>
+                  </DataTableRow>
+                );
+              })
+            )
+          ) : (
+            <tr><td colSpan={9}><EmptyState message="No summary data" /></td></tr>
           )}
         </DataTable>
       </Panel>

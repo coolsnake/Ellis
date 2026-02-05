@@ -691,7 +691,7 @@ export class DriftTriggerRunner {
                   orderId,
                   priorityFeeMicroLamports: priority,
                   cuLimit: cuUnits,
-                  bot: (this as any)?.state?.name ? `trg#${(this as any).state.name}` : undefined,
+                  bot: this.botKey,
                   buildMs,
                   sendMs,
                   sentAtMs,

@@ -192,7 +192,11 @@ export class DriftLiquidator {
   private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string; collateralUsd?: number; maintenanceUsd?: number; freeUsd?: number; exposureUsd?: number }> = new Map();
   private userLastRefresh: Map<string, number> = new Map();
 
-  constructor(private config: LiquidatorConfig) {}
+  private botKey: string;
+  
+  constructor(private config: LiquidatorConfig) {
+    this.botKey = config?.name ? `liq#${config.name}` : 'liq#default';
+  }
 
   getStatus(): LiquidatorRuntimeState {
     return { ...this.state, config: this.config };
@@ -1627,7 +1631,7 @@ export class DriftLiquidator {
                     action: 'liquidate',
                     marketIndex: mkt,
                     taker: String(target.userPk),
-                    bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                    bot: this.botKey,
                     sendMs: Math.max(0, Date.now() - t0),
                     sentAtMs: t0,
                   }).catch(() => {});
@@ -1667,7 +1671,7 @@ export class DriftLiquidator {
                       action: 'liquidate',
                       marketIndex: safeMarkets?.[0] ?? 0,
                       taker: String(target.userPk),
-                      bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                      bot: this.botKey,
                       sendMs: Math.max(0, Date.now() - t0),
                       sentAtMs: t0,
                     }).catch(() => {});
@@ -1723,7 +1727,7 @@ export class DriftLiquidator {
                       action: 'liquidate',
                       marketIndex: mkt,
                       taker: String(target.userPk),
-                      bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                      bot: this.botKey,
                       sendMs: Math.max(0, Date.now() - tSend),
                       sentAtMs: tSend,
                     }).catch(() => {});
@@ -1755,7 +1759,7 @@ export class DriftLiquidator {
                       action: 'liquidate',
                       marketIndex: mkt,
                       taker: String(target.userPk),
-                      bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                      bot: this.botKey,
                       sendMs: Math.max(0, Date.now() - tSend),
                       sentAtMs: tSend,
                     }).catch(() => {});
@@ -1803,7 +1807,7 @@ export class DriftLiquidator {
                       action: 'liquidate',
                       marketIndex: Number(spotBorrow.marketIndex),
                       taker: String(target.userPk),
-                      bot: this.config?.name ? `liq#${this.config.name}` : undefined,
+                      bot: this.botKey,
                       sendMs: Math.max(0, Date.now() - tSend),
                       sentAtMs: tSend,
                     }).catch(() => {});
