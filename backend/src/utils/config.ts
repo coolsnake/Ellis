@@ -1057,6 +1057,8 @@ export const CONFIG = {
       // Critical-tier: users below this health get slot-speed (400ms) monitoring
       criticalHealthThreshold: Number(process.env.DRIFT_LIQ_CRITICAL_HEALTH || 0.03),
       criticalRefreshMs: Number(process.env.DRIFT_LIQ_CRITICAL_REFRESH_MS || 400),
+      // Fraction of own free collateral to use as max notional cap (0-1, default 0.9 = 90%)
+      ownCapacityMargin: Number(process.env.DRIFT_LIQ_OWN_CAPACITY_MARGIN || 0.9),
       wsOnlyDiscovery: (process.env.DRIFT_LIQ_WS_ONLY_DISCOVERY || 'true') === 'true',
       limitedHttpDiscovery: (process.env.DRIFT_LIQ_LIMITED_HTTP_DISCOVERY || 'false') === 'true',
       discoveryIntervalMs: Number(process.env.DRIFT_LIQ_DISCOVERY_INTERVAL_MS || 60000),

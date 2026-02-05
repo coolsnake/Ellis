@@ -1557,6 +1557,25 @@ export class DriftLiquidator {
         }
         try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.cap_state', { user: target.userPk, maxAttemptNotional: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
       } catch {}
+      // Dynamic sizing: cap at own subaccount's available free collateral
+      let ownFreeCollateral: number | null = null;
+      try {
+        const snap = await DriftService.getInstance().getActiveSubaccountSnapshot();
+        if (snap && typeof snap.freeCollateral === 'number' && isFinite(snap.freeCollateral)) {
+          ownFreeCollateral = snap.freeCollateral;
+          const margin = Number((this.config as any)?.ownCapacityMargin ?? ((CONFIG as any)?.drift?.liquidator?.ownCapacityMargin) ?? 0.9);
+          const ownCap = Math.max(0, ownFreeCollateral * margin);
+          if (ownCap < 1) {
+            // Less than $1 of usable balance – cannot liquidate
+            try { logger.warn('drift.liquidator.skip_target', { user: target.userPk, reason: 'OWN_BALANCE_ZERO', ownFreeCollateral, ownCap, cat: 'drift' }); } catch {}
+            return;
+          }
+          remainingNotional = (Number.isFinite(remainingNotional) && remainingNotional !== Infinity)
+            ? Math.min(remainingNotional, ownCap)
+            : ownCap;
+          try { logger.info('drift.liquidator.own_capacity', { user: target.userPk, ownFreeCollateral, margin, ownCap, effectiveCap: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
+        }
+      } catch {}
       // Build notional/base lookups by market for this user (perp positions only)
       const userSummary = this.atRiskUsers.get(String(target.userPk));
       const posNotionalByMarket: Map<number, number> = new Map();
@@ -1741,6 +1760,7 @@ export class DriftLiquidator {
           exposureUsd,
           positions: posSummary,
           spotCollateral,
+          ownCapacity: { freeCollateral: ownFreeCollateral, effectiveCap: (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) ? remainingNotional : null },
           config: cfgLog,
           cat: 'drift'
         } as any);
