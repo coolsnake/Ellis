@@ -7,6 +7,7 @@ type QueueItem = { userPk: string; health: number; updatedAt: number };
 type UserItem = { userPk: string; health: number; updatedAt: number };
 type MarketFee = { marketIndex: number; symbol?: string; perpFee?: number; spotFee?: number };
 type LiqAttempt = { ts: number; type: string; marketIndex: number; user: string; sig?: string; ms: number; notionalUsd?: number; liqFeeRate?: number; ok: boolean; error?: string };
+type ProbeStats = { totalIndexed: number; totalProbed: number; probeQueuePending: number; atRiskCount: number; subscribedCount: number; liveMonitorCount: number; userCacheSize: number; sweepGeneration: number; lastSweepTs: number | null; lastSweepEnqueued: number };
 
 interface Props {
   apiBase: string;
@@ -18,7 +19,7 @@ interface Props {
 export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidatorKey = 'liq#default', hideUserList = false }) => {
   const { socket: ctxSocket } = useSocket();
   const effectiveSocket = socket ?? ctxSocket;
-  const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users?: UserItem[]; marketFees?: MarketFee[]; recentAttempts?: LiqAttempt[] } | null>(null);
+  const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users?: UserItem[]; marketFees?: MarketFee[]; recentAttempts?: LiqAttempt[]; probeStats?: ProbeStats } | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
   const [marketsOpen, setMarketsOpen] = useState(false);
   const [usersOpen, setUsersOpen] = useState(false);
@@ -67,6 +68,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
             users: Array.isArray(evt.users) ? evt.users : [],
             marketFees: Array.isArray(evt.marketFees) ? evt.marketFees : [],
             recentAttempts: Array.isArray(evt.recentAttempts) ? evt.recentAttempts : [],
+            probeStats: evt.probeStats || undefined,
           });
           setLastUpdate(now);
         }
@@ -151,8 +153,9 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
       </div>
       
       {/* Stats Row */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <StatCard label="Queued Candidates" value={queue?.candidatesQueued ?? 0} />
+        <StatCard label="At-Risk Users" value={queue?.probeStats?.atRiskCount ?? 0} />
         <StatCard label="Actions (1m)" value={queue?.actionsLastMin ?? 0} />
         <StatCard
           label="Errors (1m)"
@@ -160,6 +163,23 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
           className={((queue?.errorsLastMin || 0) > 0) ? 'border-yellow-600/30' : ''}
         />
       </div>
+
+      {/* Discovery / Probe Stats */}
+      {queue?.probeStats && (
+        <div className="mb-4 bg-gray-800/40 border border-gray-600/30 rounded-lg p-3">
+          <h4 className="text-sm font-medium text-gray-300 mb-2">User Discovery</h4>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-xs">
+            <div className="flex justify-between"><span className="text-gray-400">Indexed Users</span><span className="text-white font-mono">{queue.probeStats.totalIndexed.toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Total Probed</span><span className="text-white font-mono">{queue.probeStats.totalProbed.toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Probe Queue</span><span className={`font-mono ${queue.probeStats.probeQueuePending > 0 ? 'text-yellow-400' : 'text-white'}`}>{queue.probeStats.probeQueuePending.toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Subscribed</span><span className="text-white font-mono">{queue.probeStats.subscribedCount.toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Live Monitors</span><span className="text-white font-mono">{queue.probeStats.liveMonitorCount}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">User Cache</span><span className="text-white font-mono">{queue.probeStats.userCacheSize.toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Sweep #</span><span className="text-white font-mono">{queue.probeStats.sweepGeneration}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Last Sweep</span><span className="text-gray-300 font-mono">{queue.probeStats.lastSweepTs ? timeAgo(queue.probeStats.lastSweepTs) : 'never'}</span></div>
+          </div>
+        </div>
+      )}
 
       {/* Tracked Markets with Fees (collapsible) */}
       {Array.isArray(queue?.marketFees) && queue!.marketFees!.length > 0 && (

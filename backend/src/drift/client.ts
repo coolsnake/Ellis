@@ -1683,8 +1683,20 @@ export class DriftService {
     await this.init();
     try {
       const client: any = this.client;
-      const user = client?.user || null;
-      if (!user) return null;
+      let user = client?.user || null;
+      // If no active user, try to force-add the configured subaccount
+      if (!user) {
+        try {
+          const subId = Number(this.activeSubaccountId ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
+          if (typeof client?.addUser === 'function') await client.addUser(subId);
+          if (typeof client?.switchActiveUser === 'function') await client.switchActiveUser(subId);
+          user = client?.user || null;
+        } catch {}
+      }
+      if (!user) {
+        try { logger.debug('drift.snapshot.no_active_user', { cat: 'drift' }); } catch {}
+        return null;
+      }
       const id = Number((client?.getUserAccount?.()?.subAccountId) ?? (client?.activeUserId) ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
       // Convert quote-precision values to UI units using SDK constants when available
       let QUOTE_PREC = 1_000_000;

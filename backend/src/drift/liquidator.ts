@@ -196,6 +196,18 @@ export class DriftLiquidator {
   private drainRequested: boolean = false;
   private sweepTimer: any | null = null;
   private _sweepInFlight: boolean = false;
+  // Probe stats for UI
+  private _probeStats = {
+    totalIndexed: 0,     // total users discovered from index sweeps
+    totalProbed: 0,      // cumulative users probed (lifetime)
+    probeQueueSize: 0,   // current pending probe queue length
+    lastSweepEnqueued: 0, // users enqueued in last sweep
+    lastSweepTs: 0,      // timestamp of last sweep completion
+    sweepGeneration: 0,  // increments each sweep
+    atRiskCount: 0,      // current atRiskUsers size
+    subscribedCount: 0,  // current subscribedUsers size
+    liveMonitorCount: 0, // current liveMonitors size
+  };
 
   private requestImmediateDrain(): void {
     try {
@@ -358,6 +370,7 @@ export class DriftLiquidator {
     // Full sweep of event index at startup to seed atRiskUsers
     try { await this.sweepIndexForAtRisk(); } catch {}
     // Periodic non-blocking background rescan to pick up newly at-risk users
+    // Only re-sweep once the probe queue from the previous sweep has been fully drained
     try {
       const rescanMs = Math.max(60_000, Number(
         (this.config as any)?.indexRescanIntervalMs
@@ -366,6 +379,11 @@ export class DriftLiquidator {
       ));
       this.sweepTimer = (globalThis as any).setInterval(() => {
         if (this.abort || this._sweepInFlight) return;
+        // Skip rescan if probe queue still has users from the previous sweep
+        if (this.pendingProbeQueue.length > 0) {
+          try { logger.debug('drift.liquidator.sweep_deferred', { remaining: this.pendingProbeQueue.length, cat: 'drift' }); } catch {}
+          return;
+        }
         this._sweepInFlight = true;
         this.sweepIndexForAtRisk()
           .catch(() => {})
@@ -772,6 +790,11 @@ export class DriftLiquidator {
           await new Promise(r => setTimeout(r, delayMs));
         }
       }
+      // Update probe stats
+      this._probeStats.totalIndexed = allUsers.size;
+      this._probeStats.lastSweepEnqueued = enqueued;
+      this._probeStats.lastSweepTs = Date.now();
+      this._probeStats.sweepGeneration++;
       try {
         logger.info('drift.liquidator.index_sweep_done', {
           name: this.config.name,
@@ -780,6 +803,7 @@ export class DriftLiquidator {
           newUsers: allUsers.size - beforeSize,
           enqueued,
           trackedMarkets: this.trackedMarkets.size,
+          generation: this._probeStats.sweepGeneration,
           cat: 'drift',
         });
       } catch {}
@@ -1574,6 +1598,8 @@ export class DriftLiquidator {
             ? Math.min(remainingNotional, ownCap)
             : ownCap;
           try { logger.info('drift.liquidator.own_capacity', { user: target.userPk, ownFreeCollateral, margin, ownCap, effectiveCap: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
+        } else {
+          try { logger.warn('drift.liquidator.own_capacity_unavailable', { user: target.userPk, snapNull: !snap, freeCollateral: snap?.freeCollateral, cat: 'drift' }); } catch {}
         }
       } catch {}
       // Build notional/base lookups by market for this user (perp positions only)
@@ -1730,6 +1756,11 @@ export class DriftLiquidator {
         } catch {}
         try {
           userAccount = (sdkUser as any)?.getUserAccount?.();
+          // Validate userAccount has essential fields for SDK tx building
+          if (userAccount && !userAccount.authority) {
+            try { logger.debug('drift.liquidator.user_account_incomplete', { user: target.userPk, hasAuthority: !!userAccount.authority, cat: 'drift' }); } catch {}
+            userAccount = null;
+          }
           openOrdersCount = Number(userAccount?.openOrders || 0);
         } catch {}
         try {
@@ -1794,7 +1825,18 @@ export class DriftLiquidator {
         }
       } catch {}
       const marketsForUser = Array.from(this.userToMarkets.get(String(target.userPk)) || []);
-      const perpMarkets = marketsForUser.length > 0 ? marketsForUser : [0, 1, 2];
+      // Start with cached market set; will be enriched from live posSummary after snapshot
+      let perpMarkets: number[] = [...marketsForUser];
+      // Merge in any markets found in live SDK position data (posNotionalByMarket is rebuilt from posSummary)
+      try {
+        for (const mkt of posNotionalByMarket.keys()) {
+          if (!perpMarkets.includes(mkt)) perpMarkets.push(mkt);
+        }
+        for (const mkt of posBaseRawByMarket.keys()) {
+          if (!perpMarkets.includes(mkt)) perpMarkets.push(mkt);
+        }
+      } catch {}
+      if (perpMarkets.length === 0) perpMarkets = [0, 1, 2]; // last-resort fallback
       let anySuccess = false;
       // Step 1: force-cancel orders (best-effort, capped)
       try {
@@ -3039,6 +3081,12 @@ export class DriftLiquidator {
           this.inProbeQueue.delete(key);
         }
       }
+      // Update rolling probe stats
+      this._probeStats.totalProbed += probed;
+      this._probeStats.probeQueueSize = this.pendingProbeQueue.length;
+      this._probeStats.atRiskCount = this.atRiskUsers.size;
+      this._probeStats.subscribedCount = this.subscribedUsers.size;
+      this._probeStats.liveMonitorCount = this.liveMonitors.size;
       try { logger.debug('drift.liquidator.probe_result', { attempted: slice.length, probed, flagged, pending: this.pendingProbeQueue.length, rps: this.getProbeRps(), cat: 'drift' }); } catch {}
     } catch {} finally {
       this.probeProcessing = false;
@@ -3223,6 +3271,19 @@ export class DriftLiquidator {
     } catch {}
     // Prune stale attempts (older than 5 min)
     try { const cutoff = Date.now() - 5 * 60_000; while (this.recentAttempts.length > 0 && this.recentAttempts[0].ts < cutoff) this.recentAttempts.shift(); } catch {}
+    // Build live probe stats snapshot
+    const probeStats = {
+      totalIndexed: this._probeStats.totalIndexed,
+      totalProbed: this._probeStats.totalProbed,
+      probeQueuePending: this.pendingProbeQueue.length,
+      atRiskCount: this.atRiskUsers.size,
+      subscribedCount: this.subscribedUsers.size,
+      liveMonitorCount: this.liveMonitors.size,
+      userCacheSize: this.userCache.size,
+      sweepGeneration: this._probeStats.sweepGeneration,
+      lastSweepTs: this._probeStats.lastSweepTs || null,
+      lastSweepEnqueued: this._probeStats.lastSweepEnqueued,
+    };
     return {
       candidatesQueued: this.state.candidatesQueued,
       top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
@@ -3233,6 +3294,7 @@ export class DriftLiquidator {
       users: usersArr.slice(0, usersLimit),
       marketFees,
       recentAttempts: this.recentAttempts.slice(),
+      probeStats,
     };
   }
 }
