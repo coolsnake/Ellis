@@ -117,7 +117,7 @@ export async function waitForInfraReady(timeoutMs?: number): Promise<boolean> {
   const deadline = Date.now() + ms;
   let delay = 500;
   while (Date.now() < deadline) {
-    const s = await fetchInfraStatus().catch(() => ({}));
+    const s = await fetchInfraStatus().catch(() => ({} as InfraStatus));
     const ready = !!(s?.ready || (s?.infraReady && !s?.slotStale && s?.has?.dlobSubscriber));
     if (ready) return true;
     await new Promise((r) => setTimeout(r, delay));
