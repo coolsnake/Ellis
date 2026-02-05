@@ -95,9 +95,10 @@ export function setupDriftBotsProcess(): void {
       DRIFT_BOTS_PROCESS: '1',
       DRIFT_BOTS_PORT: String(port),
       DRIFT_BOTS_CALLBACK_URL: String(callbackUrl),
-      // Disable warmup in child process - main backend already warms up
+      // Disable warmup and prefetch in child process - main backend already handles these
       // This prevents duplicate GPA queries and reduces RPC load
       DRIFT_WARMUP_ENABLED: 'false',
+      DRIFT_PREFETCH_ENABLED: 'false',
     };
     if (cfg.secret || process.env.DRIFT_BOTS_SECRET) {
       env.DRIFT_BOTS_SECRET = String(process.env.DRIFT_BOTS_SECRET || cfg.secret || '');

@@ -175,6 +175,13 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       }
       const { event, payload } = (req.body || {}) as any;
       if (!event) return res.status(400).json({ error: 'event is required' });
+      // Log received events for debugging bot->main communication
+      try {
+        const payloadSummary = payload && typeof payload === 'object'
+          ? { keys: Object.keys(payload), itemCount: Array.isArray(payload.triggers) ? payload.triggers.length : (Array.isArray(payload.fillers) ? payload.fillers.length : (Array.isArray(payload.liquidators) ? payload.liquidators.length : undefined)) }
+          : {};
+        logger.info('drift.bots.event_received', { cat: 'drift', event, payloadSummary });
+      } catch {}
       await emit(String(event), payload);
       res.json({ ok: true });
     } catch (e: any) {
