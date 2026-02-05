@@ -131,6 +131,10 @@ export const FillerStatus: React.FC<{ apiBase: string; hideHeader?: boolean }> =
             const avgLatencyMs = Number(m?.avgLatencyMs ?? 0);
             const costSol = Number(m?.costSol ?? 0);
             const revenue = Number(m?.revenueQuote ?? 0);
+            const last = (it.status as any)?.lastLoop;
+            const econ = last?.econ;
+            const prebuildStats = (it.status as any)?.prebuildStats;
+            const prebuildCache = Number((it.status as any)?.prebuildCache ?? 0);
             
             return (
               <div key={it.key} className="p-3 bg-gray-700/50 border border-gray-600/50 rounded-lg">
@@ -163,6 +167,24 @@ export const FillerStatus: React.FC<{ apiBase: string; hideHeader?: boolean }> =
                             <span>Req: <span className="text-gray-400 font-mono">{(it.status as any).requireExistingMakers ? 'Y' : 'N'}</span></span>
                             <span>Tip Floor: <span className="text-gray-400 font-mono">{(it.status as any).minTipFloorToAttemptLamports ?? 0}</span></span>
                             <span>JIT TTL: <span className="text-gray-400 font-mono">{(it.status as any).denyJitTakersTtlMs ?? 0}ms</span></span>
+                            <span>Min Notional: <span className="text-gray-400 font-mono">{(it.status as any).minNotionalQuote ?? 0}</span></span>
+                            <span>Min Profit: <span className="text-gray-400 font-mono">{(it.status as any).minProfitQuote ?? 0}</span></span>
+                            <span>Rank: <span className="text-gray-400 font-mono">{(it.status as any).rankBy || '-'}</span></span>
+                          </div>
+                        )}
+                        {last && (
+                          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+                            <span>Loop: <span className="text-gray-400 font-mono">{last.nodesPlanned ?? 0}/{last.nodesProcessed ?? 0}/{last.nodesSent ?? 0}</span></span>
+                            {!!econ?.count && (
+                              <>
+                                <span>Notional avg: <span className="text-gray-400 font-mono">{Number(econ.avgNotional ?? 0).toFixed(2)}</span></span>
+                                <span>Reward avg: <span className="text-gray-400 font-mono">{Number(econ.avgReward ?? 0).toFixed(4)}</span></span>
+                                <span>Profit avg: <span className="text-gray-400 font-mono">{Number(econ.avgProfit ?? 0).toFixed(4)}</span></span>
+                              </>
+                            )}
+                            {(prebuildStats || prebuildCache) && (
+                              <span>Prebuild: <span className="text-gray-400 font-mono">cache {prebuildCache} built {prebuildStats?.built ?? 0} hit {prebuildStats?.hit ?? 0} miss {prebuildStats?.miss ?? 0} exp {prebuildStats?.expired ?? 0}</span></span>
+                            )}
                           </div>
                         )}
                       </>

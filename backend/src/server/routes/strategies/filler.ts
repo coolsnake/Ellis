@@ -56,6 +56,22 @@ export function createFillerRouter(_io: SocketIOServer): Router {
         minMakerCountPerNode: Math.max(0, Number(cfg?.minMakerCountPerNode ?? 1)),
         denyJitTakersTtlMs: Math.max(0, Number(cfg?.denyJitTakersTtlMs ?? 15000)),
         minTipFloorToAttemptLamports: Math.max(0, Number(cfg?.minTipFloorToAttemptLamports ?? 0)),
+        // Profitability / sizing gates
+        minNotionalQuote: Math.max(0, Number(cfg?.minNotionalQuote ?? 0)),
+        minRemainingBase: Math.max(0, Number(cfg?.minRemainingBase ?? 0)),
+        rewardShare: Math.max(0, Math.min(1, Number(cfg?.rewardShare ?? 0.5))),
+        minRewardQuote: Math.max(0, Number(cfg?.minRewardQuote ?? 0)),
+        minProfitQuote: Math.max(0, Number(cfg?.minProfitQuote ?? 0)),
+        minRewardToCostRatio: Math.max(0, Number(cfg?.minRewardToCostRatio ?? 0)),
+        maxCandidatesPerLoop: Math.max(0, Number(cfg?.maxCandidatesPerLoop ?? 0)),
+        rankBy: (typeof cfg?.rankBy === 'string' ? String(cfg.rankBy) : undefined),
+        // Prebuild controls
+        prebuildEnabled: (cfg?.prebuildEnabled === undefined ? true : !!cfg?.prebuildEnabled),
+        prebuildDistanceBps: Math.max(0, Number(cfg?.prebuildDistanceBps ?? 10)),
+        prebuildTtlMs: Math.max(0, Number(cfg?.prebuildTtlMs ?? 1500)),
+        prebuildMaxCandidates: Math.max(0, Number(cfg?.prebuildMaxCandidates ?? 50)),
+        prebuildMaxInFlight: Math.max(0, Number(cfg?.prebuildMaxInFlight ?? 2)),
+        prebuildPerLoop: Math.max(0, Number(cfg?.prebuildPerLoop ?? 2)),
       } as any);
       const key = (DriftFillerRegistry as any).keyOf({ name });
       

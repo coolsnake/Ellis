@@ -161,6 +161,7 @@ export class DriftLiquidator {
   private outOfScopeUntil: Map<string, number> = new Map();
   private healthyUntil: Map<string, number> = new Map();
   private eventSub: any | null = null;
+  private sharedUserMap: any | null = null;
   private lastDiscoveryUsedGpaV2 = false;
   private discoveryTimer: any | null = null;
   private lastDiscoverySlot: number = 0;
@@ -720,6 +721,7 @@ export class DriftLiquidator {
       const infra = await DriftService.getInstance().getSharedInfra({ includeIdle: true });
       const sub = (infra as any).eventSubscriber;
       const userMap = (infra as any).userMap;
+      this.sharedUserMap = userMap || null;
       if (!sub) return;
       this.eventSub = sub;
       try { this.setupEventIndex(userMap); } catch {}
@@ -2202,12 +2204,26 @@ export class DriftLiquidator {
       // This avoids RPC scans by using websocket-fed order streams
       let userPks: string[] = [];
       try {
-        if (typeof (drift as any)?.getUserMap === 'function') {
+        const um = this.sharedUserMap;
+        if (um && typeof um.entries === 'function') {
+          const entries = Array.from(um.entries());
+          userPks = entries.map(([k]) => String((k as any)?.toBase58?.() || k)).filter(Boolean);
+          try { logger.info('drift.liquidator.usermap_shared_keys', { keys: userPks.length, cat: 'drift' }); } catch {}
+        } else if (um && typeof um.values === 'function') {
+          const vals = Array.from(um.values());
+          userPks = vals.map((u: any) => String(u?.getUserAccountPublicKey?.()?.toBase58?.() || '')).filter(Boolean);
+          try { logger.info('drift.liquidator.usermap_shared_values', { keys: userPks.length, cat: 'drift' }); } catch {}
+        }
+      } catch (e: any) {
+        try { logger.warn('drift.liquidator.usermap_shared_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      }
+      try {
+        if (userPks.length === 0 && typeof (drift as any)?.getUserMap === 'function') {
           const um = await (drift as any).getUserMap();
           const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
           userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
           try { logger.info('drift.liquidator.usermap_get_keys', { keys: entries.length, cat: 'drift' }); } catch {}
-        } else {
+        } else if (userPks.length === 0) {
           try { logger.info('drift.liquidator.usermap_get_unavailable', { cat: 'drift' }); } catch {}
         }
       } catch (e: any) {

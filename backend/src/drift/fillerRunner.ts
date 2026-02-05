@@ -12,6 +12,7 @@ import { driftEventIndex } from './eventIndex.js';
 import { OracleUpdater } from './oracles/oracleUpdater.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
+import { getPriceByMint } from '../server/priceStore.js';
 
 export type FillerConfig = {
   name: string;
@@ -30,6 +31,22 @@ export type FillerConfig = {
   minMakerCountPerNode?: number;
   denyJitTakersTtlMs?: number;
   minTipFloorToAttemptLamports?: number;
+  // Profitability / sizing gates
+  minNotionalQuote?: number; // min notional in quote (e.g., USDC)
+  minRemainingBase?: number; // min remaining base (native units, e.g., SOL)
+  rewardShare?: number; // fraction (0..1) of taker fee attributed to filler reward
+  minRewardQuote?: number; // min estimated reward in quote
+  minProfitQuote?: number; // min estimated profit in quote (reward - cost)
+  minRewardToCostRatio?: number; // min reward/cost ratio when cost is known
+  maxCandidatesPerLoop?: number; // cap for top-N scoring
+  rankBy?: 'profit' | 'reward' | 'notional';
+  // Prebuild controls
+  prebuildEnabled?: boolean;
+  prebuildDistanceBps?: number; // widen bid/ask by this bps for near-fill prebuild
+  prebuildTtlMs?: number;
+  prebuildMaxCandidates?: number;
+  prebuildMaxInFlight?: number;
+  prebuildPerLoop?: number;
 };
 
 type FillerRuntimeState = {
@@ -44,9 +61,25 @@ type FillerRuntimeState = {
   marketsAllowlist?: number[];
 };
 
+type PreparedFill = {
+  sig: string;
+  marketIndex: number;
+  orderId: string;
+  taker: string;
+  createdAt: number;
+  expiresAt: number;
+  takerUa: any;
+  takerUserPk: PublicKey;
+  makerInfos: any[];
+  makerKeys: string[];
+  fillIx: any;
+};
+
 const FILLER_CAT = 'drift';
 const FILLER_SUBCAT = 'filler';
 const COOLDOWN_MS = 100;
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const LAMPORTS_PER_SOL = 1_000_000_000;
 
 export class DriftFillerRunner {
   private timer: any | null = null;
@@ -78,6 +111,10 @@ export class DriftFillerRunner {
   private nodesCooldown: Map<string, number> = new Map();
   private fillsInWindow: number[] = [];
   private skipLogCount: Map<number, { n: number; ts: number }> = new Map();
+  private preparedFills: Map<string, PreparedFill> = new Map();
+  private prebuildInFlight: number = 0;
+  private lastLoopStats: any | null = null;
+  private prebuildStats: { built: number; hit: number; miss: number; expired: number } = { built: 0, hit: 0, miss: 0, expired: 0 };
   private altRefreshTimer: any | null = null;
   private dlobUnavailableCount: number = 0;
   private wsNudgeTimer: any | null = null;
@@ -117,10 +154,28 @@ export class DriftFillerRunner {
   getStatus(): FillerRuntimeState {
     const cutoff = Date.now() - 60_000;
     this.fillsInWindow = this.fillsInWindow.filter((t) => t >= cutoff);
+    const cfg: any = this.config || {};
     // Expose heuristic settings for UI visibility (typed as any to avoid widening FillerRuntimeState)
     return {
       ...this.state,
       fillsLastMin: this.fillsInWindow.length,
+      lastLoop: this.lastLoopStats,
+      prebuildCache: this.preparedFills.size,
+      prebuildStats: this.prebuildStats,
+      minNotionalQuote: cfg.minNotionalQuote,
+      minRemainingBase: cfg.minRemainingBase,
+      rewardShare: cfg.rewardShare,
+      minRewardQuote: cfg.minRewardQuote,
+      minProfitQuote: cfg.minProfitQuote,
+      minRewardToCostRatio: cfg.minRewardToCostRatio,
+      maxCandidatesPerLoop: cfg.maxCandidatesPerLoop,
+      rankBy: cfg.rankBy,
+      prebuildEnabled: cfg.prebuildEnabled,
+      prebuildDistanceBps: cfg.prebuildDistanceBps,
+      prebuildTtlMs: cfg.prebuildTtlMs,
+      prebuildMaxCandidates: cfg.prebuildMaxCandidates,
+      prebuildMaxInFlight: cfg.prebuildMaxInFlight,
+      prebuildPerLoop: cfg.prebuildPerLoop,
     } as any as FillerRuntimeState & {
       skipYoungOrderMs?: number;
       requireExistingMakers?: boolean;
@@ -413,6 +468,26 @@ export class DriftFillerRunner {
       pruneByTs(this.nodeSeenAtMs as any, (v: any) => Number(v || 0));
       pruneByExpiry(this.jitTakerCooldown as any);
       pruneByTs(this.skipLogCount as any, (v: any) => Number(v?.ts || 0));
+      // Prune prepared fills (TTL + max size)
+      try {
+        const ttlMs = Math.max(200, Number(this.config.prebuildTtlMs ?? 1500));
+        const maxPrepared = Math.max(50, Number(this.config.prebuildMaxCandidates ?? 200));
+        for (const [k, v] of this.preparedFills.entries()) {
+          const exp = Number((v as any)?.expiresAt || 0);
+          const age = Number((v as any)?.createdAt || 0);
+          if ((exp && exp < now) || (age && (now - age) > ttlMs)) {
+            this.preparedFills.delete(k);
+            this.prebuildStats.expired += 1;
+          }
+        }
+        if (this.preparedFills.size > maxPrepared) {
+          const entries = Array.from(this.preparedFills.entries()).sort((a, b) => Number((a[1] as any)?.createdAt || 0) - Number((b[1] as any)?.createdAt || 0));
+          const overflow = this.preparedFills.size - maxPrepared;
+          for (let i = 0; i < overflow; i += 1) {
+            this.preparedFills.delete(entries[i][0]);
+          }
+        }
+      } catch {}
     } catch {}
   }
 
@@ -434,8 +509,261 @@ export class DriftFillerRunner {
     } catch {}
   }
 
+  private getSolPriceUsd(): number | undefined {
+    try {
+      const sol = getPriceByMint(SOL_MINT);
+      const usd = Number(sol?.usdc ?? 0);
+      return Number.isFinite(usd) && usd > 0 ? usd : undefined;
+    } catch { return undefined; }
+  }
+
+  private getBestBlockhash(maxAgeMs = 250, maxAgeSlots = 5): string | undefined {
+    try {
+      const bh = this.blockhashSubscriber?.getLatestBlockhash?.(maxAgeSlots);
+      const v = String((bh as any)?.blockhash || '');
+      if (v) return v;
+    } catch {}
+    try {
+      return getCachedBlockhash(maxAgeMs) || this.bhCacheStr;
+    } catch {
+      return this.bhCacheStr;
+    }
+  }
+
+  private async getTakerUaQuick(takerPkStr: string): Promise<any | null> {
+    // Warm cache first
+    try {
+      const warm = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr);
+      const ua = warm?.getUserAccount?.();
+      if (ua) return ua;
+    } catch {}
+    // Try userMap quickly, but keep very tight bound
+    try {
+      const wrap = await Promise.race([
+        this.userMap.mustGet(takerPkStr),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('UA_TIMEOUT')), 180)),
+      ]).catch(() => null);
+      const ua = (wrap as any)?.getUserAccount?.();
+      if (ua) return ua;
+    } catch {}
+    return null;
+  }
+
+  private async buildMakerInfos(makers: string[], nodeToFill: any): Promise<any[]> {
+    const makerInfos: any[] = [];
+    for (const m of makers) {
+      try {
+        let makerUa: any = null;
+        // Try warm cache first
+        try {
+          const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
+          makerUa = warm?.getUserAccount?.() || null;
+        } catch {}
+        // Fall back to userMap if not in warm cache
+        if (!makerUa && this.userMap) {
+          try {
+            const wrap = await Promise.race([
+              this.userMap.mustGet(m),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('MAKER_UA_TIMEOUT')), 150)),
+            ]).catch(() => null);
+            makerUa = (wrap as any)?.getUserAccount?.() || null;
+          } catch {}
+        }
+        if (!makerUa) continue;
+        const makerAuth = makerUa?.authority;
+        let makerStats = null;
+        try {
+          const { getUserStatsAccountPublicKey } = this.sdk;
+          makerStats = getUserStatsAccountPublicKey(this.client.program.programId, makerAuth);
+        } catch {}
+        const makerNodeOrder = (nodeToFill?.makerNodes || []).find((mn: any) => String(mn?.userAccount || '') === m)?.order;
+        makerInfos.push({
+          maker: new PublicKey(m),
+          makerUserAccount: makerUa,
+          order: makerNodeOrder,
+          makerStats,
+        });
+      } catch {}
+    }
+    return makerInfos;
+  }
+
+  private estimatePriorityForMarket(marketIndex: number): number {
+    const basePriority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
+    const suggestedMul = Number(this.client?.txSender?.getSuggestedPriorityFeeMultiplier?.() || 1.0);
+    const dynFromSub = Number(this.priorityFeeSubscriber?.getCustomStrategyResult?.() || basePriority);
+    const floor = Math.max(10_000, Number(((CONFIG as any)?.drift?.fillerPriorityFloorMicroLamports) ?? ((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000));
+    const effectivePriority = Math.max(floor, Math.floor(Math.max(basePriority, dynFromSub * suggestedMul)));
+    const marketKey = `perp-${marketIndex}`;
+    const mulCfg = Number((((CONFIG as any)?.drift?.feeMultipliers || {}) as Record<string, number>)[marketKey] ?? 1.0);
+    const MAX_MICRO = 200_000;
+    return Math.min(MAX_MICRO, Math.max(floor, Math.floor(effectivePriority * (Number.isFinite(mulCfg) ? mulCfg : 1.0))));
+  }
+
+  private estimateTipLamports(priorityForSend: number, cuLimit: number): number {
+    try {
+      const allowTips = !!((CONFIG as any)?.jito?.allowTips);
+      if (!((CONFIG as any)?.jito?.enabled && allowTips)) return 0;
+      const cached = getCachedTipInfo();
+      const tipPk = cached?.tipAccount;
+      if (!tipPk) return 0;
+      const priorityLamportsEst = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
+      const cfg = (CONFIG as any)?.jito || {};
+      const fixed = Number(cfg?.fixedTipLamports ?? 0);
+      const share = Number(cfg?.tipShare ?? 0.3);
+      const floor = Number(cached?.tipFloorLamports ?? 0);
+      const estShare = Math.floor((priorityLamportsEst * share) / Math.max(1 - share, 0.01));
+      const tipLamports = Math.max(1000, fixed > 0 ? fixed : (floor || estShare));
+      return tipLamports;
+    } catch { return 0; }
+  }
+
+  private estimateCostLamports(priorityForSend: number, cuLimit: number): number {
+    const baseFee = Math.max(0, Number((CONFIG as any)?.fees?.baseFee ?? 5000));
+    const priorityLamports = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
+    const tipLamports = this.estimateTipLamports(priorityForSend, cuLimit);
+    return Math.max(0, baseFee + priorityLamports + tipLamports);
+  }
+
+  private estimateNodeEconomics(params: {
+    marketIndex: number;
+    node: any;
+    vBid: any;
+    vAsk: any;
+  }): { notionalQuote: number; rewardQuote: number; costQuote?: number; profitQuote?: number; remainingBaseUi?: number; score: number } | null {
+    try {
+      const { BN, getVariant, BASE_PRECISION, PRICE_PRECISION } = this.sdk;
+      const o = params.node?.node?.order;
+      if (!o) return null;
+      const base = o?.baseAssetAmount;
+      const filled = o?.baseAssetAmountFilled || new BN(0);
+      const remaining = (base && typeof base.sub === 'function') ? base.sub(filled) : null;
+      if (!remaining || !Number.isFinite(Number(remaining?.toString?.() || 0))) return null;
+      const dir = o?.direction ? String(getVariant(o.direction)).toLowerCase() : undefined;
+      const priceBn = (o as any)?.price;
+      const vAsk = params.vAsk;
+      const vBid = params.vBid;
+      const usePx = (priceBn && typeof priceBn.toString === 'function' && Number(priceBn.toString()) > 0)
+        ? priceBn
+        : (dir === 'short' ? vBid : vAsk);
+      if (!usePx || !usePx.toString) return null;
+      const baseNum = Number(remaining.toString());
+      const priceNum = Number(usePx.toString());
+      const basePrec = Number((BASE_PRECISION as any)?.toString?.() || BASE_PRECISION || 1);
+      const pricePrec = Number((PRICE_PRECISION as any)?.toString?.() || PRICE_PRECISION || 1);
+      const remainingBaseUi = baseNum / Math.max(1, basePrec);
+      const notionalQuote = remainingBaseUi * (priceNum / Math.max(1, pricePrec));
+      if (!Number.isFinite(notionalQuote) || notionalQuote <= 0) return null;
+      const feeBps = Number((CONFIG as any)?.drift?.feeTakerBps ?? 5);
+      const rewardShare = Math.max(0, Math.min(1, Number(this.config.rewardShare ?? 0.5)));
+      const rewardQuote = notionalQuote * (feeBps / 10000) * rewardShare;
+      const priorityForSend = this.estimatePriorityForMarket(params.marketIndex);
+      const cuLimit = Math.max(220_000, Math.min(800_000, Number(this.config.cuLimit ?? 300_000)));
+      const costLamports = this.estimateCostLamports(priorityForSend, cuLimit);
+      const solUsd = this.getSolPriceUsd();
+      const costQuote = solUsd ? (costLamports / LAMPORTS_PER_SOL) * solUsd : undefined;
+      const profitQuote = (typeof costQuote === 'number') ? (rewardQuote - costQuote) : undefined;
+      let score = rewardQuote;
+      const rankBy = String(this.config.rankBy || '').toLowerCase();
+      if (rankBy === 'notional') score = notionalQuote;
+      else if (rankBy === 'profit' && typeof profitQuote === 'number') score = profitQuote;
+      return { notionalQuote, rewardQuote, costQuote, profitQuote, remainingBaseUi, score };
+    } catch {
+      return null;
+    }
+  }
+
+  private getPreparedFillForNode(sig: string, nodeToFill: any): PreparedFill | null {
+    try {
+      const cur = this.preparedFills.get(sig);
+      if (!cur) {
+        if (this.preparedFills.size > 0) this.prebuildStats.miss += 1;
+        return null;
+      }
+      if (cur.expiresAt && cur.expiresAt < Date.now()) {
+        this.preparedFills.delete(sig);
+        this.prebuildStats.expired += 1;
+        this.prebuildStats.miss += 1;
+        return null;
+      }
+      const orderId = String(nodeToFill?.node?.order?.orderId || '');
+      if (orderId && cur.orderId !== orderId) {
+        this.preparedFills.delete(sig);
+        this.prebuildStats.miss += 1;
+        return null;
+      }
+      // If makers changed, discard
+      if (Array.isArray(cur.makerKeys) && cur.makerKeys.length > 0 && Array.isArray(nodeToFill?.makerNodes)) {
+        const nowSet = new Set(nodeToFill.makerNodes.map((mn: any) => String(mn?.userAccount || '')).filter(Boolean));
+        const allPresent = cur.makerKeys.every((mk) => nowSet.has(String(mk)));
+        if (!allPresent) {
+          this.preparedFills.delete(sig);
+          this.prebuildStats.miss += 1;
+          return null;
+        }
+      }
+      this.preparedFills.delete(sig);
+      this.prebuildStats.hit += 1;
+      return cur;
+    } catch {
+      this.prebuildStats.miss += 1;
+      return null;
+    }
+  }
+
+  private async prepareFill(marketIndex: number, nodeToFill: any): Promise<boolean> {
+    try {
+      const sig = this.signatureForNode(nodeToFill);
+      if (!sig) return false;
+      const existing = this.preparedFills.get(sig);
+      if (existing && existing.expiresAt > Date.now()) return false;
+      const ttlMs = Math.max(200, Number(this.config.prebuildTtlMs ?? 1500));
+      const takerPkStr = String(nodeToFill?.node?.userAccount || '');
+      const orderId = String(nodeToFill?.node?.order?.orderId || '');
+      if (!takerPkStr || !orderId) return false;
+      const takerUa = await this.getTakerUaQuick(takerPkStr);
+      if (!takerUa) return false;
+      const makersRaw: string[] = Array.isArray(nodeToFill?.makerNodes)
+        ? nodeToFill.makerNodes.map((mn: any) => String(mn?.userAccount || '')).filter(Boolean)
+        : [];
+      const maxMakers = Math.max(0, Number(this.config.maxMakersPerFill ?? 1));
+      const makers = makersRaw.slice(0, maxMakers);
+      const makerKeys = (Array.isArray(prepared?.makerKeys) && (prepared as any).makerKeys.length > 0) ? (prepared as any).makerKeys : makers;
+      const allowAmm = this.config.allowAmmFills !== false;
+      if ((!Array.isArray(nodeToFill?.makerNodes) || nodeToFill.makerNodes.length === 0) && !allowAmm) return false;
+      const makerInfos = await this.buildMakerInfos(makers, nodeToFill);
+      const { getUserAccountPublicKey } = this.sdk;
+      const takerUserPk = await getUserAccountPublicKey(this.client.program.programId, takerUa.authority, takerUa.subAccountId);
+      const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
+      const fillIx = await withRpcTimeout(
+        this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos) as any,
+        220,
+        'fill_ix_prebuild'
+      ).catch(() => null);
+      if (!fillIx) return false;
+      this.preparedFills.set(sig, {
+        sig,
+        marketIndex,
+        orderId,
+        taker: takerPkStr,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + ttlMs,
+        takerUa,
+        takerUserPk,
+        makerInfos,
+        makerKeys: makers,
+        fillIx,
+      });
+      this.prebuildStats.built += 1;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async tryFillNode(marketIndex: number, nodeToFill: any): Promise<boolean> {
     try {
+      const sig = this.signatureForNode(nodeToFill);
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
       try { hotlist.markUser(takerPkStr, 'filler_try'); } catch {}
       const { getUserAccountPublicKey } = this.sdk;
@@ -444,29 +772,12 @@ export class DriftFillerRunner {
       let buildMs: number | undefined = undefined;
       let sendMs: number | undefined = undefined;
       let sentAtMs: number | undefined = undefined;
-      // Bounded, non-blocking taker hydration
-      const getTakerUaQuick = async (): Promise<any | null> => {
-        // Warm cache first
-        try {
-          const warm = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr);
-          const ua = warm?.getUserAccount?.();
-          if (ua) return ua;
-        } catch {}
-        // Try userMap quickly, but keep very tight bound
-        try {
-            const wrap = await Promise.race([
-            this.userMap.mustGet(takerPkStr),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('UA_TIMEOUT')), 180)),
-          ]).catch(() => null);
-          const ua = (wrap as any)?.getUserAccount?.();
-          if (ua) return ua;
-        } catch {}
-        return null;
-      };
-
-      const takerUa = await getTakerUaQuick();
+      const usePrebuild = this.config.prebuildEnabled !== false;
+      const prepared = (usePrebuild && sig) ? this.getPreparedFillForNode(sig, nodeToFill) : null;
+      const takerUa = prepared?.takerUa || await this.getTakerUaQuick(takerPkStr);
       timings.hyd = Date.now();
       if (!takerUa) {
+        try { if (this._loopStatsTmp?.skips) this._loopStatsTmp.skips.takerHydration = (this._loopStatsTmp.skips.takerHydration || 0) + 1; } catch {}
         try { logger.debug('drift.filler.skip_taker_hydration_timeout', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
         return false;
       }
@@ -479,6 +790,7 @@ export class DriftFillerRunner {
             const svc = DriftService.getInstance() as any;
             const ok = await (svc.ensureRefStatsReady?.(ref));
             if (!ok) {
+              try { if (this._loopStatsTmp?.skips) this._loopStatsTmp.skips.missingRefStats = (this._loopStatsTmp.skips.missingRefStats || 0) + 1; } catch {}
               try { logger.info('drift.filler.skip_missing_referrer_stats', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
               return false;
             }
@@ -510,56 +822,15 @@ export class DriftFillerRunner {
         try { logger.debug('drift.filler.precheck', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, dir, otype }); } catch {}
       } catch {}
 
-      const makerInfos: any[] = [];
-      // Try warm cache first, then fall back to userMap with tight timeout
-      for (const m of makers) {
-        try {
-          let makerUa: any = null;
-          // Try warm cache first
-          try {
-            const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
-            makerUa = warm?.getUserAccount?.() || null;
-          } catch {}
-          // Fall back to userMap if not in warm cache
-          if (!makerUa && this.userMap) {
-            try {
-              const wrap = await Promise.race([
-                this.userMap.mustGet(m),
-                new Promise((_, rej) => setTimeout(() => rej(new Error('MAKER_UA_TIMEOUT')), 150)),
-              ]).catch(() => null);
-              makerUa = (wrap as any)?.getUserAccount?.() || null;
-            } catch {}
-          }
-          if (!makerUa) continue;
-          const makerAuth = makerUa?.authority;
-          let makerStats = null;
-          try {
-            const { getUserStatsAccountPublicKey } = this.sdk;
-            makerStats = getUserStatsAccountPublicKey(this.client.program.programId, makerAuth);
-          } catch {}
-          const makerNodeOrder = (nodeToFill?.makerNodes || []).find((mn: any) => String(mn?.userAccount || '') === m)?.order;
-          makerInfos.push({
-            maker: new PublicKey(m),
-            makerUserAccount: makerUa,
-            order: makerNodeOrder,
-            makerStats,
-          });
-        } catch {}
+      let makerInfos: any[] = Array.isArray(prepared?.makerInfos) ? prepared!.makerInfos : [];
+      if (!prepared) {
+        makerInfos = await this.buildMakerInfos(makers, nodeToFill);
       }
       timings.mk = Date.now();
 
-      const takerUserPk = await getUserAccountPublicKey(this.client.program.programId, takerUa.authority, takerUa.subAccountId);
+      const takerUserPk = prepared?.takerUserPk || await getUserAccountPublicKey(this.client.program.programId, takerUa.authority, takerUa.subAccountId);
       const cuLimit = Math.max(220_000, Math.min(800_000, Number(this.config.cuLimit ?? 300_000)));
-      const basePriority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
-      const suggestedMul = Number(this.client?.txSender?.getSuggestedPriorityFeeMultiplier?.() || 1.0);
-      const dynFromSub = Number(this.priorityFeeSubscriber?.getCustomStrategyResult?.() || basePriority);
-      const floor = Math.max(10_000, Number(((CONFIG as any)?.drift?.fillerPriorityFloorMicroLamports) ?? ((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000));
-      const effectivePriority = Math.max(floor, Math.floor(Math.max(basePriority, dynFromSub * suggestedMul)));
-      // Apply per-market multiplier and clamp
-      const marketKey = `perp-${marketIndex}`;
-      const mulCfg = Number((((CONFIG as any)?.drift?.feeMultipliers || {}) as Record<string, number>)[marketKey] ?? 1.0);
-      const MAX_MICRO = 200_000;
-      const priorityForSend = Math.min(MAX_MICRO, Math.max(floor, Math.floor(effectivePriority * (Number.isFinite(mulCfg) ? mulCfg : 1.0))));
+      const priorityForSend = this.estimatePriorityForMarket(marketIndex);
       // Build all dependent instructions and (optionally) fetch blockhash in parallel to minimize delay
       const enableUpdateFiller = !!((CONFIG as any)?.drift?.enableUpdateFiller);
       const updateBudgetMs = Math.max(0, Number(((CONFIG as any)?.drift?.updateIxBudgetMs) ?? 60));
@@ -577,7 +848,7 @@ export class DriftFillerRunner {
         } catch {}
         return null;
       })() : Promise.resolve(null);
-      const fillIxP = this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
+      const fillIxP = prepared?.fillIx ? null : this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
       const revertIxP = this.client.getRevertFillIx();
       // Build optional oracle update instructions (Pyth Pull) if enabled
       let oracleUpdateIxs: any[] = [];
@@ -591,12 +862,8 @@ export class DriftFillerRunner {
         }
       } catch {}
       // Prefer cached blockhash; only fetch live if no cache available
-      let cachedBhEarly = (() => {
-        try {
-          return getCachedBlockhash(200) || this.bhCacheStr;
-        } catch { return this.bhCacheStr; }
-      })();
-      let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
+      let cachedBhEarly = this.getBestBlockhash(200, 5);
+      let updateFillerIx: any = null, fillIx: any = prepared?.fillIx, revertIx: any = null, bh: any;
       // Always await fill ix (required), but time-bound update/revert so they don't block the first send
       const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
       let usedNoMakersFallback = false;
@@ -607,25 +874,27 @@ export class DriftFillerRunner {
         } catch {}
       }
       if (cachedBhEarly) {
-        try {
-          fillIx = await withRpcTimeout(fillIxP as any, 220, 'fill_ix');
-          timings.fillPri = Date.now();
-        } catch {
-          // Fallback: minimal fill without makers
+        if (!fillIx) {
           try {
-            const emptyMakers: any[] = [];
-            // Bound fallback as well to prevent multi-second stalls
-            fillIx = await withRpcTimeout(
-              this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers) as any,
-              180,
-              'fill_ix_fb'
-            );
-            usedNoMakersFallback = true;
-            try { logger.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') }); } catch {}
-            timings.fillFb = Date.now();
-          } catch (e: any) {
-            try { logger.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
-            return false;
+            fillIx = await withRpcTimeout(fillIxP as any, 220, 'fill_ix');
+            timings.fillPri = Date.now();
+          } catch {
+            // Fallback: minimal fill without makers
+            try {
+              const emptyMakers: any[] = [];
+              // Bound fallback as well to prevent multi-second stalls
+              fillIx = await withRpcTimeout(
+                this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers) as any,
+                180,
+                'fill_ix_fb'
+              );
+              usedNoMakersFallback = true;
+              try { logger.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') }); } catch {}
+              timings.fillFb = Date.now();
+            } catch (e: any) {
+              try { logger.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+              return false;
+            }
           }
         }
         try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, updateBudgetMs, 'upd_ix'); } catch { updateFillerIx = null; }
@@ -762,11 +1031,7 @@ export class DriftFillerRunner {
         return false;
       }
 
-      const cachedBh = (() => {
-        try {
-          return getCachedBlockhash(250) || this.bhCacheStr;
-        } catch { return this.bhCacheStr; }
-      })();
+      const cachedBh = this.getBestBlockhash(250, 5);
       const recentBlockhash = String(cachedBh || cachedBhEarly || (bh as any)?.blockhash);
       try { if (recentBlockhash) { this.bhCacheStr = recentBlockhash; this.bhCacheTs = Date.now(); } } catch {}
       const toV0Tx = (instructions: any[]) => {
@@ -891,7 +1156,6 @@ export class DriftFillerRunner {
           logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
           try {
             const { trackDriftAttempt } = await import('./txTracker.js');
-            const makerKeys = Array.isArray(makers) ? makers : [];
             trackDriftAttempt(this.connection as any, {
               sig: sigTx,
               action: 'fill',
@@ -938,7 +1202,6 @@ export class DriftFillerRunner {
               logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
               try {
                 const { trackDriftAttempt } = await import('./txTracker.js');
-                const makerKeys = Array.isArray(makers) ? makers : [];
                 trackDriftAttempt(this.connection as any, {
                   sig: sigTx,
                   action: 'fill',
@@ -1014,7 +1277,6 @@ export class DriftFillerRunner {
               logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
               try {
                 const { trackDriftAttempt } = await import('./txTracker.js');
-                const makerKeys = Array.isArray(makers) ? makers : [];
                 trackDriftAttempt(this.connection as any, {
                   sig: sigTx,
                   action: 'fill',
@@ -1034,7 +1296,6 @@ export class DriftFillerRunner {
               // Record failed revert attempt as well
               try {
                 const { recordAttempt } = await import('./txTracker.js');
-                const makerKeys = Array.isArray(makers) ? makers : [];
                 recordAttempt({
                   ts: Date.now(),
                   sig: 'FAILED',
@@ -1064,7 +1325,6 @@ export class DriftFillerRunner {
           // Record failed attempt for metrics
           try {
             const { recordAttempt } = await import('./txTracker.js');
-            const makerKeys = Array.isArray(makers) ? makers : [];
             recordAttempt({
               ts: Date.now(),
               sig: 'FAILED',
@@ -1117,6 +1377,8 @@ export class DriftFillerRunner {
       nodesSent: 0,
       makersBreakdown: { withMakers: 0, withoutMakers: 0 },
       budget: { exhausted: false, processedNodes: 0 },
+      econ: { count: 0, notionalSum: 0, rewardSum: 0, costSum: 0, profitSum: 0, minNotional: Infinity, maxNotional: 0 },
+      prebuild: { planned: 0, nearCandidates: 0, overflowCandidates: 0 },
       skips: {
         vammDisallowed: 0,
         ammBelowMin: 0,
@@ -1126,6 +1388,12 @@ export class DriftFillerRunner {
         takerHydration: 0,
         missingRefStats: 0,
         noMakers: 0,
+        remainingBelowMin: 0,
+        notionalBelowMin: 0,
+        rewardBelowMin: 0,
+        profitBelowMin: 0,
+        rewardCostRatio: 0,
+        maxCandidates: 0,
       },
     };
     this._loopStatsTmp = loopStats;
@@ -1414,8 +1682,114 @@ export class DriftFillerRunner {
           } catch { return true; }
         });
 
-        let iter = 0;
+        // Profitability and sizing gates with ranking
+        const minNotionalQuote = Math.max(0, Number(this.config.minNotionalQuote ?? 0));
+        const minRemainingBase = Math.max(0, Number(this.config.minRemainingBase ?? 0));
+        const minRewardQuote = Math.max(0, Number(this.config.minRewardQuote ?? 0));
+        const minProfitQuote = Math.max(0, Number(this.config.minProfitQuote ?? 0));
+        const minRewardToCostRatio = Math.max(0, Number(this.config.minRewardToCostRatio ?? 0));
+        const maxCandidatesPerLoop = Math.max(0, Number(this.config.maxCandidatesPerLoop ?? 0));
+        const scored: Array<{ node: any; score: number; economics?: any }> = [];
         for (const node of filtered) {
+          const econ = this.estimateNodeEconomics({ marketIndex: idx, node, vBid, vAsk });
+          if (econ) {
+            loopStats.econ.count += 1;
+            loopStats.econ.notionalSum += Number(econ.notionalQuote || 0);
+            loopStats.econ.rewardSum += Number(econ.rewardQuote || 0);
+            loopStats.econ.costSum += Number(econ.costQuote || 0);
+            loopStats.econ.profitSum += Number(econ.profitQuote || 0);
+            loopStats.econ.minNotional = Math.min(loopStats.econ.minNotional, Number(econ.notionalQuote || Infinity));
+            loopStats.econ.maxNotional = Math.max(loopStats.econ.maxNotional, Number(econ.notionalQuote || 0));
+            if (minRemainingBase > 0 && typeof econ.remainingBaseUi === 'number' && econ.remainingBaseUi < minRemainingBase) {
+              loopStats.skips.remainingBelowMin += 1;
+              continue;
+            }
+            if (minNotionalQuote > 0 && econ.notionalQuote < minNotionalQuote) {
+              loopStats.skips.notionalBelowMin += 1;
+              continue;
+            }
+            if (minRewardQuote > 0 && econ.rewardQuote < minRewardQuote) {
+              loopStats.skips.rewardBelowMin += 1;
+              continue;
+            }
+            if (minProfitQuote > 0 && typeof econ.profitQuote === 'number' && econ.profitQuote < minProfitQuote) {
+              loopStats.skips.profitBelowMin += 1;
+              continue;
+            }
+            if (minRewardToCostRatio > 0 && typeof econ.costQuote === 'number' && econ.costQuote > 0) {
+              const ratio = econ.rewardQuote / econ.costQuote;
+              if (ratio < minRewardToCostRatio) {
+                loopStats.skips.rewardCostRatio += 1;
+                continue;
+              }
+            }
+          }
+          scored.push({ node, score: Number(econ?.score || 0), economics: econ });
+        }
+        scored.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+        let selected = scored;
+        let overflow: Array<{ node: any; score: number; economics?: any }> = [];
+        if (maxCandidatesPerLoop > 0 && scored.length > maxCandidatesPerLoop) {
+          selected = scored.slice(0, maxCandidatesPerLoop);
+          overflow = scored.slice(maxCandidatesPerLoop);
+          loopStats.skips.maxCandidates += Math.max(0, overflow.length);
+        }
+        const nodesForAttempt = selected.map((s) => s.node);
+
+        // Prebuild near-eligible fills and overflow candidates
+        const prebuildEnabled = this.config.prebuildEnabled !== false;
+        const prebuildPerLoop = Math.max(0, Number(this.config.prebuildPerLoop ?? 0));
+        if (prebuildEnabled && prebuildPerLoop > 0) {
+          const prebuildBps = Math.max(0, Number(this.config.prebuildDistanceBps ?? 0));
+          const prebuildMaxCandidates = Math.max(0, Number(this.config.prebuildMaxCandidates ?? 0));
+          const maxInFlight = Math.max(1, Number(this.config.prebuildMaxInFlight ?? 2));
+          const sigSeen = new Set(nodesForAttempt.map((n: any) => this.signatureForNode(n)));
+          let nearNodes: any[] = [];
+          if (prebuildBps > 0) {
+            try {
+              const bps = Math.min(500, prebuildBps);
+              const vBidNear = (vBid && typeof vBid.mul === 'function') ? vBid.mul(new BN(10000 + bps)).div(new BN(10000)) : vBid;
+              const vAskNear = (vAsk && typeof vAsk.mul === 'function') ? vAsk.mul(new BN(10000 - bps)).div(new BN(10000)) : vAsk;
+              nearNodes = dlob.findNodesToFill(
+                idx, vBidNear, vAskNear, slot,
+                Math.floor(Date.now() / 1000) - 60,
+                MarketType.PERP, mmOraclePriceData,
+                stateAcc, this.client.getPerpMarketAccount?.(idx)
+              ) || [];
+            } catch {}
+          }
+          const requireMakersPre = (this.config.requireExistingMakers !== false);
+          const minMakersPre = Math.max(0, Number(this.config.minMakerCountPerNode ?? 1));
+          const nearFiltered = nearNodes
+            .filter((n: any) => !sigSeen.has(this.signatureForNode(n)))
+            .filter((n: any) => {
+              if (!requireMakersPre) return true;
+              const makersLen = Array.isArray(n?.makerNodes) ? n.makerNodes.length : 0;
+              return makersLen >= minMakersPre;
+            });
+          const overflowNodes = overflow.map((o) => o.node);
+          loopStats.prebuild.nearCandidates += nearFiltered.length;
+          loopStats.prebuild.overflowCandidates += overflowNodes.length;
+          let candidates = [...overflowNodes, ...nearFiltered];
+          if (prebuildMaxCandidates > 0 && candidates.length > prebuildMaxCandidates) {
+            candidates = candidates.slice(0, prebuildMaxCandidates);
+          }
+          if (candidates.length > 0) {
+            const toSchedule = candidates.slice(0, prebuildPerLoop);
+            loopStats.prebuild.planned += toSchedule.length;
+            for (const n of toSchedule) {
+              if (this.prebuildInFlight >= maxInFlight) break;
+              this.prebuildInFlight += 1;
+              setImmediate(async () => {
+                try { await this.prepareFill(idx, n); }
+                finally { this.prebuildInFlight = Math.max(0, this.prebuildInFlight - 1); }
+              });
+            }
+          }
+        }
+
+        let iter = 0;
+        for (const node of nodesForAttempt) {
           if ((Date.now() - t0) > LOOP_BUDGET_MS || processedNodes >= MAX_NODES_PER_LOOP) {
             budgetExceeded = true;
             try { logger.debug('drift.filler.loop_budget_exhausted', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, processedNodes, ms: Date.now() - t0 }); } catch {}
@@ -1643,6 +2017,27 @@ export class DriftFillerRunner {
             (this._summary.skipped as any)[k] = ((this._summary.skipped as any)[k] || 0) + Number(v || 0);
           }
         }
+      } catch {}
+      try {
+        const econ = loopStats.econ || {};
+        const count = Number(econ.count || 0);
+        const avg = (v: any) => (count > 0 ? Number(v || 0) / count : 0);
+        const econOut = {
+          count,
+          avgNotional: avg(econ.notionalSum),
+          avgReward: avg(econ.rewardSum),
+          avgCost: avg(econ.costSum),
+          avgProfit: avg(econ.profitSum),
+          minNotional: Number.isFinite(Number(econ.minNotional)) && Number(econ.minNotional) !== Infinity ? Number(econ.minNotional) : 0,
+          maxNotional: Number(econ.maxNotional || 0),
+        };
+        this.lastLoopStats = {
+          ts: Date.now(),
+          ...loopStats,
+          econ: econOut,
+          prebuildCache: this.preparedFills.size,
+          prebuildStats: this.prebuildStats,
+        };
       } catch {}
       if (totalPlanned === 0) {
         try {

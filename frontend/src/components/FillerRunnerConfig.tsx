@@ -30,6 +30,22 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
     minMakerCountPerNode: initialConfig?.minMakerCountPerNode ?? 1,
     denyJitTakersTtlMs: initialConfig?.denyJitTakersTtlMs ?? 15000,
     minTipFloorToAttemptLamports: initialConfig?.minTipFloorToAttemptLamports ?? 0,
+    // Profitability / sizing gates
+    minNotionalQuote: initialConfig?.minNotionalQuote ?? 0,
+    minRemainingBase: initialConfig?.minRemainingBase ?? 0,
+    rewardShare: initialConfig?.rewardShare ?? 0.5,
+    minRewardQuote: initialConfig?.minRewardQuote ?? 0,
+    minProfitQuote: initialConfig?.minProfitQuote ?? 0,
+    minRewardToCostRatio: initialConfig?.minRewardToCostRatio ?? 0,
+    maxCandidatesPerLoop: initialConfig?.maxCandidatesPerLoop ?? 0,
+    rankBy: initialConfig?.rankBy ?? 'profit',
+    // Prebuild controls
+    prebuildEnabled: initialConfig?.prebuildEnabled ?? true,
+    prebuildDistanceBps: initialConfig?.prebuildDistanceBps ?? 10,
+    prebuildTtlMs: initialConfig?.prebuildTtlMs ?? 1500,
+    prebuildMaxCandidates: initialConfig?.prebuildMaxCandidates ?? 50,
+    prebuildMaxInFlight: initialConfig?.prebuildMaxInFlight ?? 2,
+    prebuildPerLoop: initialConfig?.prebuildPerLoop ?? 2,
   });
 
   useEffect(() => {
@@ -79,6 +95,22 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
         minMakerCountPerNode: Math.max(0, Number(form.minMakerCountPerNode || 0)),
         denyJitTakersTtlMs: Math.max(0, Number(form.denyJitTakersTtlMs || 0)),
         minTipFloorToAttemptLamports: Math.max(0, Number(form.minTipFloorToAttemptLamports || 0)),
+        // Profitability / sizing gates
+        minNotionalQuote: Math.max(0, Number(form.minNotionalQuote || 0)),
+        minRemainingBase: Math.max(0, Number(form.minRemainingBase || 0)),
+        rewardShare: Math.max(0, Math.min(1, Number(form.rewardShare ?? 0.5))),
+        minRewardQuote: Math.max(0, Number(form.minRewardQuote || 0)),
+        minProfitQuote: Math.max(0, Number(form.minProfitQuote || 0)),
+        minRewardToCostRatio: Math.max(0, Number(form.minRewardToCostRatio || 0)),
+        maxCandidatesPerLoop: Math.max(0, Number(form.maxCandidatesPerLoop || 0)),
+        rankBy: String(form.rankBy || 'profit'),
+        // Prebuild controls
+        prebuildEnabled: !!form.prebuildEnabled,
+        prebuildDistanceBps: Math.max(0, Number(form.prebuildDistanceBps || 0)),
+        prebuildTtlMs: Math.max(0, Number(form.prebuildTtlMs || 0)),
+        prebuildMaxCandidates: Math.max(0, Number(form.prebuildMaxCandidates || 0)),
+        prebuildMaxInFlight: Math.max(0, Number(form.prebuildMaxInFlight || 0)),
+        prebuildPerLoop: Math.max(0, Number(form.prebuildPerLoop || 0)),
       };
       const res = await fetch(`${apiBase}${ROUTES.strategies.filler.start}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
@@ -209,6 +241,82 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
             <div className="text-gray-400 mb-1">Min Tip Floor to Attempt (lamports)</div>
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minTipFloorToAttemptLamports}
               onChange={(e) => setForm((p: any) => ({ ...p, minTipFloorToAttemptLamports: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+
+          <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Profitability & Prebuild</div>
+          <div>
+            <div className="text-gray-400 mb-1">Min Notional (quote)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minNotionalQuote}
+              onChange={(e) => setForm((p: any) => ({ ...p, minNotionalQuote: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min Remaining Base (units)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minRemainingBase}
+              onChange={(e) => setForm((p: any) => ({ ...p, minRemainingBase: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Reward Share (0-1)</div>
+            <input type="number" step="0.01" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.rewardShare}
+              onChange={(e) => setForm((p: any) => ({ ...p, rewardShare: Math.max(0, Math.min(1, Number(e.target.value))) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min Reward (quote)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minRewardQuote}
+              onChange={(e) => setForm((p: any) => ({ ...p, minRewardQuote: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min Profit (quote)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minProfitQuote}
+              onChange={(e) => setForm((p: any) => ({ ...p, minProfitQuote: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min Reward / Cost Ratio</div>
+            <input type="number" step="0.1" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minRewardToCostRatio}
+              onChange={(e) => setForm((p: any) => ({ ...p, minRewardToCostRatio: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Max Candidates / Loop</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxCandidatesPerLoop}
+              onChange={(e) => setForm((p: any) => ({ ...p, maxCandidatesPerLoop: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Rank By</div>
+            <select className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.rankBy}
+              onChange={(e) => setForm((p: any) => ({ ...p, rankBy: e.target.value }))}>
+              <option value="profit">profit</option>
+              <option value="reward">reward</option>
+              <option value="notional">notional</option>
+            </select>
+          </div>
+          <label className="flex items-center gap-2 mt-6">
+            <input type="checkbox" className="h-4 w-4" checked={!!form.prebuildEnabled}
+              onChange={(e) => setForm((p: any) => ({ ...p, prebuildEnabled: e.target.checked }))} />
+            <span className="text-gray-300">Enable Prebuild</span>
+          </label>
+          <div>
+            <div className="text-gray-400 mb-1">Prebuild Distance (bps)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.prebuildDistanceBps}
+              onChange={(e) => setForm((p: any) => ({ ...p, prebuildDistanceBps: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Prebuild TTL (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.prebuildTtlMs}
+              onChange={(e) => setForm((p: any) => ({ ...p, prebuildTtlMs: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Prebuild Max Candidates</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.prebuildMaxCandidates}
+              onChange={(e) => setForm((p: any) => ({ ...p, prebuildMaxCandidates: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Prebuild Per Loop</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.prebuildPerLoop}
+              onChange={(e) => setForm((p: any) => ({ ...p, prebuildPerLoop: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Prebuild Max In-Flight</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.prebuildMaxInFlight}
+              onChange={(e) => setForm((p: any) => ({ ...p, prebuildMaxInFlight: Math.max(0, Number(e.target.value)) }))} />
           </div>
         </div>
 
