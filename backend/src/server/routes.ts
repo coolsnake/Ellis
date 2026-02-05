@@ -31,6 +31,7 @@ import { createDebugRouter } from './routes/debug.js';
 import { createWalletRouter } from './routes/wallet.js';
 import { createSwapRouter } from './routes/swap.js';
 import { createDriftRouter } from './routes/drift.js';
+import { createDriftProxyRouter } from './routes/driftProxy.js';
 import { createLeveragedGridRouter } from './routes/strategies/leveragedGrid.js';
 import { createLiquidatorRouter } from './routes/strategies/liquidator.js';
 import { createTriggerRouter } from './routes/strategies/trigger.js';
@@ -137,7 +138,13 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createDebugRouter(io));
   api.use(createWalletRouter(io));
   api.use(createSwapRouter(io));
-  api.use(createDriftRouter(io));
+  // When bots are isolated to child process, proxy drift routes to avoid
+  // initializing heavy DriftService infrastructure in the main process
+  if ((CONFIG as any)?.driftBots?.enabled) {
+    api.use(createDriftProxyRouter());
+  } else {
+    api.use(createDriftRouter(io));
+  }
   api.use(createLeveragedGridRouter(io));
   if ((CONFIG as any)?.driftBots?.enabled) {
     api.use(createDriftBotsProxyRouter());

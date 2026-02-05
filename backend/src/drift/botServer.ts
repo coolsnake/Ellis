@@ -6,6 +6,7 @@ import { setIo } from '../server/realtime.js';
 import { createTriggerRouter } from '../server/routes/strategies/trigger.js';
 import { createFillerRouter } from '../server/routes/strategies/filler.js';
 import { createLiquidatorRouter } from '../server/routes/strategies/liquidator.js';
+import { createDriftRouter } from '../server/routes/drift.js';
 
 type IoProxy = Pick<SocketIOServer, 'emit'>;
 
@@ -94,6 +95,8 @@ const api = express.Router();
 api.use(createTriggerRouter(ioProxy as any));
 api.use(createFillerRouter(ioProxy as any));
 api.use(createLiquidatorRouter(ioProxy as any));
+// Drift infrastructure routes (status, subaccounts, etc.) - handled in isolated process
+api.use(createDriftRouter(ioProxy as any));
 
 app.use('/api', api);
 

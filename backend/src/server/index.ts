@@ -892,9 +892,11 @@ server.listen(CONFIG.port, () => {
   } catch {}
   
   // Auto warmup Drift infra on startup so prefetch/GPA begins before any bot
+  // Skip warmup in main process when bots are isolated to child process
   try {
     const driftCfg: any = (CONFIG as any)?.drift || {};
-    const enabled = driftCfg?.warmupEnabled !== false;
+    const botsIsolated = !!(CONFIG as any)?.driftBots?.enabled;
+    const enabled = driftCfg?.warmupEnabled !== false && !botsIsolated;
     if (enabled) {
       const delayMs = Math.max(0, Number(driftCfg?.prefetchStartDelayMs ?? 4000));
       setTimeout(() => {
@@ -908,6 +910,8 @@ server.listen(CONFIG.port, () => {
           .catch(() => {});
     }
       , delayMs);
+    } else if (botsIsolated) {
+      try { logger.info('drift.warmup.skipped', { reason: 'bots_isolated', cat: 'drift' }); } catch {}
     }
   } catch {}
 });
