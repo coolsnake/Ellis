@@ -1732,37 +1732,64 @@ export class DriftService {
         QUOTE_PREC = Number(cst?.QUOTE_PRECISION ?? 1_000_000);
       } catch {}
       const toUi = (val: any): number => Number(val?.toString?.() || val || 0) / QUOTE_PREC;
-      for (const id of ids) {
+
+      // Step 1: Get all public keys in parallel
+      const pkPromises = ids.map(async (id) => {
         try {
           const pk = await client.getUserAccountPublicKey?.(Number(id));
-          if (!pk) continue;
-          const info = await (await import('../utils/rpcLimiter.js')).withRpcLimit(
-            () => this.getReadConnection().getAccountInfo(pk, 'confirmed'),
-            1,
-            { module: 'drift', method: 'getAccountInfo' }
-          );
-          if (!info) continue;
-          // Avoid switching active user; instantiate a polling User for this subaccount
-          let user: any = null;
+          return { id, pk };
+        } catch { return { id, pk: null }; }
+      });
+      const pkResults = await Promise.all(pkPromises);
+      const validPks = pkResults.filter((r) => r.pk !== null) as Array<{ id: number; pk: any }>;
+      if (validPks.length === 0) {
+        const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
+        out.push({ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] });
+        logger.warn('drift.subaccounts.fallback', { id, reason: 'no_pks', cat: 'drift' });
+        this.subaccountsCache = { data: out, ts: Date.now() };
+        return this.subaccountsCache.data;
+      }
+
+      // Step 2: Batch fetch all account infos at once
+      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+      const pks = validPks.map((r) => r.pk);
+      const infos = await withRpcLimit(
+        () => this.getReadConnection().getMultipleAccountsInfo(pks, 'confirmed'),
+        Math.max(1, Math.ceil(pks.length / 5)),
+        { module: 'drift', method: 'getMultipleAccountsInfo' }
+      );
+
+      // Step 3: Filter to accounts that exist on-chain
+      const existingAccounts: Array<{ id: number; pk: any }> = [];
+      for (let i = 0; i < validPks.length; i++) {
+        if (infos[i]) existingAccounts.push(validPks[i]);
+      }
+      if (existingAccounts.length === 0) {
+        const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
+        out.push({ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] });
+        logger.warn('drift.subaccounts.fallback', { id, reason: 'none_exist', cat: 'drift' });
+        this.subaccountsCache = { data: out, ts: Date.now() };
+        return this.subaccountsCache.data;
+      }
+
+      // Step 4: Create User objects and fetch data in parallel (using polling, not websocket)
+      const { User } = await loadSdk();
+      const userPromises = existingAccounts.map(async ({ id, pk }) => {
+        try {
+          // Use polling subscription - faster than websocket, no WS wait needed
+          const user = new User({
+            driftClient: client,
+            userAccountPublicKey: pk,
+            accountSubscription: { type: 'polling', accountLoader: this.loader }
+          });
           try {
-            const { User } = await loadSdk();
-            user = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
-            try { 
-              if (typeof (user as any).subscribe === 'function') { 
-                const { waitUntilWsReady } = await import('./wsHelper.js');
-                if (this.connection) await waitUntilWsReady(this.connection, 'client.getSubaccounts');
-                
-                // Import RPC limiter for tracking
-                const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-                
-                // Wrap subscribe call with RPC tracking
-                await withRpcLimit(
-                  () => (user as any).subscribe(),
-                  1,
-                  { module: 'drift', method: 'accountSubscribe' }
-                );
-              } 
-            } catch {}
+            if (typeof user.subscribe === 'function') {
+              await withRpcLimit(
+                () => user.subscribe(),
+                1,
+                { module: 'drift', method: 'userSubscribe' }
+              );
+            }
           } catch {}
           const totalCollateral = toUi(user?.getTotalCollateral?.());
           const maint = toUi(user?.getMaintenanceMarginRequirement?.());
@@ -1778,9 +1805,18 @@ export class DriftService {
               positions.push({ marketIndex: idx, base, entryPrice: undefined });
             }
           } catch {}
-          out.push({ id: Number(id), freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions });
-        } catch {}
+          // Unsubscribe after getting data to avoid leaks
+          try { await user?.unsubscribe?.(); } catch {}
+          return { id: Number(id), freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions };
+        } catch {
+          return null;
+        }
+      });
+      const results = await Promise.all(userPromises);
+      for (const r of results) {
+        if (r) out.push(r);
       }
+
       if (out.length === 0) {
         const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
         out.push({ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] });

@@ -157,54 +157,31 @@ export function createStatusRouter(_io: SocketIOServer): Router {
     }
   });
 
-  // GET /api/status/drift - Aggregated drift module status
+  // GET /api/status/drift - Lightweight drift module status
+  // IMPORTANT: This endpoint must NOT import DriftService or any heavy SDK modules
+  // It only reads from config JSON files to avoid triggering SDK initialization
   api.get('/status/drift', async (_req: Request, res: Response) => {
     try {
-      // Get infrastructure status
-      let infraStatus: any = { active: false, bots: 0, userCount: null, indexStats: null };
-      try {
-        const { DriftService } = await import('../../drift/client.js');
-        const svc = DriftService.getInstance() as any;
-        const s = svc.getInfraStatus?.() || { active: false, forceActive: false, bots: 0, has: {} };
-        let userCount: any = null;
-        try { if (typeof svc.getUserCountCached === 'function') userCount = await svc.getUserCountCached({ wait: false }); } catch {}
-        
-        let indexStats: any = null;
-        try {
-          const { driftEventIndex } = await import('../../drift/eventIndex.js');
-          indexStats = driftEventIndex.getStats();
-        } catch {}
-        
-        infraStatus = {
-          active: s.active || s.forceActive,
-          bots: s.bots || 0,
-          userCount,
-          indexStats,
-        };
-      } catch {}
+      const { readJson } = await import('../../utils/fs.js');
+      const pathMod = await import('path');
+      const configDir = pathMod.resolve(process.cwd(), 'backend', 'config');
 
-      // Get filler status
+      // Read filler status from JSON config (lightweight)
       let fillerStatus = { count: 0, running: 0, fillsLast5Min: 0 };
       try {
-        const { readJson } = await import('../../utils/fs.js');
-        const pathMod = await import('path');
-        const storePath = pathMod.resolve(process.cwd(), 'backend', 'config', 'fillers.json');
-        const store = await readJson<any>(storePath, { fillers: [] });
+        const store = await readJson<any>(pathMod.join(configDir, 'fillers.json'), { fillers: [] });
         const fillers = store.fillers || [];
         fillerStatus = {
           count: fillers.length,
           running: fillers.filter((f: any) => f.running).length,
-          fillsLast5Min: 0, // Could aggregate from metrics
+          fillsLast5Min: 0,
         };
       } catch {}
 
-      // Get liquidator status
+      // Read liquidator status from JSON config (lightweight)
       let liquidatorStatus = { count: 0, running: 0 };
       try {
-        const { readJson } = await import('../../utils/fs.js');
-        const pathMod = await import('path');
-        const storePath = pathMod.resolve(process.cwd(), 'backend', 'config', 'liquidators.json');
-        const store = await readJson<any>(storePath, { liquidators: [] });
+        const store = await readJson<any>(pathMod.join(configDir, 'liquidators.json'), { liquidators: [] });
         const liquidators = store.liquidators || [];
         liquidatorStatus = {
           count: liquidators.length,
@@ -212,13 +189,10 @@ export function createStatusRouter(_io: SocketIOServer): Router {
         };
       } catch {}
 
-      // Get trigger status
+      // Read trigger status from JSON config (lightweight)  
       let triggerStatus = { count: 0, running: 0 };
       try {
-        const { readJson } = await import('../../utils/fs.js');
-        const pathMod = await import('path');
-        const storePath = pathMod.resolve(process.cwd(), 'backend', 'config', 'triggers.json');
-        const store = await readJson<any>(storePath, { triggers: [] });
+        const store = await readJson<any>(pathMod.join(configDir, 'triggers.json'), { triggers: [] });
         const triggers = store.triggers || [];
         triggerStatus = {
           count: triggers.length,
@@ -226,58 +200,38 @@ export function createStatusRouter(_io: SocketIOServer): Router {
         };
       } catch {}
 
-      // Get tx metrics from txTracker
-      let metrics = { attempts: 0, successes: 0, failureRate: 0, costSolLast1Hr: 0, revenueUsdcLast1Hr: 0 };
-      let recentTxs: any[] = [];
-      try {
-        const { getMetrics, readAttemptHistory } = await import('../../drift/txTracker.js');
-        const m = getMetrics({ windowMs: 3600_000 }); // 1 hour
-        metrics = {
-          attempts: m.attempts,
-          successes: m.successes,
-          failureRate: m.failureRate,
-          costSolLast1Hr: m.costSol,
-          revenueUsdcLast1Hr: (m.revenueQuote || 0) / 1_000_000, // Convert from USDC precision
-        };
-        
-        // Get recent transactions
-        const history = await readAttemptHistory({ limit: 20 });
-        recentTxs = history.slice(-20).reverse().map((tx: any) => ({
-          sig: tx.sig,
-          action: tx.action,
-          success: tx.success,
-          ts: tx.ts,
-          marketIndex: tx.marketIndex,
-          rewardUsd: tx.fillerRewardQuote ? (tx.fillerRewardQuote / 1_000_000) : undefined,
-        }));
-      } catch {}
-
-      // Calculate health
-      const active = infraStatus.active;
+      // Calculate totals
       const totalBots = fillerStatus.running + liquidatorStatus.running + triggerStatus.running;
+      const totalConfigured = fillerStatus.count + liquidatorStatus.count + triggerStatus.count;
       
+      // Determine health based on config state only (no SDK calls)
+      const active = totalConfigured > 0;
       let health: 'healthy' | 'degraded' | 'offline' = 'offline';
-      if (active) {
-        if (totalBots > 0 && metrics.failureRate < 0.5) {
-          health = 'healthy';
-        } else {
-          health = 'degraded';
-        }
+      if (totalBots > 0) {
+        health = 'healthy';
+      } else if (totalConfigured > 0) {
+        health = 'degraded';
       }
 
       const response: DriftStatusResponse = {
         active,
         health,
         infrastructure: {
-          bots: infraStatus.bots,
-          userCount: infraStatus.userCount,
-          indexStats: infraStatus.indexStats,
+          bots: totalConfigured,
+          userCount: null, // Skip - requires SDK
+          indexStats: null, // Skip - requires SDK
         },
         fillers: fillerStatus,
         liquidators: liquidatorStatus,
         triggers: triggerStatus,
-        metrics,
-        recentTxs,
+        metrics: {
+          attempts: 0,
+          successes: 0,
+          failureRate: 0,
+          costSolLast1Hr: 0,
+          revenueUsdcLast1Hr: 0,
+        },
+        recentTxs: [], // Skip - reading history file can be slow
       };
 
       res.json(response);
