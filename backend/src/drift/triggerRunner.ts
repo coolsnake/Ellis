@@ -10,7 +10,7 @@ import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { buildTipIx } from '../execution/jitoTip.js';
 import { startTipFeed, getCachedTipInfo } from '../execution/jitoTipCache.js';
 import { sendToBlockEngine } from '../execution/jitoClient.js';
-import { hasInfra, fetchTriggerNodes, fetchUserAccounts, fetchEventIndex } from './infraClient.js';
+import { hasInfra, fetchTriggerNodes, fetchUserAccounts, fetchEventIndex, waitForInfraReady } from './infraClient.js';
 
 export type TriggerConfig = {
   name: string;
@@ -177,8 +177,13 @@ export class DriftTriggerRunner {
       const driftCfg: any = (CONFIG as any)?.drift || {};
       const requireWarm = driftCfg?.warmupRequireBeforeBots !== false;
       if (requireWarm) {
-        const ok = await (svc as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
-        try { logger.info('drift.trigger.warmup_gate', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, ok }); } catch {}
+        if (this.useInfra) {
+          const ok = await waitForInfraReady(Number(driftCfg?.infraReadyTimeoutMs ?? driftCfg?.warmupTimeoutMs ?? 30000));
+          try { logger.info('drift.trigger.infra_gate', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, ok }); } catch {}
+        } else {
+          const ok = await (svc as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
+          try { logger.info('drift.trigger.warmup_gate', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, ok }); } catch {}
+        }
       }
     } catch {}
     await this.initDiscovery();
@@ -326,6 +331,14 @@ export class DriftTriggerRunner {
     if (this.eventIndexBound) return;
     this.eventIndexBound = true;
     const driftCfg: any = (CONFIG as any)?.drift || {};
+    try {
+      driftEventIndex.configure({
+        ttlMs: driftCfg?.eventIndexTtlMs,
+        maxUsers: driftCfg?.eventIndexMaxUsers,
+        maxMarkets: driftCfg?.eventIndexMaxMarkets,
+        maxMarketsPerUser: driftCfg?.eventIndexMaxMarketsPerUser,
+      });
+    } catch {}
     try { driftEventIndex.bindEventSubscriber(this.eventSubscriber); } catch {}
     try {
       const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));

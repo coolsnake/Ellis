@@ -13,7 +13,7 @@ import { OracleUpdater } from './oracles/oracleUpdater.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
 import { getPriceByMint } from '../server/priceStore.js';
-import { hasInfra, fetchFillNodes, fetchUserAccounts, fetchEventIndex } from './infraClient.js';
+import { hasInfra, fetchFillNodes, fetchUserAccounts, fetchEventIndex, waitForInfraReady } from './infraClient.js';
 
 export type FillerConfig = {
   name: string;
@@ -254,8 +254,13 @@ export class DriftFillerRunner {
         const svcGate: any = DriftService.getInstance();
         const requireWarm = driftCfg?.warmupRequireBeforeBots !== false;
         if (requireWarm) {
-          const ok = await (svcGate as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
-          try { logger.info('drift.filler.warmup_gate', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, ok }); } catch {}
+          if (this.useInfra) {
+            const ok = await waitForInfraReady(Number(driftCfg?.infraReadyTimeoutMs ?? driftCfg?.warmupTimeoutMs ?? 30000));
+            try { logger.info('drift.filler.infra_gate', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, ok }); } catch {}
+          } else {
+            const ok = await (svcGate as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
+            try { logger.info('drift.filler.warmup_gate', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, ok }); } catch {}
+          }
         }
         const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
         await withRpcTimeout(this.initDiscovery(), 5000, 'initDiscovery');
@@ -524,6 +529,14 @@ export class DriftFillerRunner {
     if (this.eventIndexBound) return;
     this.eventIndexBound = true;
     const driftCfg: any = (CONFIG as any)?.drift || {};
+    try {
+      driftEventIndex.configure({
+        ttlMs: driftCfg?.eventIndexTtlMs,
+        maxUsers: driftCfg?.eventIndexMaxUsers,
+        maxMarkets: driftCfg?.eventIndexMaxMarkets,
+        maxMarketsPerUser: driftCfg?.eventIndexMaxMarketsPerUser,
+      });
+    } catch {}
     try { driftEventIndex.bindEventSubscriber(this.eventSubscriber); } catch {}
     try {
       const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));

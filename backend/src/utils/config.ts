@@ -79,6 +79,7 @@ export const CONFIG = {
     secret: process.env.DRIFT_INFRA_SECRET || '',
     callbackUrl: process.env.DRIFT_INFRA_CALLBACK_URL || `http://127.0.0.1:${Number(process.env.PORT || 3001)}/api/internal/drift-bots/events`,
     baseUrl: process.env.DRIFT_INFRA_BASE_URL || '',
+    autostart: (process.env.DRIFT_INFRA_AUTOSTART || 'false') === 'true',
   },
   // Orca configuration
   orca: {
@@ -931,12 +932,15 @@ export const CONFIG = {
     // Disabled by default - SDK's UserMap and OrderSubscriber already provide user data
     // Enable with DRIFT_PREFETCH_ENABLED=true if extra caching is needed for high-frequency filler
     prefetchEnabled: (process.env.DRIFT_PREFETCH_ENABLED || 'false') === 'true',
+    // When true, only warm users with active orders/positions (no GPA full scans)
+    prefetchActiveOnly: (process.env.DRIFT_PREFETCH_ACTIVE_ONLY || 'true') === 'true',
     // Method: 'maci' (getMultipleAccountsInfo), 'gpa' (Helius GPA v2), or 'auto'
     prefetchMethod: (process.env.DRIFT_PREFETCH_METHOD as any) || 'auto',
     prefetchIntervalMs: Number(process.env.DRIFT_PREFETCH_INTERVAL_MS || 3000),
     prefetchBatchMax: Number(process.env.DRIFT_PREFETCH_BATCH_MAX || 60),
     prefetchChunkSize: Number(process.env.DRIFT_PREFETCH_CHUNK_SIZE || 20),
     prefetchQueueCap: Number(process.env.DRIFT_PREFETCH_QUEUE_CAP || 5000),
+    prefetchWarmUserCap: Number(process.env.DRIFT_PREFETCH_WARM_USER_CAP || process.env.DRIFT_EVENT_INDEX_MAX_USERS || 100000),
     prefetchGpaLimit: Number(process.env.DRIFT_PREFETCH_GPA_LIMIT || 1200),
     // GPA pagination controls
     prefetchGpaPageSize: Number(process.env.DRIFT_PREFETCH_GPA_PAGE_SIZE || 2000),
@@ -952,6 +956,16 @@ export const CONFIG = {
     warmupGpaLimit: Number(process.env.DRIFT_WARMUP_GPA_LIMIT || process.env.DRIFT_PREFETCH_GPA_LIMIT || 20000),
     // Overall warmup timeout (bots will proceed after this even if warmup incomplete)
     warmupTimeoutMs: Number(process.env.DRIFT_WARMUP_TIMEOUT_MS || 30000),
+    // Infra readiness timeout for bot startup gating (ms)
+    infraReadyTimeoutMs: Number(process.env.DRIFT_INFRA_READY_TIMEOUT_MS || 60000),
+    // Event index sizing for active-user tracking
+    eventIndexTtlMs: Number(process.env.DRIFT_EVENT_INDEX_TTL_MS || 60000),
+    eventIndexMaxUsers: Number(process.env.DRIFT_EVENT_INDEX_MAX_USERS || 100000),
+    eventIndexMaxMarkets: Number(process.env.DRIFT_EVENT_INDEX_MAX_MARKETS || 10000),
+    eventIndexMaxMarketsPerUser: Number(process.env.DRIFT_EVENT_INDEX_MAX_MARKETS_PER_USER || 64),
+    eventIndexBootstrapUsers: Number(process.env.DRIFT_EVENT_INDEX_BOOTSTRAP_USERS || process.env.DRIFT_EVENT_INDEX_MAX_USERS || 100000),
+    eventIndexSweepUsers: Number(process.env.DRIFT_EVENT_INDEX_SWEEP_USERS || process.env.DRIFT_EVENT_INDEX_MAX_USERS || 100000),
+    eventIndexSweepMs: Number(process.env.DRIFT_EVENT_INDEX_SWEEP_MS || 45000),
     // Subscription pacing
     subscribeSpacingMs: Number(process.env.DRIFT_SUBSCRIBE_SPACING_MS || 100),
     // Loop logging mode: when true, suppress per-loop info logs and emit periodic summaries

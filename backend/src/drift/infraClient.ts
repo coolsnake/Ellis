@@ -35,6 +35,20 @@ export type EventIndexResponse = {
   activeMarkets?: number[];
 };
 
+export type InfraStatus = {
+  active?: boolean;
+  forceActive?: boolean;
+  bots?: number;
+  has?: { slotSubscriber?: boolean; eventSubscriber?: boolean; userMap?: boolean; dlobSubscriber?: boolean; orderSubscriber?: boolean };
+  lastSlotAtMs?: number;
+  slotStale?: boolean;
+  warmupDone?: boolean;
+  warmupInProgress?: boolean;
+  infraReady?: boolean;
+  infraReadyAtMs?: number;
+  ready?: boolean;
+};
+
 function getInfraBaseUrl(): string | null {
   try {
     const env = String(process.env.DRIFT_INFRA_URL || '').trim();
@@ -86,6 +100,30 @@ async function requestJson<T>(path: string, opts?: { method?: string; body?: any
 
 export function hasInfra(): boolean {
   return !!getInfraBaseUrl();
+}
+
+export async function fetchInfraStatus(): Promise<InfraStatus> {
+  try {
+    return await requestJson<InfraStatus>('/api/drift/infra/status', { method: 'GET', timeoutMs: 5000 });
+  } catch (e: any) {
+    try { logger.warn('drift.infra.status_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    return {};
+  }
+}
+
+export async function waitForInfraReady(timeoutMs?: number): Promise<boolean> {
+  const driftCfg: any = (CONFIG as any)?.drift || {};
+  const ms = Math.max(1000, Number(timeoutMs ?? driftCfg?.infraReadyTimeoutMs ?? 30000));
+  const deadline = Date.now() + ms;
+  let delay = 500;
+  while (Date.now() < deadline) {
+    const s = await fetchInfraStatus().catch(() => ({}));
+    const ready = !!(s?.ready || (s?.infraReady && !s?.slotStale && s?.has?.dlobSubscriber));
+    if (ready) return true;
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(2000, Math.round(delay * 1.2));
+  }
+  return false;
 }
 
 export async function fetchTriggerNodes(req: TriggerNodesRequest): Promise<TriggerNodesResponse> {

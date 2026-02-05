@@ -10,7 +10,7 @@ import { isOracleTwapOutlier } from './guardrails.js';
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
-import { hasInfra, fetchPrices, fetchUserKeys, fetchEventIndex } from './infraClient.js';
+import { hasInfra, fetchPrices, fetchUserKeys, fetchEventIndex, waitForInfraReady } from './infraClient.js';
 import { User, EventSubscriber } from '@drift-labs/sdk';
 import bs58 from 'bs58';
 import { PublicKey } from '@solana/web3.js';
@@ -246,6 +246,19 @@ export class DriftLiquidator {
       await DriftService.getInstance().init();
     } catch {}
     this.useInfra = hasInfra();
+    try {
+      const driftCfg: any = (CONFIG as any)?.drift || {};
+      const requireWarm = driftCfg?.warmupRequireBeforeBots !== false;
+      if (requireWarm) {
+        if (this.useInfra) {
+          const ok = await waitForInfraReady(Number(driftCfg?.infraReadyTimeoutMs ?? driftCfg?.warmupTimeoutMs ?? 30000));
+          try { logger.info('drift.liquidator.infra_gate', { name: this.config.name, ok, cat: 'drift' }); } catch {}
+        } else {
+          const ok = await (DriftService.getInstance() as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
+          try { logger.info('drift.liquidator.warmup_gate', { name: this.config.name, ok, cat: 'drift' }); } catch {}
+        }
+      }
+    } catch {}
     // Ensure configured subaccount is active for liquidation actions
     try {
       const subId = Number((this.config as any)?.subaccountId ?? ((CONFIG as any)?.drift?.liquidator?.subaccountId) ?? ((CONFIG as any)?.drift?.defaultSubaccountId));
@@ -793,6 +806,14 @@ export class DriftLiquidator {
     if (this.eventIndexBound) return;
     this.eventIndexBound = true;
     const driftCfg: any = (CONFIG as any)?.drift || {};
+    try {
+      driftEventIndex.configure({
+        ttlMs: driftCfg?.eventIndexTtlMs,
+        maxUsers: driftCfg?.eventIndexMaxUsers,
+        maxMarkets: driftCfg?.eventIndexMaxMarkets,
+        maxMarketsPerUser: driftCfg?.eventIndexMaxMarketsPerUser,
+      });
+    } catch {}
     try { driftEventIndex.bindEventSubscriber(this.eventSub); } catch {}
     try {
       const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));
@@ -1338,6 +1359,18 @@ export class DriftLiquidator {
       let perpPositionsForPnl: any[] = [];
       let openOrdersCount = 0;
       let forceCancelAttempted = false;
+      let userAccount: any = null;
+      let BN: any = null;
+      const toBn = (val: any): any => {
+        try {
+          if (!BN) return val;
+          if (val && typeof val === 'object' && typeof (val as any).toArrayLike === 'function') return val;
+          const n = Math.max(0, Math.floor(Number(val?.toString?.() || val || 0)));
+          return new BN(n);
+        } catch {
+          return val;
+        }
+      };
       // Parse user public key for SDK calls in this attempt scope
       let userPublicKey: PublicKey | null = toPublicKey(target.userPk);
       if (!userPublicKey) {
@@ -1547,8 +1580,8 @@ export class DriftLiquidator {
           }
         } catch {}
         try {
-          const ua = (sdkUser as any)?.getUserAccount?.();
-          openOrdersCount = Number(ua?.openOrders || 0);
+          userAccount = (sdkUser as any)?.getUserAccount?.();
+          openOrdersCount = Number(userAccount?.openOrders || 0);
         } catch {}
         try {
           const spotTargets = await this.getSpotLiqCandidates(sdkUser);
@@ -1617,7 +1650,7 @@ export class DriftLiquidator {
       try {
         if (openOrdersCount > 0) {
           const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
-          await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels);
+          await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels, userAccount);
           forceCancelAttempted = true;
         } else {
           try { logger.info('drift.liquidator.force_cancel_skip_no_orders', { user: target.userPk, cat: 'drift' }); } catch {}
@@ -1630,24 +1663,28 @@ export class DriftLiquidator {
         const maxPerp = Math.max(1, Math.min(50, Number((this.config.maxPerpAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) ?? 3))));
         const baseSizeFrac = withSizeFrac(Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05)))));
         // Prefer SDK BN; fallback to Anchor BN, then bn.js and polyfill toBuffer when missing
-        let BN: any = null;
-        try { const sdk: any = await import('@drift-labs/sdk'); BN = (sdk as any)?.BN || (sdk as any)?.AnchorsBN || null; } catch {}
-        if (!BN) { try { const anchor: any = await import('@coral-xyz/anchor'); BN = (anchor as any)?.BN || (anchor as any)?.default?.BN || null; } catch {} }
         if (!BN) {
-          try {
-            const mod: any = await import('bn.js');
-            BN = (mod as any)?.BN || (mod as any)?.default?.BN || (mod as any)?.default || null;
+          try { const sdk: any = await import('@drift-labs/sdk'); BN = (sdk as any)?.BN || (sdk as any)?.AnchorsBN || null; } catch {}
+          if (!BN) { try { const anchor: any = await import('@coral-xyz/anchor'); BN = (anchor as any)?.BN || (anchor as any)?.default?.BN || null; } catch {} }
+          if (!BN) {
             try {
-              if (BN && !BN.prototype.toBuffer && typeof BN.prototype.toArrayLike === 'function') {
-                BN.prototype.toBuffer = function toBuffer(this: any, endian?: any, length?: any) {
-                  const buf = Buffer.from(this.toArrayLike(Buffer, endian || 'be', length));
-                  return buf;
-                };
-              }
+              const mod: any = await import('bn.js');
+              BN = (mod as any)?.BN || (mod as any)?.default?.BN || (mod as any)?.default || null;
+              try {
+                if (BN && !BN.prototype.toBuffer && typeof BN.prototype.toArrayLike === 'function') {
+                  BN.prototype.toBuffer = function toBuffer(this: any, endian?: any, length?: any) {
+                    const buf = Buffer.from(this.toArrayLike(Buffer, endian || 'be', length));
+                    return buf;
+                  };
+                }
+              } catch {}
             } catch {}
-          } catch {}
+          }
+          if (!BN) {
+            try { logger.warn('drift.liquidator.bn_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
+          }
         }
-        if (typeof drift?.liquidatePerp === 'function' && userPublicKey) {
+        if (typeof drift?.liquidatePerp === 'function' && userPublicKey && userAccount && BN) {
           let attempts = 0;
           for (const idx of perpMarkets) {
             if (attempts >= maxPerp) break;
@@ -1672,19 +1709,8 @@ export class DriftLiquidator {
             const t0 = Date.now();
             try {
               const attemptBaseRaw = Math.max(1, Math.floor(baseRawAbs * sizeFrac));
-              let res: any = null;
-              try {
-                // Prefer fractional size if supported by SDK
-                res = await drift.liquidatePerp(userPublicKey, mkt, sizeFrac);
-              } catch (e: any) {
-                if (BN) {
-                  // Fallback to BN amount if fractional signature is not supported
-                  const amt = new BN(Number(attemptBaseRaw));
-                  res = await drift.liquidatePerp(userPublicKey, mkt, amt);
-                } else {
-                  throw e;
-                }
-              }
+              const amt = toBn(attemptBaseRaw);
+              const res: any = await drift.liquidatePerp(userPublicKey, userAccount, mkt, amt);
               const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
               attempts += 1;
               const consumedUsd = posN * sizeFrac;
@@ -1767,9 +1793,14 @@ export class DriftLiquidator {
         const sizeFrac = withSizeFrac(Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05)))));
         let attempts = 0;
         const sdkUser = this.userCache.get(String(target.userPk));
-        const userAccount = (sdkUser as any)?.getUserAccount?.();
-        const fnBorrowForPnl = (drift as any)?.liquidateBorrowForPerpPnl;
-        const fnPerpPnlForDeposit = (drift as any)?.liquidatePerpPnlForDeposit;
+        if (!userAccount) { try { userAccount = (sdkUser as any)?.getUserAccount?.(); } catch {} }
+        if (!userAccount || !BN) {
+          try { logger.warn('drift.liquidator.pnl_skip_user_or_bn', { user: target.userPk, hasUser: !!userAccount, hasBn: !!BN, cat: 'drift' }); } catch {}
+        }
+        const fnBorrowForPnlRaw = (drift as any)?.liquidateBorrowForPerpPnl;
+        const fnPerpPnlForDepositRaw = (drift as any)?.liquidatePerpPnlForDeposit;
+        const fnBorrowForPnl = (fnBorrowForPnlRaw as any)?.bind?.(drift) ?? fnBorrowForPnlRaw;
+        const fnPerpPnlForDeposit = (fnPerpPnlForDepositRaw as any)?.bind?.(drift) ?? fnPerpPnlForDepositRaw;
         if (Array.isArray(perpPositionsForPnl) && (spotDeposit || spotBorrow)) {
           for (const p of perpPositionsForPnl) {
             if (attempts >= maxPnl) break;
@@ -1777,10 +1808,11 @@ export class DriftLiquidator {
             const quoteRaw = Number(p?.quoteAssetAmount?.toString?.() || p?.quoteAssetAmount || 0);
             if (!Number.isFinite(mkt) || !Number.isFinite(quoteRaw) || quoteRaw === 0) continue;
             if (!opts?.bypassOracleGuard && this.isOracleOutlier(mkt, 'perp')) continue;
+            if (!userAccount || !BN) continue;
             // Negative PnL: attempt perp pnl for deposit
             if (quoteRaw < 0 && spotDeposit && typeof fnPerpPnlForDeposit === 'function') {
               if (!opts?.bypassOracleGuard && this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot')) continue;
-              const depAmount = this.scaleAmount(spotDeposit.amountRaw, sizeFrac);
+              const depAmount = toBn(this.scaleAmount(spotDeposit.amountRaw, sizeFrac));
               try {
                 const tSend = Date.now();
                 const res = await this.callMethodVariants(fnPerpPnlForDeposit, [
@@ -1812,7 +1844,7 @@ export class DriftLiquidator {
             // Positive PnL: attempt borrow for perp pnl
             if (quoteRaw > 0 && spotBorrow && typeof fnBorrowForPnl === 'function') {
               if (!opts?.bypassOracleGuard && this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot')) continue;
-              const borrowAmount = this.scaleAmount(spotBorrow.amountRaw, sizeFrac);
+              const borrowAmount = toBn(this.scaleAmount(spotBorrow.amountRaw, sizeFrac));
               try {
                 const tSend = Date.now();
                 const res = await this.callMethodVariants(fnBorrowForPnl, [
@@ -1857,14 +1889,15 @@ export class DriftLiquidator {
           } else {
             const maxSpot = Math.max(1, Math.min(50, Number((this.config.maxSpotAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) ?? 2))));
             const sizeFrac = withSizeFrac(Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05)))));
-            const amountToLiq = this.scaleAmount(spotBorrow.amountRaw, sizeFrac);
-            const fnBorrow = (drift as any)?.liquidateBorrow || (drift as any)?.liquidateSpot;
+            const amountToLiq = toBn(this.scaleAmount(spotBorrow.amountRaw, sizeFrac));
+            const fnBorrowRaw = (drift as any)?.liquidateBorrow || (drift as any)?.liquidateSpot;
+            const fnBorrow = (fnBorrowRaw as any)?.bind?.(drift) ?? fnBorrowRaw;
             let attempts = 0;
-            if (typeof fnBorrow === 'function') {
+            if (typeof fnBorrow === 'function' && userAccount && BN) {
               try {
                 const tSend = Date.now();
                 const res = await this.callMethodVariants(fnBorrow, [
-                  [userPublicKey, (this.userCache.get(String(target.userPk)) as any)?.getUserAccount?.(), Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
+                  [userPublicKey, userAccount, Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
                   [userPublicKey, Number(spotDeposit.marketIndex), Number(spotBorrow.marketIndex), amountToLiq],
                 ]);
                 attempts += 1;
@@ -1909,7 +1942,7 @@ export class DriftLiquidator {
       try {
         if (!anySuccess && !forceCancelAttempted) {
           const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
-          await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels);
+          await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels, userAccount);
           forceCancelAttempted = true;
         }
       } catch {}
@@ -2232,37 +2265,23 @@ export class DriftLiquidator {
     } catch {}
   }
 
-  private async forceCancelOrdersForUser(drift: any, userPublicKey: any, userPk: string, maxCancels: number): Promise<{ batches: number; errors: number }> {
+  private async forceCancelOrdersForUser(drift: any, userPublicKey: any, userPk: string, maxCancels: number, userAccount?: any): Promise<{ batches: number; errors: number }> {
     let batches = 0;
     let errors = 0;
     try {
       const batch = Math.min(Math.max(1, maxCancels), 10);
       try { logger.info('drift.liquidator.force_cancel_begin', { user: userPk, maxCancels, batch, cat: 'drift' }); } catch {}
-      if (typeof drift?.forceCancelOrdersForUsers === 'function' && userPublicKey) {
+      if (!userAccount) {
+        try { logger.warn('drift.liquidator.force_cancel_no_user_account', { user: userPk, cat: 'drift' }); } catch {}
+      } else if (typeof drift?.forceCancelOrders === 'function' && userPublicKey) {
         try {
-          await drift.forceCancelOrdersForUsers({ users: [userPublicKey], marketType: 0, maxCancels });
+          await drift.forceCancelOrders(userPublicKey, userAccount);
           batches += 1;
           try { logger.info('drift.liquidator.force_cancel_batch_ok', { user: userPk, batchSize: maxCancels, batches, cat: 'drift' }); } catch {}
         } catch (e: any) {
           errors += 1;
           try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
         }
-      } else if (typeof drift?.forceCancelOrders === 'function' && userPublicKey) {
-        try {
-          let remaining = maxCancels;
-          while (remaining > 0) {
-            try {
-              await drift.forceCancelOrders({ userPublicKey, marketType: 0, limit: batch });
-              batches += 1;
-              try { logger.info('drift.liquidator.force_cancel_batch_ok', { user: userPk, batchSize: batch, batches, cat: 'drift' }); } catch {}
-            } catch (e: any) {
-              errors += 1;
-              try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
-            }
-            remaining -= batch;
-            if (remaining > 0) { try { await new Promise(r => setTimeout(r, 250)); } catch {} }
-          }
-        } catch {}
       } else {
         try { logger.info('drift.liquidator.force_cancel_unavailable', { user: userPk, cat: 'drift' }); } catch {}
       }

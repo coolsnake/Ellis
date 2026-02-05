@@ -96,25 +96,18 @@ app.listen(port, () => {
   try { logger.info('drift.infra.started', { port, callbackUrl, cat: 'drift' }); } catch {}
 });
 
-// Activate shared infra + price service on boot
-setImmediate(async () => {
-  try {
-    const { DriftService } = await import('./client.js');
-    const svc = DriftService.getInstance() as any;
-    await svc.activate?.({ includeIdle: true, updateFrequency: Math.max(200, Number(cfg?.updateFrequency ?? 1000)), preferOrderSubscriber: true });
+// Optionally auto-activate infra on boot
+if (cfg?.autostart) {
+  setImmediate(async () => {
     try {
-      const infra = await svc.getSharedInfra?.({ includeIdle: true, updateFrequency: Math.max(200, Number(cfg?.updateFrequency ?? 1000)), preferOrderSubscriber: true });
-      const { driftEventIndex } = await import('./eventIndex.js');
-      try { driftEventIndex.bindEventSubscriber(infra?.eventSubscriber); } catch {}
-      try {
-        const limit = Math.max(100, Number(((CONFIG as any)?.drift?.eventIndexBootstrapUsers ?? 2000)));
-        driftEventIndex.bootstrapFromUserMap(infra?.userMap, { limit, includeOrders: true, reason: 'infra_bootstrap' });
-      } catch {}
+      const { DriftService } = await import('./client.js');
+      const svc = DriftService.getInstance() as any;
+      await svc.activate?.({
+        includeIdle: false,
+        updateFrequency: Math.max(200, Number(cfg?.updateFrequency ?? 1000)),
+        preferOrderSubscriber: true
+      });
     } catch {}
-    try {
-      const { DriftPriceService } = await import('./price.js');
-      DriftPriceService.getInstance();
-    } catch {}
-  } catch {}
-});
+  });
+}
 

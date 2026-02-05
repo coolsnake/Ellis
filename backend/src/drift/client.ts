@@ -70,6 +70,9 @@ export class DriftService {
   private forceActive: boolean = false;
   private activeBots: Set<string> = new Set();
   private infraWatchdogTimer: any | null = null;
+  private eventIndexSweepTimer: any | null = null;
+  private infraReady: boolean = false;
+  private infraReadyAtMs: number = 0;
   private lastSlotTs: number = 0;
   private _slotTsHandler: any | null = null;
   private _lastResubMs: number = 0;
@@ -684,6 +687,35 @@ export class DriftService {
     };
   }
 
+  private async setupEventIndex(infra: { eventSubscriber?: any; userMap?: any } | null | undefined, reason: string): Promise<void> {
+    try {
+      const driftCfg: any = ((CONFIG as any)?.drift || {});
+      const { driftEventIndex } = await import('./eventIndex.js');
+      try {
+        driftEventIndex.configure({
+          ttlMs: driftCfg?.eventIndexTtlMs,
+          maxUsers: driftCfg?.eventIndexMaxUsers,
+          maxMarkets: driftCfg?.eventIndexMaxMarkets,
+          maxMarketsPerUser: driftCfg?.eventIndexMaxMarketsPerUser,
+        });
+      } catch {}
+      try { driftEventIndex.bindEventSubscriber(infra?.eventSubscriber); } catch {}
+      try {
+        const limit = Math.max(100, Number(driftCfg?.eventIndexBootstrapUsers ?? driftCfg?.eventIndexMaxUsers ?? 2000));
+        driftEventIndex.bootstrapFromUserMap(infra?.userMap, { limit, includeOrders: true, reason });
+      } catch {}
+      try {
+        const sweepMs = Math.max(10_000, Number(driftCfg?.eventIndexSweepMs ?? 45_000));
+        const limit = Math.max(100, Number(driftCfg?.eventIndexSweepUsers ?? driftCfg?.eventIndexMaxUsers ?? 1000));
+        if (!this.eventIndexSweepTimer) {
+          this.eventIndexSweepTimer = setInterval(() => {
+            try { driftEventIndex.bootstrapFromUserMap(infra?.userMap, { limit, includeOrders: true, reason: 'infra_sweep' }); } catch {}
+          }, sweepMs);
+        }
+      } catch {}
+    } catch {}
+  }
+
   // One-shot warmup to prepare infra and perform optional GPA bootstrap
   async warmup(opts?: { includeIdle?: boolean; updateFrequency?: number; preferOrderSubscriber?: boolean }): Promise<void> {
     const driftCfg: any = ((CONFIG as any)?.drift || {});
@@ -695,12 +727,19 @@ export class DriftService {
       try {
         await this.init();
         const infra = await this.getSharedInfra({ includeIdle: !!opts?.includeIdle, updateFrequency: opts?.updateFrequency, preferOrderSubscriber: (opts?.preferOrderSubscriber ?? true) });
-        try { await this.startUserPrefetcher(infra.dlobSubscriber, infra.userMap); } catch {}
+        try { await this.setupEventIndex(infra, 'infra_bootstrap'); } catch {}
+        const prefetchEnabled = driftCfg?.prefetchEnabled !== false;
+        const activeOnly = driftCfg?.prefetchActiveOnly !== false;
+        if (prefetchEnabled) {
+          try { await this.startUserPrefetcher(infra.dlobSubscriber, infra.userMap); } catch {}
+        } else if (activeOnly) {
+          try { await this.warmActiveUsersOnce(); } catch {}
+        }
         // Optional GPA bootstrap on Helius endpoints
         try {
           const heliusConn: any = this.getHeliusConn();
           const rpcEndpoint: string = String(heliusConn?._rpcEndpoint || heliusConn?.rpcEndpoint || '');
-          const doGpa = driftCfg?.warmupGpaBootstrap !== false && /helius/i.test(rpcEndpoint) && driftCfg?.prefetchEnabled !== false;
+          const doGpa = !activeOnly && driftCfg?.warmupGpaBootstrap !== false && /helius/i.test(rpcEndpoint) && driftCfg?.prefetchEnabled !== false;
           if (doGpa) {
             const rawLim = driftCfg?.warmupGpaLimit ?? driftCfg?.prefetchGpaLimit ?? 1200;
             const limNum = Number(rawLim);
@@ -711,10 +750,7 @@ export class DriftService {
             if (decoded && decoded.size > 0) {
               for (const [pk, ua] of decoded.entries()) {
                 try {
-                  if (this.warmUsers.size >= 500) {
-                    const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
-                    if (oldest) { try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
-                  }
+                  this.evictWarmUserIfNeeded();
                   this.warmUsers.set(pk, { ua, ts: Date.now() });
                   try {
                     const ref = ua?.referrerInfo?.referrer;
@@ -736,10 +772,7 @@ export class DriftService {
                     try { map = await this.fetchUsersDecoded(slice); } catch { map = new Map(); }
                     for (const [pk, ua] of map.entries()) {
                       try {
-                        if (this.warmUsers.size >= 500) {
-                          const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
-                          if (oldest) { try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
-                        }
+                        this.evictWarmUserIfNeeded();
                         this.warmUsers.set(pk, { ua, ts: Date.now() });
                       } catch {}
                     }
@@ -787,11 +820,19 @@ export class DriftService {
   async activate(opts?: { includeIdle?: boolean; updateFrequency?: number; preferOrderSubscriber?: boolean }): Promise<void> {
     this.forceActive = true;
     await this.warmup(opts);
-    try { logger.info('drift.infra.activated', { cat: 'drift' }); } catch {}
+    try {
+      const { DriftPriceService } = await import('./price.js');
+      DriftPriceService.getInstance();
+    } catch {}
+    this.infraReady = !!this.warmupDone;
+    if (this.infraReady) this.infraReadyAtMs = Date.now();
+    try { logger.info('drift.infra.activated', { cat: 'drift', ready: this.infraReady }); } catch {}
   }
 
   deactivate(): void {
     this.forceActive = false;
+    this.infraReady = false;
+    this.infraReadyAtMs = 0;
     this.maybeTeardownInfra();
     try { logger.info('drift.infra.deactivated', { cat: 'drift' }); } catch {}
   }
@@ -815,21 +856,41 @@ export class DriftService {
     } catch {}
   }
 
-  getInfraStatus(): { active: boolean; forceActive: boolean; bots: number; has: { slotSubscriber: boolean; eventSubscriber: boolean; userMap: boolean; dlobSubscriber: boolean; orderSubscriber: boolean }; lastSlotAtMs?: number; slotStale?: boolean } {
+  getInfraStatus(): {
+    active: boolean;
+    forceActive: boolean;
+    bots: number;
+    has: { slotSubscriber: boolean; eventSubscriber: boolean; userMap: boolean; dlobSubscriber: boolean; orderSubscriber: boolean };
+    lastSlotAtMs?: number;
+    slotStale?: boolean;
+    warmupDone?: boolean;
+    warmupInProgress?: boolean;
+    infraReady?: boolean;
+    infraReadyAtMs?: number;
+    ready?: boolean;
+  } {
     const slotStaleMs = Math.max(5000, Number(((CONFIG as any)?.drift?.slotStaleMs) ?? 15000));
+    const slotStale = !!(this.lastSlotTs && (Date.now() - this.lastSlotTs) > slotStaleMs);
+    const has = {
+      slotSubscriber: !!this.sharedSlotSubscriber,
+      eventSubscriber: !!this.sharedEventSubscriber,
+      userMap: !!this.sharedUserMap,
+      dlobSubscriber: !!this.sharedDlobSubscriber,
+      orderSubscriber: !!this.sharedOrderSubscriber,
+    };
+    const ready = !!(this.infraReady && !slotStale && has.slotSubscriber && has.eventSubscriber && has.userMap && has.dlobSubscriber);
     return {
       active: !!(this.sharedSlotSubscriber || this.sharedEventSubscriber || this.sharedUserMap || this.sharedDlobSubscriber || this.sharedOrderSubscriber),
       forceActive: this.forceActive,
       bots: this.activeBots.size,
-      has: {
-        slotSubscriber: !!this.sharedSlotSubscriber,
-        eventSubscriber: !!this.sharedEventSubscriber,
-        userMap: !!this.sharedUserMap,
-        dlobSubscriber: !!this.sharedDlobSubscriber,
-        orderSubscriber: !!this.sharedOrderSubscriber,
-      },
+      has,
       lastSlotAtMs: this.lastSlotTs || undefined,
-      slotStale: !!(this.lastSlotTs && (Date.now() - this.lastSlotTs) > slotStaleMs),
+      slotStale,
+      warmupDone: this.warmupDone,
+      warmupInProgress: this.warmupInProgress,
+      infraReady: this.infraReady,
+      infraReadyAtMs: this.infraReadyAtMs || undefined,
+      ready,
     };
   }
 
@@ -942,6 +1003,7 @@ export class DriftService {
     try { if (this.prefetchTimer) { clearInterval(this.prefetchTimer); this.prefetchTimer = null; } } catch {}
     try { if (this.pollLoaderWarm) { try { (this.pollLoaderWarm as any)?.removeAllListeners?.(); } catch {} this.pollLoaderWarm = null; } } catch {}
     try { const mod = await import('../utils/blockhash.js'); (mod as any)?.stopSharedBlockhash?.(); } catch {}
+    try { if (this.eventIndexSweepTimer) { clearInterval(this.eventIndexSweepTimer); this.eventIndexSweepTimer = null; } } catch {}
     // Stop infra watchdog and detach slot listener
     try { if (this.infraWatchdogTimer) { clearInterval(this.infraWatchdogTimer); this.infraWatchdogTimer = null; } } catch {}
     try {
@@ -963,6 +1025,8 @@ export class DriftService {
     this.sharedUserMap = null;
     this.sharedEventSubscriber = null;
     this.sharedSlotSubscriber = null;
+    this.infraReady = false;
+    this.infraReadyAtMs = 0;
   }
 
   // Public cleanup method for shutdown - ensures all subscriptions are properly torn down
@@ -1057,6 +1121,23 @@ export class DriftService {
     if (this.activeBots.size > 0) return;
     // Fire-and-forget teardown
     this.teardownInfra().catch(() => {});
+  }
+
+  private getWarmUserCap(): number {
+    const driftCfg: any = ((CONFIG as any)?.drift || {});
+    const raw = driftCfg?.prefetchWarmUserCap ?? driftCfg?.eventIndexMaxUsers ?? 500;
+    const n = Number(raw);
+    return Math.max(500, Number.isFinite(n) ? n : 500);
+  }
+
+  private evictWarmUserIfNeeded(): void {
+    const cap = this.getWarmUserCap();
+    if (this.warmUsers.size < cap) return;
+    const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
+    if (oldest) {
+      try { (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {}
+      this.warmUsers.delete(oldest);
+    }
   }
 
   // Warm user cache helpers
@@ -1313,7 +1394,9 @@ export class DriftService {
   }
   enqueueUsersForPrefetch(pks: string[]): void {
     const driftCfg: any = ((CONFIG as any)?.drift || {});
-    const cap = Math.max(1000, Number(driftCfg?.prefetchQueueCap ?? 5000));
+    const activeOnly = driftCfg?.prefetchActiveOnly !== false;
+    const capRaw = activeOnly ? (driftCfg?.prefetchWarmUserCap ?? driftCfg?.prefetchQueueCap) : driftCfg?.prefetchQueueCap;
+    const cap = Math.max(1000, Number(capRaw ?? 5000));
     for (const pk of pks) {
       if (!pk) continue;
       if (this.prefetchQueue.length >= cap) break;
@@ -1325,6 +1408,11 @@ export class DriftService {
     if (this.prefetchRunning) return;
     const driftCfg: any = ((CONFIG as any)?.drift || {});
     if (driftCfg?.prefetchEnabled === false) return;
+    const activeOnly = driftCfg?.prefetchActiveOnly !== false;
+    let driftEventIndex: any = null;
+    if (activeOnly) {
+      try { driftEventIndex = (await import('./eventIndex.js'))?.driftEventIndex; } catch {}
+    }
     this.prefetchRunning = true;
     // Prepare polling loader for stability
     try {
@@ -1370,11 +1458,22 @@ export class DriftService {
       } catch {}
     };
 
+    const collectFromActiveIndex = async () => {
+      try {
+        if (!driftEventIndex?.getActiveUsers) return;
+        const capRaw = driftCfg?.prefetchWarmUserCap ?? driftCfg?.prefetchQueueCap ?? 5000;
+        const maxKeys = Math.max(100, Number(capRaw));
+        const keys = driftEventIndex.getActiveUsers(maxKeys) || [];
+        this.enqueueUsersForPrefetch(keys);
+      } catch {}
+    };
+
     // Choose prefetch method: auto => use GPA on Helius endpoints, else MACI
     const cfgMethodRaw = String((driftCfg?.prefetchMethod || 'auto')).toLowerCase();
     const rpcEndpoint: string = String((this.connection as any)?._rpcEndpoint || (this.connection as any)?.rpcEndpoint || '');
-    const autoPick = /helius/i.test(rpcEndpoint) ? 'gpa' : 'maci';
-    const method = cfgMethodRaw === 'auto' ? autoPick : cfgMethodRaw;
+    const autoPick = activeOnly ? 'maci' : (/helius/i.test(rpcEndpoint) ? 'gpa' : 'maci');
+    let method = cfgMethodRaw === 'auto' ? autoPick : cfgMethodRaw;
+    if (activeOnly && method === 'gpa') method = 'maci';
     try { logger.info('drift.prefetch.start', { method, rpc: rpcEndpoint.includes('helius') ? 'helius' : 'other', cat: 'drift' }); } catch {}
     const step = async () => {
       try {
@@ -1385,13 +1484,7 @@ export class DriftService {
           if (decoded && decoded.size > 0) {
             for (const [pk, ua] of decoded.entries()) {
               try {
-                if (this.warmUsers.size >= 500) {
-                  const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
-                  if (oldest) {
-                    try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {}
-                    this.warmUsers.delete(oldest);
-                  }
-                }
+                this.evictWarmUserIfNeeded();
                 this.warmUsers.set(pk, { ua, ts: Date.now() });
                 try {
                   const ref = ua?.referrerInfo?.referrer;
@@ -1405,6 +1498,9 @@ export class DriftService {
           return;
         }
         // Default MACI path
+        if (activeOnly) {
+          await collectFromActiveIndex();
+        }
         await collectFromDlob();
         const batch = this.prefetchQueue.splice(0, batchMax);
         if (batch.length === 0) return;
@@ -1417,13 +1513,7 @@ export class DriftService {
             try {
               const ua = decoded.get(pk);
               if (!ua) continue;
-              if (this.warmUsers.size >= 500) {
-                const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
-                if (oldest) {
-                  try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {}
-                  this.warmUsers.delete(oldest);
-                }
-              }
+              this.evictWarmUserIfNeeded();
               this.warmUsers.set(pk, { ua, ts: Date.now() });
               try {
                 const ref = ua?.referrerInfo?.referrer;
@@ -1441,6 +1531,39 @@ export class DriftService {
     this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, intervalMs);
     // Run an immediate step to avoid waiting for the first interval
     try { step().catch(() => {}); } catch {}
+  }
+
+  private async warmActiveUsersOnce(): Promise<void> {
+    try {
+      await this.init();
+      const driftCfg: any = ((CONFIG as any)?.drift || {});
+      const { driftEventIndex } = await import('./eventIndex.js');
+      const capRaw = driftCfg?.prefetchWarmUserCap ?? driftCfg?.eventIndexMaxUsers ?? 1000;
+      const maxUsers = Math.max(100, Number(capRaw));
+      const keys: string[] = driftEventIndex.getActiveUsers?.(maxUsers) || [];
+      if (!Array.isArray(keys) || keys.length === 0) return;
+      const chunkSize = Math.max(10, Number(driftCfg?.prefetchChunkSize ?? 20));
+      for (let i = 0; i < keys.length; i += chunkSize) {
+        const chunk = keys.slice(i, i + chunkSize);
+        let decoded: Map<string, any> = new Map();
+        try { decoded = await this.fetchUsersDecoded(chunk); } catch { decoded = new Map(); }
+        for (const pk of chunk) {
+          try {
+            const ua = decoded.get(pk);
+            if (!ua) continue;
+            this.evictWarmUserIfNeeded();
+            this.warmUsers.set(pk, { ua, ts: Date.now() });
+            try {
+              const ref = ua?.referrerInfo?.referrer;
+              if (ref && String(ref) !== '11111111111111111111111111111111') {
+                await this.ensureRefStatsReady(ref);
+              }
+            } catch {}
+          } catch {}
+        }
+      }
+      try { logger.info('drift.prefetch.active_warm', { users: keys.length, cat: 'drift' }); } catch {}
+    } catch {}
   }
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {

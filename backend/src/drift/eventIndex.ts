@@ -164,6 +164,26 @@ export class DriftEventIndex {
     return out;
   }
 
+  getActiveUsers(limit = 1000): string[] {
+    const now = Date.now();
+    this.pruneIfNeeded(now);
+    const entries = Array.from(this.userToMarkets.entries())
+      .filter(([, v]) => v.size > 0)
+      .sort((a, b) => {
+        const aVals = Array.from(a[1].values());
+        const bVals = Array.from(b[1].values());
+        const aTs = aVals.length ? Math.max(...aVals.map(v => v.ts)) : 0;
+        const bTs = bVals.length ? Math.max(...bVals.map(v => v.ts)) : 0;
+        return bTs - aTs;
+      });
+    const out: string[] = [];
+    for (const [user] of entries) {
+      out.push(user);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   ingestMakers(marketIndex: number, makers: string[], reason?: string): void {
     const idx = Number(marketIndex);
     if (!Number.isFinite(idx) || !Array.isArray(makers)) return;
