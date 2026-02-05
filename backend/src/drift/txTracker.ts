@@ -36,11 +36,75 @@ export type DriftAttemptOut = {
   err?: any;
 };
 
+/**
+ * Track a drift transaction attempt. Records immediately on send, then
+ * asynchronously polls for confirmation to update with final results.
+ * This ensures metrics are visible even before confirmation.
+ */
 export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Promise<DriftAttemptOut | null> {
+  const ts = Date.now();
+  
+  // Record immediately with input data (before confirmation)
+  // This ensures the attempt shows up in metrics right away
+  const initialRecord: AttemptRecord = {
+    ts,
+    ...a,
+    success: false, // Unknown until confirmed
+    feeLamports: 0,
+    priorityLamports: 0,
+    lamportsPaid: 0,
+    confirmationStatus: 'pending',
+  };
+  
+  try {
+    recordAttempt(initialRecord);
+    try {
+      logger.info('drift.tx.attempt_recorded', {
+        cat: 'drift',
+        action: a.action,
+        sig: a.sig,
+        bot: a.bot,
+        marketIndex: a.marketIndex,
+        buildMs: a.buildMs,
+        sendMs: a.sendMs,
+      });
+    } catch {}
+  } catch {}
+
+  // Now poll for confirmation asynchronously
   try {
     const tConfirm0 = Date.now();
-    const tx = await withRpcLimit(() => conn.getTransaction(a.sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' }));
-    if (!tx || !tx.meta) return null;
+    
+    // Poll up to 30 seconds for confirmation
+    const maxWaitMs = 30_000;
+    const pollIntervalMs = 2_000;
+    let tx: any = null;
+    let attempts = 0;
+    const maxAttempts = Math.ceil(maxWaitMs / pollIntervalMs);
+    
+    while (!tx && attempts < maxAttempts) {
+      attempts += 1;
+      try {
+        tx = await withRpcLimit(() => conn.getTransaction(a.sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' }));
+      } catch {}
+      if (!tx && attempts < maxAttempts) {
+        await new Promise((r) => setTimeout(r, pollIntervalMs));
+      }
+    }
+    
+    if (!tx || !tx.meta) {
+      // Transaction not found after polling - update record as failed/expired
+      try {
+        updateAttemptRecord(a.sig, {
+          success: false,
+          confirmationStatus: 'not_found',
+          confirmMs: Date.now() - (Number(a.sentAtMs) || tConfirm0),
+        });
+        logger.warn('drift.tx.not_confirmed', { cat: 'drift', sig: a.sig, attempts, maxWaitMs });
+      } catch {}
+      return null;
+    }
+    
     const logs: string[] = tx.meta.logMessages || [];
     const feeLamports = Number(tx.meta.fee || 0);
     const cuConsumed = Number((tx.meta as any)?.computeUnitsConsumed || extractCuFromLogs(logs) || 0);
@@ -62,9 +126,12 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
       quoteFilled: parsed.quoteFilled,
       confirmMs,
       slot: Number(tx?.slot || 0) || undefined,
-      confirmationStatus: String((tx as any)?.confirmationStatus || (tx as any)?.meta?.confirmationStatus || ''),
+      confirmationStatus: String((tx as any)?.confirmationStatus || (tx as any)?.meta?.confirmationStatus || 'confirmed'),
       err: (tx as any)?.meta?.err,
     };
+
+    // Update the existing record with confirmation data
+    try { updateAttemptRecord(a.sig, out); } catch {}
 
     try {
       logger.info('drift.tx.tracked', {
@@ -91,8 +158,6 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
         confirmationStatus: out.confirmationStatus,
       });
     } catch {}
-
-    try { recordAttempt({ ts: Date.now(), ...a, ...out }); } catch {}
 
     // Persist a filler tx record for easy post-hoc analysis
     try {
@@ -165,6 +230,24 @@ async function appendJsonl(obj: any) {
 export function recordAttempt(rec: AttemptRecord): void {
   try { attemptsStore.push(rec); } catch {}
   try { appendJsonl(rec).catch(() => {}); } catch {}
+}
+
+/**
+ * Update an existing attempt record by signature with confirmation data.
+ * Updates both in-memory store and appends update to JSONL.
+ */
+export function updateAttemptRecord(sig: string, update: Partial<DriftAttemptOut>): void {
+  try {
+    // Find and update in-memory record (most recent match)
+    for (let i = attemptsStore.length - 1; i >= 0; i--) {
+      if (attemptsStore[i].sig === sig) {
+        Object.assign(attemptsStore[i], update);
+        // Append the updated record to JSONL for persistence
+        try { appendJsonl({ ...attemptsStore[i], _updated: Date.now() }).catch(() => {}); } catch {}
+        break;
+      }
+    }
+  } catch {}
 }
 
 async function readJsonlTail(filePath: string, maxBytes: number): Promise<string[]> {
@@ -275,6 +358,10 @@ export function getMetrics(params: { windowMs: number; action?: 'fill' | 'trigge
   costLamports: number;
   costSol: number;
   revenueQuote: number; // only for fills
+  avgBuildMs: number;
+  avgLatencyMs: number; // sendMs + confirmMs
+  avgSendMs: number;
+  avgConfirmMs: number;
 } {
   const now = Date.now();
   const cutoff = now - Math.max(1000, Number(params.windowMs || 60000));
@@ -283,15 +370,38 @@ export function getMetrics(params: { windowMs: number; action?: 'fill' | 'trigge
   let successes = 0;
   let costLamports = 0;
   let revenueQuote = 0;
+  const buildVals: number[] = [];
+  const sendVals: number[] = [];
+  const confirmVals: number[] = [];
   for (const r of slice) {
     if (r.success) successes += 1;
     costLamports += Number(r.lamportsPaid || 0);
     if (r.action === 'fill') revenueQuote += Number(r.fillerRewardQuote || 0);
+    if (Number.isFinite(Number((r as any).buildMs))) buildVals.push(Number((r as any).buildMs));
+    if (Number.isFinite(Number((r as any).sendMs))) sendVals.push(Number((r as any).sendMs));
+    if (Number.isFinite(Number((r as any).confirmMs))) confirmVals.push(Number((r as any).confirmMs));
   }
   const failures = Math.max(0, attempts - successes);
   const failureRate = attempts > 0 ? failures / attempts : 0;
   const costSol = costLamports / 1_000_000_000;
-  return { attempts, successes, failures, failureRate, costLamports, costSol, revenueQuote };
+  const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  const avgBuildMs = avg(buildVals);
+  const avgSendMs = avg(sendVals);
+  const avgConfirmMs = avg(confirmVals);
+  const avgLatencyMs = avgSendMs + avgConfirmMs; // Total latency from send to confirm
+  return { 
+    attempts, 
+    successes, 
+    failures, 
+    failureRate, 
+    costLamports, 
+    costSol, 
+    revenueQuote,
+    avgBuildMs,
+    avgLatencyMs,
+    avgSendMs,
+    avgConfirmMs,
+  };
 }
 
 

@@ -886,7 +886,19 @@ export const DriftSection: React.FC<{
                 <DataTableCell compact className="uppercase">{row?.action || '-'}</DataTableCell>
                 <DataTableCell compact>{row?.bot || '-'}</DataTableCell>
                 <DataTableCell compact>{Number.isFinite(Number(row?.marketIndex)) ? row.marketIndex : '-'}</DataTableCell>
-                <DataTableCell compact mono className="text-xs">{shortPk(String(row?.taker || ''))}</DataTableCell>
+                <DataTableCell compact mono className="text-xs">
+                  {row?.taker ? (
+                    <a 
+                      className="text-blue-400 hover:underline" 
+                      href={`https://solscan.io/account/${row.taker}${clusterQs}`} 
+                      target="_blank" 
+                      rel="noreferrer"
+                      title={row.taker}
+                    >
+                      {shortPk(String(row.taker))}
+                    </a>
+                  ) : '-'}
+                </DataTableCell>
                 <DataTableCell compact mono>{Number(row?.lamportsPaid ?? 0) / 1_000_000_000}</DataTableCell>
                 <DataTableCell compact mono>{Number(row?.fillerRewardQuote ?? 0) ? Number(row?.fillerRewardQuote ?? 0).toLocaleString() : '-'}</DataTableCell>
                 <DataTableCell compact mono>{formatMs(row?.buildMs)} / {formatMs(row?.sendMs)} / {formatMs(row?.confirmMs)}</DataTableCell>
