@@ -1272,7 +1272,7 @@ export class DriftLiquidator {
           try {
             const last = this.userLastRefresh.get(String(key)) || 0;
             if ((Date.now() - last) > Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000))) {
-              try { await (user as any)?.fetchAccounts?.(); } catch {}
+              try { await this.fetchAccountsLimited(user, 'fetchAccounts.probeRefresh'); } catch {}
               this.userLastRefresh.set(String(key), Date.now());
             }
           } catch {}
@@ -1523,7 +1523,7 @@ export class DriftLiquidator {
         }
         try {
           // Unconditional fetch -- freshest possible data before execution decision
-          await (user as any)?.fetchAccounts?.();
+          await this.fetchAccountsLimited(user, 'fetchAccounts.preExec');
           this.userLastRefresh.set(String(target.userPk), Date.now());
         } catch {}
         try {
@@ -1602,7 +1602,7 @@ export class DriftLiquidator {
           const last = this.userLastRefresh.get(String(target.userPk)) || 0;
           const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
           if ((Date.now() - last) > refreshMs) {
-            await (sdkUser as any)?.fetchAccounts?.();
+            await this.fetchAccountsLimited(sdkUser, 'fetchAccounts.snapshotRefresh');
             this.userLastRefresh.set(String(target.userPk), Date.now());
           }
         } catch {}
@@ -1820,16 +1820,17 @@ export class DriftLiquidator {
             try {
               const mod: any = await import('bn.js');
               BN = (mod as any)?.BN || (mod as any)?.default?.BN || (mod as any)?.default || null;
-              try {
-                if (BN && !BN.prototype.toBuffer && typeof BN.prototype.toArrayLike === 'function') {
-                  BN.prototype.toBuffer = function toBuffer(this: any, endian?: any, length?: any) {
-                    const buf = Buffer.from(this.toArrayLike(Buffer, endian || 'be', length));
-                    return buf;
-                  };
-                }
-              } catch {}
             } catch {}
           }
+          // Polyfill toBuffer on whichever BN we resolved -- SDK/Anchor BN may also lack it
+          try {
+            if (BN && !BN.prototype.toBuffer && typeof BN.prototype.toArrayLike === 'function') {
+              BN.prototype.toBuffer = function toBuffer(this: any, endian?: any, length?: any) {
+                const buf = Buffer.from(this.toArrayLike(Buffer, endian || 'be', length));
+                return buf;
+              };
+            }
+          } catch {}
           if (!BN) {
             try { logger.warn('drift.liquidator.bn_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
           }
@@ -1980,8 +1981,8 @@ export class DriftLiquidator {
             if (quoteRaw < 0 && spotDeposit && typeof fnPerpPnlForDeposit === 'function') {
               if (!opts?.bypassOracleGuard && this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot')) continue;
               const depAmount = toBn(this.scaleAmount(spotDeposit.amountRaw, sizeFrac));
+              const tSend = Date.now();
               try {
-                const tSend = Date.now();
                 const res = await this.callMethodVariants(fnPerpPnlForDeposit, [
                   [userPublicKey, userAccount, mkt, Number(spotDeposit.marketIndex), depAmount],
                   [userPublicKey, mkt, Number(spotDeposit.marketIndex), depAmount],
@@ -2014,8 +2015,8 @@ export class DriftLiquidator {
             if (quoteRaw > 0 && spotBorrow && typeof fnBorrowForPnl === 'function') {
               if (!opts?.bypassOracleGuard && this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot')) continue;
               const borrowAmount = toBn(this.scaleAmount(spotBorrow.amountRaw, sizeFrac));
+              const tSend = Date.now();
               try {
-                const tSend = Date.now();
                 const res = await this.callMethodVariants(fnBorrowForPnl, [
                   [userPublicKey, userAccount, mkt, Number(spotBorrow.marketIndex), borrowAmount],
                   [userPublicKey, mkt, Number(spotBorrow.marketIndex), borrowAmount],
@@ -2153,7 +2154,7 @@ export class DriftLiquidator {
             const last = this.userLastRefresh.get(String(target.userPk)) || 0;
             const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
             if ((Date.now() - last) > refreshMs) {
-              await (sdkUser as any)?.fetchAccounts?.();
+              await this.fetchAccountsLimited(sdkUser, 'fetchAccounts.postLiqRefresh');
               this.userLastRefresh.set(String(target.userPk), Date.now());
             }
           } catch {}
@@ -2236,6 +2237,20 @@ export class DriftLiquidator {
       try { logger.error('drift.liquidator.test_failed', { user: String(userPk), error: String(e?.message || e), cat: 'drift' }); } catch {}
       return { ok: false };
     }
+  }
+
+  /**
+   * Wrap user.fetchAccounts() in the RPC rate limiter so every on-chain
+   * refresh counts toward the global RPS budget.
+   */
+  private async fetchAccountsLimited(user: any, label?: string): Promise<void> {
+    if (typeof user?.fetchAccounts !== 'function') return;
+    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    await withRpcLimit(
+      () => user.fetchAccounts(),
+      1,
+      { module: 'drift.liquidator', method: label || 'fetchAccounts' }
+    );
   }
 
   private recordAttempt(entry: { type: 'perp' | 'spot' | 'perp_pnl_deposit' | 'perp_pnl_borrow' | 'perp_batch'; marketIndex: number; user: string; sig?: string; ms: number; notionalUsd?: number; liqFeeRate?: number; ok: boolean; error?: string }): void {
@@ -2834,7 +2849,7 @@ export class DriftLiquidator {
             const last = this.userLastRefresh.get(String(key)) || 0;
             const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
             if ((Date.now() - last) > refreshMs) {
-              if (typeof (user as any)?.fetchAccounts === 'function') { await (user as any).fetchAccounts(); }
+              await this.fetchAccountsLimited(user, 'fetchAccounts.postSubscribe');
               this.userLastRefresh.set(String(key), Date.now());
             }
           } catch {}
@@ -3092,12 +3107,12 @@ export class DriftLiquidator {
             const last = this.userLastRefresh.get(String(key)) || 0;
             if (isCurrentlyCritical) {
               // Critical: always fetch, no debounce -- state can change every slot
-              await (user as any)?.fetchAccounts?.();
+              await this.fetchAccountsLimited(user, 'fetchAccounts.criticalMonitor');
               this.userLastRefresh.set(String(key), Date.now());
             } else {
               const refreshMs = Math.max(3000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
               if ((Date.now() - last) > refreshMs) {
-                await (user as any)?.fetchAccounts?.();
+                await this.fetchAccountsLimited(user, 'fetchAccounts.liveMonitor');
                 this.userLastRefresh.set(String(key), Date.now());
               }
             }
