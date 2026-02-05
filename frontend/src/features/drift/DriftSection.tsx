@@ -491,6 +491,27 @@ export const DriftSection: React.FC<{
           />
         </div>
 
+        {/* Event Index Stats */}
+        {infra?.indexStats && (
+          <div className="grid grid-cols-3 gap-3 mb-6">
+            <StatCard
+              label="Indexed Users"
+              value={(infra.indexStats.users ?? 0).toLocaleString()}
+              subValue="event index"
+            />
+            <StatCard
+              label="Active Markets"
+              value={(infra.indexStats.markets ?? 0).toLocaleString()}
+              subValue="with activity"
+            />
+            <StatCard
+              label="Tracked Orders"
+              value={(infra.indexStats.marketToOrders ?? 0).toLocaleString()}
+              subValue="conditional"
+            />
+          </div>
+        )}
+
         {/* Subaccount Selection & Deposit/Withdraw */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <InputGroup label="Select Subaccount">
@@ -794,6 +815,8 @@ export const DriftSection: React.FC<{
       {/* Performance Summary Panel */}
       <Panel
         title="Performance Summary"
+        collapsible
+        defaultCollapsed
         actions={<Button onClick={loadTxSummary}>Refresh</Button>}
       >
         <DataTable
@@ -801,7 +824,7 @@ export const DriftSection: React.FC<{
           compact
         >
           {txSummary ? (
-            (['5m', '1h', '24h'] as const).flatMap((win) =>
+            (['1h', '24h'] as const).flatMap((win) =>
               (['all', 'fill', 'trigger', 'liquidate'] as const).map((action) => {
                 const m = txSummary?.[win]?.[action];
                 const attempts = Number(m?.attempts ?? 0);
@@ -833,6 +856,8 @@ export const DriftSection: React.FC<{
       {/* Transactions Panel */}
       <Panel
         title="Transactions"
+        collapsible
+        defaultCollapsed
         actions={
           <div className="flex items-center gap-3">
             <span className="text-xs text-gray-400">Showing last {txDisplayLimit}</span>

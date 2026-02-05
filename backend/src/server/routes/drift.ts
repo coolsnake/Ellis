@@ -16,7 +16,13 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const s = svc.getInfraStatus?.() || { active: false, forceActive: false, bots: 0, has: {} };
       let userCount: any = null;
       try { if (typeof svc.getUserCountCached === 'function') userCount = await svc.getUserCountCached({ wait: false }); } catch {}
-      res.json({ ...s, userCount });
+      // Include event index stats (users/markets/orders tracked)
+      let indexStats: { users: number; markets: number; marketToOrders: number } | null = null;
+      try {
+        const { driftEventIndex } = await import('../../drift/eventIndex.js');
+        indexStats = driftEventIndex.getStats();
+      } catch {}
+      res.json({ ...s, userCount, indexStats });
     } catch (e: any) {
       logger.error('drift: infra status failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
