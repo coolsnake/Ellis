@@ -689,15 +689,16 @@ export const DriftSection: React.FC<{
           <LiquidatorStatus apiBase={p.apiBase} hideHeader />
           <div className="grid grid-cols-1 gap-3">
             {p.ls.map((x) => (
-              <LiquidationMonitor key={x.key} apiBase={p.apiBase} liquidatorKey={x.key} />
+              <LiquidationMonitor key={x.key} apiBase={p.apiBase} liquidatorKey={x.key} hideUserList />
             ))}
           </div>
 
           {/* Users Table */}
           <div>
             <h4 className="text-sm font-medium text-gray-300 mb-3">Users Under Threshold</h4>
+            <div className="text-xs text-gray-500 mb-2">Health is (total - maintenance) / maintenance; 0 = liquidation. Thresholds use ratios (0.4 = 40%).</div>
             <DataTable 
-              headers={['User', 'Health', 'Updated', 'Exposure', 'C/E', 'Profit', 'Skip', 'Actions']} 
+              headers={['User', 'Health', 'Updated', 'Exposure', 'C/E', 'Est. Profit', 'Skip', 'Actions']} 
               compact
             >
               {liqUsers.length > 0 ? liqUsers.map((u) => (
@@ -803,7 +804,27 @@ export const DriftSection: React.FC<{
                             </DataTable>
                           </div>
                           <div>
-                            <h5 className="text-sm font-medium text-gray-300 mb-2">Perp Positions</h5>
+                            <h5 className="text-sm font-medium text-gray-300 mb-2">Perp Positions (Est.)</h5>
+                            <DataTable headers={['Market', 'Base', 'Notional', 'Liq', 'Prof']} compact>
+                              {Array.isArray((u as any).positions) && (u as any).positions.length > 0 ? 
+                                (u as any).positions.map((pp: any, i: number) => (
+                                  <DataTableRow key={i}>
+                                    <DataTableCell compact>{pp.symbol || pp.marketIndex}</DataTableCell>
+                                    <DataTableCell compact mono>{Number(pp.base ?? 0).toFixed(3)}</DataTableCell>
+                                    <DataTableCell compact mono>{typeof pp.notional === 'number' ? `$${Number(pp.notional).toFixed(2)}` : '-'}</DataTableCell>
+                                    <DataTableCell compact mono>{typeof pp.liqPrice === 'number' ? Number(pp.liqPrice).toFixed(2) : '-'}</DataTableCell>
+                                    <DataTableCell compact>
+                                      {typeof pp.profitability === 'number' ? (
+                                        <span className={`font-mono ${(pp.profitability as number) > 0 ? 'text-green-400' : 'text-yellow-400'}`}>
+                                          {((pp.profitability as number) * 100).toFixed(2)}%
+                                        </span>
+                                      ) : <span className="text-gray-500">-</span>}
+                                    </DataTableCell>
+                                  </DataTableRow>
+                                )) : <tr><td colSpan={5}><EmptyState message="No estimated perp positions" /></td></tr>}
+                            </DataTable>
+                            
+                            <h5 className="text-sm font-medium text-gray-300 mb-2 mt-4">Perp Positions (Raw)</h5>
                             <DataTable headers={['Market', 'Base (raw)']} compact>
                               {(userDetails[u.userPk]?.perpPositions || []).length > 0 ? 
                                 (userDetails[u.userPk]?.perpPositions || []).map((pp: any, i: number) => (
@@ -811,7 +832,7 @@ export const DriftSection: React.FC<{
                                     <DataTableCell compact>{pp.marketIndex}</DataTableCell>
                                     <DataTableCell compact mono>{Number(pp.baseRaw || 0).toLocaleString()}</DataTableCell>
                                   </DataTableRow>
-                                )) : <tr><td colSpan={2}><EmptyState message="No perp positions" /></td></tr>}
+                                )) : <tr><td colSpan={2}><EmptyState message="No raw perp positions" /></td></tr>}
                             </DataTable>
                           </div>
                         </div>

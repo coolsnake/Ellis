@@ -21,12 +21,12 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     // Account selection & sizing cap
     subaccountId: initialConfig?.subaccountId ?? '',
     maxAttemptNotional: initialConfig?.maxAttemptNotional ?? '',
-    executeHealthThreshold: initialConfig?.executeHealthThreshold ?? 0,
+    executeHealthThreshold: initialConfig?.executeHealthThreshold ?? '',
 
     // Discovery (WS)
     usersAllowlistCsv: Array.isArray(initialConfig?.usersAllowlist) ? initialConfig.usersAllowlist.join(',') : '',
     userCacheMax: initialConfig?.userCacheMax ?? 500,
-    riskHealthThreshold: initialConfig?.riskHealthThreshold ?? 0,
+    riskHealthThreshold: initialConfig?.riskHealthThreshold ?? '',
 
     // Triggers & markets
     usePriceTriggers: initialConfig?.usePriceTriggers ?? true,
@@ -97,11 +97,21 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         // Account selection & sizing cap
         subaccountId: String(form.subaccountId ?? '').trim() === '' ? undefined : Math.max(0, Number(form.subaccountId)),
         maxAttemptNotional: String(form.maxAttemptNotional ?? '').trim() === '' ? undefined : Math.max(0, Number(form.maxAttemptNotional)),
-        executeHealthThreshold: Number.isFinite(Number(form.executeHealthThreshold)) ? Number(form.executeHealthThreshold) : undefined,
+        executeHealthThreshold: (() => {
+          const raw = String(form.executeHealthThreshold ?? '').trim();
+          if (raw === '') return undefined;
+          const n = Number(raw);
+          return Number.isFinite(n) ? n : undefined;
+        })(),
 
         usersAllowlist: String(form.usersAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
         userCacheMax: Math.max(50, Number(form.userCacheMax || 50)),
-        riskHealthThreshold: Number(form.riskHealthThreshold || 0),
+        riskHealthThreshold: (() => {
+          const raw = String(form.riskHealthThreshold ?? '').trim();
+          if (raw === '') return undefined;
+          const n = Number(raw);
+          return Number.isFinite(n) ? n : undefined;
+        })(),
 
         usePriceTriggers: !!form.usePriceTriggers,
         priceTriggerDebounceMs: Math.max(200, Number(form.priceTriggerDebounceMs || 0)),
@@ -194,7 +204,8 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
           <div>
             <div className="text-gray-400 mb-1">Execute Health Threshold (&lt;= triggers execution)</div>
             <input type="number" step={0.001} className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.executeHealthThreshold}
-              onChange={(e) => setForm((p: any) => ({ ...p, executeHealthThreshold: Number(e.target.value) }))} placeholder="0" />
+              onChange={(e) => setForm((p: any) => ({ ...p, executeHealthThreshold: e.target.value }))} placeholder="0 (liquidation)" />
+            <div className="text-xs text-gray-500 mt-1">Health is a ratio: 0 = liquidation, 0.4 = 40%. Leave blank for defaults.</div>
           </div>
 
           <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">General</div>
@@ -208,7 +219,8 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
           </div>
           <div>
             <div className="text-gray-400 mb-1">Risk Health Threshold</div>
-            <input type="number" step={0.01} className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.riskHealthThreshold} onChange={(e) => setForm((p: any) => ({ ...p, riskHealthThreshold: Number(e.target.value) }))} />
+            <input type="number" step={0.01} className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.riskHealthThreshold} onChange={(e) => setForm((p: any) => ({ ...p, riskHealthThreshold: e.target.value }))} placeholder="0.1 (10%)" />
+            <div className="text-xs text-gray-500 mt-1">Ratio gate for “at-risk” users (0.4 = 40%). Leave blank for defaults.</div>
           </div>
 
           <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Price Triggers & Markets</div>

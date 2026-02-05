@@ -946,7 +946,7 @@ export const CONFIG = {
     // Subscription pacing
     subscribeSpacingMs: Number(process.env.DRIFT_SUBSCRIBE_SPACING_MS || 100),
     // Loop logging mode: when true, suppress per-loop info logs and emit periodic summaries
-    loopSummaryOnly: (process.env.DRIFT_LOOP_SUMMARY_ONLY || 'false') === 'true',
+    loopSummaryOnly: (process.env.DRIFT_LOOP_SUMMARY_ONLY || 'true') === 'true',
     loopSummaryIntervalMs: Number(process.env.DRIFT_LOOP_SUMMARY_INTERVAL_MS || 10000),
     // Per-node log controls (trigger/filler)
     verboseNodeLogs: (process.env.DRIFT_VERBOSE_NODE_LOGS || 'false') === 'true',
@@ -1146,6 +1146,13 @@ export const CONFIG = {
     supportedDexIds: (() => {
       const raw = process.env.DISCOVERY_SUPPORTED_DEX_IDS || '';
       if (raw) return raw.split(',').map(s => s.trim()).filter(Boolean);
+      return ['raydium', 'orca', 'meteora', 'pumpswap'];
+    })(),
+  },
+};
+
+
+(raw) return raw.split(',').map(s => s.trim()).filter(Boolean);
       return ['raydium', 'orca', 'meteora', 'pumpswap'];
     })(),
   },

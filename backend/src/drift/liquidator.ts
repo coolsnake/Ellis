@@ -52,6 +52,7 @@ export type LiquidatorConfig = {
   spotSizeFraction?: number;
   targetCooldownMs?: number;
   statsIntervalMs?: number;
+  loopSummaryOnly?: boolean;
   // Subscriptions
   useEventSubscriptions?: boolean;
   // Discovery modes
@@ -304,15 +305,21 @@ export class DriftLiquidator {
       finally { (this as any)._inTick = false; }
     };
     this.timer = (globalThis as any).setInterval(() => { guardedTick().catch(() => {}); }, pollMs);
-    // Periodic stats emission
+    // Periodic summary/stats emission
     try {
       if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} }
-      const everyMs = Math.max(5000, Number(this.config.statsIntervalMs ?? ((CONFIG as any)?.drift?.liquidator?.statsIntervalMs) ?? 15000));
+      const driftCfg: any = (CONFIG as any)?.drift || {};
+      const summaryOnly = (this.config as any)?.loopSummaryOnly ?? driftCfg?.loopSummaryOnly ?? false;
+      const summaryIntervalMs = Math.max(2000, Number(driftCfg?.loopSummaryIntervalMs ?? 10000));
+      const statsIntervalMs = Math.max(5000, Number(this.config.statsIntervalMs ?? ((CONFIG as any)?.drift?.liquidator?.statsIntervalMs) ?? 15000));
+      const everyMs = summaryOnly ? summaryIntervalMs : statsIntervalMs;
       this.statsTimer = (globalThis as any).setInterval(() => {
         try {
           const snapshot = this.getQueueSnapshot(20);
           const exposure = this.computeExposureStats();
-          logger.info('drift.liquidator.stats', {
+          const payload = {
+            name: this.config.name,
+            windowMs: everyMs,
             queued: snapshot.candidatesQueued,
             actionsLastMin: snapshot.actionsLastMin,
             errorsLastMin: snapshot.errorsLastMin,
@@ -322,7 +329,12 @@ export class DriftLiquidator {
             exposureMarkets: exposure.exposureMarkets,
             index: driftEventIndex.getStats(),
             cat: 'drift'
-          });
+          };
+          if (summaryOnly) {
+            logger.info('drift.liquidator.loop_summary_10s', payload);
+          } else {
+            logger.info('drift.liquidator.stats', payload);
+          }
           emit('drift-liquidation', { type: 'stats', ...snapshot }).catch(() => {});
         } catch {}
       }, everyMs);

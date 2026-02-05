@@ -3,6 +3,9 @@ import { indexToSymbol, symbolToIndex } from './marketMapping.js';
 import { logger } from '../utils/logger.js';
 import { LogCode } from '../utils/logging.js';
 
+const rawDlobScale = Number(getDriftConfig().dlobPriceScale);
+const DLOB_PRICE_SCALE = (Number.isFinite(rawDlobScale) && rawDlobScale >= 1) ? rawDlobScale : 1_000_000;
+
 function getWebSocketCtor(): any {
   const g: any = (globalThis as any);
   return g.WebSocket || g.webkitWebSocket || g.MozWebSocket || g.ws || null;
@@ -188,10 +191,11 @@ export class DriftDlobWs {
     try {
       const bidsArr: any[] = Array.isArray((raw as any).bids) ? (raw as any).bids : (Array.isArray((raw as any).bid) ? (raw as any).bid : []);
       const asksArr: any[] = Array.isArray((raw as any).asks) ? (raw as any).asks : (Array.isArray((raw as any).ask) ? (raw as any).ask : []);
-      // DLOB WS may emit micro-priced values (price * 1e6). Normalize to UI units.
+      // DLOB WS prices are typically in PRICE_PRECISION (1e6) units.
       const scaleIfMicro = (v: number | undefined): number | undefined => {
         if (typeof v !== 'number' || !isFinite(v)) return undefined;
-        return Math.abs(v) > 1e6 ? v / 1e6 : v;
+        if (!Number.isFinite(DLOB_PRICE_SCALE) || DLOB_PRICE_SCALE <= 1) return v;
+        return v / DLOB_PRICE_SCALE;
       };
       const parsePx = (x: any): number => Number((Array.isArray(x) ? x[0] : (x?.price)) ?? NaN);
       const bidRaw = bidsArr.length > 0 ? parsePx(bidsArr[0]) : undefined;

@@ -10,9 +10,10 @@ interface Props {
   apiBase: string;
   socket?: any;
   liquidatorKey?: string;
+  hideUserList?: boolean;
 }
 
-export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidatorKey = 'liq#default' }) => {
+export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidatorKey = 'liq#default', hideUserList = false }) => {
   const { socket: ctxSocket } = useSocket();
   const effectiveSocket = socket ?? ctxSocket;
   const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users?: UserItem[] } | null>(null);
@@ -132,7 +133,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
       )}
 
       {/* Users Under Threshold */}
-      {Array.isArray(queue?.users) && queue!.users!.length > 0 && (
+      {!hideUserList && Array.isArray(queue?.users) && queue!.users!.length > 0 && (
         <div className="mb-4">
           <h4 className="text-sm font-medium text-gray-300 mb-2">Users Under Threshold</h4>
           <div className="space-y-2 max-h-80 overflow-auto">
@@ -149,7 +150,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
                     </span>
                     {typeof (u as any).profitability === 'number' && (
                       <>
-                        <span className="text-xs text-gray-400">prof</span>
+                        <span className="text-xs text-gray-400">est prof</span>
                         <span className={`font-mono text-sm ${(u as any).profitability > 0 ? 'text-green-400' : 'text-yellow-400'}`}>
                           {(((u as any).profitability) * 100).toFixed(2)}%
                         </span>
@@ -179,7 +180,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
                           <span>liq <span className="text-white font-mono">{p.liqPrice.toFixed(2)}</span></span>
                         )}
                         {typeof p.profitability === 'number' && (
-                          <span>prof <span className={`font-mono ${p.profitability > 0 ? 'text-green-400' : 'text-yellow-400'}`}>{(p.profitability * 100).toFixed(2)}%</span></span>
+                          <span>est prof <span className={`font-mono ${p.profitability > 0 ? 'text-green-400' : 'text-yellow-400'}`}>{(p.profitability * 100).toFixed(2)}%</span></span>
                         )}
                       </div>
                     ))}

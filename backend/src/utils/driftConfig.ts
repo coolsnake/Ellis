@@ -36,6 +36,7 @@ export type DriftConfig = {
   websocketIntervalMs?: number;
   dlobUrl?: string;
   dlobWsUrl?: string;
+  dlobPriceScale?: number;
   wsHeartbeatMs?: number;
   wsReconnectMinMs?: number;
   wsResubChunkSize?: number;
@@ -59,6 +60,7 @@ export function getDriftConfig(): DriftConfig {
     websocketIntervalMs: Number(d.websocketIntervalMs || 400),
     dlobUrl: d.dlobUrl || 'https://dlob.drift.trade',
     dlobWsUrl: d.dlobWsUrl || 'wss://dlob.drift.trade/ws',
+    dlobPriceScale: Number(d.dlobPriceScale || 1_000_000),
     wsHeartbeatMs: Number(d.wsHeartbeatMs || 15000),
     wsReconnectMinMs: Number(d.wsReconnectMinMs || 1000),
     wsResubChunkSize: Number(d.wsResubChunkSize || 25),

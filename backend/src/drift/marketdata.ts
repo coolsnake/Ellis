@@ -39,6 +39,14 @@ const markDlobBadRequest = (marketIndex: number, status: number | undefined, kin
   } catch {}
 };
 
+const rawDlobScale = Number((CONFIG as any)?.drift?.dlobPriceScale);
+const DLOB_PRICE_SCALE = (Number.isFinite(rawDlobScale) && rawDlobScale >= 1) ? rawDlobScale : 1_000_000;
+const scaleDlobPrice = (v: number | undefined): number | undefined => {
+  if (typeof v !== 'number' || !isFinite(v)) return undefined;
+  if (!Number.isFinite(DLOB_PRICE_SCALE) || DLOB_PRICE_SCALE <= 1) return v;
+  return v / DLOB_PRICE_SCALE;
+};
+
 export async function fetchDlobL2(marketIndex: number): Promise<DlobL2 | null> {
   const base = (CONFIG as any).drift?.dlobUrl || 'https://dlob.drift.trade';
   const cluster = (CONFIG as any).drift?.cluster || 'mainnet-beta';
@@ -74,15 +82,10 @@ export async function fetchDlobL2(marketIndex: number): Promise<DlobL2 | null> {
       }
       const data = (await res.json()) as RawDlobL2;
       // best-effort normalization
-      const scaleIfNeeded = (v: number | undefined): number | undefined => {
-        if (typeof v !== 'number' || !isFinite(v)) return undefined;
-        // DLOB often returns micro-price (1e6). Detect and scale down.
-        return Math.abs(v) > 1e6 ? v / 1e6 : v;
-      };
-      const out: DlobL2 = { bid: [], ask: [], oracle: scaleIfNeeded(data?.oracle), symbol: data?.symbol };
+      const out: DlobL2 = { bid: [], ask: [], oracle: scaleDlobPrice(data?.oracle), symbol: data?.symbol };
       const b = Array.isArray(data?.bids) ? data.bids : (Array.isArray(data?.bid) ? data.bid : []);
       const a = Array.isArray(data?.asks) ? data.asks : (Array.isArray(data?.ask) ? data.ask : []);
-      const toLevel = (x: any) => ({ price: scaleIfNeeded(Number(x[0] ?? x.price)), size: Number(x[1] ?? x.size) });
+      const toLevel = (x: any) => ({ price: scaleDlobPrice(Number(x[0] ?? x.price)), size: Number(x[1] ?? x.size) });
       const isLevel = (v: { price: number | undefined; size: number }): v is Dl2Level =>
         typeof v.price === 'number' && isFinite(v.price) && isFinite(v.size);
       out.bid = (b || []).map(toLevel).filter(isLevel);
