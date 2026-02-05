@@ -6,6 +6,7 @@ import { logFillerTx } from '../utils/tradeSummary.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { emit } from '../server/realtime.js';
+import { sendDriftNotification } from '../notifications/push.js';
 
 export type DriftAttemptIn = {
   sig: string;
@@ -185,6 +186,37 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
         slot: out.slot ?? null,
         confirmationStatus: out.confirmationStatus || null,
       });
+    } catch {}
+
+    // Send push notification for drift transaction
+    try {
+      sendDriftNotification({
+        ts,
+        sig: a.sig,
+        action: a.action,
+        marketIndex: a.marketIndex,
+        taker: a.taker,
+        makers: a.makers,
+        orderId: a.orderId,
+        priorityFeeMicroLamports: a.priorityFeeMicroLamports,
+        cuLimit: a.cuLimit,
+        bot: a.bot,
+        buildMs: a.buildMs,
+        sendMs: a.sendMs,
+        sentAtMs: a.sentAtMs,
+        success: out.success,
+        feeLamports: out.feeLamports,
+        priorityLamports: out.priorityLamports,
+        lamportsPaid: out.lamportsPaid,
+        cuConsumed: out.cuConsumed,
+        fillerRewardQuote: out.fillerRewardQuote,
+        baseFilled: out.baseFilled,
+        quoteFilled: out.quoteFilled,
+        confirmMs: out.confirmMs,
+        slot: out.slot,
+        confirmationStatus: out.confirmationStatus,
+        err: out.err,
+      }).catch(() => {});
     } catch {}
 
     return out;

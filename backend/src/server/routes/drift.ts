@@ -29,6 +29,255 @@ export function createDriftRouter(io: SocketIOServer): Router {
     }
   });
 
+  api.get('/drift/infra/event-index', async (req: Request, res: Response) => {
+    try {
+      const limit = Number.isFinite(Number(req.query?.limit)) ? Number(req.query?.limit) : 50;
+      const { driftEventIndex } = await import('../../drift/eventIndex.js');
+      const stats = driftEventIndex.getStats();
+      const condMarkets = driftEventIndex.getMarketsWithConditionalOrders(Math.max(1, limit));
+      const activeMarkets = driftEventIndex.getActiveMarkets(Math.max(1, limit));
+      res.json({ stats, condMarkets, activeMarkets });
+    } catch (e: any) {
+      logger.error('drift: infra event-index failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.get('/drift/infra/slot', async (_req: Request, res: Response) => {
+    try {
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance() as any;
+      const infra = await svc.getSharedInfra?.({ includeIdle: true });
+      const slot = Number(infra?.slotSubscriber?.getSlot?.() ?? 0);
+      res.json({ slot });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.get('/drift/infra/users/keys', async (req: Request, res: Response) => {
+    try {
+      const limit = Number.isFinite(Number(req.query?.limit)) ? Number(req.query?.limit) : 1000;
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance() as any;
+      const infra = await svc.getSharedInfra?.({ includeIdle: true });
+      const userMap = infra?.userMap;
+      let keys: string[] = [];
+      try {
+        if (userMap && typeof userMap.entries === 'function') {
+          const entries = Array.from(userMap.entries());
+          keys = entries.map(([k]) => String((k as any)?.toBase58?.() || k)).filter(Boolean);
+        } else if (userMap && typeof userMap.values === 'function') {
+          const vals = Array.from(userMap.values());
+          keys = vals.map((u: any) => String(u?.getUserAccountPublicKey?.()?.toBase58?.() || '')).filter(Boolean);
+        }
+      } catch {}
+      res.json({ keys: keys.slice(0, Math.max(1, limit)) });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/drift/infra/users/accounts', async (req: Request, res: Response) => {
+    try {
+      const pubkeys: string[] = Array.isArray(req.body?.pubkeys) ? req.body.pubkeys : [];
+      const uniq = Array.from(new Set(pubkeys.map((p) => String(p || '').trim()).filter(Boolean)));
+      const out: Record<string, { data: string | null; slot?: number }> = {};
+      if (uniq.length === 0) return res.json({ accounts: out });
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance() as any;
+      const conn = svc.getReadConnection?.() || svc.connection;
+      const { PublicKey } = await import('@solana/web3.js');
+      const chunkSize = Math.max(1, Math.min(100, Number(req.body?.chunkSize || 50)));
+      for (let i = 0; i < uniq.length; i += chunkSize) {
+        const slice = uniq.slice(i, i + chunkSize);
+        const keys = slice.map((k) => new PublicKey(k));
+        const infos = await conn.getMultipleAccountsInfo(keys, { commitment: 'processed' } as any);
+        infos.forEach((info: any, idx: number) => {
+          const pk = slice[idx];
+          out[pk] = { data: info?.data ? Buffer.from(info.data).toString('base64') : null };
+        });
+      }
+      res.json({ accounts: out });
+    } catch (e: any) {
+      logger.error('drift: infra user accounts failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/drift/infra/dlob/trigger-nodes', async (req: Request, res: Response) => {
+    try {
+      const markets: Array<{ marketIndex: number; marketType?: any; triggerPrice?: string }> = Array.isArray(req.body?.markets) ? req.body.markets : [];
+      const limitPerMarket = Number.isFinite(Number(req.body?.limitPerMarket)) ? Number(req.body.limitPerMarket) : undefined;
+      if (markets.length === 0) return res.json({ results: [] });
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance() as any;
+      const infra = await svc.getSharedInfra?.({ includeIdle: true, preferOrderSubscriber: true });
+      const dlob = infra?.dlobSubscriber?.getDLOB?.();
+      if (!dlob) return res.status(503).json({ error: 'dlob_unavailable' });
+      const { BN, MarketType, getVariant, isVariant, getTriggerPrice, useMedianTriggerPrice } = await import('@drift-labs/sdk');
+      const stateAcc = svc?.client?.getStateAccount?.();
+      const slot = Number(infra?.slotSubscriber?.getSlot?.() ?? 0);
+      const results: any[] = [];
+      for (const m of markets) {
+        const idx = Number((m as any)?.marketIndex ?? m);
+        if (!Number.isFinite(idx)) continue;
+        const mType = (m as any)?.marketType;
+        const marketType = (mType && typeof mType === 'object')
+          ? mType
+          : (String(mType || '').toLowerCase() === 'spot' ? MarketType.SPOT : MarketType.PERP);
+        let triggerPx: any = null;
+        if ((m as any)?.triggerPrice) {
+          try { triggerPx = new BN(String((m as any).triggerPrice)); } catch {}
+        }
+        if (!triggerPx) {
+          try {
+            const oracleData = isVariant(marketType, 'perp')
+              ? svc.client.getOracleDataForPerpMarket(idx)
+              : svc.client.getOracleDataForSpotMarket(idx);
+            const freshest = oracleData?.price as any;
+            const nowSec = new BN(Math.floor(Date.now() / 1000));
+            if (isVariant(marketType, 'perp')) {
+              const market = svc.client.getPerpMarketAccount?.(idx);
+              triggerPx = getTriggerPrice(market, freshest, nowSec, useMedianTriggerPrice(svc.client.getStateAccount()));
+            } else {
+              triggerPx = freshest;
+            }
+          } catch {}
+        }
+        if (!triggerPx) continue;
+        const nodes = dlob.findNodesToTrigger(idx, slot, triggerPx, marketType, stateAcc) || [];
+        const trimmed = (limitPerMarket && nodes.length > limitPerMarket) ? nodes.slice(0, limitPerMarket) : nodes;
+        const serialized = trimmed.map((n: any) => ({
+          node: {
+            userAccount: String(n?.node?.userAccount || ''),
+            order: {
+              orderId: Number(n?.node?.order?.orderId ?? 0),
+              marketIndex: Number(n?.node?.order?.marketIndex ?? idx),
+              marketType: n?.node?.order?.marketType,
+              orderType: n?.node?.order?.orderType,
+              triggerCondition: n?.node?.order?.triggerCondition,
+            },
+          },
+        }));
+        results.push({ marketIndex: idx, marketType: String(getVariant(marketType)), nodes: serialized });
+      }
+      res.json({ slot, results });
+    } catch (e: any) {
+      logger.error('drift: infra trigger nodes failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/drift/infra/dlob/fill-nodes', async (req: Request, res: Response) => {
+    try {
+      const markets: number[] = Array.isArray(req.body?.markets) ? req.body.markets : [];
+      const limitPerMarket = Number.isFinite(Number(req.body?.limitPerMarket)) ? Number(req.body.limitPerMarket) : undefined;
+      if (markets.length === 0) return res.json({ results: [] });
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance() as any;
+      const infra = await svc.getSharedInfra?.({ includeIdle: true, preferOrderSubscriber: true });
+      const dlob = infra?.dlobSubscriber?.getDLOB?.();
+      if (!dlob) return res.status(503).json({ error: 'dlob_unavailable' });
+      const { MarketType, BN, calculateAskPrice, calculateBidPrice } = await import('@drift-labs/sdk');
+      const slot = Number(infra?.slotSubscriber?.getSlot?.() ?? 0);
+      const slotBn = new BN(slot);
+      const stateAcc = svc?.client?.getStateAccount?.();
+      const ts = Math.floor(Date.now() / 1000) - 60;
+      const driftCfg: any = (CONFIG as any)?.drift || {};
+      const maxDelay = Math.max(0, Number(driftCfg?.maxOracleDelaySlots ?? 40));
+      const results: any[] = [];
+      for (const rawIdx of markets) {
+        const idx = Number(rawIdx);
+        if (!Number.isFinite(idx)) continue;
+        const market = svc.client.getPerpMarketAccount?.(idx);
+        const mmOraclePriceData = svc.client.getMMOracleDataForPerpMarket?.(idx);
+        if (!market || !mmOraclePriceData) continue;
+        const vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
+        const vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
+        let oracleDelay: number | undefined = undefined;
+        let oracleStale: boolean | undefined = undefined;
+        let oraclePx: string | undefined = undefined;
+        try {
+          const od = svc.client.getOracleDataForPerpMarket?.(idx);
+          const odSlot = Number((od as any)?.slot?.toString?.() || 0);
+          oraclePx = String((od as any)?.price?.toString?.() || '');
+          if (odSlot > 0) {
+            oracleDelay = Math.max(0, slot - odSlot);
+            oracleStale = oracleDelay > maxDelay;
+          }
+        } catch {}
+        const nodes = dlob.findNodesToFill(
+          idx,
+          vBid,
+          vAsk,
+          slot,
+          ts,
+          MarketType.PERP,
+          mmOraclePriceData,
+          stateAcc,
+          market
+        ) || [];
+        const trimmed = (limitPerMarket && nodes.length > limitPerMarket) ? nodes.slice(0, limitPerMarket) : nodes;
+        const serialized = trimmed.map((n: any) => ({
+          node: {
+            userAccount: String(n?.node?.userAccount || ''),
+            order: {
+              orderId: Number(n?.node?.order?.orderId ?? 0),
+              marketIndex: Number(n?.node?.order?.marketIndex ?? idx),
+              orderType: n?.node?.order?.orderType,
+            },
+          },
+          makerNodes: Array.isArray(n?.makerNodes)
+            ? n.makerNodes.map((mn: any) => ({
+                userAccount: String(mn?.userAccount || ''),
+                order: {
+                  orderId: Number(mn?.order?.orderId ?? 0),
+                  marketIndex: Number(mn?.order?.marketIndex ?? idx),
+                  orderType: mn?.order?.orderType,
+                },
+              }))
+            : [],
+        }));
+        results.push({
+          marketIndex: idx,
+          vBid: String((vBid as any)?.toString?.() || vBid || ''),
+          vAsk: String((vAsk as any)?.toString?.() || vAsk || ''),
+          oracle: oraclePx,
+          oracleDelay,
+          oracleStale,
+          nodes: serialized,
+        });
+      }
+      res.json({ slot, results });
+    } catch (e: any) {
+      logger.error('drift: infra fill nodes failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/drift/infra/prices', async (req: Request, res: Response) => {
+    try {
+      const markets: number[] = Array.isArray(req.body?.markets) ? req.body.markets : [];
+      const pollMs = Number.isFinite(Number(req.body?.pollMs)) ? Number(req.body.pollMs) : undefined;
+      if (markets.length === 0) return res.json({ prices: {} });
+      const { DriftPriceService } = await import('../../drift/price.js');
+      const svc = DriftPriceService.getInstance();
+      const out: Record<string, any> = {};
+      for (const m of markets) {
+        const idx = Number(m);
+        if (!Number.isFinite(idx)) continue;
+        try { svc.trackMarket(idx, Math.max(500, Number(pollMs || 500))); } catch {}
+        const sample = svc.getPrice(idx);
+        if (sample) out[String(idx)] = sample;
+      }
+      res.json({ prices: out });
+    } catch (e: any) {
+      logger.error('drift: infra prices failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.post('/drift/infra/activate', async (req: Request, res: Response) => {
     try {
       const { DriftService } = await import('../../drift/client.js');

@@ -6,7 +6,7 @@ import { getMessaging, isFirebaseReady } from './firebase.js';
 import { getAllDeviceTokens, cleanupInvalidTokens, loadNotificationConfig } from './deviceStore.js';
 import { loadJupiterTokenMap } from '../utils/tokens.js';
 import type { TxRecord } from '../server/txHistory.js';
-import type { NotificationPriority, ArbNotificationPayload } from './types.js';
+import type { NotificationPriority, ArbNotificationPayload, DriftNotificationPayload } from './types.js';
 
 // Cache for token symbol lookups
 let tokenSymbolCache: Record<string, string> = {};
@@ -151,6 +151,11 @@ export async function sendArbNotification(rec: TxRecord): Promise<void> {
   // Check if notifications are enabled
   const config = await loadNotificationConfig();
   if (!config.enabled) {
+    return;
+  }
+  
+  // Check if arb notifications are enabled
+  if (config.arbEnabled === false) {
     return;
   }
   
@@ -304,5 +309,254 @@ export async function sendTestNotification(): Promise<{ success: boolean; messag
       success: false,
       message: String(err?.message || err),
     };
+  }
+}
+
+// Market symbol lookup cache for drift notifications
+const DRIFT_MARKET_SYMBOLS: Record<number, string> = {
+  0: 'SOL-PERP',
+  1: 'BTC-PERP',
+  2: 'ETH-PERP',
+  3: 'APT-PERP',
+  4: 'MATIC-PERP',
+  5: 'ARB-PERP',
+  6: 'DOGE-PERP',
+  7: 'BNB-PERP',
+  8: 'SUI-PERP',
+  9: 'PEPE-PERP',
+  10: '1KPEPE-PERP',
+  11: 'OP-PERP',
+  12: 'RENDER-PERP',
+  13: 'XRP-PERP',
+  14: 'HNT-PERP',
+  15: 'INJ-PERP',
+  16: 'LINK-PERP',
+  17: 'RLB-PERP',
+  18: 'PYTH-PERP',
+  19: 'TIA-PERP',
+  20: 'JTO-PERP',
+  21: 'SEI-PERP',
+  22: 'AVAX-PERP',
+  23: 'WIF-PERP',
+  24: 'JUP-PERP',
+  25: 'DYM-PERP',
+  26: 'TAO-PERP',
+  27: 'W-PERP',
+  28: 'KMNO-PERP',
+  29: 'TNSR-PERP',
+};
+
+function getMarketSymbol(marketIndex?: number): string {
+  if (marketIndex === undefined || marketIndex === null) return 'Unknown';
+  return DRIFT_MARKET_SYMBOLS[marketIndex] || `Market #${marketIndex}`;
+}
+
+/**
+ * Calculate drift notification priority based on reward USD
+ */
+function calculateDriftPriority(rewardUsd: number, success: boolean): NotificationPriority {
+  if (!success) return 'high'; // Failed txs are notable
+  if (rewardUsd >= 1) return 'high';
+  if (rewardUsd >= 0.1) return 'medium';
+  return 'low';
+}
+
+/**
+ * Drift attempt record type (from txTracker)
+ */
+export interface DriftAttemptRecord {
+  ts: number;
+  sig: string;
+  action: 'fill' | 'trigger' | 'liquidate';
+  marketIndex?: number;
+  taker?: string;
+  makers?: string[];
+  orderId?: string | number;
+  priorityFeeMicroLamports?: number;
+  cuLimit?: number;
+  bot?: string;
+  buildMs?: number;
+  sendMs?: number;
+  sentAtMs?: number;
+  success: boolean;
+  feeLamports: number;
+  priorityLamports: number;
+  lamportsPaid: number;
+  cuConsumed?: number;
+  fillerRewardQuote?: number;
+  baseFilled?: number;
+  quoteFilled?: number;
+  confirmMs?: number;
+  slot?: number;
+  confirmationStatus?: string;
+  err?: any;
+}
+
+/**
+ * Build drift notification payload from attempt record
+ */
+function buildDriftNotificationPayload(rec: DriftAttemptRecord): DriftNotificationPayload {
+  // Calculate USD value of filler reward (USDC precision = 6)
+  const rewardUsd = (rec.fillerRewardQuote || 0) / 1_000_000;
+  const marketSymbol = getMarketSymbol(rec.marketIndex);
+  const priority = calculateDriftPriority(rewardUsd, rec.success);
+  
+  // Build summary
+  const actionDisplay = rec.action.charAt(0).toUpperCase() + rec.action.slice(1);
+  const rewardDisplay = rewardUsd > 0 ? `+$${formatProfitUsd(rewardUsd)}` : '';
+  const statusDisplay = rec.success ? 'OK' : 'FAILED';
+  const summary = `${actionDisplay} ${marketSymbol} ${rewardDisplay} [${statusDisplay}]`;
+  
+  return {
+    id: rec.sig,
+    signature: rec.sig,
+    timestamp: rec.ts,
+    action: rec.action,
+    marketIndex: rec.marketIndex,
+    marketSymbol,
+    success: rec.success,
+    baseFilled: rec.baseFilled,
+    quoteFilled: rec.quoteFilled,
+    fillerRewardQuote: rec.fillerRewardQuote,
+    fillerRewardUsd: rewardUsd,
+    lamportsPaid: rec.lamportsPaid,
+    bot: rec.bot,
+    priority,
+    summary,
+  };
+}
+
+/**
+ * Send push notification for a drift transaction
+ */
+export async function sendDriftNotification(rec: DriftAttemptRecord): Promise<void> {
+  // Check if Firebase is ready
+  if (!isFirebaseReady()) {
+    return;
+  }
+  
+  // Check if notifications are enabled
+  const config = await loadNotificationConfig();
+  if (!config.enabled) {
+    return;
+  }
+  
+  // Check if drift notifications are enabled
+  if (!config.driftEnabled) {
+    return;
+  }
+  
+  // Check if this action type should be notified
+  if (!config.driftActions.includes(rec.action)) {
+    return;
+  }
+  
+  // Calculate reward USD
+  const rewardUsd = (rec.fillerRewardQuote || 0) / 1_000_000;
+  
+  // Check minimum reward threshold (only for successful txs)
+  if (rec.success && rewardUsd < (config.driftMinRewardUsd || 0)) {
+    return;
+  }
+  
+  // Check if we should notify on failures
+  if (!rec.success && !config.driftNotifyFailures) {
+    return;
+  }
+  
+  // Get all device tokens
+  const tokens = await getAllDeviceTokens();
+  if (tokens.length === 0) {
+    return;
+  }
+  
+  const messaging = getMessaging();
+  if (!messaging) {
+    return;
+  }
+  
+  // Build notification payload
+  const payload = buildDriftNotificationPayload(rec);
+  
+  // Format notification
+  const actionDisplay = rec.action.charAt(0).toUpperCase() + rec.action.slice(1);
+  const title = payload.fillerRewardUsd && payload.fillerRewardUsd > 0 
+    ? `+$${formatProfitUsd(payload.fillerRewardUsd)}`
+    : (rec.success ? `${actionDisplay} OK` : `${actionDisplay} Failed`);
+  const body = `${payload.marketSymbol} via ${payload.bot || 'Drift'}`;
+  
+  try {
+    const response = await messaging.sendEachForMulticast({
+      tokens,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: 'drift_tx',
+        action: rec.action,
+        signature: payload.signature,
+        marketIndex: String(payload.marketIndex ?? ''),
+        marketSymbol: payload.marketSymbol || '',
+        rewardUsd: String(payload.fillerRewardUsd || 0),
+        success: String(rec.success),
+        priority: payload.priority,
+        timestamp: String(payload.timestamp),
+        bot: payload.bot || '',
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: `drift-${rec.action}`,
+          color: rec.action === 'fill' ? '#3b82f6'
+               : rec.action === 'liquidate' ? '#f59e0b'
+               : '#8b5cf6',
+        },
+      },
+    });
+    
+    // Log success/failure stats
+    logger.info('notifications: Drift push notification sent', {
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      action: rec.action,
+      marketIndex: rec.marketIndex,
+      rewardUsd: payload.fillerRewardUsd,
+      success: rec.success,
+      cat: 'notifications',
+    });
+    
+    // Emit log event for UI
+    emit('log', {
+      level: 'info',
+      message: `notifications: Drift push sent to ${response.successCount} device(s) - ${title}`,
+      timestamp: new Date().toISOString(),
+      context: { cat: 'notifications' },
+    });
+    
+    // Handle invalid tokens
+    if (response.failureCount > 0) {
+      const invalidTokens: string[] = [];
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success && resp.error) {
+          const errorCode = resp.error.code;
+          if (
+            errorCode === 'messaging/invalid-registration-token' ||
+            errorCode === 'messaging/registration-token-not-registered'
+          ) {
+            invalidTokens.push(tokens[idx]);
+          }
+        }
+      });
+      
+      if (invalidTokens.length > 0) {
+        await cleanupInvalidTokens(invalidTokens);
+      }
+    }
+  } catch (err: any) {
+    logger.warn('notifications: Failed to send drift push notification', {
+      error: String(err?.message || err),
+      cat: 'notifications',
+    });
   }
 }

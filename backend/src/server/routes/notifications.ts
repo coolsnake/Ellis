@@ -50,7 +50,14 @@ export function createNotificationsRouter(_io: SocketIOServer): Router {
         enabled: config.enabled,
         firebaseReady,
         deviceCount,
+        // Arb settings
+        arbEnabled: config.arbEnabled ?? true,
         profitThresholds: config.profitThresholds,
+        // Drift settings
+        driftEnabled: config.driftEnabled ?? true,
+        driftActions: config.driftActions ?? ['fill', 'trigger', 'liquidate'],
+        driftMinRewardUsd: config.driftMinRewardUsd ?? 0,
+        driftNotifyFailures: config.driftNotifyFailures ?? false,
       });
     } catch (e: any) {
       logger.error('notifications: Failed to get status', { error: String(e?.message || e), cat: 'notifications' });
@@ -138,20 +145,37 @@ export function createNotificationsRouter(_io: SocketIOServer): Router {
   // Update notification configuration
   api.patch('/notifications/config', async (req: Request, res: Response) => {
     try {
-      const { enabled, profitThresholds } = req.body as {
+      const { 
+        enabled, 
+        arbEnabled,
+        profitThresholds,
+        driftEnabled,
+        driftActions,
+        driftMinRewardUsd,
+        driftNotifyFailures,
+      } = req.body as {
         enabled?: boolean;
+        arbEnabled?: boolean;
         profitThresholds?: {
           low?: number;
           medium?: number;
           high?: number;
           critical?: number;
         };
+        driftEnabled?: boolean;
+        driftActions?: Array<'fill' | 'trigger' | 'liquidate'>;
+        driftMinRewardUsd?: number;
+        driftNotifyFailures?: boolean;
       };
       
       const updates: any = {};
       
       if (typeof enabled === 'boolean') {
         updates.enabled = enabled;
+      }
+      
+      if (typeof arbEnabled === 'boolean') {
+        updates.arbEnabled = arbEnabled;
       }
       
       if (profitThresholds && typeof profitThresholds === 'object') {
@@ -168,6 +192,25 @@ export function createNotificationsRouter(_io: SocketIOServer): Router {
         if (typeof profitThresholds.critical === 'number') {
           updates.profitThresholds.critical = Math.max(0, profitThresholds.critical);
         }
+      }
+      
+      // Drift settings
+      if (typeof driftEnabled === 'boolean') {
+        updates.driftEnabled = driftEnabled;
+      }
+      
+      if (Array.isArray(driftActions)) {
+        // Validate actions
+        const validActions = ['fill', 'trigger', 'liquidate'];
+        updates.driftActions = driftActions.filter(a => validActions.includes(a));
+      }
+      
+      if (typeof driftMinRewardUsd === 'number') {
+        updates.driftMinRewardUsd = Math.max(0, driftMinRewardUsd);
+      }
+      
+      if (typeof driftNotifyFailures === 'boolean') {
+        updates.driftNotifyFailures = driftNotifyFailures;
       }
       
       const config = await saveNotificationConfig(updates);

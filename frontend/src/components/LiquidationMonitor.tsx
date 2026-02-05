@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useSocket } from '../app/contexts/socket';
 import { StatCard, Button, EmptyState } from './ui';
 
@@ -89,6 +89,21 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
     } catch {}
   };
 
+  const topAtRisk = useMemo(() => {
+    try {
+      const users = Array.isArray(queue?.users) ? [...queue!.users!] : [];
+      return users
+        .sort((a, b) => {
+          const ah = (typeof a?.health === 'number') ? a.health : Infinity;
+          const bh = (typeof b?.health === 'number') ? b.health : Infinity;
+          return ah - bh;
+        })
+        .slice(0, 25);
+    } catch {
+      return [];
+    }
+  }, [queue?.users]);
+
   return (
     <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-4">
       <div className="flex items-center justify-between mb-4">
@@ -107,7 +122,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
           value={queue?.candidatesQueued ?? 0}
         />
         <StatCard 
-          label="Actions (1m)" 
+          label="Attempts (1m)" 
           value={queue?.actionsLastMin ?? 0}
         />
         <StatCard 
@@ -116,6 +131,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
           className={((queue?.errorsLastMin || 0) > 0) ? 'border-yellow-600/30' : ''}
         />
       </div>
+      <div className="text-xs text-gray-500 mb-3">Attempts include dry runs and test clicks.</div>
 
       {/* Market Exposures */}
       {Array.isArray(queue?.exposures) && queue!.exposures!.length > 0 && (
@@ -163,7 +179,14 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
                     )}
                   </div>
                   <div className="flex items-center gap-3">
-                    <Button size="xs" variant="primary" onClick={() => testUser(u.userPk)}>Test</Button>
+                    <Button
+                      size="xs"
+                      variant="primary"
+                      title="Runs full liquidation test (bypasses exec gate, minimal size/cap; respects dry run)"
+                      onClick={() => testUser(u.userPk)}
+                    >
+                      Attempt
+                    </Button>
                     <span className="text-xs text-gray-500">{timeAgo(u.updatedAt)}</span>
                   </div>
                 </div>
@@ -192,12 +215,12 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
         </div>
       )}
 
-      {/* Top At-Risk Accounts */}
+      {/* Top Under-Threshold Accounts */}
       <div>
-        <h4 className="text-sm font-medium text-gray-300 mb-2">Top At-Risk Accounts (health &lt; 0)</h4>
-        {(queue?.top || []).length > 0 ? (
+        <h4 className="text-sm font-medium text-gray-300 mb-2">Top Under-Threshold Accounts</h4>
+        {topAtRisk.length > 0 ? (
           <div className="space-y-1 max-h-56 overflow-auto">
-            {(queue?.top || []).map((c) => (
+            {topAtRisk.map((c) => (
               <div key={c.userPk} className="flex items-center justify-between p-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-sm">
                 <div className="flex items-center gap-3">
                   <span className="text-white font-mono" title={c.userPk}>
@@ -213,7 +236,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
             ))}
           </div>
         ) : (
-          <EmptyState message="No unhealthy users detected" />
+          <EmptyState message="No users under threshold" />
         )}
       </div>
     </div>

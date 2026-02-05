@@ -71,6 +71,15 @@ export const CONFIG = {
     secret: process.env.DRIFT_BOTS_SECRET || '',
     callbackUrl: process.env.DRIFT_BOTS_CALLBACK_URL || `http://127.0.0.1:${Number(process.env.PORT || 3001)}/api/internal/drift-bots/events`,
   },
+  driftInfra: {
+    enabled: (process.env.DRIFT_INFRA_ENABLED || 'true') !== 'false',
+    port: Number(process.env.DRIFT_INFRA_PORT || 3020),
+    respawn: (process.env.DRIFT_INFRA_RESPAWN || 'true') !== 'false',
+    useTsx: (process.env.DRIFT_INFRA_USE_TSX || process.env.DRIFT_BOTS_USE_TSX || 'false') === 'true',
+    secret: process.env.DRIFT_INFRA_SECRET || '',
+    callbackUrl: process.env.DRIFT_INFRA_CALLBACK_URL || `http://127.0.0.1:${Number(process.env.PORT || 3001)}/api/internal/drift-bots/events`,
+    baseUrl: process.env.DRIFT_INFRA_BASE_URL || '',
+  },
   // Orca configuration
   orca: {
     mode: (process.env.ORCA_MODE as any) || 'http', // 'http' | 'v4' | 'legacy'
@@ -1000,6 +1009,9 @@ export const CONFIG = {
       subaccountId: process.env.DRIFT_LIQ_SUBACCOUNT_ID ? Number(process.env.DRIFT_LIQ_SUBACCOUNT_ID) : undefined,
       // Max total USD notional to attempt per target handling (across perp attempts)
       maxAttemptNotional: process.env.DRIFT_LIQ_MAX_ATTEMPT_NOTIONAL ? Number(process.env.DRIFT_LIQ_MAX_ATTEMPT_NOTIONAL) : undefined,
+      // Test-mode overrides (used by /strategies/liquidator/test)
+      testMaxAttemptNotional: Number(process.env.DRIFT_LIQ_TEST_MAX_ATTEMPT_NOTIONAL || 5),
+      testSizeFraction: Number(process.env.DRIFT_LIQ_TEST_SIZE_FRACTION || 0.001),
       // New discovery/scan defaults
       probeRps: Number(process.env.DRIFT_LIQ_PROBE_RPS || 100),
       riskHealthThreshold: Number(process.env.DRIFT_LIQ_RISK_HEALTH || 0.1),

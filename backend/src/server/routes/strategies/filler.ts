@@ -5,11 +5,18 @@ import { logger } from '../../../utils/logger.js';
 
 export function createFillerRouter(_io: SocketIOServer): Router {
   const api = Router();
+  const useManager = String(process.env.DRIFT_BOTS_MANAGER || '') === '1';
 
   api.get('/strategies/filler/status', async (_req: Request, res: Response) => {
     try {
-      const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
-      const list = DriftFillerRegistry.list();
+      let list: any[] = [];
+      if (useManager) {
+        const { listBotsFresh } = await import('../../../drift/botsManager.js');
+        list = await listBotsFresh('filler');
+      } else {
+        const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
+        list = DriftFillerRegistry.list();
+      }
       res.json({ fillers: list });
     } catch (e: any) {
       logger.error('drift-filler: status failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -22,9 +29,15 @@ export function createFillerRouter(_io: SocketIOServer): Router {
     try {
       const windowMs = Number.isFinite(Number(req.query.windowMs)) ? Number(req.query.windowMs) : 60_000;
       const bot = String(req.query.bot || '').trim() || undefined;
-      const { getMetrics } = await import('../../../drift/txTracker.js');
-      const m = getMetrics({ windowMs, action: 'fill', bot });
-      res.json({ windowMs, bot, ...m });
+      if (useManager) {
+        if (!bot) return res.json({ windowMs, bot, total: 0, byBot: {} });
+        const { getMetrics } = await import('../../../drift/botsManager.js');
+        const m = await getMetrics('filler', bot, windowMs);
+        return res.json(m || { windowMs, bot, total: 0, byBot: {} });
+      }
+      const { getMetrics: getMetricsLocal } = await import('../../../drift/txTracker.js');
+      const m = getMetricsLocal({ windowMs, action: 'fill', bot });
+      return res.json({ windowMs, bot, ...m });
     } catch (e: any) {
       logger.error('drift-filler: metrics failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
@@ -35,8 +48,7 @@ export function createFillerRouter(_io: SocketIOServer): Router {
     try {
       const cfg = (req.body || {}) as any;
       const name = String(cfg?.name || '').trim() || 'default';
-      const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
-      DriftFillerRegistry.upsert({
+      const nextCfg = {
         name,
         enabled: true,
         dryRun: !!cfg?.dryRun,
@@ -72,8 +84,18 @@ export function createFillerRouter(_io: SocketIOServer): Router {
         prebuildMaxCandidates: Math.max(0, Number(cfg?.prebuildMaxCandidates ?? 50)),
         prebuildMaxInFlight: Math.max(0, Number(cfg?.prebuildMaxInFlight ?? 2)),
         prebuildPerLoop: Math.max(0, Number(cfg?.prebuildPerLoop ?? 2)),
-      } as any);
-      const key = (DriftFillerRegistry as any).keyOf({ name });
+      } as any;
+      let key = `fil#${name}`;
+      let DriftFillerRegistry: any = null;
+      if (useManager) {
+        const { startBot } = await import('../../../drift/botsManager.js');
+        const out = await startBot('filler', nextCfg);
+        key = out?.key || key;
+      } else {
+        DriftFillerRegistry = (await import('../../../drift/fillerRunner.js') as any).DriftFillerRegistry;
+        DriftFillerRegistry.upsert(nextCfg);
+        key = (DriftFillerRegistry as any).keyOf({ name });
+      }
       
       // Emit immediate update to show "starting" state in UI
       try {
@@ -86,21 +108,26 @@ export function createFillerRouter(_io: SocketIOServer): Router {
       
       setImmediate(async () => {
         try {
-          const existing = (DriftFillerRegistry as any).get?.(key);
-          if (!existing || !existing.getStatus?.().running) {
-            await DriftFillerRegistry.start(key);
+          if (!useManager) {
+            const existing = (DriftFillerRegistry as any).get?.(key);
+            if (!existing || !existing.getStatus?.().running) {
+              await DriftFillerRegistry.start(key);
+            }
           }
           emit('log', { level: 'info', message: `drift: filler started ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
           try {
-            const listNow = (DriftFillerRegistry as any).list?.();
+            const listNow = useManager
+              ? await (await import('../../../drift/botsManager.js')).listBotsFresh('filler')
+              : (DriftFillerRegistry as any).list?.();
             _io.emit('filler-update', { fillers: listNow });
           } catch {}
         } catch (e: any) {
           logger.error('drift-filler: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: filler start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
-          // Emit update on failure too so UI shows error state
           try {
-            const listNow = (DriftFillerRegistry as any).list?.();
+            const listNow = useManager
+              ? await (await import('../../../drift/botsManager.js')).listBotsFresh('filler')
+              : (DriftFillerRegistry as any).list?.();
             _io.emit('filler-update', { fillers: listNow });
           } catch {}
         }
@@ -118,12 +145,20 @@ export function createFillerRouter(_io: SocketIOServer): Router {
       let key = String(body?.key || '').trim();
       if (!key) {
         const name = String(body?.name || '').trim();
-        if (name) key = (await import('../../../drift/fillerRunner.js') as any).DriftFillerRegistry.keyOf({ name });
+        if (name) key = useManager ? `fil#${name}` : (await import('../../../drift/fillerRunner.js') as any).DriftFillerRegistry.keyOf({ name });
       }
-      const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
-      const ok = await DriftFillerRegistry.stop(key);
+      let ok = false;
+      if (useManager) {
+        const { stopBot } = await import('../../../drift/botsManager.js');
+        ok = await stopBot(key);
+      } else {
+        const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
+        ok = await DriftFillerRegistry.stop(key);
+      }
       try {
-        const listNow = (DriftFillerRegistry as any).list?.();
+        const listNow = useManager
+          ? await (await import('../../../drift/botsManager.js')).listBotsFresh('filler')
+          : (await import('../../../drift/fillerRunner.js') as any).DriftFillerRegistry.list?.();
         _io.emit('filler-update', { fillers: listNow });
       } catch {}
       res.json({ ok });
@@ -139,12 +174,20 @@ export function createFillerRouter(_io: SocketIOServer): Router {
       let key = String(body?.key || '').trim();
       if (!key) {
         const name = String(body?.name || '').trim();
-        if (name) key = (await import('../../../drift/fillerRunner.js') as any).DriftFillerRegistry.keyOf({ name });
+        if (name) key = useManager ? `fil#${name}` : (await import('../../../drift/fillerRunner.js') as any).DriftFillerRegistry.keyOf({ name });
       }
-      const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
-      const ok = await DriftFillerRegistry.remove(key);
+      let ok = false;
+      if (useManager) {
+        const { removeBot } = await import('../../../drift/botsManager.js');
+        ok = await removeBot(key);
+      } else {
+        const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
+        ok = await DriftFillerRegistry.remove(key);
+      }
       try {
-        const listNow = (DriftFillerRegistry as any).list?.();
+        const listNow = useManager
+          ? await (await import('../../../drift/botsManager.js')).listBotsFresh('filler')
+          : (await import('../../../drift/fillerRunner.js') as any).DriftFillerRegistry.list?.();
         _io.emit('filler-update', { fillers: listNow });
       } catch {}
       res.json({ ok });

@@ -3,26 +3,26 @@ import { CONFIG } from '../../utils/config.js';
 import { logger } from '../../utils/logger.js';
 
 /**
- * Proxy for /drift/* routes when bots are isolated to child process.
- * Forwards all drift API requests to the bot server so that DriftService
- * initialization and heavy infrastructure only happens in the child process.
+ * Proxy for /drift/* routes when infra is isolated to child process.
+ * Forwards all drift API requests to the infra server so DriftService
+ * initialization and heavy infra only happens in the infra process.
  */
 
-function driftBotsBaseUrl(): string {
-  const cfg: any = (CONFIG as any)?.driftBots || {};
+function driftInfraBaseUrl(): string {
+  const cfg: any = (CONFIG as any)?.driftInfra || {};
   if (cfg.baseUrl) return String(cfg.baseUrl);
-  const port = Math.max(1, Number(process.env.DRIFT_BOTS_PORT || cfg.port || 3015));
+  const port = Math.max(1, Number(process.env.DRIFT_INFRA_PORT || cfg.port || 3020));
   return `http://127.0.0.1:${port}`;
 }
 
 function getSecretHeader(): Record<string, string> {
-  const cfg: any = (CONFIG as any)?.driftBots || {};
-  const secret = String(process.env.DRIFT_BOTS_SECRET || cfg.secret || '');
-  return secret ? { 'x-drift-bots-secret': secret } : {};
+  const cfg: any = (CONFIG as any)?.driftInfra || {};
+  const secret = String(process.env.DRIFT_INFRA_SECRET || cfg.secret || '');
+  return secret ? { 'x-drift-infra-secret': secret } : {};
 }
 
 async function proxy(req: Request, res: Response): Promise<void> {
-  const base = driftBotsBaseUrl();
+  const base = driftInfraBaseUrl();
   const url = `${base}${req.originalUrl}`;
   const method = String(req.method || 'GET').toUpperCase();
   const headers: Record<string, string> = {
@@ -44,8 +44,8 @@ async function proxy(req: Request, res: Response): Promise<void> {
     res.status(r.status).send(text);
   } catch (e: any) {
     clearTimeout(t);
-    logger.warn('drift.proxy_failed', { url, error: String(e?.message || e), cat: 'drift' });
-    res.status(502).json({ error: 'drift-bots unavailable' });
+    logger.warn('drift.infra.proxy_failed', { url, error: String(e?.message || e), cat: 'drift' });
+    res.status(502).json({ error: 'drift-infra unavailable' });
   }
 }
 

@@ -4,6 +4,8 @@ export type LiquidatorCfg = {
   // Account selection and sizing caps
   subaccountId?: number;
   maxAttemptNotional?: number;
+  testMaxAttemptNotional?: number;
+  testSizeFraction?: number;
   discoverAllUsers?: boolean;
   maxDiscoveredUsers?: number;
   usersAllowlist?: string[];

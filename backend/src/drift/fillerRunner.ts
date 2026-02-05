@@ -13,6 +13,7 @@ import { OracleUpdater } from './oracles/oracleUpdater.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
 import { getPriceByMint } from '../server/priceStore.js';
+import { hasInfra, fetchFillNodes, fetchUserAccounts, fetchEventIndex } from './infraClient.js';
 
 export type FillerConfig = {
   name: string;
@@ -96,6 +97,8 @@ export class DriftFillerRunner {
   private blockhashSubscriber: any | null = null; // legacy; superseded by shared utils/blockhash
   private priorityFeeSubscriber: any | null = null;
   private lookupTableAccounts: AddressLookupTableAccount[] | null = null;
+  private useInfra: boolean = false;
+  private infraUaCache: Map<string, { ua: any; ts: number }> = new Map();
 
   slotSubscriber: any | null = null;
   eventSubscriber: any | null = null;
@@ -185,6 +188,24 @@ export class DriftFillerRunner {
     };
   }
 
+  private async getUserAccountFromInfra(pubkey: string): Promise<any | null> {
+    if (!this.useInfra) return null;
+    const now = Date.now();
+    const cached = this.infraUaCache.get(pubkey);
+    if (cached && (now - cached.ts) < 2000) return cached.ua;
+    try {
+      const res = await fetchUserAccounts([pubkey]);
+      const data = res?.accounts?.[pubkey]?.data;
+      if (!data) return null;
+      const { decodeUser } = await import('@drift-labs/sdk');
+      const ua = decodeUser(Buffer.from(String(data), 'base64'));
+      this.infraUaCache.set(pubkey, { ua, ts: now });
+      return ua;
+    } catch {
+      return null;
+    }
+  }
+
   async start(): Promise<void> {
     if (this.timer) return;
     this.abort = false;
@@ -222,6 +243,7 @@ export class DriftFillerRunner {
     }
 
     this.sdk = await import('@drift-labs/sdk');
+    this.useInfra = hasInfra();
     // Configure throttle early (reduced gaps, higher concurrency for lower latency)
     try { (svc as any).configureTxThrottle?.({ minGapMs: 30, maxInFlight: 8 }); } catch {}
 
@@ -308,21 +330,27 @@ export class DriftFillerRunner {
 
   private async initDiscovery(): Promise<void> {
     const svc = DriftService.getInstance();
-    const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(100, Math.floor(this.state.loopIntervalMs / 2)), preferOrderSubscriber: true });
-    this.slotSubscriber = (infra as any).slotSubscriber;
-    this.eventSubscriber = (infra as any).eventSubscriber;
-    this.userMap = (infra as any).userMap;
-    this.dlobSubscriber = (infra as any).dlobSubscriber;
-    this.orderSubscriber = (infra as any).orderSubscriber;
-    logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, shared: true });
+    if (!this.useInfra) {
+      const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(100, Math.floor(this.state.loopIntervalMs / 2)), preferOrderSubscriber: true });
+      this.slotSubscriber = (infra as any).slotSubscriber;
+      this.eventSubscriber = (infra as any).eventSubscriber;
+      this.userMap = (infra as any).userMap;
+      this.dlobSubscriber = (infra as any).dlobSubscriber;
+      this.orderSubscriber = (infra as any).orderSubscriber;
+      logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, shared: true });
+    } else {
+      try { logger.info('drift.filler.infra_remote', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name }); } catch {}
+    }
     try {
       if (!this.oracleUpdater) {
         this.oracleUpdater = new OracleUpdater({ sdk: this.sdk, driftClient: this.client, cluster: (CONFIG as any)?.drift?.cluster || 'mainnet-beta' });
       }
     } catch {}
     // Start user prefetcher once shared infra is ready
-    try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
-    try { this.setupEventIndex(); } catch {}
+    if (!this.useInfra) {
+      try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
+      try { this.setupEventIndex(); } catch {}
+    }
     // Initialize blockhash subscriber and priority fee strategy
     try {
       const { BlockhashSubscriber, PriorityFeeSubscriber } = this.sdk || {};
@@ -492,6 +520,7 @@ export class DriftFillerRunner {
   }
 
   private setupEventIndex(): void {
+    if (this.useInfra) return;
     if (this.eventIndexBound) return;
     this.eventIndexBound = true;
     const driftCfg: any = (CONFIG as any)?.drift || {};
@@ -531,6 +560,9 @@ export class DriftFillerRunner {
   }
 
   private async getTakerUaQuick(takerPkStr: string): Promise<any | null> {
+    if (this.useInfra) {
+      return await this.getUserAccountFromInfra(takerPkStr);
+    }
     // Warm cache first
     try {
       const warm = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr);
@@ -554,20 +586,24 @@ export class DriftFillerRunner {
     for (const m of makers) {
       try {
         let makerUa: any = null;
-        // Try warm cache first
-        try {
-          const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
-          makerUa = warm?.getUserAccount?.() || null;
-        } catch {}
-        // Fall back to userMap if not in warm cache
-        if (!makerUa && this.userMap) {
+        if (this.useInfra) {
+          makerUa = await this.getUserAccountFromInfra(m);
+        } else {
+          // Try warm cache first
           try {
-            const wrap = await Promise.race([
-              this.userMap.mustGet(m),
-              new Promise((_, rej) => setTimeout(() => rej(new Error('MAKER_UA_TIMEOUT')), 150)),
-            ]).catch(() => null);
-            makerUa = (wrap as any)?.getUserAccount?.() || null;
+            const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
+            makerUa = warm?.getUserAccount?.() || null;
           } catch {}
+          // Fall back to userMap if not in warm cache
+          if (!makerUa && this.userMap) {
+            try {
+              const wrap = await Promise.race([
+                this.userMap.mustGet(m),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('MAKER_UA_TIMEOUT')), 150)),
+              ]).catch(() => null);
+              makerUa = (wrap as any)?.getUserAccount?.() || null;
+            } catch {}
+          }
         }
         if (!makerUa) continue;
         const makerAuth = makerUa?.authority;
@@ -1405,7 +1441,7 @@ export class DriftFillerRunner {
 
     try {
       const dlob = this.dlobSubscriber?.getDLOB?.();
-      if (!dlob) {
+      if (!dlob && !this.useInfra) {
         logger.info('drift.filler.warn dlob_unavailable', { cat: FILLER_CAT, subcat: FILLER_SUBCAT });
         this.dlobUnavailableCount = (this.dlobUnavailableCount || 0) + 1;
         if (this.dlobUnavailableCount >= 3) {
@@ -1433,6 +1469,8 @@ export class DriftFillerRunner {
           } catch {}
         }
         return;
+      } else if (!dlob && this.useInfra) {
+        this.dlobUnavailableCount = (this.dlobUnavailableCount || 0) + 1;
       } else {
         this.dlobUnavailableCount = 0;
         // If WS fallback was running, optionally keep it or stop to reduce load
@@ -1447,9 +1485,18 @@ export class DriftFillerRunner {
         getVariant,
       } = this.sdk;
 
-      const slot = this.slotSubscriber?.getSlot?.() ?? 0;
+      let slot = this.slotSubscriber?.getSlot?.() ?? 0;
       const stateAcc = this.client.getStateAccount?.();
       const perps = await this.client.getPerpMarketAccounts?.();
+      let indexStats = driftEventIndex.getStats();
+      let indexMarketsRemote: number[] = [];
+      if (this.useInfra) {
+        try {
+          const remote = await fetchEventIndex(Math.max(1, Number(driftCfg?.eventIndexMarketsPerLoop ?? 50)));
+          if (remote?.stats) indexStats = remote.stats;
+          if (Array.isArray(remote?.activeMarkets)) indexMarketsRemote = remote.activeMarkets;
+        } catch {}
+      }
 
       try {
         if (!driftCfg?.loopSummaryOnly) {
@@ -1475,7 +1522,9 @@ export class DriftFillerRunner {
         limit: Math.max(1, Number(driftCfg?.hotMarketsPerLoop ?? 25)),
         consumerId: 'filler',
       });
-      const indexMarkets = driftEventIndex.getActiveMarkets(Math.max(1, Number(driftCfg?.eventIndexMarketsPerLoop ?? 50)));
+      const indexMarkets = this.useInfra
+        ? indexMarketsRemote
+        : driftEventIndex.getActiveMarkets(Math.max(1, Number(driftCfg?.eventIndexMarketsPerLoop ?? 50)));
       const prioritySet = new Set<number>();
       for (const idx of hotMarkets) prioritySet.add(Number(idx));
       for (const idx of indexMarkets) prioritySet.add(Number(idx));
@@ -1486,7 +1535,7 @@ export class DriftFillerRunner {
         if (this._summary) {
           if (!this._summary.scanModes) this._summary.scanModes = { full: 0, targeted: 0 };
           this._summary.scanModes[doFullScan ? 'full' : 'targeted'] += 1;
-          this._summary.indexStats = driftEventIndex.getStats();
+          this._summary.indexStats = indexStats;
         }
       } catch {}
       if (hotMarkets.length > 0) {
@@ -1518,6 +1567,34 @@ export class DriftFillerRunner {
         }
       }
 
+      const remoteByMarket = this.useInfra ? new Map<number, any>() : null;
+      if (this.useInfra && remoteByMarket) {
+        try {
+          const marketIdxs = marketsOrdered.map((m: any) => Number(m?.marketIndex || 0)).filter((n: any) => Number.isFinite(n));
+          if (marketIdxs.length > 0) {
+            const resp = await fetchFillNodes({ markets: marketIdxs });
+            if (typeof resp?.slot === 'number') slot = resp.slot;
+            const results = Array.isArray(resp?.results) ? resp.results : [];
+            const { BN } = this.sdk || {};
+            const toBn = (v: any) => {
+              try { return BN ? new BN(String(v)) : v; } catch { return undefined; }
+            };
+            for (const r of results) {
+              const idx = Number(r?.marketIndex ?? -1);
+              if (!Number.isFinite(idx)) continue;
+              remoteByMarket.set(idx, {
+                vBid: toBn(r?.vBid),
+                vAsk: toBn(r?.vAsk),
+                oracle: r?.oracle,
+                oracleDelay: r?.oracleDelay,
+                oracleStale: r?.oracleStale,
+                nodes: Array.isArray(r?.nodes) ? r.nodes : [],
+              });
+            }
+          }
+        } catch {}
+      }
+
       for (const market of marketsOrdered) {
         if (budgetExceeded) break;
         const mStart = Date.now();
@@ -1534,40 +1611,67 @@ export class DriftFillerRunner {
             continue;
           }
         } catch {}
-        const mmOraclePriceData = this.client.getMMOracleDataForPerpMarket?.(idx);
-        // Skip markets with stale oracle data to avoid zero-fills due to SafeMM checks
-        try {
-          const od = this.client.getOracleDataForPerpMarket?.(idx);
-          const odSlot = Number((od as any)?.slot?.toString?.() || 0);
-          const curSlot = this.slotSubscriber?.getSlot?.() ?? 0;
-          const maxDelay = Math.max(0, Number(((CONFIG as any)?.drift?.maxOracleDelaySlots) ?? 40));
-          if (odSlot > 0 && (curSlot - odSlot) > maxDelay) {
-            try { logger.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: (curSlot - odSlot), maxDelay }); } catch {}
+        let vAsk: any = null;
+        let vBid: any = null;
+        let nodesToFill: any[] = [];
+        if (this.useInfra) {
+          const remote = remoteByMarket?.get(idx);
+          if (!remote) continue;
+          if (remote.oracleStale) {
+            try { logger.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: remote.oracleDelay, maxDelay: Math.max(0, Number(((CONFIG as any)?.drift?.maxOracleDelaySlots) ?? 40)) }); } catch {}
             loopStats.marketsOracleStale += 1;
             continue;
           }
-        } catch {}
-        const vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
-        const vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
+          vAsk = remote.vAsk;
+          vBid = remote.vBid;
+          nodesToFill = Array.isArray(remote.nodes) ? remote.nodes : [];
+          try {
+            logger.debug('drift.filler.market_scan', {
+              cat: FILLER_CAT,
+              subcat: FILLER_SUBCAT,
+              marketIndex: idx,
+              oraclePx: String(remote.oracle || ''),
+              vBid: String((vBid as any)?.toString?.() || vBid || ''),
+              vAsk: String((vAsk as any)?.toString?.() || vAsk || ''),
+              slot,
+            });
+          } catch {}
+        } else {
+          const mmOraclePriceData = this.client.getMMOracleDataForPerpMarket?.(idx);
+          // Skip markets with stale oracle data to avoid zero-fills due to SafeMM checks
+          try {
+            const od = this.client.getOracleDataForPerpMarket?.(idx);
+            const odSlot = Number((od as any)?.slot?.toString?.() || 0);
+            const curSlot = this.slotSubscriber?.getSlot?.() ?? 0;
+            const maxDelay = Math.max(0, Number(((CONFIG as any)?.drift?.maxOracleDelaySlots) ?? 40));
+            if (odSlot > 0 && (curSlot - odSlot) > maxDelay) {
+              try { logger.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: (curSlot - odSlot), maxDelay }); } catch {}
+              loopStats.marketsOracleStale += 1;
+              continue;
+            }
+          } catch {}
+          vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
+          vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
 
-        try {
-          logger.debug('drift.filler.market_scan', {
-            cat: FILLER_CAT,
-            subcat: FILLER_SUBCAT,
-            marketIndex: idx,
-            oraclePx: String((mmOraclePriceData as any)?.price?.toString?.() || (mmOraclePriceData as any)?.price || ''),
-            vBid: String((vBid as any)?.toString?.() || vBid || ''),
-            vAsk: String((vAsk as any)?.toString?.() || vAsk || ''),
-            slot,
-          });
-        } catch {}
+          try {
+            logger.debug('drift.filler.market_scan', {
+              cat: FILLER_CAT,
+              subcat: FILLER_SUBCAT,
+              marketIndex: idx,
+              oraclePx: String((mmOraclePriceData as any)?.price?.toString?.() || (mmOraclePriceData as any)?.price || ''),
+              vBid: String((vBid as any)?.toString?.() || vBid || ''),
+              vAsk: String((vAsk as any)?.toString?.() || vAsk || ''),
+              slot,
+            });
+          } catch {}
 
-        const nodesToFill = dlob.findNodesToFill(
-          idx, vBid, vAsk, slot,
-          Math.floor(Date.now() / 1000) - 60,
-          MarketType.PERP, mmOraclePriceData,
-          stateAcc, this.client.getPerpMarketAccount?.(idx)
-        ) || [];
+          nodesToFill = dlob.findNodesToFill(
+            idx, vBid, vAsk, slot,
+            Math.floor(Date.now() / 1000) - 60,
+            MarketType.PERP, mmOraclePriceData,
+            stateAcc, this.client.getPerpMarketAccount?.(idx)
+          ) || [];
+        }
         // Prefilter: drop trigger orders to avoid wasting budget
         const isTriggerNode = (n: any): boolean => {
           try {
@@ -1597,22 +1701,24 @@ export class DriftFillerRunner {
         } catch {}
 
         // Enqueue taker/maker accounts for prefetch warming
-        try {
-          const svc = DriftService.getInstance() as any;
-          const keys: string[] = [];
-          for (const n of nodesToFill) {
-            const t = String(n?.node?.userAccount || ''); if (t) keys.push(t);
-            const mks = Array.isArray(n?.makerNodes) ? n.makerNodes : [];
-            for (const mn of mks) { const mk = String(mn?.userAccount || ''); if (mk) keys.push(mk); }
-          }
+        if (!this.useInfra) {
           try {
-            for (const k of keys) {
-              if (!k) continue;
-              driftEventIndex.updateUserMarkets(k, [idx], 'filler_node');
+            const svc = DriftService.getInstance() as any;
+            const keys: string[] = [];
+            for (const n of nodesToFill) {
+              const t = String(n?.node?.userAccount || ''); if (t) keys.push(t);
+              const mks = Array.isArray(n?.makerNodes) ? n.makerNodes : [];
+              for (const mn of mks) { const mk = String(mn?.userAccount || ''); if (mk) keys.push(mk); }
             }
+            try {
+              for (const k of keys) {
+                if (!k) continue;
+                driftEventIndex.updateUserMarkets(k, [idx], 'filler_node');
+              }
+            } catch {}
+            svc.enqueueUsersForPrefetch?.(keys);
           } catch {}
-          svc.enqueueUsersForPrefetch?.(keys);
-        } catch {}
+        }
 
         // Diagnostics: maker vs non-maker nodes
         try {

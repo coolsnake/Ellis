@@ -97,8 +97,8 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
                       </span>
                     </div>
                     <div className="mt-2 flex items-center gap-4 text-xs text-gray-400">
-                      <span>Actions (1m): <span className="text-white font-mono">{a}</span></span>
-                      <span>Errors (1m): <span className={e > 0 ? 'text-yellow-400 font-mono' : 'text-white font-mono'}>{e}</span></span>
+                      <span title="Completed liquidation attempts (includes dry runs/tests)">Attempts (1m): <span className="text-white font-mono">{a}</span></span>
+                      <span title="Attempt errors in the last minute">Errors (1m): <span className={e > 0 ? 'text-yellow-400 font-mono' : 'text-white font-mono'}>{e}</span></span>
                       <span>Success: <span className="text-white font-mono">{successRate}%</span></span>
                     </div>
                   </div>

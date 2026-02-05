@@ -5,11 +5,18 @@ import { logger } from '../../../utils/logger.js';
 
 export function createLiquidatorRouter(_io: SocketIOServer): Router {
   const api = Router();
+  const useManager = String(process.env.DRIFT_BOTS_MANAGER || '') === '1';
 
   api.get('/strategies/liquidator/status', async (_req: Request, res: Response) => {
     try {
-      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const list = DriftLiquidatorRegistry.list();
+      let list: any[] = [];
+      if (useManager) {
+        const { listBotsFresh } = await import('../../../drift/botsManager.js');
+        list = await listBotsFresh('liquidator');
+      } else {
+        const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
+        list = DriftLiquidatorRegistry.list();
+      }
       res.json({ liquidators: list });
     } catch (e: any) {
       logger.error('drift-liq: status failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -29,8 +36,7 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
         }
       }
       if (!name) return res.status(400).json({ error: 'name is required' });
-      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      DriftLiquidatorRegistry.upsert({
+      const nextCfg = {
         name,
         enabled: true,
         pollMs: cfg?.pollMs,
@@ -58,8 +64,18 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
         spotSizeFraction: cfg?.spotSizeFraction,
         targetCooldownMs: cfg?.targetCooldownMs,
         statsIntervalMs: cfg?.statsIntervalMs,
-      } as any);
-      const key = (DriftLiquidatorRegistry as any).keyOf({ name });
+      } as any;
+      let key = `liq#${name}`;
+      let DriftLiquidatorRegistry: any = null;
+      if (useManager) {
+        const { startBot } = await import('../../../drift/botsManager.js');
+        const out = await startBot('liquidator', nextCfg);
+        key = out?.key || key;
+      } else {
+        DriftLiquidatorRegistry = (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry;
+        DriftLiquidatorRegistry.upsert(nextCfg);
+        key = (DriftLiquidatorRegistry as any).keyOf({ name });
+      }
       
       // Emit immediate update to show "starting" state in UI
       try {
@@ -73,21 +89,26 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       // Start asynchronously to avoid proxy timeouts; report status via logs/socket
       setImmediate(async () => {
         try {
-          const existing = (DriftLiquidatorRegistry as any).get?.(key);
-          if (!existing || !existing.getStatus?.().running) {
-            await DriftLiquidatorRegistry.start(key);
+          if (!useManager) {
+            const existing = (DriftLiquidatorRegistry as any).get?.(key);
+            if (!existing || !existing.getStatus?.().running) {
+              await DriftLiquidatorRegistry.start(key);
+            }
           }
           emit('log', { level: 'info', message: `drift: liquidator started ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
           try {
-            const listNow = (DriftLiquidatorRegistry as any).list?.();
+            const listNow = useManager
+              ? await (await import('../../../drift/botsManager.js')).listBotsFresh('liquidator')
+              : (DriftLiquidatorRegistry as any).list?.();
             _io.emit('liquidator-update', { liquidators: listNow });
           } catch {}
         } catch (e: any) {
           logger.error('drift-liq: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: liquidator start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
-          // Emit update on failure too so UI shows error state
           try {
-            const listNow = (DriftLiquidatorRegistry as any).list?.();
+            const listNow = useManager
+              ? await (await import('../../../drift/botsManager.js')).listBotsFresh('liquidator')
+              : (DriftLiquidatorRegistry as any).list?.();
             _io.emit('liquidator-update', { liquidators: listNow });
           } catch {}
         }
@@ -105,12 +126,20 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       let key = String(body?.key || '').trim();
       if (!key) {
         const name = String(body?.name || '').trim();
-        if (name) key = (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.keyOf({ name });
+        if (name) key = useManager ? `liq#${name}` : (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.keyOf({ name });
       }
-      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const ok = await DriftLiquidatorRegistry.stop(key);
+      let ok = false;
+      if (useManager) {
+        const { stopBot } = await import('../../../drift/botsManager.js');
+        ok = await stopBot(key);
+      } else {
+        const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
+        ok = await DriftLiquidatorRegistry.stop(key);
+      }
       try {
-        const listNow = (DriftLiquidatorRegistry as any).list?.();
+        const listNow = useManager
+          ? await (await import('../../../drift/botsManager.js')).listBotsFresh('liquidator')
+          : (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.list?.();
         _io.emit('liquidator-update', { liquidators: listNow });
       } catch {}
       res.json({ ok });
@@ -126,12 +155,20 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       let key = String(body?.key || '').trim();
       if (!key) {
         const name = String(body?.name || '').trim();
-        if (name) key = (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.keyOf({ name });
+        if (name) key = useManager ? `liq#${name}` : (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.keyOf({ name });
       }
-      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const ok = await DriftLiquidatorRegistry.remove(key);
+      let ok = false;
+      if (useManager) {
+        const { removeBot } = await import('../../../drift/botsManager.js');
+        ok = await removeBot(key);
+      } else {
+        const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
+        ok = await DriftLiquidatorRegistry.remove(key);
+      }
       try {
-        const listNow = (DriftLiquidatorRegistry as any).list?.();
+        const listNow = useManager
+          ? await (await import('../../../drift/botsManager.js')).listBotsFresh('liquidator')
+          : (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.list?.();
         _io.emit('liquidator-update', { liquidators: listNow });
       } catch {}
       res.json({ ok });
@@ -146,18 +183,27 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       const cfg = req.body as any;
       const name = String(cfg?.name || '').trim();
       if (!name) return res.status(400).json({ error: 'name is required' });
-      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const key = (DriftLiquidatorRegistry as any).keyOf({ name });
+      const key = useManager ? `liq#${name}` : (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.keyOf({ name });
       // Perform update and restart asynchronously to avoid request timeouts
       setImmediate(async () => {
         try {
-          try { await DriftLiquidatorRegistry.stop(key); } catch {}
-          try { DriftLiquidatorRegistry.remove(key); } catch {}
-          DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name, enabled: true } as any);
-          try { await DriftLiquidatorRegistry.start(key); } catch {}
+          if (useManager) {
+            const { stopBot, removeBot, startBot } = await import('../../../drift/botsManager.js');
+            try { await stopBot(key); } catch {}
+            try { await removeBot(key); } catch {}
+            await startBot('liquidator', { ...(cfg || {}), name, enabled: true } as any);
+          } else {
+            const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
+            try { await DriftLiquidatorRegistry.stop(key); } catch {}
+            try { DriftLiquidatorRegistry.remove(key); } catch {}
+            DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name, enabled: true } as any);
+            try { await DriftLiquidatorRegistry.start(key); } catch {}
+          }
           emit('log', { level: 'info', message: `drift: liquidator updated ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
           try {
-            const listNow = (DriftLiquidatorRegistry as any).list?.();
+            const listNow = useManager
+              ? await (await import('../../../drift/botsManager.js')).listBotsFresh('liquidator')
+              : (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.list?.();
             _io.emit('liquidator-update', { liquidators: listNow });
           } catch {}
         } catch (e: any) {
@@ -178,11 +224,16 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       const { key, userPk } = req.body as { key?: string; userPk?: string };
       if (!key) return res.status(400).json({ error: 'key is required' });
       if (!userPk) return res.status(400).json({ error: 'userPk is required' });
+      if (useManager) {
+        const { testLiquidator } = await import('../../../drift/botsManager.js');
+        const out = await testLiquidator(String(key), String(userPk));
+        return res.json(out || { ok: false });
+      }
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const runner = DriftLiquidatorRegistry.get(String(key));
       if (!runner) return res.status(404).json({ error: 'liquidator not found' });
       const ok = await (runner as any).testTarget?.(String(userPk));
-      res.json({ ok: !!ok });
+      return res.json({ ok: !!ok });
     } catch (e: any) {
       logger.error('drift-liq: test failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
@@ -192,8 +243,9 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
   api.get('/strategies/liquidator/config', async (_req: Request, res: Response) => {
     try {
       // placeholder: no global config store exposed; return status list
-      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const list = DriftLiquidatorRegistry.list();
+      const list = useManager
+        ? await (await import('../../../drift/botsManager.js')).listBotsFresh('liquidator')
+        : (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.list();
       res.json({ liquidators: list });
     } catch (e: any) {
       logger.error('drift-liq: get config failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -207,12 +259,20 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       const cfg = req.body as any;
       const name = String(cfg?.name || '').trim();
       if (!name) return res.status(400).json({ error: 'name is required' });
+      if (useManager) {
+        const { stopBot, removeBot, startBot } = await import('../../../drift/botsManager.js');
+        const key = `liq#${name}`;
+        try { await stopBot(key); } catch {}
+        try { await removeBot(key); } catch {}
+        await startBot('liquidator', { ...(cfg || {}), name, enabled: !!cfg?.enabled } as any);
+        return res.json({ ok: true, key });
+      }
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const key = (DriftLiquidatorRegistry as any).keyOf({ name });
       try { await DriftLiquidatorRegistry.stop(key); } catch {}
       try { DriftLiquidatorRegistry.remove(key); } catch {}
       DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name, enabled: !!cfg?.enabled } as any);
-      res.json({ ok: true, key });
+      return res.json({ ok: true, key });
     } catch (e: any) {
       logger.error('drift-liq: set config failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
@@ -223,12 +283,17 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
     try {
       const key = String(req.query?.key || '').trim();
       const limit = Number(req.query?.limit || 25);
-      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       if (!key) return res.status(400).json({ error: 'key is required', queue: null });
+      if (useManager) {
+        const { getQueue } = await import('../../../drift/botsManager.js');
+        const snapshot = await getQueue(key, Number.isFinite(limit) ? limit : 25);
+        return res.json(snapshot || { queue: null });
+      }
+      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const runner = DriftLiquidatorRegistry.get(key);
       if (!runner) return res.json({ queue: null });
       const snapshot = (runner as any).getQueueSnapshot?.(Number.isFinite(limit) ? limit : 25);
-      res.json({ queue: snapshot });
+      return res.json({ queue: snapshot });
     } catch (e: any) {
       logger.error('drift-liq: queue failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
@@ -241,13 +306,18 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       const { key, userPk } = req.body as { key?: string; userPk?: string };
       if (!key) return res.status(400).json({ error: 'key is required' });
       if (!userPk) return res.status(400).json({ error: 'userPk is required' });
+      if (useManager) {
+        const { testLiquidator } = await import('../../../drift/botsManager.js');
+        const out = await testLiquidator(String(key), String(userPk));
+        return res.json(out || { ok: false });
+      }
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const runner = DriftLiquidatorRegistry.get(String(key));
       if (!runner) return res.status(404).json({ error: 'liquidator not found' });
       try { emit('log', { level: 'info', message: `drift:liquidator test requested key=${key} user=${userPk}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
       const out = await (runner as any).testTarget?.(String(userPk));
       const ok = !!(out && (out.ok !== false));
-      res.json({ ok });
+      return res.json({ ok });
     } catch (e: any) {
       logger.error('drift-liq: test failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });

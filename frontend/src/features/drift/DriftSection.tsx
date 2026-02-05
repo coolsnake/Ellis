@@ -759,8 +759,13 @@ export const DriftSection: React.FC<{
                         <Button size="xs" onClick={(e) => { e?.stopPropagation(); toggleOpen(u.userPk); }}>
                           {openUser === u.userPk ? 'Hide' : 'Show'}
                         </Button>
-                        <Button size="xs" variant="primary" onClick={(e) => { e?.stopPropagation(); testUser(u.userPk); }}>
-                          Test
+                        <Button
+                          size="xs"
+                          variant="primary"
+                          title="Runs full liquidation test (bypasses exec gate, minimal size/cap; respects dry run)"
+                          onClick={(e) => { e?.stopPropagation(); testUser(u.userPk); }}
+                        >
+                          Attempt
                         </Button>
                       </div>
                     </DataTableCell>

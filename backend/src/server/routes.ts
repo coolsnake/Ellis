@@ -42,6 +42,7 @@ import { createArbRouter } from './routes/arb.js';
 import { createRouterRouter } from './routes/router.js';
 import { createNotificationsRouter } from './routes/notifications.js';
 import { createDiscoveryRouter } from './routes/discovery.js';
+import { createStatusRouter } from './routes/status.js';
 
 // Opportunity sampling (env knobs + helper)
 const OPP_SAMPLE_DIR = process.env.OPP_SAMPLE_DIR || joinPath(CONFIG.logDir, 'opportunity-samples');
@@ -138,9 +139,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createDebugRouter(io));
   api.use(createWalletRouter(io));
   api.use(createSwapRouter(io));
-  // When bots are isolated to child process, proxy drift routes to avoid
-  // initializing heavy DriftService infrastructure in the main process
-  if ((CONFIG as any)?.driftBots?.enabled) {
+  // When infra is isolated to child process, proxy drift routes
+  if ((CONFIG as any)?.driftInfra?.enabled) {
     api.use(createDriftProxyRouter());
   } else {
     api.use(createDriftRouter(io));
@@ -157,6 +157,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createArbRouter(io));
   api.use(createRouterRouter(io));
   api.use(createNotificationsRouter(io));
+  api.use(createStatusRouter(io));
   api.use(createDiscoveryRouter(io));
 
   const isLocalRequest = (req: Request): boolean => {
@@ -173,10 +174,13 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.post('/internal/drift-bots/events', async (req: Request, res: Response) => {
     try {
       const cfg: any = (CONFIG as any)?.driftBots || {};
-      const expected = String(cfg.secret || '');
+      const infraCfg: any = (CONFIG as any)?.driftInfra || {};
+      const expectedBots = String(cfg.secret || '');
+      const expectedInfra = String(infraCfg.secret || '');
+      const expected = expectedBots || expectedInfra;
       if (expected) {
         const got = String(req.headers['x-drift-bots-secret'] || '');
-        if (got !== expected) return res.status(401).json({ error: 'unauthorized' });
+        if (got !== expectedBots && got !== expectedInfra) return res.status(401).json({ error: 'unauthorized' });
       } else if (!isLocalRequest(req)) {
         return res.status(403).json({ error: 'forbidden' });
       }
@@ -204,6 +208,24 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const base = cfg.baseUrl || `http://127.0.0.1:${Number(process.env.DRIFT_BOTS_PORT || cfg.port || 3015)}`;
       const headers: Record<string, string> = {};
       if (cfg.secret) headers['x-drift-bots-secret'] = String(cfg.secret);
+      const r = await fetch(`${base}/health`, { headers });
+      const text = await r.text();
+      try { return res.status(r.status).json(JSON.parse(text || '{}')); } catch {}
+      return res.status(r.status).send(text);
+    } catch (e: any) {
+      res.status(502).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
+  // Health proxy for drift-infra service
+  api.get('/drift-infra/health', async (_req: Request, res: Response) => {
+    try {
+      const cfg: any = (CONFIG as any)?.driftInfra || {};
+      if (cfg.enabled === false) return res.json({ ok: false, disabled: true });
+      const base = cfg.baseUrl || `http://127.0.0.1:${Number(process.env.DRIFT_INFRA_PORT || cfg.port || 3020)}`;
+      const headers: Record<string, string> = {};
+      const secret = String(process.env.DRIFT_INFRA_SECRET || cfg.secret || '');
+      if (secret) headers['x-drift-infra-secret'] = secret;
       const r = await fetch(`${base}/health`, { headers });
       const text = await r.text();
       try { return res.status(r.status).json(JSON.parse(text || '{}')); } catch {}
