@@ -90,6 +90,8 @@ export type LiquidatorRuntimeState = {
 type Candidate = { userPk: string; health: number; updatedAt: number; distance?: number };
 type HandleTargetOpts = {
   bypassExecGate?: boolean;
+  bypassBankruptcy?: boolean;
+  bypassOracleGuard?: boolean;
   forceAttempt?: boolean;
   sizeFraction?: number;
   maxAttemptNotional?: number;
@@ -1424,30 +1426,34 @@ export class DriftLiquidator {
         } catch {}
         // Early bankruptcy handling: skip normal liquidation and optionally resolve
         try {
-          const bankrupt = await this.isUserBankrupt(sdkUser);
-          if (bankrupt) {
-            try { logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'BANKRUPT', cat: 'drift' }); } catch {}
-            try {
-              const resolvePerp = (DriftService.getInstance() as any)?.client?.resolvePerpBankruptcy;
-              if (typeof resolvePerp === 'function') {
-                let BASE_PREC = 1_000_000_000;
-                try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch {}
-                const positions = (sdkUser as any)?.getPerpPositions?.() || [];
-                for (const p of (positions || [])) {
-                  try {
-                    const rawBase = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
-                    const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
-                    if (!Number.isFinite(m) || rawBase === 0) continue;
-                    await resolvePerp(userPublicKey, m);
-                    try { logger.info('drift.liquidator.bankruptcy_perp_resolve_ok', { user: target.userPk, marketIndex: m, cat: 'drift' }); } catch {}
-                  } catch (e: any) {
-                    try { logger.warn('drift.liquidator.bankruptcy_perp_resolve_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+          if (opts?.bypassBankruptcy) {
+            try { logger.info('drift.liquidator.bankruptcy_bypassed', { user: target.userPk, cat: 'drift' }); } catch {}
+          } else {
+            const bankrupt = await this.isUserBankrupt(sdkUser);
+            if (bankrupt) {
+              try { logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'BANKRUPT', cat: 'drift' }); } catch {}
+              try {
+                const resolvePerp = (DriftService.getInstance() as any)?.client?.resolvePerpBankruptcy;
+                if (typeof resolvePerp === 'function') {
+                  let BASE_PREC = 1_000_000_000;
+                  try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch {}
+                  const positions = (sdkUser as any)?.getPerpPositions?.() || [];
+                  for (const p of (positions || [])) {
+                    try {
+                      const rawBase = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
+                      const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+                      if (!Number.isFinite(m) || rawBase === 0) continue;
+                      await resolvePerp(userPublicKey, m);
+                      try { logger.info('drift.liquidator.bankruptcy_perp_resolve_ok', { user: target.userPk, marketIndex: m, cat: 'drift' }); } catch {}
+                    } catch (e: any) {
+                      try { logger.warn('drift.liquidator.bankruptcy_perp_resolve_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                    }
                   }
                 }
-              }
-            } catch {}
-            this.recordAction();
-            return;
+              } catch {}
+              this.recordAction();
+              return;
+            }
           }
         } catch {}
         // Collateral values (native + UI)
@@ -1594,7 +1600,10 @@ export class DriftLiquidator {
       } catch {}
       try {
         const sdkUserGuard = this.userCache.get(String(target.userPk));
-        if (sdkUserGuard && this.hasOracleOutlierForUser(sdkUserGuard)) {
+        if (opts?.bypassOracleGuard && sdkUserGuard) {
+          try { logger.info('drift.liquidator.oracle_guard_bypassed', { user: target.userPk, cat: 'drift' }); } catch {}
+        }
+        if (!opts?.bypassOracleGuard && sdkUserGuard && this.hasOracleOutlierForUser(sdkUserGuard)) {
           try { logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'ORACLE_TWAP_GUARD', cat: 'drift' }); } catch {}
           this.applyOracleGuardCooldown(target.userPk);
           return;
@@ -1643,7 +1652,7 @@ export class DriftLiquidator {
             if (attempts >= maxPerp) break;
             const mkt = Number(idx);
             try {
-              if (this.isOracleOutlier(mkt, 'perp')) {
+              if (!opts?.bypassOracleGuard && this.isOracleOutlier(mkt, 'perp')) {
                 try { logger.info('drift.liquidator.perp_skip_oracle_guard', { user: target.userPk, marketIndex: mkt, cat: 'drift' }); } catch {}
                 continue;
               }
@@ -1710,9 +1719,9 @@ export class DriftLiquidator {
           try {
             // If we only have batch available, compute a conservative global fraction to obey the cap
             let sizeFraction = baseSizeFrac;
-            const safeMarkets = perpMarkets.filter((mkt: number) => {
+            const safeMarkets = (opts?.bypassOracleGuard ? perpMarkets : perpMarkets.filter((mkt: number) => {
               try { return !this.isOracleOutlier(Number(mkt), 'perp'); } catch { return true; }
-            });
+            }));
             if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
               const sumN = safeMarkets.reduce((s: number, idx: number) => s + (Number(posNotionalByMarket.get(Number(idx)) || 0)), 0);
               if (sumN > 0) sizeFraction = Math.min(baseSizeFrac, Math.max(0, remainingNotional / sumN));
@@ -1766,10 +1775,10 @@ export class DriftLiquidator {
             const mkt = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
             const quoteRaw = Number(p?.quoteAssetAmount?.toString?.() || p?.quoteAssetAmount || 0);
             if (!Number.isFinite(mkt) || !Number.isFinite(quoteRaw) || quoteRaw === 0) continue;
-            if (this.isOracleOutlier(mkt, 'perp')) continue;
+            if (!opts?.bypassOracleGuard && this.isOracleOutlier(mkt, 'perp')) continue;
             // Negative PnL: attempt perp pnl for deposit
             if (quoteRaw < 0 && spotDeposit && typeof fnPerpPnlForDeposit === 'function') {
-              if (this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot')) continue;
+              if (!opts?.bypassOracleGuard && this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot')) continue;
               const depAmount = this.scaleAmount(spotDeposit.amountRaw, sizeFrac);
               try {
                 const tSend = Date.now();
@@ -1801,7 +1810,7 @@ export class DriftLiquidator {
             }
             // Positive PnL: attempt borrow for perp pnl
             if (quoteRaw > 0 && spotBorrow && typeof fnBorrowForPnl === 'function') {
-              if (this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot')) continue;
+              if (!opts?.bypassOracleGuard && this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot')) continue;
               const borrowAmount = this.scaleAmount(spotBorrow.amountRaw, sizeFrac);
               try {
                 const tSend = Date.now();
@@ -1842,7 +1851,7 @@ export class DriftLiquidator {
           // Cap fully consumed; skip spot
           try { logger.info('drift.liquidator.spot_skip_cap', { user: target.userPk, cat: 'drift' }); } catch {}
         } else if (spotDeposit && spotBorrow && userPublicKey) {
-          if (this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot') || this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot')) {
+          if (!opts?.bypassOracleGuard && (this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot') || this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot'))) {
             try { logger.info('drift.liquidator.spot_skip_oracle_guard', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), cat: 'drift' }); } catch {}
           } else {
             const maxSpot = Math.max(1, Math.min(50, Number((this.config.maxSpotAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) ?? 2))));
@@ -1991,6 +2000,8 @@ export class DriftLiquidator {
       const testSizeFraction = Number(liqCfg.testSizeFraction ?? 0.001);
       const opts: HandleTargetOpts = {
         bypassExecGate: true,
+        bypassBankruptcy: true,
+        bypassOracleGuard: true,
         forceAttempt: true,
         maxAttemptNotional: (Number.isFinite(testMaxAttemptNotional) && testMaxAttemptNotional > 0) ? testMaxAttemptNotional : undefined,
         sizeFraction: (Number.isFinite(testSizeFraction) && testSizeFraction > 0) ? testSizeFraction : undefined,

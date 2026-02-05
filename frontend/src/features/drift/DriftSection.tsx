@@ -429,6 +429,15 @@ export const DriftSection: React.FC<{
   };
   
   const shortPk = (s: string) => (s && s.length > 10 ? `${s.slice(0, 4)}...${s.slice(-4)}` : (s || '-'));
+  const displayHealthMin = -0.02;
+  const displayLiqUsers = useMemo(
+    () => liqUsers.filter((u) => {
+      if (typeof u?.health !== 'number') return false;
+      if (u.health < 0) return u.health >= displayHealthMin;
+      return true;
+    }),
+    [liqUsers]
+  );
   
   const txDisplayLimit = 10;
   // Sort by timestamp descending (most recent first) and take first N
@@ -696,12 +705,12 @@ export const DriftSection: React.FC<{
           {/* Users Table */}
           <div>
             <h4 className="text-sm font-medium text-gray-300 mb-3">Users Under Threshold</h4>
-            <div className="text-xs text-gray-500 mb-2">Health is (total - maintenance) / maintenance; 0 = liquidation. Thresholds use ratios (0.4 = 40%).</div>
+            <div className="text-xs text-gray-500 mb-2">Health is (total - maintenance) / maintenance; 0 = liquidation. Thresholds use ratios (0.4 = 40%). Sub-0 users are shown only down to -2%.</div>
             <DataTable 
               headers={['User', 'Health', 'Updated', 'Exposure', 'C/E', 'Est. Profit', 'Skip', 'Actions']} 
               compact
             >
-              {liqUsers.length > 0 ? liqUsers.map((u) => (
+              {displayLiqUsers.length > 0 ? displayLiqUsers.map((u) => (
                 <React.Fragment key={u.userPk}>
                   <DataTableRow onClick={() => toggleOpen(u.userPk)}>
                     <DataTableCell compact mono className="text-xs">{shortPk(u.userPk)}</DataTableCell>
@@ -762,7 +771,7 @@ export const DriftSection: React.FC<{
                         <Button
                           size="xs"
                           variant="primary"
-                          title="Runs full liquidation test (bypasses exec gate, minimal size/cap; respects dry run)"
+                          title="Runs full liquidation test (bypasses exec gate + guards; minimal size/cap; respects dry run)"
                           onClick={(e) => { e?.stopPropagation(); testUser(u.userPk); }}
                         >
                           Attempt

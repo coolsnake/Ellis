@@ -89,20 +89,28 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
     } catch {}
   };
 
-  const topAtRisk = useMemo(() => {
+  const displayHealthMin = -0.02;
+  const filteredUsers = useMemo(() => {
     try {
       const users = Array.isArray(queue?.users) ? [...queue!.users!] : [];
-      return users
-        .sort((a, b) => {
-          const ah = (typeof a?.health === 'number') ? a.health : Infinity;
-          const bh = (typeof b?.health === 'number') ? b.health : Infinity;
-          return ah - bh;
-        })
-        .slice(0, 25);
+      return users.filter((u) => {
+        if (typeof u?.health !== 'number') return false;
+        if (u.health < 0) return u.health >= displayHealthMin;
+        return true;
+      });
     } catch {
       return [];
     }
   }, [queue?.users]);
+  const topAtRisk = useMemo(() => {
+    try {
+      return [...filteredUsers]
+        .sort((a, b) => a.health - b.health)
+        .slice(0, 25);
+    } catch {
+      return [];
+    }
+  }, [filteredUsers]);
 
   return (
     <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-4">
@@ -149,11 +157,12 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
       )}
 
       {/* Users Under Threshold */}
-      {!hideUserList && Array.isArray(queue?.users) && queue!.users!.length > 0 && (
+      {!hideUserList && filteredUsers.length > 0 && (
         <div className="mb-4">
           <h4 className="text-sm font-medium text-gray-300 mb-2">Users Under Threshold</h4>
+          <div className="text-xs text-gray-500 mb-2">Showing all under-threshold users; for sub-0, only down to -2%</div>
           <div className="space-y-2 max-h-80 overflow-auto">
-            {queue!.users!.map((u) => (
+            {filteredUsers.map((u) => (
               <div key={`user-${u.userPk}`} className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3 flex-wrap">
@@ -182,7 +191,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
                     <Button
                       size="xs"
                       variant="primary"
-                      title="Runs full liquidation test (bypasses exec gate, minimal size/cap; respects dry run)"
+                      title="Runs full liquidation test (bypasses exec gate + guards; minimal size/cap; respects dry run)"
                       onClick={() => testUser(u.userPk)}
                     >
                       Attempt
