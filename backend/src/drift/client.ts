@@ -333,6 +333,27 @@ export class DriftService {
   }
 
   async getSharedInfra(opts?: { includeIdle?: boolean; updateFrequency?: number; preferOrderSubscriber?: boolean }): Promise<{ slotSubscriber: any; eventSubscriber: any; userMap: any; dlobSubscriber: any; orderSubscriber?: any }> {
+    // Fast-path: if all core subscribers are already wired up and the DLOB
+    // is populated, return immediately without re-entering the subscription
+    // waterfall.  This prevents concurrent HTTP requests (trigger-nodes,
+    // fill-nodes) from piling up inside slow subscribe/waitReady chains
+    // while the infra process is still warming up or serving other requests.
+    if (
+      this.sharedSlotSubscriber &&
+      this.sharedEventSubscriber &&
+      this.sharedUserMap &&
+      this.sharedDlobSubscriber &&
+      (typeof this.sharedDlobSubscriber.getDLOB !== 'function' || this.sharedDlobSubscriber.getDLOB())
+    ) {
+      return {
+        slotSubscriber: this.sharedSlotSubscriber,
+        eventSubscriber: this.sharedEventSubscriber,
+        userMap: this.sharedUserMap,
+        dlobSubscriber: this.sharedDlobSubscriber,
+        orderSubscriber: this.sharedOrderSubscriber,
+      };
+    }
+
     await this.init();
     let sdk: any = null;
     try { sdk = await import('@drift-labs/sdk'); } catch {}

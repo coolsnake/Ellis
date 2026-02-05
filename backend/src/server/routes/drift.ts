@@ -105,21 +105,44 @@ export function createDriftRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Helper: yield to the event loop so one heavy DLOB scan cannot starve
+  // concurrent requests (trigger-nodes vs fill-nodes).
+  const yieldLoop = () => new Promise<void>((r) => setImmediate(r));
+
+  // Helper: get infra fast — check readiness first, only fall through to
+  // the full getSharedInfra() call if subscribers are already wired up.
+  // Returns null when infra is not ready yet (caller should 503).
+  const getInfraFast = async (): Promise<{ svc: any; infra: any; dlob: any } | null> => {
+    const { DriftService } = await import('../../drift/client.js');
+    const svc = DriftService.getInstance() as any;
+    const status = svc.getInfraStatus?.();
+    // If warmup hasn't completed or the DLOB subscriber isn't attached yet,
+    // return null immediately instead of entering the subscription waterfall
+    // which would block this request for many seconds.
+    if (!status?.has?.dlobSubscriber || !status?.has?.slotSubscriber) return null;
+    const infra = await svc.getSharedInfra?.({ includeIdle: true, preferOrderSubscriber: true });
+    const dlob = infra?.dlobSubscriber?.getDLOB?.();
+    if (!dlob) return null;
+    return { svc, infra, dlob };
+  };
+
   api.post('/drift/infra/dlob/trigger-nodes', async (req: Request, res: Response) => {
     try {
       const markets: Array<{ marketIndex: number; marketType?: any; triggerPrice?: string }> = Array.isArray(req.body?.markets) ? req.body.markets : [];
       const limitPerMarket = Number.isFinite(Number(req.body?.limitPerMarket)) ? Number(req.body.limitPerMarket) : undefined;
       if (markets.length === 0) return res.json({ results: [] });
-      const { DriftService } = await import('../../drift/client.js');
-      const svc = DriftService.getInstance() as any;
-      const infra = await svc.getSharedInfra?.({ includeIdle: true, preferOrderSubscriber: true });
-      const dlob = infra?.dlobSubscriber?.getDLOB?.();
-      if (!dlob) return res.status(503).json({ error: 'dlob_unavailable' });
+      const ctx = await getInfraFast();
+      if (!ctx) return res.status(503).json({ error: 'dlob_unavailable' });
+      const { svc, infra, dlob } = ctx;
       const { BN, MarketType, getVariant, isVariant, getTriggerPrice, useMedianTriggerPrice } = await import('@drift-labs/sdk');
       const stateAcc = svc?.client?.getStateAccount?.();
       const slot = Number(infra?.slotSubscriber?.getSlot?.() ?? 0);
       const results: any[] = [];
+      let iter = 0;
       for (const m of markets) {
+        // Yield every 10 markets so fill-nodes (or other requests) aren't starved
+        iter += 1;
+        if ((iter % 10) === 0) await yieldLoop();
         const idx = Number((m as any)?.marketIndex ?? m);
         if (!Number.isFinite(idx)) continue;
         const mType = (m as any)?.marketType;
@@ -174,11 +197,9 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const markets: number[] = Array.isArray(req.body?.markets) ? req.body.markets : [];
       const limitPerMarket = Number.isFinite(Number(req.body?.limitPerMarket)) ? Number(req.body.limitPerMarket) : undefined;
       if (markets.length === 0) return res.json({ results: [] });
-      const { DriftService } = await import('../../drift/client.js');
-      const svc = DriftService.getInstance() as any;
-      const infra = await svc.getSharedInfra?.({ includeIdle: true, preferOrderSubscriber: true });
-      const dlob = infra?.dlobSubscriber?.getDLOB?.();
-      if (!dlob) return res.status(503).json({ error: 'dlob_unavailable' });
+      const ctx = await getInfraFast();
+      if (!ctx) return res.status(503).json({ error: 'dlob_unavailable' });
+      const { svc, infra, dlob } = ctx;
       const { MarketType, BN, calculateAskPrice, calculateBidPrice } = await import('@drift-labs/sdk');
       const slot = Number(infra?.slotSubscriber?.getSlot?.() ?? 0);
       const slotBn = new BN(slot);
@@ -187,7 +208,11 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const driftCfg: any = (CONFIG as any)?.drift || {};
       const maxDelay = Math.max(0, Number(driftCfg?.maxOracleDelaySlots ?? 40));
       const results: any[] = [];
+      let iter = 0;
       for (const rawIdx of markets) {
+        // Yield every 10 markets so trigger-nodes (or other requests) aren't starved
+        iter += 1;
+        if ((iter % 10) === 0) await yieldLoop();
         const idx = Number(rawIdx);
         if (!Number.isFinite(idx)) continue;
         const market = svc.client.getPerpMarketAccount?.(idx);
