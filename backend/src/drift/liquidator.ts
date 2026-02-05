@@ -996,7 +996,7 @@ export class DriftLiquidator {
       } catch {}
       const exists = await (user as any).exists?.();
       if (!exists) return;
-      const total = Number((user as any)?.getTotalCollateral?.() || 0);
+      const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
       const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
       if (!isFinite(total) || !isFinite(maint)) return;
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
@@ -1278,7 +1278,7 @@ export class DriftLiquidator {
           } catch {}
 
           // Collateral/maintenance (quote precision)
-          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
           const health = maint > 0 ? (total - maint) / maint : Infinity;
@@ -1527,7 +1527,7 @@ export class DriftLiquidator {
           this.userLastRefresh.set(String(target.userPk), Date.now());
         } catch {}
         try {
-          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (isFinite(total) && isFinite(maint) && maint > 0) healthNow = (total - maint) / maint;
         } catch {}
@@ -1641,7 +1641,7 @@ export class DriftLiquidator {
         // Collateral values (native + UI)
         let QUOTE_PREC = 1_000_000;
         try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION); } catch {}
-        const total = Number((sdkUser as any)?.getTotalCollateral?.() || 0);
+        const total = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
         const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
         const free = Number((sdkUser as any)?.getFreeCollateral?.()?.toString?.() || (sdkUser as any)?.getFreeCollateral?.() || 0);
         const totalUi = total / QUOTE_PREC;
@@ -2146,7 +2146,7 @@ export class DriftLiquidator {
             try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
           }
           try {
-            const total = Number((sdkUser as any)?.getTotalCollateral?.() || 0);
+            const total = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
             const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
             beforeHealth = (isFinite(total) && isFinite(maint) && maint > 0) ? (total - maint) / maint : null;
           } catch {}
@@ -2159,7 +2159,7 @@ export class DriftLiquidator {
             }
           } catch {}
           try {
-            const total2 = Number((sdkUser as any)?.getTotalCollateral?.() || 0);
+            const total2 = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
             const maint2 = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
             afterHealth = (isFinite(total2) && isFinite(maint2) && maint2 > 0) ? (total2 - maint2) / maint2 : null;
           } catch {}
@@ -2421,7 +2421,7 @@ export class DriftLiquidator {
       const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
       if (typeof cur !== 'number' || cur <= 0) return null;
       // Approximation: smaller (collateral - maint)/maint => closer to zero health; translate to price move needed
-      const total = Number((sdkUser as any)?.getTotalCollateral?.() || 0);
+      const total = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
       const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
       if (!isFinite(total) || !isFinite(maint) || maint <= 0) return null;
       const health = (total - maint) / maint; // 0 => liquidation threshold
@@ -2854,7 +2854,7 @@ export class DriftLiquidator {
             }
           } catch {}
           // Compute health early; if already under threshold, flag immediately
-          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (!isFinite(total) || !isFinite(maint)) { this.inProbeQueue.delete(key); continue; }
           const health = maint > 0 ? (total - maint) / maint : Infinity;
@@ -3117,7 +3117,7 @@ export class DriftLiquidator {
               }
             }
           } catch {}
-          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
           const currentHealth = maint > 0 ? (total - maint) / maint : Infinity;

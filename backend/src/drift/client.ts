@@ -1699,7 +1699,7 @@ export class DriftService {
           return Number(val?.toString?.() || val || 0) / QUOTE_PREC;
         } catch { return Number(val?.toString?.() || val || 0) / QUOTE_PREC; }
       };
-      const totalCollateral = toUi(user?.getTotalCollateral?.());
+      const totalCollateral = toUi(user?.getTotalCollateral?.('Maintenance'));
       const maint = toUi(user?.getMaintenanceMarginRequirement?.());
       const initReq = toUi(user?.getInitialMarginRequirement?.());
       const free = toUi(user?.getFreeCollateral?.());
@@ -1939,7 +1939,7 @@ export class DriftService {
               );
             }
           } catch {}
-          const totalCollateral = toUi(user?.getTotalCollateral?.());
+          const totalCollateral = toUi(user?.getTotalCollateral?.('Maintenance'));
           const maint = toUi(user?.getMaintenanceMarginRequirement?.());
           const initReq = toUi(user?.getInitialMarginRequirement?.());
           const free = toUi(user?.getFreeCollateral?.());

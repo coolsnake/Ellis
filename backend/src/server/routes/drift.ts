@@ -622,10 +622,10 @@ export function createDriftRouter(io: SocketIOServer): Router {
       } catch {}
       const toUi = (v: any) => Number(v?.toString?.() || v || 0) / QUOTE_PREC;
       const collateral = {
-        total: Number((sdkUser as any)?.getTotalCollateral?.() || 0),
+        total: Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0),
         maintenance: Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0),
         free: Number((sdkUser as any)?.getFreeCollateral?.()?.toString?.() || (sdkUser as any)?.getFreeCollateral?.() || 0),
-        totalUi: toUi((sdkUser as any)?.getTotalCollateral?.()),
+        totalUi: toUi((sdkUser as any)?.getTotalCollateral?.('Maintenance')),
         maintUi: toUi((sdkUser as any)?.getMaintenanceMarginRequirement?.()),
         freeUi: toUi((sdkUser as any)?.getFreeCollateral?.()),
       } as any;
