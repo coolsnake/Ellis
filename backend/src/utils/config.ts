@@ -919,7 +919,9 @@ export const CONFIG = {
     // Shared OrderSubscriber resync interval
     orderResyncIntervalMs: Number(process.env.DRIFT_ORDER_RESYNC_MS || 15000),
     // User prefetcher controls
-    prefetchEnabled: (process.env.DRIFT_PREFETCH_ENABLED || 'true') !== 'false',
+    // Disabled by default - SDK's UserMap and OrderSubscriber already provide user data
+    // Enable with DRIFT_PREFETCH_ENABLED=true if extra caching is needed for high-frequency filler
+    prefetchEnabled: (process.env.DRIFT_PREFETCH_ENABLED || 'false') === 'true',
     // Method: 'maci' (getMultipleAccountsInfo), 'gpa' (Helius GPA v2), or 'auto'
     prefetchMethod: (process.env.DRIFT_PREFETCH_METHOD as any) || 'auto',
     prefetchIntervalMs: Number(process.env.DRIFT_PREFETCH_INTERVAL_MS || 3000),

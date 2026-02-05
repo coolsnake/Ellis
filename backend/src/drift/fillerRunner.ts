@@ -511,14 +511,25 @@ export class DriftFillerRunner {
       } catch {}
 
       const makerInfos: any[] = [];
-      // Makers must be warm; do not decode via RPC in the hot path
+      // Try warm cache first, then fall back to userMap with tight timeout
       for (const m of makers) {
         try {
           let makerUa: any = null;
+          // Try warm cache first
           try {
             const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
             makerUa = warm?.getUserAccount?.() || null;
           } catch {}
+          // Fall back to userMap if not in warm cache
+          if (!makerUa && this.userMap) {
+            try {
+              const wrap = await Promise.race([
+                this.userMap.mustGet(m),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('MAKER_UA_TIMEOUT')), 150)),
+              ]).catch(() => null);
+              makerUa = (wrap as any)?.getUserAccount?.() || null;
+            } catch {}
+          }
           if (!makerUa) continue;
           const makerAuth = makerUa?.authority;
           let makerStats = null;
