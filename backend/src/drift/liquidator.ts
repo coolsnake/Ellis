@@ -450,11 +450,6 @@ export class DriftLiquidator {
     // Unsubscribe all User websocket subscriptions (skip when WS not ready)
     try {
       const drift: any = (DriftService.getInstance() as any).client;
-      let spotDeposit: any | null = null;
-      let spotBorrow: any | null = null;
-      let perpPositionsForPnl: any[] = [];
-      let openOrdersCount = 0;
-      let forceCancelAttempted = false;
       const ws: any = drift?.connection?._rpcWebSocket?._ws;
       const rs: number = Number(ws?.readyState);
       const canRpc = (rs === 0 || rs === 1);
@@ -1337,6 +1332,12 @@ export class DriftLiquidator {
         }
       } catch {}
       const drift: any = (DriftService.getInstance() as any).client;
+      // Liquidation state variables for this attempt
+      let spotDeposit: any | null = null;
+      let spotBorrow: any | null = null;
+      let perpPositionsForPnl: any[] = [];
+      let openOrdersCount = 0;
+      let forceCancelAttempted = false;
       // Parse user public key for SDK calls in this attempt scope
       let userPublicKey: PublicKey | null = toPublicKey(target.userPk);
       if (!userPublicKey) {
