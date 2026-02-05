@@ -911,11 +911,11 @@ export const CONFIG = {
     // Shared blockhash warmer interval (ms)
     blockhashWarmMs: Number(process.env.DRIFT_BLOCKHASH_WARM_MS || 400),
     // Watchdog: consider slot stale after this many ms and attempt resubscribe
-    slotStaleMs: Number(process.env.DRIFT_SLOT_STALE_MS || 25000),
+    slotStaleMs: Number(process.env.DRIFT_SLOT_STALE_MS || 45000),
     // Cooldown between consecutive watchdog-driven resubscribe attempts
-    resubCooldownMs: Number(process.env.DRIFT_RESUB_COOLDOWN_MS || 15000),
+    resubCooldownMs: Number(process.env.DRIFT_RESUB_COOLDOWN_MS || 20000),
     // Timeout for heartbeat slot fetch before resubscribe (ms)
-    heartbeatTimeoutMs: Number(process.env.DRIFT_HEARTBEAT_TIMEOUT_MS || 3000),
+    heartbeatTimeoutMs: Number(process.env.DRIFT_HEARTBEAT_TIMEOUT_MS || 5000),
     // Shared OrderSubscriber resync interval
     orderResyncIntervalMs: Number(process.env.DRIFT_ORDER_RESYNC_MS || 15000),
     // User prefetcher controls

@@ -162,6 +162,7 @@ export class DriftLiquidator {
   private healthyUntil: Map<string, number> = new Map();
   private eventSub: any | null = null;
   private sharedUserMap: any | null = null;
+  private userMapSeedRetryTimer: any | null = null;
   private lastDiscoveryUsedGpaV2 = false;
   private discoveryTimer: any | null = null;
   private lastDiscoverySlot: number = 0;
@@ -350,6 +351,7 @@ export class DriftLiquidator {
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
     if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} this.discoveryTimer = null; }
     if (this.eventIndexSweepTimer) { try { (globalThis as any).clearInterval(this.eventIndexSweepTimer); } catch {} this.eventIndexSweepTimer = null; }
+    if (this.userMapSeedRetryTimer) { try { (globalThis as any).clearTimeout(this.userMapSeedRetryTimer); } catch {} this.userMapSeedRetryTimer = null; }
     // Do not unsubscribe shared event subscriber owned by DriftService
     try { this.eventSub = null; } catch {}
     // Cleanup DLOB helpers and periodic seed timer
@@ -2205,6 +2207,18 @@ export class DriftLiquidator {
       let userPks: string[] = [];
       try {
         const um = this.sharedUserMap;
+        try {
+          if (um && typeof um.size === 'function' && um.size() <= 0) {
+            // Shared user map is present but not ready yet; retry shortly
+            if (!this.userMapSeedRetryTimer) {
+              this.userMapSeedRetryTimer = (globalThis as any).setTimeout(() => {
+                try { this.userMapSeedRetryTimer = null; } catch {}
+                try { this.seedFromDlobUserMap().catch(() => {}); } catch {}
+              }, 5000);
+            }
+            return;
+          }
+        } catch {}
         if (um && typeof um.entries === 'function') {
           const entries = Array.from(um.entries());
           userPks = entries.map(([k]) => String((k as any)?.toBase58?.() || k)).filter(Boolean);
@@ -2218,19 +2232,19 @@ export class DriftLiquidator {
         try { logger.warn('drift.liquidator.usermap_shared_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
       }
       try {
-        if (userPks.length === 0 && typeof (drift as any)?.getUserMap === 'function') {
+        if (userPks.length === 0 && !this.sharedUserMap && typeof (drift as any)?.getUserMap === 'function') {
           const um = await (drift as any).getUserMap();
           const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
           userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
           try { logger.info('drift.liquidator.usermap_get_keys', { keys: entries.length, cat: 'drift' }); } catch {}
-        } else if (userPks.length === 0) {
+        } else if (userPks.length === 0 && !this.sharedUserMap) {
           try { logger.info('drift.liquidator.usermap_get_unavailable', { cat: 'drift' }); } catch {}
         }
       } catch (e: any) {
         try { logger.warn('drift.liquidator.usermap_get_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
       }
       try {
-        if (userPks.length === 0 && (drift as any)?.dlob?._userMap) {
+        if (userPks.length === 0 && !this.sharedUserMap && (drift as any)?.dlob?._userMap) {
           const um = (drift as any).dlob._userMap;
           const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
           userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
@@ -2260,21 +2274,30 @@ export class DriftLiquidator {
         try { indices = getAllowlistIndices(); } catch {}
       }
       if (indices.length === 0) indices = [0, 1, 2];
+      const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
       const seen: Set<string> = new Set();
       const makers: string[] = [];
       // Lazy import helpers to avoid cycles
       const mod: any = await import('./marketdata.js');
-      for (const idx of indices) {
-        try {
-          // Prefer topMakers (cheaper); fallback to L3 if empty
-          const top = await mod.fetchDlobTopMakers(Number(idx)).catch(() => null);
-          if (top && Array.isArray(top.makers) && top.makers.length > 0) {
-            for (const m of top.makers) { const k = String(m.maker || ''); if (k && !seen.has(k)) { seen.add(k); makers.push(k); } }
-          } else {
-            const l3Keys: string[] = await mod.fetchDlobL3Makers(Number(idx)).catch(() => []);
-            for (const k of l3Keys) { if (k && !seen.has(k)) { seen.add(k); makers.push(k); } }
-          }
-        } catch {}
+      const maxParallel = Math.max(1, Number((this.config as any)?.dlobHttpConcurrency ?? liqCfg.dlobHttpConcurrency ?? 4));
+      for (let i = 0; i < indices.length; i += maxParallel) {
+        const slice = indices.slice(i, i + maxParallel);
+        await Promise.all(slice.map(async (idx) => {
+          try {
+            // Prefer topMakers (cheaper); fallback to L3 if empty
+            const top = await mod.fetchDlobTopMakers(Number(idx)).catch(() => null);
+            if (top && Array.isArray(top.makers) && top.makers.length > 0) {
+              for (const m of top.makers) { const k = String(m.maker || ''); if (k && !seen.has(k)) { seen.add(k); makers.push(k); } }
+            } else {
+              const l3Keys: string[] = await mod.fetchDlobL3Makers(Number(idx)).catch(() => []);
+              for (const k of l3Keys) { if (k && !seen.has(k)) { seen.add(k); makers.push(k); } }
+            }
+          } catch {}
+        }));
+        // Yield between batches to keep event loop responsive
+        if (i + maxParallel < indices.length) {
+          try { await new Promise(r => setTimeout(r, 0)); } catch {}
+        }
       }
       if (makers.length > 0) {
         const max = Math.min(2000, makers.length);

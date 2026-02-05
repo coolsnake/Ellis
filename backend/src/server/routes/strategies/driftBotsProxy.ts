@@ -25,7 +25,8 @@ async function proxy(req: Request, res: Response): Promise<void> {
   };
   const body = (method === 'GET' || method === 'HEAD') ? undefined : JSON.stringify(req.body || {});
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort('timeout'), 5000);
+  // Allow longer startup operations in child process
+  const t = setTimeout(() => ac.abort('timeout'), 20000);
   try {
     const r = await fetch(url, { method, headers, body, signal: ac.signal });
     const text = await r.text();
