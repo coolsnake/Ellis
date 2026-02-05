@@ -20,6 +20,8 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
   const effectiveSocket = socket ?? ctxSocket;
   const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users?: UserItem[]; marketFees?: MarketFee[]; recentAttempts?: LiqAttempt[] } | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
+  const [marketsOpen, setMarketsOpen] = useState(false);
+  const [usersOpen, setUsersOpen] = useState(false);
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -141,16 +143,6 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
       return [];
     }
   }, [queue?.users]);
-  const topAtRisk = useMemo(() => {
-    try {
-      return [...filteredUsers]
-        .sort((a, b) => a.health - b.health)
-        .slice(0, 25);
-    } catch {
-      return [];
-    }
-  }, [filteredUsers]);
-
   return (
     <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-4">
       <div className="flex items-center justify-between mb-4">
@@ -169,34 +161,44 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
         />
       </div>
 
-      {/* Tracked Markets with Fees */}
+      {/* Tracked Markets with Fees (collapsible) */}
       {Array.isArray(queue?.marketFees) && queue!.marketFees!.length > 0 && (
         <div className="mb-4">
-          <h4 className="text-sm font-medium text-gray-300 mb-2">Tracked Markets</h4>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-gray-400 text-xs uppercase tracking-wide border-b border-gray-700/50">
-                  <th className="text-left py-1.5 pr-4">Market</th>
-                  <th className="text-right py-1.5 px-3">Perp Fee</th>
-                  <th className="text-right py-1.5 px-3">Spot Fee</th>
-                </tr>
-              </thead>
-              <tbody>
-                {queue!.marketFees!.map((mf) => (
-                  <tr key={`mf-${mf.marketIndex}`} className="border-b border-gray-800/30">
-                    <td className="py-1.5 pr-4 text-gray-200 font-mono">{mf.symbol || `#${mf.marketIndex}`}</td>
-                    <td className="py-1.5 px-3 text-right font-mono text-gray-300">
-                      {typeof mf.perpFee === 'number' ? `${(mf.perpFee * 100).toFixed(2)}%` : '-'}
-                    </td>
-                    <td className="py-1.5 px-3 text-right font-mono text-gray-300">
-                      {typeof mf.spotFee === 'number' ? `${(mf.spotFee * 100).toFixed(2)}%` : '-'}
-                    </td>
+          <button
+            type="button"
+            onClick={() => setMarketsOpen((v) => !v)}
+            className="flex items-center gap-2 w-full text-left group"
+          >
+            <span className={`text-gray-400 transition-transform text-xs ${marketsOpen ? 'rotate-90' : ''}`}>&#9654;</span>
+            <h4 className="text-sm font-medium text-gray-300">Tracked Markets</h4>
+            <span className="text-xs text-gray-500">{queue!.marketFees!.length}</span>
+          </button>
+          {marketsOpen && (
+            <div className="overflow-x-auto mt-2">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-gray-400 text-xs uppercase tracking-wide border-b border-gray-700/50">
+                    <th className="text-left py-1.5 pr-4">Market</th>
+                    <th className="text-right py-1.5 px-3">Perp Fee</th>
+                    <th className="text-right py-1.5 px-3">Spot Fee</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {queue!.marketFees!.map((mf) => (
+                    <tr key={`mf-${mf.marketIndex}`} className="border-b border-gray-800/30">
+                      <td className="py-1.5 pr-4 text-gray-200 font-mono">{mf.symbol || `#${mf.marketIndex}`}</td>
+                      <td className="py-1.5 px-3 text-right font-mono text-gray-300">
+                        {typeof mf.perpFee === 'number' ? `${(mf.perpFee * 100).toFixed(2)}%` : '-'}
+                      </td>
+                      <td className="py-1.5 px-3 text-right font-mono text-gray-300">
+                        {typeof mf.spotFee === 'number' ? `${(mf.spotFee * 100).toFixed(2)}%` : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -309,11 +311,21 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
         )}
       </div>
 
-      {/* Users Under Threshold */}
+      {/* Users Under Threshold (collapsible) */}
       {!hideUserList && filteredUsers.length > 0 && (
         <div className="mb-4">
-          <h4 className="text-sm font-medium text-gray-300 mb-2">Users Under Threshold</h4>
-          <div className="text-xs text-gray-500 mb-2">Showing all under-threshold users; for sub-0, only down to -2%</div>
+          <button
+            type="button"
+            onClick={() => setUsersOpen((v) => !v)}
+            className="flex items-center gap-2 w-full text-left group"
+          >
+            <span className={`text-gray-400 transition-transform text-xs ${usersOpen ? 'rotate-90' : ''}`}>&#9654;</span>
+            <h4 className="text-sm font-medium text-gray-300">Users Under Threshold</h4>
+            <span className="text-xs text-gray-500">{filteredUsers.length}</span>
+          </button>
+          {usersOpen && (
+          <>
+          <div className="text-xs text-gray-500 mb-2 mt-2">Showing all under-threshold users; for sub-0, only down to -2%</div>
           <div className="space-y-2 max-h-80 overflow-auto">
             {filteredUsers.map((u) => (
               <div key={`user-${u.userPk}`} className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
@@ -374,33 +386,10 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
               </div>
             ))}
           </div>
+          </>
+          )}
         </div>
       )}
-
-      {/* Top Under-Threshold Accounts */}
-      <div>
-        <h4 className="text-sm font-medium text-gray-300 mb-2">Top Under-Threshold Accounts</h4>
-        {topAtRisk.length > 0 ? (
-          <div className="space-y-1 max-h-56 overflow-auto">
-            {topAtRisk.map((c) => (
-              <div key={c.userPk} className="flex items-center justify-between p-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-sm">
-                <div className="flex items-center gap-3">
-                  <span className="text-white font-mono" title={c.userPk}>
-                    {c.userPk.slice(0, 4)}…{c.userPk.slice(-4)}
-                  </span>
-                  <span className="text-xs text-gray-400">health</span>
-                  <span className={`font-mono ${c.health < -0.5 ? 'text-red-400' : c.health < 0 ? 'text-yellow-400' : 'text-white'}`}>
-                    {formatPct(c.health)}
-                  </span>
-                </div>
-                <span className="text-xs text-gray-500">{timeAgo(c.updatedAt)}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <EmptyState message="No users under threshold" />
-        )}
-      </div>
     </div>
   );
 };

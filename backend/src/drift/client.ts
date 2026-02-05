@@ -786,6 +786,8 @@ export class DriftService {
             }
           }
         } catch {}
+        // Eagerly enumerate own subaccounts so cache is warm for bots/UI
+        try { await this.getSubaccounts(); } catch {}
         this.warmupDone = true;
         this.lastWarmupAtMs = Date.now();
         try { logger.info('drift.warmup.ok', { ms: this.lastWarmupAtMs - t0, cat: 'drift' }); } catch {}

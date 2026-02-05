@@ -192,6 +192,8 @@ export class DriftLiquidator {
   private unsubscribingUsers: Set<string> = new Set();
   private liveMonitors: Map<string, any> = new Map();
   private drainRequested: boolean = false;
+  private sweepTimer: any | null = null;
+  private _sweepInFlight: boolean = false;
 
   private requestImmediateDrain(): void {
     try {
@@ -311,6 +313,8 @@ export class DriftLiquidator {
         }
       }
     } catch {}
+    // Increase event index TTL so indexed users persist long enough for background rescans
+    try { driftEventIndex.configure({ ttlMs: 300_000 }); } catch {}
     // Initialize discovery and subscriptions (WS-only sources first)
     try { await this.initDiscovery(); this.initialized = true; } catch {}
     try { await this.initEventSubscriptions(); } catch {}
@@ -349,6 +353,23 @@ export class DriftLiquidator {
       try { logger.warn('drift.liquidator.enumerate_helius_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
     }
     try { await this.initPriceTriggers(); } catch {}
+    // Full sweep of event index at startup to seed atRiskUsers
+    try { await this.sweepIndexForAtRisk(); } catch {}
+    // Periodic non-blocking background rescan to pick up newly at-risk users
+    try {
+      const rescanMs = Math.max(60_000, Number(
+        (this.config as any)?.indexRescanIntervalMs
+        ?? ((CONFIG as any)?.drift?.liquidator?.indexRescanIntervalMs)
+        ?? 300_000 // 5 minutes
+      ));
+      this.sweepTimer = (globalThis as any).setInterval(() => {
+        if (this.abort || this._sweepInFlight) return;
+        this._sweepInFlight = true;
+        this.sweepIndexForAtRisk()
+          .catch(() => {})
+          .finally(() => { this._sweepInFlight = false; });
+      }, rescanMs);
+    } catch {}
     const guardedTick = async () => {
       if (this.abort || (this as any)._inTick) return;
       (this as any)._inTick = true;
@@ -424,6 +445,7 @@ export class DriftLiquidator {
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
     if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} this.discoveryTimer = null; }
     if (this.eventIndexSweepTimer) { try { (globalThis as any).clearInterval(this.eventIndexSweepTimer); } catch {} this.eventIndexSweepTimer = null; }
+    if (this.sweepTimer) { try { (globalThis as any).clearInterval(this.sweepTimer); } catch {} this.sweepTimer = null; }
     if (this.userMapSeedRetryTimer) { try { (globalThis as any).clearTimeout(this.userMapSeedRetryTimer); } catch {} this.userMapSeedRetryTimer = null; }
     // Do not unsubscribe shared event subscriber owned by DriftService
     try { this.eventSub = null; } catch {}
@@ -689,6 +711,78 @@ export class DriftLiquidator {
       }
       try { this.lastDiscoverySlot = Number(await conn.getSlot('processed')); } catch {}
     } catch {}
+  }
+
+  /**
+   * Sweep the event index for all users across tracked markets (and broadly active users),
+   * merge them into userKeys, and enqueue them all for probing. The existing probe flow
+   * will compute health and populate atRiskUsers for anyone found under threshold.
+   * Called once at startup and periodically via sweepTimer.
+   */
+  private async sweepIndexForAtRisk(): Promise<void> {
+    try {
+      const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
+      const indexLimit = Math.max(200, Number(
+        (this.config as any)?.indexSweepLimit
+        ?? liqCfg.indexSweepLimit
+        ?? 2000
+      ));
+      const allUsers = new Set<string>(this.userKeys);
+      const beforeSize = allUsers.size;
+      // Gather users from tracked markets via event index
+      for (const mkt of this.trackedMarkets) {
+        try {
+          const idxUsers = this.useInfra
+            ? ((await fetchEventIndex())?.getUsersForMarket?.(Number(mkt), indexLimit) ?? [])
+            : driftEventIndex.getUsersForMarket(Number(mkt), indexLimit);
+          for (const u of idxUsers) allUsers.add(String(u));
+        } catch {}
+      }
+      // Also fold in broadly active users from the index
+      try {
+        const activeUsers = this.useInfra
+          ? ((await fetchEventIndex())?.getActiveUsers?.(indexLimit) ?? [])
+          : driftEventIndex.getActiveUsers(indexLimit);
+        for (const u of activeUsers) allUsers.add(String(u));
+      } catch {}
+      this.userKeys = Array.from(allUsers);
+      // Enqueue all for probing in controlled batches
+      const chunk = Math.max(100, Number(
+        (this.config as any)?.indexSweepChunk
+        ?? liqCfg.indexSweepChunk
+        ?? 500
+      ));
+      const delayMs = Math.max(0, Number(
+        (this.config as any)?.indexSweepDelayMs
+        ?? liqCfg.indexSweepDelayMs
+        ?? 100
+      ));
+      let enqueued = 0;
+      for (const pk of allUsers) {
+        this.enqueueProbe(pk);
+        enqueued++;
+        if (enqueued % chunk === 0 && delayMs > 0) {
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+      }
+      try {
+        logger.info('drift.liquidator.index_sweep_done', {
+          name: this.config.name,
+          usersBefore: beforeSize,
+          usersAfter: allUsers.size,
+          newUsers: allUsers.size - beforeSize,
+          enqueued,
+          trackedMarkets: this.trackedMarkets.size,
+          cat: 'drift',
+        });
+      } catch {}
+    } catch (e: any) {
+      try {
+        logger.warn('drift.liquidator.index_sweep_failed', {
+          error: String(e?.message || e), cat: 'drift',
+        });
+      } catch {}
+    }
   }
 
   private async initPriceTriggers(): Promise<void> {
