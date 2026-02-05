@@ -5,7 +5,7 @@ import { CONFIG } from '../utils/config.js';
 import { ensureWallet } from '../wallet/wallet.js';
 import type { DriftStatus, SubaccountInfo, DriftMarketRef, DriftCluster } from './types.js';
 import { parseAllowlistMarkets } from './marketMapping.js';
-import { logger } from '../utils/logger.js';
+import { logger, maskUrl } from '../utils/logger.js';
 
 // Lazy import SDK to keep startup fast and optional
 type DriftEnv = {
@@ -102,7 +102,7 @@ export class DriftService {
           if (res && typeof res.status === 'number' && res.status === 429) {
             let method: string | undefined;
             try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch {}
-            try { logger.warn('rpc.429', { method, url: String(info), cat: 'rpc' }); } catch {}
+            try { logger.warn('rpc.429', { method, url: maskUrl(String(info)), cat: 'rpc' }); } catch {}
           }
         } catch {}
         return res as any;
@@ -200,7 +200,7 @@ export class DriftService {
         if (res && typeof res.status === 'number' && res.status === 429) {
           let method: string | undefined;
           try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch {}
-          try { logger.warn('rpc.429', { method, url: String(info), cat: 'rpc' }); } catch {}
+          try { logger.warn('rpc.429', { method, url: maskUrl(String(info)), cat: 'rpc' }); } catch {}
         }
       } catch {}
       return res as any;
@@ -220,7 +220,7 @@ export class DriftService {
     };
     
     const t0 = Date.now();
-    logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift', code: 'DRIFT.SDK.INIT' });
+    logger.info('drift.sdk.init', { rpcUrl: maskUrl(CONFIG.rpcUrl), cluster: this.cluster, cat: 'drift', code: 'DRIFT.SDK.INIT' });
     const { initialize, Wallet, BulkAccountLoader, getMarketsAndOraclesForSubscription } = await loadSdk();
     // Use SDK Wallet wrapper per docs
     const wallet = new Wallet(this.walletKp);
@@ -452,7 +452,8 @@ export class DriftService {
             // Heartbeat: try a quick slot fetch; if successful, mark fresh and skip resubscribe
             try {
               const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
-              const hbSlot = await withRpcTimeout(this.getReadConnection().getSlot('processed'), 1500, 'slot.heartbeat');
+              const hbTimeoutMs = Math.max(1500, Number(((CONFIG as any)?.drift?.heartbeatTimeoutMs) ?? 3000));
+              const hbSlot = await withRpcTimeout(this.getReadConnection().getSlot('processed'), hbTimeoutMs, 'slot.heartbeat');
               if (Number.isFinite(Number(hbSlot))) {
                 this.lastSlotTs = Date.now();
                 this._staleCount = 0;
@@ -1471,7 +1472,7 @@ export class DriftService {
       try {
         return await primarySend();
       } catch (ePrimary: any) {
-        try { logger.warn('tx.send.primary_fail', { cat: 'tx', url: (CONFIG as any)?.rpcUrl, err: String(ePrimary?.message || ePrimary) }); } catch {}
+        try { logger.warn('tx.send.primary_fail', { cat: 'tx', url: maskUrl((CONFIG as any)?.rpcUrl), err: String(ePrimary?.message || ePrimary) }); } catch {}
         // Secondary RPC fallback (tight timeouts, best-effort)
         const secondaries: string[] = Array.isArray((CONFIG as any)?.rpcSend?.secondaryRpcUrls) ? (CONFIG as any).rpcSend.secondaryRpcUrls : [];
         let lastErr: any = ePrimary;
@@ -1479,7 +1480,7 @@ export class DriftService {
           try {
             const alt = new Connection(String(url), { commitment: 'processed', disableRetryOnRateLimit: true } as any);
             const sig = await tryWithTimeout(alt, raw, Number(((CONFIG as any)?.rpcSend?.sendTimeoutMs) ?? 1200));
-            try { logger.info('tx.send.fallback_ok', { cat: 'tx', url }); } catch {}
+            try { logger.info('tx.send.fallback_ok', { cat: 'tx', url: maskUrl(url) }); } catch {}
             return sig;
           } catch (eAlt: any) {
             lastErr = eAlt;

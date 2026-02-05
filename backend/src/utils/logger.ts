@@ -294,4 +294,22 @@ export function logStructured(args: StructuredLogArgs): void {
   logger.log(level, message, context);
 }
 
+/**
+ * Mask sensitive data in URLs (API keys, tokens, secrets)
+ * Replaces query parameters that likely contain secrets with masked values
+ */
+export function maskUrl(url: string | undefined | null): string {
+  if (!url) return '';
+  try {
+    // Match common sensitive query parameter patterns
+    // api-key, api_key, apikey, token, secret, key, auth, password, access_token, etc.
+    return url.replace(
+      /([?&])(api[-_]?key|apikey|token|secret|key|auth|password|access[-_]?token|bearer)=([^&]+)/gi,
+      (_match, prefix, param, _value) => `${prefix}${param}=***MASKED***`
+    );
+  } catch {
+    // If URL parsing fails, do basic masking
+    return url.replace(/=([a-zA-Z0-9_-]{20,})/g, '=***MASKED***');
+  }
+}
 

@@ -60,6 +60,13 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
         statsIntervalMs: cfg?.statsIntervalMs,
       } as any);
       const key = (DriftLiquidatorRegistry as any).keyOf({ name });
+      
+      // Emit immediate update to show "starting" state in UI
+      try {
+        const listNow = (DriftLiquidatorRegistry as any).list?.();
+        _io.emit('liquidator-update', { liquidators: listNow });
+      } catch {}
+      
       // Start asynchronously to avoid proxy timeouts; report status via logs/socket
       setImmediate(async () => {
         try {
@@ -75,6 +82,11 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
         } catch (e: any) {
           logger.error('drift-liq: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: liquidator start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
+          // Emit update on failure too so UI shows error state
+          try {
+            const listNow = (DriftLiquidatorRegistry as any).list?.();
+            _io.emit('liquidator-update', { liquidators: listNow });
+          } catch {}
         }
       });
       res.status(202).json({ ok: true, key, starting: true });

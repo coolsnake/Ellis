@@ -63,6 +63,13 @@ export function createTriggerRouter(_io: SocketIOServer): Router {
       });
 
       const key = (DriftTriggerRegistry as any).keyOf({ name });
+      
+      // Emit immediate update to show "starting" state in UI
+      try {
+        const listNow = (DriftTriggerRegistry as any).list?.();
+        _io.emit('trigger-update', { triggers: listNow });
+      } catch {}
+      
       setImmediate(async () => {
         try {
           const existing = (DriftTriggerRegistry as any).get?.(key);
@@ -77,6 +84,11 @@ export function createTriggerRouter(_io: SocketIOServer): Router {
         } catch (e: any) {
           logger.error('drift-trigger: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: trigger start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
+          // Emit update on failure too so UI shows error state
+          try {
+            const listNow = (DriftTriggerRegistry as any).list?.();
+            _io.emit('trigger-update', { triggers: listNow });
+          } catch {}
         }
       });
 

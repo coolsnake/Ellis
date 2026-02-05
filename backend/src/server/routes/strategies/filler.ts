@@ -58,6 +58,13 @@ export function createFillerRouter(_io: SocketIOServer): Router {
         minTipFloorToAttemptLamports: Math.max(0, Number(cfg?.minTipFloorToAttemptLamports ?? 0)),
       } as any);
       const key = (DriftFillerRegistry as any).keyOf({ name });
+      
+      // Emit immediate update to show "starting" state in UI
+      try {
+        const listNow = (DriftFillerRegistry as any).list?.();
+        _io.emit('filler-update', { fillers: listNow });
+      } catch {}
+      
       setImmediate(async () => {
         try {
           const existing = (DriftFillerRegistry as any).get?.(key);
@@ -72,6 +79,11 @@ export function createFillerRouter(_io: SocketIOServer): Router {
         } catch (e: any) {
           logger.error('drift-filler: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: filler start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
+          // Emit update on failure too so UI shows error state
+          try {
+            const listNow = (DriftFillerRegistry as any).list?.();
+            _io.emit('filler-update', { fillers: listNow });
+          } catch {}
         }
       });
       res.status(202).json({ ok: true, key, starting: true });
