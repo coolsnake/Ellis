@@ -3,6 +3,19 @@ import { LiquidationMonitor, TriggerStatus, FillerStatus } from '../drift';
 import { LiquidatorStatus } from '../../components/LiquidatorStatus';
 import { ROUTES } from '../../utils/routes';
 import { useSocket } from '../../app/contexts/socket';
+import {
+  Panel,
+  StatCard,
+  StatusBadge,
+  Button,
+  DataTable,
+  DataTableRow,
+  DataTableCell,
+  InputGroup,
+  Input,
+  Select,
+  EmptyState,
+} from '../../components/ui';
 
 export const DriftSection: React.FC<{
   apiBase: string;
@@ -59,11 +72,9 @@ export const DriftSection: React.FC<{
       setInfra(si || null);
       if (Array.isArray(st?.subaccounts)) p.setDriftSubaccounts(st.subaccounts);
       if (Array.isArray(mk?.markets)) setSpotMarkets(mk.markets);
-      // Default selection if needed
       if (!Number.isFinite(Number(p.driftSelectedSubId)) && Array.isArray(st?.subaccounts) && st.subaccounts.length > 0) {
         try { p.setDriftSelectedSubId(Number(st.subaccounts[0].id)); } catch {}
       }
-      // Default spot index
       const firstIdx = Array.isArray(mk?.markets) && mk.markets.length > 0 ? Number(mk.markets[0].marketIndex) : 0;
       setSpotIndex((v) => (Number.isFinite(v) ? v : firstIdx));
     } catch (e: any) {
@@ -140,8 +151,6 @@ export const DriftSection: React.FC<{
   useEffect(() => { loadStatusAndSubs(); loadSubaccounts(); }, []);
   useEffect(() => { loadTxSummary(); loadTxHistory(); }, [p.apiBase]);
   useEffect(() => {
-    // Poll infra status occasionally for live indicators
-    // Reduced frequency since this is just for indicators, not critical data
     let id: any = null;
     const tick = async () => {
       try {
@@ -150,7 +159,7 @@ export const DriftSection: React.FC<{
         setInfra(j || null);
       } catch {}
     };
-    id = setInterval(tick, 15000); // Increased from 5s to 15s - less critical data
+    id = setInterval(tick, 15000);
     tick();
     return () => { try { clearInterval(id); } catch {} };
   }, [p.apiBase]);
@@ -188,7 +197,6 @@ export const DriftSection: React.FC<{
     return () => { try { s.off('drift:user:balances', onBal); } catch {} };
   }, [ctxSocket, p.driftSelectedSubId]);
 
-  // Listen for liquidation users list updates
   useEffect(() => {
     const s = ctxSocket;
     if (!s) return;
@@ -198,12 +206,10 @@ export const DriftSection: React.FC<{
           setLiqUsers(evt.users as any);
           return;
         }
-        // Live per-user summary: update row metrics and expanded details
         if (evt && typeof evt === 'object' && evt.type === 'user_summary' && evt.summary) {
           const sum = evt.summary as any;
           const key = String(sum.userPk || sum.user || '');
           if (key) {
-            // Update main table entry metrics if present
             setLiqUsers((prev) => {
               try {
                 const arr = Array.isArray(prev) ? [...prev] : [] as any[];
@@ -238,7 +244,6 @@ export const DriftSection: React.FC<{
                 return arr;
               } catch { return prev; }
             });
-            // Update expanded details collateral summary if open or cached
             setUserDetails((prev) => {
               const cur = { ...(prev || {}) } as any;
               const d = { ...(cur[key] || {}) };
@@ -247,7 +252,6 @@ export const DriftSection: React.FC<{
                 maintUi: Number(sum.maintenanceUsd || 0),
                 freeUi: Number(sum.freeUsd || 0),
               };
-              // Do not overwrite spotCollateral/perpPositions here (kept from HTTP fetch)
               cur[key] = d;
               return cur;
             });
@@ -260,14 +264,11 @@ export const DriftSection: React.FC<{
     return () => { try { s.off('drift-liquidation', onLiq); } catch {} };
   }, [ctxSocket]);
 
-  // Store liquidator status in ref to avoid dependency issues
   const lsRef = useRef<any[]>([]);
   useEffect(() => {
     lsRef.current = Array.isArray(p.ls) ? p.ls : [];
   }, [p.ls]);
 
-  // Periodically poll queue for users to keep UI fresh even if socket events are sparse
-  // Reduced polling frequency - socket events handle most updates
   useEffect(() => {
     let id: any = null;
     const tick = async () => {
@@ -280,10 +281,10 @@ export const DriftSection: React.FC<{
         if (q && Array.isArray(q.users)) setLiqUsers(q.users);
       } catch {}
     };
-    id = setInterval(tick, 10000); // Increased from 3s to 10s - socket events handle real-time updates
+    id = setInterval(tick, 10000);
     tick();
     return () => { try { clearInterval(id); } catch {} };
-  }, [p.apiBase]); // Removed JSON.stringify dependency - use ref instead
+  }, [p.apiBase]);
 
   const createSub = async () => {
     try {
@@ -378,6 +379,7 @@ export const DriftSection: React.FC<{
   };
 
   const [open, setOpen] = useState<{ liq: boolean; trig: boolean; fill: boolean }>({ liq: true, trig: true, fill: true });
+  
   const formatAgo = (ts?: number) => {
     if (!ts || !Number.isFinite(Number(ts))) return '-';
     const d = Date.now() - Number(ts);
@@ -386,119 +388,115 @@ export const DriftSection: React.FC<{
     if (d < 3600000) return `${Math.floor(d / 60000)}m ago`;
     return `${Math.floor(d / 3600000)}h ago`;
   };
+  
   const formatMs = (v: any) => {
     const n = Number(v);
     if (!Number.isFinite(n) || n <= 0) return '-';
     return `${Math.round(n)}ms`;
   };
-  const shortPk = (s: string) => (s && s.length > 10 ? `${s.slice(0, 4)}…${s.slice(-4)}` : (s || '-'));
-  const renderHealthBadge = (h: any) => {
-    const ok = !!h?.ok;
-    const label = ok ? 'API OK' : 'API ERR';
-    const meta = [
-      h?.status ? `status=${h.status}` : '',
-      h?.error ? `err=${h.error}` : '',
-      h?.lastAt ? `last=${formatAgo(h.lastAt)}` : '',
-    ].filter(Boolean).join(' ');
-    return (
-      <span
-        className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${ok ? 'bg-green-700 text-white' : 'bg-red-700 text-white'}`}
-        title={meta || label}
-      >
-        {label}
-      </span>
-    );
-  };
-  const txDisplayLimit = 100;
+  
+  const shortPk = (s: string) => (s && s.length > 10 ? `${s.slice(0, 4)}...${s.slice(-4)}` : (s || '-'));
+  
+  const txDisplayLimit = 10;
   const txDisplay = txHistory.slice(Math.max(0, txHistory.length - txDisplayLimit));
 
+  // Render infrastructure status badges
+  const renderInfraBadges = () => (
+    <div className="flex items-center gap-2">
+      <StatusBadge
+        status={infra?.active ? 'active' : 'inactive'}
+        label={infra?.active ? 'Infra: ON' : 'Infra: OFF'}
+        title={infra?.forceActive ? 'Force active' : ''}
+      />
+      {!!infra?.lastSlotAtMs && (
+        <StatusBadge
+          status={infra?.slotStale ? 'error' : 'ok'}
+          label={infra?.slotStale ? 'SLOT STALE' : 'SLOT OK'}
+          title={`Last slot at ${new Date(infra.lastSlotAtMs).toLocaleTimeString()}`}
+        />
+      )}
+    </div>
+  );
+
   return (
-    <div className="grid grid-cols-1 gap-4">
-      {/* Subaccounts — full width */}
-      <div className="p-3 bg-gray-800 rounded">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-white font-semibold">Subaccounts</div>
+    <div className="space-y-4">
+      {/* Subaccounts Panel */}
+      <Panel
+        title="Subaccounts"
+        badges={renderInfraBadges()}
+        actions={
           <div className="flex items-center gap-2">
-            <input
-              className="px-2 py-1 bg-gray-700 rounded text-white text-sm placeholder-gray-400"
+            <Input
+              className="w-32"
               placeholder="Name (optional)"
               value={p.driftNewSubName}
               onChange={(e) => p.setDriftNewSubName(e.target.value)}
             />
-            <button className="px-2 py-1 bg-gray-700 rounded text-white text-sm" onClick={loadStatusAndSubs} disabled={loading}>Refresh</button>
-            {/* Drift Infra Controls */}
-            <div className="flex items-center gap-1">
-              <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${infra?.active ? 'bg-green-700 text-white' : 'bg-gray-700 text-gray-300'}`} title={infra?.forceActive ? 'Force active' : ''}>
-                {infra?.active ? 'Infra: ON' : 'Infra: OFF'}{infra?.forceActive ? ' (forced)' : ''}
-              </span>
-              {!!infra?.lastSlotAtMs && (
-                <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${infra?.slotStale ? 'bg-red-700 text-white' : 'bg-gray-700 text-gray-300'}`} title={`Last slot at ${new Date(infra.lastSlotAtMs).toLocaleTimeString()}`}>
-                  {infra?.slotStale ? 'SLOT STALE' : 'SLOT OK'}
-                </span>
-              )}
-              <button
-                className="px-2 py-1 bg-gray-700 text-white rounded text-sm disabled:opacity-50"
-                onClick={async () => { try { setInfraBusy(true); await fetch(`${p.apiBase}${ROUTES.drift.infraActivate}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); await loadStatusAndSubs(); } finally { setInfraBusy(false); } }}
-                disabled={infraBusy}
-              >Activate</button>
-              <button
-                className="px-2 py-1 bg-gray-700 text-white rounded text-sm disabled:opacity-50"
-                onClick={async () => { try { setInfraBusy(true); await fetch(`${p.apiBase}${ROUTES.drift.infraDeactivate}`, { method: 'POST' }); await loadStatusAndSubs(); } finally { setInfraBusy(false); } }}
-                disabled={infraBusy}
-              >Deactivate</button>
-            </div>
-            <button className="px-2 py-1 bg-blue-600 rounded text-white text-sm" onClick={createSub} disabled={p.driftOpBusy}>+ Create</button>
+            <Button onClick={loadStatusAndSubs} disabled={loading}>
+              {loading ? 'Loading...' : 'Refresh'}
+            </Button>
+            <Button onClick={async () => { 
+              try { setInfraBusy(true); await fetch(`${p.apiBase}${ROUTES.drift.infraActivate}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); await loadStatusAndSubs(); } finally { setInfraBusy(false); } 
+            }} disabled={infraBusy}>
+              Activate
+            </Button>
+            <Button onClick={async () => { 
+              try { setInfraBusy(true); await fetch(`${p.apiBase}${ROUTES.drift.infraDeactivate}`, { method: 'POST' }); await loadStatusAndSubs(); } finally { setInfraBusy(false); } 
+            }} disabled={infraBusy}>
+              Deactivate
+            </Button>
+            <Button variant="primary" onClick={createSub} disabled={p.driftOpBusy}>
+              + Create
+            </Button>
             {!!p.onOpenExecConfig && (
-              <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => p.onOpenExecConfig?.()}>Execution Config</button>
+              <Button onClick={() => p.onOpenExecConfig?.()}>Execution Config</Button>
             )}
           </div>
+        }
+      >
+        {error && <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">{error}</div>}
+        
+        {/* Stats Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <StatCard
+            label="Total Users"
+            value={(() => {
+              const u = infra?.userCount;
+              const total = Number(u?.total || 0);
+              if (u?.error) return 'unavailable';
+              if (!Number.isFinite(total) || total <= 0) return u?.refreshing ? 'loading...' : '-';
+              return `${total.toLocaleString()}${u?.capped ? '+' : ''}`;
+            })()}
+            subValue={formatAgo(Number(infra?.userCount?.updatedAtMs || 0))}
+          />
+          <StatCard
+            label="At-Risk Users"
+            value={liqUsers.length.toLocaleString()}
+            subValue="queue snapshot"
+          />
+          <StatCard
+            label="Markets"
+            value={`${Array.isArray(status?.markets) ? status.markets.length : 0} perp / ${spotMarkets.length} spot`}
+            subValue="tracked"
+          />
+          <StatCard
+            label="Bots / Subs"
+            value={`${infra?.bots ?? 0} / ${(p.driftSubaccounts || []).length}`}
+            subValue={`${(() => {
+              const pos = Array.isArray(status?.subaccounts)
+                ? status.subaccounts.reduce((s: number, sa: any) => s + (Array.isArray(sa?.positions) ? sa.positions.length : 0), 0)
+                : 0;
+              return `${pos} positions`;
+            })()}`}
+          />
         </div>
-        {error && <div className="mb-2 text-sm text-red-300">{error}</div>}
-        <div className="mb-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-          <div className="bg-gray-700 rounded p-2">
-            <div className="text-gray-400">Total users</div>
-            <div className="text-white font-mono">
-              {(() => {
-                const u = infra?.userCount;
-                const total = Number(u?.total || 0);
-                if (u?.error) return 'unavailable';
-                if (!Number.isFinite(total) || total <= 0) return u?.refreshing ? 'loading…' : '-';
-                return `${total.toLocaleString()}${u?.capped ? '+' : ''}`;
-              })()}
-            </div>
-            <div className="text-gray-500">{formatAgo(Number(infra?.userCount?.updatedAtMs || 0))}</div>
-          </div>
-          <div className="bg-gray-700 rounded p-2">
-            <div className="text-gray-400">At-risk users</div>
-            <div className="text-white font-mono">{liqUsers.length.toLocaleString()}</div>
-            <div className="text-gray-500">queue snapshot</div>
-          </div>
-          <div className="bg-gray-700 rounded p-2">
-            <div className="text-gray-400">Markets</div>
-            <div className="text-white font-mono">
-              {Array.isArray(status?.markets) ? status.markets.length : 0} perp · {spotMarkets.length} spot
-            </div>
-            <div className="text-gray-500">tracked</div>
-          </div>
-          <div className="bg-gray-700 rounded p-2">
-            <div className="text-gray-400">Bots / Subs</div>
-            <div className="text-white font-mono">{infra?.bots ?? 0} bots · {(p.driftSubaccounts || []).length} subs</div>
-            <div className="text-gray-500">
-              {(() => {
-                const pos = Array.isArray(status?.subaccounts)
-                  ? status.subaccounts.reduce((s: number, sa: any) => s + (Array.isArray(sa?.positions) ? sa.positions.length : 0), 0)
-                  : 0;
-                return `${pos} positions`;
-              })()}
-            </div>
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">Select Subaccount</label>
+
+        {/* Subaccount Selection & Deposit/Withdraw */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <InputGroup label="Select Subaccount">
             <div className="flex gap-2">
-              <select
-                className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white"
+              <Select
+                className="flex-1"
                 value={Number.isFinite(Number(p.driftSelectedSubId)) ? Number(p.driftSelectedSubId) : ''}
                 onChange={(e) => p.setDriftSelectedSubId(Number(e.target.value))}
               >
@@ -507,47 +505,46 @@ export const DriftSection: React.FC<{
                     {typeof s.name === 'string' && s.name.length ? `${s.name} (#${s.id})` : `Sub #${s.id}`}
                   </option>
                 ))}
-              </select>
-              <button
-                className="px-2 py-1 border border-gray-600 rounded text-sm text-white"
+              </Select>
+              <Button
                 onClick={() => switchSub(Number(p.driftSelectedSubId))}
                 disabled={p.driftOpBusy || !Number.isFinite(Number(p.driftSelectedSubId))}
               >
                 Switch
-              </button>
+              </Button>
             </div>
             {selected && (
-              <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-gray-300">
-                <div>
-                  <div className="text-gray-400">Free Collateral</div>
-                  <div className="text-white">{Number(selected.freeCollateral ?? 0).toLocaleString()}</div>
+              <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div className="bg-gray-800/50 rounded p-2">
+                  <div className="text-xs text-gray-400">Free Collateral</div>
+                  <div className="text-white font-mono">{Number(selected.freeCollateral ?? 0).toLocaleString()}</div>
                 </div>
-                <div>
-                  <div className="text-gray-400">Total Collateral</div>
-                  <div className="text-white">{Number(selected.totalCollateral ?? 0).toLocaleString()}</div>
+                <div className="bg-gray-800/50 rounded p-2">
+                  <div className="text-xs text-gray-400">Total Collateral</div>
+                  <div className="text-white font-mono">{Number(selected.totalCollateral ?? 0).toLocaleString()}</div>
                 </div>
-                <div>
-                  <div className="text-gray-400">Initial Requirement</div>
-                  <div className="text-white">{Number(selected.initialRequirement ?? 0).toLocaleString()}</div>
+                <div className="bg-gray-800/50 rounded p-2">
+                  <div className="text-xs text-gray-400">Initial Req.</div>
+                  <div className="text-white font-mono">{Number(selected.initialRequirement ?? 0).toLocaleString()}</div>
                 </div>
-                <div>
-                  <div className="text-gray-400">Maintenance Requirement</div>
-                  <div className="text-white">{Number(selected.maintenanceRequirement ?? 0).toLocaleString()}</div>
+                <div className="bg-gray-800/50 rounded p-2">
+                  <div className="text-xs text-gray-400">Maint. Req.</div>
+                  <div className="text-white font-mono">{Number(selected.maintenanceRequirement ?? 0).toLocaleString()}</div>
                 </div>
-                <div>
-                  <div className="text-gray-400">Effective Leverage</div>
-                  <div className="text-white">{Number(selected.effectiveLeverage ?? 0).toFixed(2)}x</div>
+                <div className="bg-gray-800/50 rounded p-2 col-span-2">
+                  <div className="text-xs text-gray-400">Effective Leverage</div>
+                  <div className="text-white font-mono">{Number(selected.effectiveLeverage ?? 0).toFixed(2)}x</div>
                 </div>
               </div>
             )}
-          </div>
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">Deposit / Withdraw</label>
-            <div className="grid grid-cols-2 gap-2">
+          </InputGroup>
+
+          <InputGroup label="Deposit / Withdraw">
+            <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
-                <div className="text-xs text-gray-400 mb-1">Spot Market</div>
-                <select
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white"
+                <div className="text-xs text-gray-500 mb-1">Spot Market</div>
+                <Select
+                  className="w-full"
                   value={spotIndex}
                   onChange={(e) => setSpotIndex(Number(e.target.value))}
                 >
@@ -556,12 +553,12 @@ export const DriftSection: React.FC<{
                       {m.symbol ? `${m.symbol} (${m.marketIndex})` : `Market ${m.marketIndex}`}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div>
-                <div className="text-xs text-gray-400 mb-1">Amount</div>
-                <input
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white"
+                <div className="text-xs text-gray-500 mb-1">Amount</div>
+                <Input
+                  className="w-full"
                   type="number"
                   step="0.000001"
                   value={amount}
@@ -569,393 +566,320 @@ export const DriftSection: React.FC<{
                 />
               </div>
             </div>
-            <div className="mt-2 flex gap-2">
-              <button className="px-3 py-1 bg-green-600 text-white rounded text-sm" onClick={() => doSubOp('deposit')} disabled={p.driftOpBusy}>
+            <div className="grid grid-cols-2 gap-3">
+              <Button variant="success" onClick={() => doSubOp('deposit')} disabled={p.driftOpBusy}>
                 Deposit
-              </button>
-              <button className="px-3 py-1 bg-red-600 text-white rounded text-sm" onClick={() => doSubOp('withdraw')} disabled={p.driftOpBusy}>
+              </Button>
+              <Button variant="danger" onClick={() => doSubOp('withdraw')} disabled={p.driftOpBusy}>
                 Withdraw
-              </button>
+              </Button>
             </div>
-          </div>
+          </InputGroup>
         </div>
 
-        <div className="mt-4">
-          <div className="text-sm text-gray-300 mb-1">Balances{Number.isFinite(Number(p.driftSelectedSubId)) ? ` — Sub #${p.driftSelectedSubId}` : ''}</div>
-          <div className="overflow-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-gray-400">
-                  <th className="text-left">Mint</th>
-                  <th className="text-left">Symbol</th>
-                  <th className="text-left">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {balances.map((b, i) => (
-                  <tr key={i} className="text-gray-300">
-                    <td>{b.mint || '-'}</td>
-                    <td>{b.symbol || '-'}</td>
-                    <td>{Number(b.amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
-                  </tr>
-                ))}
-                {balances.length === 0 && (
-                  <tr><td colSpan={3} className="text-gray-500">No balances</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+        {/* Balances Table */}
+        <div className="mt-6">
+          <h4 className="text-sm font-medium text-gray-300 mb-3">
+            Balances{Number.isFinite(Number(p.driftSelectedSubId)) ? ` - Sub #${p.driftSelectedSubId}` : ''}
+          </h4>
+          <DataTable headers={['Mint', 'Symbol', 'Amount']} compact>
+            {balances.length > 0 ? balances.map((b, i) => (
+              <DataTableRow key={i}>
+                <DataTableCell compact mono className="text-xs">{b.mint || '-'}</DataTableCell>
+                <DataTableCell compact>{b.symbol || '-'}</DataTableCell>
+                <DataTableCell compact mono>{Number(b.amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}</DataTableCell>
+              </DataTableRow>
+            )) : (
+              <tr><td colSpan={3}><EmptyState message="No balances" /></td></tr>
+            )}
+          </DataTable>
         </div>
-        <div className="mt-4 text-xs text-gray-400">
+
+        {/* Footer Info */}
+        <div className="mt-4 pt-3 border-t border-gray-700 text-xs text-gray-500">
           {status?.cluster ? `Cluster: ${status.cluster}` : null}
-          {status?.programId ? ` — Program: ${status.programId}` : null}
+          {status?.programId ? ` - Program: ${status.programId}` : null}
         </div>
-      </div>
+      </Panel>
 
-      {/* Liquidators section */}
-      <div className="bg-gray-800 rounded">
-        <div className="p-3 flex items-center justify-between">
-          <div className="text-white font-semibold">Liquidators</div>
+      {/* Liquidators Panel */}
+      <Panel
+        title="Liquidators"
+        collapsible
+        defaultCollapsed={!open.liq}
+        badges={<StatusBadge status={botHealth.liq?.ok ? 'ok' : 'error'} label={botHealth.liq?.ok ? 'API OK' : 'API ERR'} />}
+        actions={
           <div className="flex items-center gap-2">
-            {renderHealthBadge(botHealth.liq)}
             {!!p.onOpenLiqRunner && (
-              <button className="px-2 py-1 bg-purple-600 text-white rounded text-sm" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</button>
+              <Button variant="primary" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</Button>
             )}
-            <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => setOpen((o) => ({ ...o, liq: !o.liq }))}>{open.liq ? 'Hide' : 'Show'}</button>
           </div>
-        </div>
-        {open.liq && (
-          <div className="px-3 pb-3 space-y-3">
-            <LiquidatorStatus apiBase={p.apiBase} hideHeader />
-            <div className="grid grid-cols-1 gap-3">
-              {p.ls.map((x) => (
-                <LiquidationMonitor key={x.key} apiBase={p.apiBase} liquidatorKey={x.key} />
-              ))}
-            </div>
-            <div className="mt-2">
-              <div className="text-white font-semibold mb-2">Users</div>
-              <div className="overflow-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-gray-400">
-                      <th className="text-left">User</th>
-                      <th className="text-left">Health</th>
-                      <th className="text-left">Updated</th>
-                      <th className="text-left">Exposure</th>
-                      <th className="text-left">C/E</th>
-                      <th className="text-left">Profit</th>
-                      <th className="text-left">Skip</th>
-                      <th className="text-left">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {liqUsers.map((u) => (
-                      <React.Fragment key={u.userPk}>
-                        <tr className="text-gray-300">
-                          <td title={u.userPk} className="font-mono">{u.userPk.slice(0, 6)}…{u.userPk.slice(-6)}</td>
-                          <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
-                          <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
-                          <td>{(() => {
-                            const ex = (u as any).exposureUsd;
-                            if (typeof ex === 'number') return `$${(ex as number).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-                            let sum = 0;
-                            try { if (Array.isArray((u as any).positions)) for (const p of (u as any).positions) { if (typeof (p as any).notional === 'number') sum += Math.abs((p as any).notional as number); } } catch {}
-                            return sum > 0 ? `$${sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-';
-                          })()}</td>
-                          <td>{(() => {
-                            const c = (u as any).collateralUsd;
-                            let ex = (u as any).exposureUsd;
-                            if (!(typeof ex === 'number')) {
-                              let sum = 0;
-                              try { if (Array.isArray((u as any).positions)) for (const p of (u as any).positions) { if (typeof (p as any).notional === 'number') sum += Math.abs((p as any).notional as number); } } catch {}
-                              ex = sum;
+        }
+      >
+        <div className="space-y-4">
+          <LiquidatorStatus apiBase={p.apiBase} hideHeader />
+          <div className="grid grid-cols-1 gap-3">
+            {p.ls.map((x) => (
+              <LiquidationMonitor key={x.key} apiBase={p.apiBase} liquidatorKey={x.key} />
+            ))}
+          </div>
+
+          {/* Users Table */}
+          <div>
+            <h4 className="text-sm font-medium text-gray-300 mb-3">Users Under Threshold</h4>
+            <DataTable 
+              headers={['User', 'Health', 'Updated', 'Exposure', 'C/E', 'Profit', 'Skip', 'Actions']} 
+              compact
+            >
+              {liqUsers.length > 0 ? liqUsers.map((u) => (
+                <React.Fragment key={u.userPk}>
+                  <DataTableRow onClick={() => toggleOpen(u.userPk)}>
+                    <DataTableCell compact mono className="text-xs">{shortPk(u.userPk)}</DataTableCell>
+                    <DataTableCell compact className={u.health < -0.5 ? 'text-red-400' : u.health < 0 ? 'text-yellow-400' : ''}>
+                      {(u.health * 100).toFixed(2)}%
+                    </DataTableCell>
+                    <DataTableCell compact className="text-gray-500 text-xs">{formatAgo(u.updatedAt)}</DataTableCell>
+                    <DataTableCell compact mono>
+                      {(() => {
+                        const ex = (u as any).exposureUsd;
+                        if (typeof ex === 'number') return `$${ex.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+                        let sum = 0;
+                        try { if (Array.isArray((u as any).positions)) for (const pos of (u as any).positions) { if (typeof (pos as any).notional === 'number') sum += Math.abs((pos as any).notional as number); } } catch {}
+                        return sum > 0 ? `$${sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-';
+                      })()}
+                    </DataTableCell>
+                    <DataTableCell compact>
+                      {(() => {
+                        const c = (u as any).collateralUsd;
+                        let ex = (u as any).exposureUsd;
+                        if (!(typeof ex === 'number')) {
+                          let sum = 0;
+                          try { if (Array.isArray((u as any).positions)) for (const pos of (u as any).positions) { if (typeof (pos as any).notional === 'number') sum += Math.abs((pos as any).notional as number); } } catch {}
+                          ex = sum;
+                        }
+                        return (typeof c === 'number' && typeof ex === 'number' && ex > 0) ? (c / ex).toFixed(2) : '-';
+                      })()}
+                    </DataTableCell>
+                    <DataTableCell compact>
+                      {(() => {
+                        let prof = (u as any).profitability;
+                        if (typeof prof !== 'number' && Array.isArray((u as any).positions)) {
+                          for (const pos of (u as any).positions) {
+                            if (typeof (pos as any).profitability === 'number') {
+                              prof = (typeof prof === 'number') ? Math.min(prof as number, (pos as any).profitability as number) : (pos as any).profitability;
                             }
-                            return (typeof c === 'number' && typeof ex === 'number' && ex > 0) ? (c / ex).toFixed(2) : '-';
-                          })()}</td>
-                          <td>
-                            {(() => {
-                              let prof = (u as any).profitability;
-                              if (typeof prof !== 'number' && Array.isArray((u as any).positions)) {
-                                for (const p of (u as any).positions) {
-                                  if (typeof (p as any).profitability === 'number') {
-                                    prof = (typeof prof === 'number') ? Math.min(prof as number, (p as any).profitability as number) : (p as any).profitability;
-                                  }
-                                }
-                              }
-                              return (typeof prof === 'number') ? (
-                                <span className={`font-mono ${(prof as number) > 0 ? 'text-green-300' : 'text-yellow-300'}`}>{(((prof as number)) * 100).toFixed(2)}%</span>
-                              ) : <span className="text-gray-500">-</span>;
-                            })()}
-                          </td>
-                          <td>
-                            {typeof (u as any).skipReason === 'string' && (u as any).skipReason ? (
-                              <span className="px-1.5 py-0.5 bg-gray-700 rounded text-[10px] uppercase tracking-wide">{(u as any).skipReason}</span>
-                            ) : <span className="text-gray-500">-</span>}
-                          </td>
-                          <td className="flex gap-2 items-center">
-                            <button className="px-2 py-0.5 bg-gray-700 text-white rounded hover:bg-gray-600" onClick={() => toggleOpen(u.userPk)}>
-                              {openUser === u.userPk ? 'Hide' : 'Show'}
-                            </button>
-                            <button className="px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700" onClick={() => testUser(u.userPk)}>Test</button>
-                          </td>
-                        </tr>
-                        {openUser === u.userPk && (
-                          <tr className="bg-gray-900/60">
-                            <td colSpan={8} className="p-2">
-                              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                                <div className="bg-gray-800 rounded p-2">
-                                  <div className="text-gray-300">Total</div>
-                                  <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.totalUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                                </div>
-                                <div className="bg-gray-800 rounded p-2">
-                                  <div className="text-gray-300">Maintenance</div>
-                                  <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.maintUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                                </div>
-                                <div className="bg-gray-800 rounded p-2">
-                                  <div className="text-gray-300">Free</div>
-                                  <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.freeUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <div>
-                                  <div className="text-gray-300 mb-1">Collateral tokens</div>
-                                  <div className="overflow-auto">
-                                    <div className="mb-3">
-                                      <div className="text-gray-400 text-xs mb-1">Spot collateral — Deposits</div>
-                                      <table className="w-full text-xs">
-                                        <thead>
-                                          <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
-                                        </thead>
-                                        <tbody>
-                                          {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) > 0).map((c: any, i: number) => (
-                                            <tr key={`col-dep-${u.userPk}-${i}`} className="text-gray-300">
-                                              <td>{c.symbol || c.marketIndex}</td>
-                                              <td className="font-mono">{c.mint || '-'}</td>
-                                              <td className="font-mono text-green-300">{Number(c.amountUi || 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
-                                            </tr>
-                                          ))}
-                                          {!((userDetails[u.userPk]?.spotCollateral || []).some((c: any) => Number(c?.amountUi || 0) > 0)) && (
-                                            <tr><td colSpan={3} className="text-gray-500">No deposits</td></tr>
-                                          )}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                    <div>
-                                      <div className="text-gray-400 text-xs mb-1">Spot collateral — Borrows</div>
-                                      <table className="w-full text-xs">
-                                        <thead>
-                                          <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
-                                        </thead>
-                                        <tbody>
-                                          {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) < 0).map((c: any, i: number) => (
-                                            <tr key={`col-bor-${u.userPk}-${i}`} className="text-gray-300">
-                                              <td>{c.symbol || c.marketIndex}</td>
-                                              <td className="font-mono">{c.mint || '-'}</td>
-                                              <td className="font-mono text-red-300">{Math.abs(Number(c.amountUi || 0)).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
-                                            </tr>
-                                          ))}
-                                          {!((userDetails[u.userPk]?.spotCollateral || []).some((c: any) => Number(c?.amountUi || 0) < 0)) && (
-                                            <tr><td colSpan={3} className="text-gray-500">No borrows</td></tr>
-                                          )}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                  </div>
-                                </div>
-                                <div>
-                                  <div className="text-gray-300 mb-1">Perp positions</div>
-                                  <div className="overflow-auto">
-                                    <table className="w-full text-xs">
-                                      <thead>
-                                        <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Base (raw)</th></tr>
-                                      </thead>
-                                      <tbody>
-                                        {(userDetails[u.userPk]?.perpPositions || []).map((pp: any, i: number) => (
-                                          <tr key={`pp-${u.userPk}-${i}`} className="text-gray-300">
-                                            <td>{pp.marketIndex}</td>
-                                            <td className="font-mono">{Number(pp.baseRaw || 0).toLocaleString()}</td>
-                                          </tr>
-                                        ))}
-                                        {!(userDetails[u.userPk]?.perpPositions || []).length && (
-                                          <tr><td colSpan={2} className="text-gray-500">No perp positions</td></tr>
-                                        )}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                </div>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    ))}
-                    {liqUsers.length === 0 && (
-                      <tr><td colSpan={8} className="text-gray-500">No users under threshold</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Triggers section */}
-      <div className="bg-gray-800 rounded">
-        <div className="p-3 flex items-center justify-between">
-          <div className="text-white font-semibold">Triggers</div>
-          <div className="flex items-center gap-2">
-            {renderHealthBadge(botHealth.trig)}
-            {!!p.onOpenTriggerRunner && (
-              <button className="px-2 py-1 bg-amber-600 text-white rounded text-sm" onClick={() => p.onOpenTriggerRunner?.()}>+ New Trigger Bot</button>
-            )}
-            <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => setOpen((o) => ({ ...o, trig: !o.trig }))}>{open.trig ? 'Hide' : 'Show'}</button>
-          </div>
-        </div>
-        {open.trig && (
-          <div className="px-3 pb-3">
-            <TriggerStatus apiBase={p.apiBase} hideHeader />
-          </div>
-        )}
-      </div>
-
-      {/* Fillers section */}
-      <div className="bg-gray-800 rounded">
-        <div className="p-3 flex items-center justify-between">
-          <div className="text-white font-semibold">Fillers</div>
-          <div className="flex items-center gap-2">
-            {renderHealthBadge(botHealth.fill)}
-            {!!p.onOpenFillerRunner && (
-              <button className="px-2 py-1 bg-sky-600 text-white rounded text-sm" onClick={() => p.onOpenFillerRunner?.()}>+ New Filler Bot</button>
-            )}
-            <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => setOpen((o) => ({ ...o, fill: !o.fill }))}>{open.fill ? 'Hide' : 'Show'}</button>
-          </div>
-        </div>
-        {open.fill && (
-          <div className="px-3 pb-3">
-            <FillerStatus apiBase={p.apiBase} hideHeader />
-          </div>
-        )}
-      </div>
-
-      {/* Performance summary */}
-      <div className="bg-gray-800 rounded">
-        <div className="p-3 flex items-center justify-between">
-          <div className="text-white font-semibold">Performance Summary</div>
-          <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={loadTxSummary}>Refresh</button>
-        </div>
-        <div className="px-3 pb-3 overflow-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-gray-400">
-                <th className="text-left">Window</th>
-                <th className="text-left">Action</th>
-                <th className="text-left">Attempts</th>
-                <th className="text-left">Success</th>
-                <th className="text-left">Cost (SOL)</th>
-                <th className="text-left">Revenue (q)</th>
-                <th className="text-left">Build p50/p95</th>
-                <th className="text-left">Send p50/p95</th>
-                <th className="text-left">Confirm p50/p95</th>
-              </tr>
-            </thead>
-            <tbody>
-              {txSummary ? (
-                (['5m', '1h', '24h'] as const).flatMap((win) =>
-                  (['all', 'fill', 'trigger', 'liquidate'] as const).map((action) => {
-                    const m = txSummary?.[win]?.[action];
-                    const attempts = Number(m?.attempts ?? 0);
-                    const successes = Number(m?.successes ?? 0);
-                    const successRate = attempts > 0 ? ((successes / attempts) * 100).toFixed(1) : '0.0';
-                    const costSol = Number(m?.costSol ?? 0);
-                    const revenue = Number(m?.revenueQuote ?? 0);
-                    return (
-                      <tr key={`${win}-${action}`} className="text-gray-300">
-                        <td>{win}</td>
-                        <td className="uppercase">{action}</td>
-                        <td>{attempts}</td>
-                        <td>{successRate}%</td>
-                        <td>{costSol.toFixed(4)}</td>
-                        <td>{action === 'fill' || action === 'all' ? revenue.toLocaleString() : '-'}</td>
-                        <td>{formatMs(m?.timings?.buildMs?.p50)} / {formatMs(m?.timings?.buildMs?.p95)}</td>
-                        <td>{formatMs(m?.timings?.sendMs?.p50)} / {formatMs(m?.timings?.sendMs?.p95)}</td>
-                        <td>{formatMs(m?.timings?.confirmMs?.p50)} / {formatMs(m?.timings?.confirmMs?.p95)}</td>
-                      </tr>
-                    );
-                  })
-                )
-              ) : (
-                <tr><td colSpan={9} className="text-gray-500">No summary data</td></tr>
+                          }
+                        }
+                        return (typeof prof === 'number') ? (
+                          <span className={`font-mono ${(prof as number) > 0 ? 'text-green-400' : 'text-yellow-400'}`}>
+                            {((prof as number) * 100).toFixed(2)}%
+                          </span>
+                        ) : <span className="text-gray-500">-</span>;
+                      })()}
+                    </DataTableCell>
+                    <DataTableCell compact>
+                      {typeof (u as any).skipReason === 'string' && (u as any).skipReason ? (
+                        <span className="px-1.5 py-0.5 bg-gray-700 rounded text-[10px] uppercase tracking-wide">
+                          {(u as any).skipReason}
+                        </span>
+                      ) : <span className="text-gray-500">-</span>}
+                    </DataTableCell>
+                    <DataTableCell compact>
+                      <div className="flex gap-2">
+                        <Button size="xs" onClick={(e) => { e?.stopPropagation(); toggleOpen(u.userPk); }}>
+                          {openUser === u.userPk ? 'Hide' : 'Show'}
+                        </Button>
+                        <Button size="xs" variant="primary" onClick={(e) => { e?.stopPropagation(); testUser(u.userPk); }}>
+                          Test
+                        </Button>
+                      </div>
+                    </DataTableCell>
+                  </DataTableRow>
+                  {openUser === u.userPk && (
+                    <tr className="bg-gray-900/60">
+                      <td colSpan={8} className="p-4">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                          <StatCard label="Total" value={Number(userDetails[u.userPk]?.collateral?.totalUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} />
+                          <StatCard label="Maintenance" value={Number(userDetails[u.userPk]?.collateral?.maintUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} />
+                          <StatCard label="Free" value={Number(userDetails[u.userPk]?.collateral?.freeUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <h5 className="text-sm font-medium text-gray-300 mb-2">Spot Collateral - Deposits</h5>
+                            <DataTable headers={['Market', 'Mint', 'Amount']} compact>
+                              {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) > 0).length > 0 ? 
+                                (userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) > 0).map((c: any, i: number) => (
+                                  <DataTableRow key={i}>
+                                    <DataTableCell compact>{c.symbol || c.marketIndex}</DataTableCell>
+                                    <DataTableCell compact mono className="text-xs">{c.mint || '-'}</DataTableCell>
+                                    <DataTableCell compact mono className="text-green-400">
+                                      {Number(c.amountUi || 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}
+                                    </DataTableCell>
+                                  </DataTableRow>
+                                )) : <tr><td colSpan={3}><EmptyState message="No deposits" /></td></tr>}
+                            </DataTable>
+                            
+                            <h5 className="text-sm font-medium text-gray-300 mb-2 mt-4">Spot Collateral - Borrows</h5>
+                            <DataTable headers={['Market', 'Mint', 'Amount']} compact>
+                              {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) < 0).length > 0 ? 
+                                (userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) < 0).map((c: any, i: number) => (
+                                  <DataTableRow key={i}>
+                                    <DataTableCell compact>{c.symbol || c.marketIndex}</DataTableCell>
+                                    <DataTableCell compact mono className="text-xs">{c.mint || '-'}</DataTableCell>
+                                    <DataTableCell compact mono className="text-red-400">
+                                      {Math.abs(Number(c.amountUi || 0)).toLocaleString(undefined, { maximumFractionDigits: 9 })}
+                                    </DataTableCell>
+                                  </DataTableRow>
+                                )) : <tr><td colSpan={3}><EmptyState message="No borrows" /></td></tr>}
+                            </DataTable>
+                          </div>
+                          <div>
+                            <h5 className="text-sm font-medium text-gray-300 mb-2">Perp Positions</h5>
+                            <DataTable headers={['Market', 'Base (raw)']} compact>
+                              {(userDetails[u.userPk]?.perpPositions || []).length > 0 ? 
+                                (userDetails[u.userPk]?.perpPositions || []).map((pp: any, i: number) => (
+                                  <DataTableRow key={i}>
+                                    <DataTableCell compact>{pp.marketIndex}</DataTableCell>
+                                    <DataTableCell compact mono>{Number(pp.baseRaw || 0).toLocaleString()}</DataTableCell>
+                                  </DataTableRow>
+                                )) : <tr><td colSpan={2}><EmptyState message="No perp positions" /></td></tr>}
+                            </DataTable>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              )) : (
+                <tr><td colSpan={8}><EmptyState message="No users under threshold" /></td></tr>
               )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Transactions */}
-      <div className="bg-gray-800 rounded">
-        <div className="p-3 flex items-center justify-between">
-          <div className="text-white font-semibold">Transactions</div>
-          <div className="flex items-center gap-2">
-            <div className="text-xs text-gray-400">Showing last {txDisplayLimit}</div>
-            <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={loadTxHistory} disabled={txBusy}>{txBusy ? 'Loading…' : 'Refresh'}</button>
+            </DataTable>
           </div>
         </div>
-        <div className="px-3 pb-3 overflow-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-gray-400">
-                <th className="text-left">Time</th>
-                <th className="text-left">Action</th>
-                <th className="text-left">Bot</th>
-                <th className="text-left">Market</th>
-                <th className="text-left">User</th>
-                <th className="text-left">Cost (SOL)</th>
-                <th className="text-left">Revenue (q)</th>
-                <th className="text-left">Build/Send/Confirm</th>
-                <th className="text-left">Status</th>
-                <th className="text-left">Tx</th>
-              </tr>
-            </thead>
-            <tbody>
-              {txDisplay.map((row: any, i: number) => {
-                const sig = String(row?.sig || '');
-                const cluster = String(status?.cluster || 'mainnet-beta');
-                const clusterQs = cluster === 'devnet' ? '?cluster=devnet' : (cluster === 'localnet' ? '?cluster=localnet' : '');
-                const solscan = sig && sig !== 'FAILED' ? `https://solscan.io/tx/${sig}${clusterQs}` : null;
-                const st = row?.status || null;
-                const conf = st?.confirmationStatus || '';
-                const err = st?.err ? 'err' : '';
-                const statusLabel = err ? 'error' : (conf || (row?.success ? 'confirmed' : 'unknown'));
+      </Panel>
+
+      {/* Triggers & Fillers - Side by Side on Large Screens */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Triggers Panel */}
+        <Panel
+          title="Triggers"
+          collapsible
+          defaultCollapsed={!open.trig}
+          badges={<StatusBadge status={botHealth.trig?.ok ? 'ok' : 'error'} label={botHealth.trig?.ok ? 'API OK' : 'API ERR'} />}
+          actions={
+            !!p.onOpenTriggerRunner && (
+              <Button variant="warning" onClick={() => p.onOpenTriggerRunner?.()}>+ New Trigger Bot</Button>
+            )
+          }
+        >
+          <TriggerStatus apiBase={p.apiBase} hideHeader />
+        </Panel>
+
+        {/* Fillers Panel */}
+        <Panel
+          title="Fillers"
+          collapsible
+          defaultCollapsed={!open.fill}
+          badges={<StatusBadge status={botHealth.fill?.ok ? 'ok' : 'error'} label={botHealth.fill?.ok ? 'API OK' : 'API ERR'} />}
+          actions={
+            !!p.onOpenFillerRunner && (
+              <Button variant="primary" onClick={() => p.onOpenFillerRunner?.()}>+ New Filler Bot</Button>
+            )
+          }
+        >
+          <FillerStatus apiBase={p.apiBase} hideHeader />
+        </Panel>
+      </div>
+
+      {/* Performance Summary Panel */}
+      <Panel
+        title="Performance Summary"
+        actions={<Button onClick={loadTxSummary}>Refresh</Button>}
+      >
+        <DataTable
+          headers={['Window', 'Action', 'Attempts', 'Success', 'Cost (SOL)', 'Revenue (q)', 'Build p50/p95', 'Send p50/p95', 'Confirm p50/p95']}
+          compact
+        >
+          {txSummary ? (
+            (['5m', '1h', '24h'] as const).flatMap((win) =>
+              (['all', 'fill', 'trigger', 'liquidate'] as const).map((action) => {
+                const m = txSummary?.[win]?.[action];
+                const attempts = Number(m?.attempts ?? 0);
+                const successes = Number(m?.successes ?? 0);
+                const successRate = attempts > 0 ? ((successes / attempts) * 100).toFixed(1) : '0.0';
+                const costSol = Number(m?.costSol ?? 0);
+                const revenue = Number(m?.revenueQuote ?? 0);
                 return (
-                  <tr key={`${sig}-${i}`} className="text-gray-300">
-                    <td>{row?.ts ? new Date(Number(row.ts)).toLocaleTimeString() : '-'}</td>
-                    <td className="uppercase">{row?.action || '-'}</td>
-                    <td>{row?.bot || '-'}</td>
-                    <td>{Number.isFinite(Number(row?.marketIndex)) ? row.marketIndex : '-'}</td>
-                    <td className="font-mono" title={row?.taker || ''}>{shortPk(String(row?.taker || ''))}</td>
-                    <td>{Number(row?.lamportsPaid ?? 0) / 1_000_000_000}</td>
-                    <td>{Number(row?.fillerRewardQuote ?? 0) ? Number(row?.fillerRewardQuote ?? 0).toLocaleString() : '-'}</td>
-                    <td>{formatMs(row?.buildMs)} / {formatMs(row?.sendMs)} / {formatMs(row?.confirmMs)}</td>
-                    <td className={err ? 'text-red-300' : 'text-gray-300'}>{statusLabel}</td>
-                    <td>
-                      {solscan ? (
-                        <a className="text-blue-300 hover:underline" href={solscan} target="_blank" rel="noreferrer">solscan</a>
-                      ) : (
-                        <span className="text-gray-500">-</span>
-                      )}
-                    </td>
-                  </tr>
+                  <DataTableRow key={`${win}-${action}`}>
+                    <DataTableCell compact>{win}</DataTableCell>
+                    <DataTableCell compact className="uppercase">{action}</DataTableCell>
+                    <DataTableCell compact mono>{attempts}</DataTableCell>
+                    <DataTableCell compact mono>{successRate}%</DataTableCell>
+                    <DataTableCell compact mono>{costSol.toFixed(4)}</DataTableCell>
+                    <DataTableCell compact mono>{action === 'fill' || action === 'all' ? revenue.toLocaleString() : '-'}</DataTableCell>
+                    <DataTableCell compact mono>{formatMs(m?.timings?.buildMs?.p50)} / {formatMs(m?.timings?.buildMs?.p95)}</DataTableCell>
+                    <DataTableCell compact mono>{formatMs(m?.timings?.sendMs?.p50)} / {formatMs(m?.timings?.sendMs?.p95)}</DataTableCell>
+                    <DataTableCell compact mono>{formatMs(m?.timings?.confirmMs?.p50)} / {formatMs(m?.timings?.confirmMs?.p95)}</DataTableCell>
+                  </DataTableRow>
                 );
-              })}
-              {txDisplay.length === 0 && (
-                <tr><td colSpan={10} className="text-gray-500">No transactions</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+              })
+            )
+          ) : (
+            <tr><td colSpan={9}><EmptyState message="No summary data" /></td></tr>
+          )}
+        </DataTable>
+      </Panel>
+
+      {/* Transactions Panel */}
+      <Panel
+        title="Transactions"
+        actions={
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-400">Showing last {txDisplayLimit}</span>
+            <Button onClick={loadTxHistory} disabled={txBusy}>
+              {txBusy ? 'Loading...' : 'Refresh'}
+            </Button>
+          </div>
+        }
+      >
+        <DataTable
+          headers={['Time', 'Action', 'Bot', 'Market', 'User', 'Cost (SOL)', 'Revenue (q)', 'Build/Send/Confirm', 'Status', 'Tx']}
+          compact
+        >
+          {txDisplay.length > 0 ? txDisplay.map((row: any, i: number) => {
+            const sig = String(row?.sig || '');
+            const cluster = String(status?.cluster || 'mainnet-beta');
+            const clusterQs = cluster === 'devnet' ? '?cluster=devnet' : (cluster === 'localnet' ? '?cluster=localnet' : '');
+            const solscan = sig && sig !== 'FAILED' ? `https://solscan.io/tx/${sig}${clusterQs}` : null;
+            const st = row?.status || null;
+            const conf = st?.confirmationStatus || '';
+            const err = st?.err ? 'err' : '';
+            const statusLabel = err ? 'error' : (conf || (row?.success ? 'confirmed' : 'unknown'));
+            return (
+              <DataTableRow key={`${sig}-${i}`}>
+                <DataTableCell compact>{row?.ts ? new Date(Number(row.ts)).toLocaleTimeString() : '-'}</DataTableCell>
+                <DataTableCell compact className="uppercase">{row?.action || '-'}</DataTableCell>
+                <DataTableCell compact>{row?.bot || '-'}</DataTableCell>
+                <DataTableCell compact>{Number.isFinite(Number(row?.marketIndex)) ? row.marketIndex : '-'}</DataTableCell>
+                <DataTableCell compact mono className="text-xs">{shortPk(String(row?.taker || ''))}</DataTableCell>
+                <DataTableCell compact mono>{Number(row?.lamportsPaid ?? 0) / 1_000_000_000}</DataTableCell>
+                <DataTableCell compact mono>{Number(row?.fillerRewardQuote ?? 0) ? Number(row?.fillerRewardQuote ?? 0).toLocaleString() : '-'}</DataTableCell>
+                <DataTableCell compact mono>{formatMs(row?.buildMs)} / {formatMs(row?.sendMs)} / {formatMs(row?.confirmMs)}</DataTableCell>
+                <DataTableCell compact className={err ? 'text-red-400' : ''}>{statusLabel}</DataTableCell>
+                <DataTableCell compact>
+                  {solscan ? (
+                    <a className="text-blue-400 hover:underline" href={solscan} target="_blank" rel="noreferrer">solscan</a>
+                  ) : (
+                    <span className="text-gray-500">-</span>
+                  )}
+                </DataTableCell>
+              </DataTableRow>
+            );
+          }) : (
+            <tr><td colSpan={10}><EmptyState message="No transactions" /></td></tr>
+          )}
+        </DataTable>
+      </Panel>
     </div>
   );
 };
-

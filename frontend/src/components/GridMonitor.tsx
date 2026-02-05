@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { logger } from '../utils/logger';
+import { Panel, StatCard, Button, DataTable, DataTableRow, DataTableCell, EmptyState } from './ui';
 
 interface GridLevel {
   id: string;
@@ -31,7 +32,6 @@ interface GridPosition {
   pairedPositionId?: string;
   intention?: string;
   timeSinceOpen?: number;
-  // Planned exit metadata for accurate display
   plannedExitSide?: 'buy' | 'sell';
   plannedExitLevelId?: string;
   plannedExitPrice?: number;
@@ -69,6 +69,9 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
   const [tokens, setTokens] = useState<{fromToken: string, toToken: string, fromSymbol: string, toSymbol: string, fromUsd?: number | null, toUsd?: number | null} | null>(null);
   const [driftInfo, setDriftInfo] = useState<{ spread?: number; fundingApy?: number; feeBps?: number; feeEstRoundTrip?: number; openOrders?: number; effectiveLeverage?: number; liquidationBuffer?: number } | null>(null);
   const [onlyClose, setOnlyClose] = useState<boolean>(false);
+  const [showLevelsDetail, setShowLevelsDetail] = useState(false);
+  const [showPositionsDetail, setShowPositionsDetail] = useState(false);
+  const [showHistoryDetail, setShowHistoryDetail] = useState(false);
 
   const formatAmount = (n: number | undefined | null) => {
     const v = Number(n || 0);
@@ -77,7 +80,6 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
 
   const formatPrice = (n: number | undefined | null) => {
     const v = Math.abs(Number(n || 0));
-    // Heuristic: fewer decimals for large prices, more for small
     const maxFrac = v >= 100 ? 2 : v >= 10 ? 3 : v >= 1 ? 4 : 6;
     const minFrac = v >= 100 ? 2 : v >= 10 ? 3 : v >= 1 ? 4 : 6;
     return v.toLocaleString(undefined, { minimumFractionDigits: minFrac, maximumFractionDigits: maxFrac });
@@ -100,7 +102,6 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
   const formatPriceUsdFromPair = (pairPrice: number | undefined | null) => {
     const p = Number(pairPrice || 0);
     if (!tokens?.fromUsd || !isFinite(p) || p <= 0) return formatPrice(pairPrice);
-    // Compute $ per toToken from pair (to per from): USD/to = USD/from * (to/from)
     return formatUsd(tokens.fromUsd * p);
   };
 
@@ -115,7 +116,6 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
       setState(data.state || null);
       setTokens(data.tokens || null);
       try { setOnlyClose(!!(data.controls?.onlyClose)); } catch {}
-      // Optional drift extras if provided by backend adapter later
       if (data && (data.spread !== undefined || data.fundingApy !== undefined || data.feeBps !== undefined || data.feeEstRoundTrip !== undefined || data.openOrders !== undefined || data.effectiveLeverage !== undefined || data.liquidationBuffer !== undefined)) {
         setDriftInfo({ spread: data.spread, fundingApy: data.fundingApy, feeBps: data.feeBps, feeEstRoundTrip: data.feeEstRoundTrip, openOrders: data.openOrders, effectiveLeverage: data.effectiveLeverage, liquidationBuffer: data.liquidationBuffer });
       }
@@ -170,10 +170,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
       });
       
       if (response.ok) {
-        // Remove the position from active positions immediately
         setActivePositions(prev => prev.filter(pos => pos.id !== positionId));
-        
-        // Refresh data to get updated trade history
         await fetchGridData();
         logger.debug('Position closed successfully');
       } else {
@@ -191,7 +188,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
     const interval = setInterval(() => {
       fetchGridData();
       fetchPerformance();
-    }, 1000); // Update every 1 second for more responsive price updates
+    }, 1000);
     
     setLoading(false);
     return () => clearInterval(interval);
@@ -201,15 +198,14 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
     return <div className="text-white">Loading grid data...</div>;
   }
 
-  const buyLevels = levels.filter(l => l.side === 'buy').sort((a, b) => b.price - a.price); // Highest at top, lowest at bottom
-  const sellLevels = levels.filter(l => l.side === 'sell').sort((a, b) => b.price - a.price); // Highest at top
+  const buyLevels = levels.filter(l => l.side === 'buy').sort((a, b) => b.price - a.price);
+  const sellLevels = levels.filter(l => l.side === 'sell').sort((a, b) => b.price - a.price);
   const filledLevels = levels.filter(l => l.filled);
   const minPrice = levels.length ? Math.min(...levels.map(l => l.price)) : undefined;
   const maxPrice = levels.length ? Math.max(...levels.map(l => l.price)) : undefined;
   const buyOnly = levels.filter(l => l.side === 'buy');
   const buyLevelAmount = buyOnly.length ? (buyOnly.reduce((sum, l) => sum + (l.amount || 0), 0) / buyOnly.length) : undefined;
 
-  // Compute average completed cycle duration
   const averageCycleDurationMs = (() => {
     if (!tradeHistory || tradeHistory.length === 0) return undefined as number | undefined;
     const groups = tradeHistory.reduce((acc, p) => {
@@ -230,234 +226,256 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
     return durations.reduce((a, b) => a + b, 0) / durations.length;
   })();
 
+  // Calculate max amount for depth visualization
+  const maxAmount = Math.max(...levels.map(l => l.amount || 0), 1);
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Grid Overview */}
-      <div className="bg-gray-800 rounded-lg p-4">
+      <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-4">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-semibold text-white">Grid Overview</h3>
-          <div className="flex items-center space-x-2">
-            <label className="flex items-center text-sm text-gray-200 mr-2">
+          <div className="flex items-center gap-3">
+            <label className="flex items-center text-sm text-gray-300 cursor-pointer">
               <input
                 type="checkbox"
-                className="mr-2"
+                className="mr-2 rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500"
                 checked={!!onlyClose}
                 onChange={(e) => toggleOnlyClose(e.target.checked)}
               />
               Only close (no new buys)
             </label>
-            <button
-              onClick={rebalanceGrid}
-              className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
-            >
-              Rebalance
-            </button>
+            <Button onClick={rebalanceGrid}>Rebalance</Button>
           </div>
         </div>
         
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-          <div>
-            <div className="text-gray-400">Center Price</div>
-            <div className="text-white font-mono">{typeof state?.centerPrice === 'number' ? formatPrice(state?.centerPrice) : 'N/A'}</div>
-          </div>
-          <div>
-            <div className="text-gray-400">Current Price</div>
-            <div className="text-white font-mono">{typeof currentPrice === 'number' ? formatPrice(currentPrice) : (typeof state?.centerPrice === 'number' ? formatPrice(state?.centerPrice) : 'N/A')}</div>
-          </div>
-          <div>
-            <div className="text-gray-400">Total Levels</div>
-            <div className="text-white">{levels.length}</div>
-          </div>
-          <div>
-            <div className="text-gray-400">Filled Levels</div>
-            <div className="text-white">{filledLevels.length}</div>
-          </div>
+        {/* Stats Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <StatCard
+            label="Center Price"
+            value={typeof state?.centerPrice === 'number' ? formatPrice(state?.centerPrice) : 'N/A'}
+          />
+          <StatCard
+            label="Current Price"
+            value={typeof currentPrice === 'number' ? formatPrice(currentPrice) : (typeof state?.centerPrice === 'number' ? formatPrice(state?.centerPrice) : 'N/A')}
+          />
+          <StatCard
+            label="Total Levels"
+            value={levels.length}
+          />
+          <StatCard
+            label="Filled Levels"
+            value={filledLevels.length}
+          />
         </div>
         
         {/* Strategy Info */}
-        <div className="mt-4 p-3 bg-gray-700/50 border border-gray-600/60 rounded">
+        <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg p-3">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
             <div>
-              <div className="text-gray-400">Pair</div>
-              <div className="text-white">{(() => {
+              <div className="text-xs text-gray-400 uppercase tracking-wider">Pair</div>
+              <div className="text-white font-mono mt-1">{(() => {
                 const to = tokens?.toSymbol || tokens?.toToken;
                 if (isDrift && to && /-PERP/i.test(to)) return to;
                 return `${tokens?.fromSymbol || tokens?.fromToken || 'FROM'} → ${tokens?.toSymbol || tokens?.toToken || 'TO'}`;
               })()}</div>
             </div>
             <div>
-              <div className="text-gray-400">Amount / Level</div>
-              <div className="text-white font-mono">{buyLevelAmount !== undefined ? formatAmount(buyLevelAmount) : 'N/A'}</div>
+              <div className="text-xs text-gray-400 uppercase tracking-wider">Amount / Level</div>
+              <div className="text-white font-mono mt-1">{buyLevelAmount !== undefined ? formatAmount(buyLevelAmount) : 'N/A'}</div>
             </div>
             <div>
-              <div className="text-gray-400">Grid Range</div>
-              <div className="text-white font-mono">{minPrice !== undefined && maxPrice !== undefined ? `${formatPrice(minPrice)} → ${formatPrice(maxPrice)}` : 'N/A'}</div>
+              <div className="text-xs text-gray-400 uppercase tracking-wider">Grid Range</div>
+              <div className="text-white font-mono mt-1">{minPrice !== undefined && maxPrice !== undefined ? `${formatPrice(minPrice)} → ${formatPrice(maxPrice)}` : 'N/A'}</div>
             </div>
           </div>
+          
           {/* Drift-specific metrics */}
           {isDrift && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm mt-3">
-            <div>
-              <div className="text-gray-400">Spread</div>
-              <div className="text-white font-mono">{typeof driftInfo?.spread === 'number' ? `${formatPrice(driftInfo.spread)}` : 'N/A'}</div>
-            </div>
-            <div>
-              <div className="text-gray-400">Funding APY</div>
-              <div className="text-white font-mono">{typeof driftInfo?.fundingApy === 'number' ? `${(driftInfo.fundingApy * 100).toFixed(2)}%` : 'N/A'}</div>
-            </div>
-            <div>
-              <div className="text-gray-400">Fees (bps)</div>
-              <div className="text-white font-mono">{typeof driftInfo?.feeBps === 'number' ? `${driftInfo.feeBps}` : 'N/A'}</div>
-            </div>
-            <div>
-              <div className="text-gray-400">Est. Round Trip Fees</div>
-              <div className="text-white font-mono">{typeof driftInfo?.feeEstRoundTrip === 'number' ? `${formatAmount(driftInfo.feeEstRoundTrip)}` : 'N/A'}</div>
-            </div>
-          </div>
-          )}
-          {isDrift && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mt-3">
-            <div>
-              <div className="text-gray-400">Open Orders</div>
-              <div className="text-white font-mono">{typeof driftInfo?.openOrders === 'number' ? driftInfo.openOrders : 'N/A'}</div>
-            </div>
-            <div>
-              <div className="text-gray-400">Effective Leverage</div>
-              <div className="text-white font-mono">{typeof driftInfo?.effectiveLeverage === 'number' ? driftInfo.effectiveLeverage.toFixed(2) : 'N/A'}</div>
-            </div>
-            <div>
-              <div className="text-gray-400">Liquidation Buffer</div>
-              <div className="text-white font-mono">{typeof driftInfo?.liquidationBuffer === 'number' && isFinite(driftInfo.liquidationBuffer) ? `${(driftInfo.liquidationBuffer * 100).toFixed(2)}%` : (driftInfo?.liquidationBuffer === Infinity ? '∞' : 'N/A')}</div>
-            </div>
-          </div>
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm mt-4 pt-4 border-t border-gray-700/50">
+                <div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Spread</div>
+                  <div className="text-white font-mono mt-1">{typeof driftInfo?.spread === 'number' ? formatPrice(driftInfo.spread) : 'N/A'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Funding APY</div>
+                  <div className="text-white font-mono mt-1">{typeof driftInfo?.fundingApy === 'number' ? `${(driftInfo.fundingApy * 100).toFixed(2)}%` : 'N/A'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Fees (bps)</div>
+                  <div className="text-white font-mono mt-1">{typeof driftInfo?.feeBps === 'number' ? driftInfo.feeBps : 'N/A'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Est. RT Fees</div>
+                  <div className="text-white font-mono mt-1">{typeof driftInfo?.feeEstRoundTrip === 'number' ? formatAmount(driftInfo.feeEstRoundTrip) : 'N/A'}</div>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mt-3">
+                <div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Open Orders</div>
+                  <div className="text-white font-mono mt-1">{typeof driftInfo?.openOrders === 'number' ? driftInfo.openOrders : 'N/A'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Eff. Leverage</div>
+                  <div className="text-white font-mono mt-1">{typeof driftInfo?.effectiveLeverage === 'number' ? driftInfo.effectiveLeverage.toFixed(2) : 'N/A'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Liq Buffer</div>
+                  <div className="text-white font-mono mt-1">{typeof driftInfo?.liquidationBuffer === 'number' && isFinite(driftInfo.liquidationBuffer) ? `${(driftInfo.liquidationBuffer * 100).toFixed(2)}%` : (driftInfo?.liquidationBuffer === Infinity ? '∞' : 'N/A')}</div>
+                </div>
+              </div>
+            </>
           )}
         </div>
       </div>
 
       {/* Performance Metrics */}
-        <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4">Performance</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div>
-              <div className="text-gray-400">Total PnL</div>
-            <div className={`font-mono ${(state?.totalPnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {(state?.totalPnl || 0).toFixed(4)}
-            </div>
-          </div>
-          <div>
-            <div className="text-gray-400">Completed Cycles</div>
-            <div className="text-white font-mono">{state?.completedCycles || 0}</div>
-          </div>
-          <div>
-            <div className="text-gray-400">Total Trades</div>
-            <div className="text-white font-mono">{state?.totalTrades || 0}</div>
-          </div>
-          <div>
-            <div className="text-gray-400">Active Positions</div>
-            <div className="text-white">{activePositions.length}</div>
-          </div>
+      <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-4">
+        <h3 className="text-lg font-semibold text-white mb-4">Performance</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <StatCard
+            label="Total PnL"
+            value={(state?.totalPnl || 0).toFixed(4)}
+            className={`${(state?.totalPnl || 0) >= 0 ? 'border-green-600/30' : 'border-red-600/30'}`}
+          />
+          <StatCard
+            label="Completed Cycles"
+            value={state?.completedCycles || 0}
+          />
+          <StatCard
+            label="Total Trades"
+            value={state?.totalTrades || 0}
+          />
+          <StatCard
+            label="Active Positions"
+            value={activePositions.length}
+          />
         </div>
-        <div className="mt-4 pt-4 border-t border-gray-700">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-            <div>
-              <div className="text-gray-400">Avg Cycle Time</div>
-              <div className="text-white font-mono">{averageCycleDurationMs !== undefined ? formatDuration(averageCycleDurationMs) : 'N/A'}</div>
-            </div>
-          </div>
-        </div>
-        </div>
-
-      {showDetails && (
-      <div className="bg-gray-800 rounded-lg p-4">
-        <h3 className="text-lg font-semibold text-white mb-4">Grid Levels</h3>
-        
-        {/* Sell Levels */}
-        <div className="mb-4">
-          <h4 className="text-sm font-medium text-green-400 mb-2">Sell Levels (Above Center)</h4>
-          <div className="space-y-1 max-h-32 overflow-y-auto">
-            {sellLevels.map((level) => (
-              <div
-                key={level.id}
-                className={`flex justify-between items-center p-2 rounded text-xs ${
-                  level.filled 
-                    ? 'bg-green-900 text-green-200' 
-                    : currentPrice && currentPrice >= level.price
-                    ? 'bg-green-800 text-green-100'
-                    : 'bg-gray-700 text-gray-300'
-                }`}
-              >
-                <span className="font-mono">{formatPrice(level.price)}</span>
-                <span className={level.filled ? 'text-green-300' : 'text-green-200'}>{formatAmount(level.amount)}</span>
-                <span className={level.filled ? 'text-green-400' : 'text-gray-400'}>
-                  {level.filled ? 'Filled' : 'Pending'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Center Price */}
-        {state?.centerPrice && (
-          <div className="text-center py-2 border-t border-b border-gray-600">
-            <div className="text-sm text-gray-400">Center Price</div>
-            <div className="text-white font-mono text-lg">{state.centerPrice.toFixed(6)}</div>
-          </div>
-        )}
-
-        {/* Buy Levels */}
-        <div>
-          <h4 className="text-sm font-medium text-red-400 mb-2">Buy Levels (Below Center)</h4>
-          <div className="space-y-1 max-h-32 overflow-y-auto">
-            {buyLevels.map((level) => (
-              <div
-                key={level.id}
-                className={`flex justify-between items-center p-2 rounded text-xs ${
-                  level.filled 
-                    ? 'bg-red-900 text-red-200' 
-                    : currentPrice && currentPrice <= level.price
-                    ? 'bg-red-800 text-red-100'
-                    : 'bg-gray-700 text-gray-300'
-                }`}
-              >
-                <span className="font-mono">{formatPrice(level.price)}</span>
-                <span className={level.filled ? 'text-red-300' : 'text-red-200'}>{formatAmount(level.amount)}</span>
-                <span className={level.filled ? 'text-red-400' : 'text-gray-400'}>
-                  {level.filled ? 'Filled' : 'Pending'}
-                </span>
-              </div>
-            ))}
+        <div className="mt-4 pt-4 border-t border-gray-700/50">
+          <div className="text-sm">
+            <span className="text-gray-400">Avg Cycle Time:</span>
+            <span className="text-white font-mono ml-2">{averageCycleDurationMs !== undefined ? formatDuration(averageCycleDurationMs) : 'N/A'}</span>
           </div>
         </div>
       </div>
+
+      {/* Grid Levels - Order Book Style */}
+      {(showDetails || showLevelsDetail) && (
+        <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-white">Grid Levels</h3>
+            <Button size="xs" onClick={() => setShowLevelsDetail(!showLevelsDetail)}>
+              {showLevelsDetail ? 'Collapse' : 'Expand'}
+            </Button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Sell Levels */}
+            <div>
+              <h4 className="text-sm font-medium text-green-400 mb-2 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                Sell Levels (Above Center)
+              </h4>
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {sellLevels.map((level) => {
+                  const depthPercent = ((level.amount || 0) / maxAmount) * 100;
+                  return (
+                    <div
+                      key={level.id}
+                      className={`flex items-center text-xs h-7 hover:bg-white/5 relative group rounded ${
+                        level.filled ? 'bg-green-900/30' : ''
+                      }`}
+                    >
+                      <div 
+                        className="absolute right-0 top-0 bottom-0 bg-green-900/20 rounded-r" 
+                        style={{ width: `${depthPercent}%` }} 
+                      />
+                      <div className="w-24 font-mono text-green-400 relative z-10 pl-2">{formatPrice(level.price)}</div>
+                      <div className="flex-1 text-right text-gray-300 relative z-10 pr-2 font-mono">{formatAmount(level.amount)}</div>
+                      <div className={`w-16 text-right relative z-10 pr-2 text-[10px] uppercase ${level.filled ? 'text-green-400' : 'text-gray-500'}`}>
+                        {level.filled ? 'Filled' : 'Open'}
+                      </div>
+                    </div>
+                  );
+                })}
+                {sellLevels.length === 0 && <div className="text-gray-500 text-sm py-2">No sell levels</div>}
+              </div>
+            </div>
+
+            {/* Buy Levels */}
+            <div>
+              <h4 className="text-sm font-medium text-red-400 mb-2 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                Buy Levels (Below Center)
+              </h4>
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {buyLevels.map((level) => {
+                  const depthPercent = ((level.amount || 0) / maxAmount) * 100;
+                  return (
+                    <div
+                      key={level.id}
+                      className={`flex items-center text-xs h-7 hover:bg-white/5 relative group rounded ${
+                        level.filled ? 'bg-red-900/30' : ''
+                      }`}
+                    >
+                      <div 
+                        className="absolute left-0 top-0 bottom-0 bg-red-900/20 rounded-l" 
+                        style={{ width: `${depthPercent}%` }} 
+                      />
+                      <div className="w-24 font-mono text-red-400 relative z-10 pl-2">{formatPrice(level.price)}</div>
+                      <div className="flex-1 text-right text-gray-300 relative z-10 pr-2 font-mono">{formatAmount(level.amount)}</div>
+                      <div className={`w-16 text-right relative z-10 pr-2 text-[10px] uppercase ${level.filled ? 'text-red-400' : 'text-gray-500'}`}>
+                        {level.filled ? 'Filled' : 'Open'}
+                      </div>
+                    </div>
+                  );
+                })}
+                {buyLevels.length === 0 && <div className="text-gray-500 text-sm py-2">No buy levels</div>}
+              </div>
+            </div>
+          </div>
+
+          {/* Center Price Indicator */}
+          {state?.centerPrice && (
+            <div className="mt-4 pt-4 border-t border-gray-700/50 text-center">
+              <span className="text-xs text-gray-400 uppercase tracking-wider">Center Price</span>
+              <div className="text-white font-mono text-lg">{formatPrice(state.centerPrice)}</div>
+            </div>
+          )}
+        </div>
       )}
 
-
-
-      {showDetails && (
-        <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4">Active Positions</h3>
-        <div className="space-y-3 max-h-96 overflow-y-auto">
+      {/* Active Positions */}
+      {(showDetails || showPositionsDetail) && (
+        <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-white">Active Positions</h3>
+            <Button size="xs" onClick={() => setShowPositionsDetail(!showPositionsDetail)}>
+              {showPositionsDetail ? 'Collapse' : 'Expand'}
+            </Button>
+          </div>
+          
           {activePositions.length > 0 ? (
-            activePositions
-              .sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0))
-              .map((position) => {
-                // Format time since open as hh:mm:ss
-                const formatTimeSinceOpen = (timeMs: number) => {
-                  const totalSeconds = Math.floor(timeMs / 1000);
-                  const hours = Math.floor(totalSeconds / 3600);
-                  const minutes = Math.floor((totalSeconds % 3600) / 60);
-                  const seconds = totalSeconds % 60;
-                  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-                };
-
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {activePositions.sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0)).map((position) => {
+                let pnl = position.pnl;
+                if (pnl === undefined && position.entryPrice && currentPrice) {
+                  if (position.side === 'buy') {
+                    pnl = (currentPrice - position.entryPrice) * (position.filledAmount || position.amount || 0);
+                  } else {
+                    pnl = (position.entryPrice - currentPrice) * (position.filledAmount || position.amount || 0);
+                  }
+                }
+                
                 return (
-                  <div key={position.id} className="p-3 bg-gray-700 rounded-lg text-sm">
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="flex items-center space-x-3">
+                  <div key={position.id} className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
+                    <div className="flex justify-between items-start">
+                      <div className="flex items-center gap-3">
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
                           position.side === 'buy' 
-                            ? 'bg-green-900 text-green-200' 
-                            : 'bg-red-900 text-red-200'
+                            ? 'bg-green-900/50 text-green-400' 
+                            : 'bg-red-900/50 text-red-400'
                         }`}>
                           {position.side?.toUpperCase() || 'POSITION'}
                         </span>
@@ -465,13 +483,13 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
                           const amt = (typeof position.amount === 'number' && position.amount > 0) ? position.amount : position.filledAmount;
                           return amt !== undefined ? formatAmount(amt) : 'N/A';
                         })()}</span>
-                        <span className="text-gray-400">@{(() => {
+                        <span className="text-gray-400">@</span>
+                        <span className="text-white font-mono">{(() => {
                           const isStableTo = typeof tokens?.toUsd === 'number' && Math.abs((tokens as any).toUsd - 1) < 0.03;
                           const entryUsdPerTo = (position as any).entryUsdPerTo as number | undefined;
                           const p = position.entryPrice as number | undefined;
                           if (isStableTo) {
                             if (typeof entryUsdPerTo === 'number' && typeof p === 'number' && p > 0) {
-                              // Show USD per fromToken when trading into a stablecoin
                               return formatUsd(entryUsdPerTo / p);
                             }
                             if (typeof (tokens as any).fromUsd === 'number') return formatUsd((tokens as any).fromUsd);
@@ -484,34 +502,15 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
                           return 'N/A';
                         })()}</span>
                       </div>
-                      <div className="flex items-center space-x-2">
-                        {(() => {
-                          // Calculate PNL for active positions
-                          let pnl = position.pnl;
-                          if (pnl === undefined && position.entryPrice && currentPrice) {
-                            // Calculate unrealized PNL for active positions
-                            if (position.side === 'buy') {
-                              // For buy positions: PNL = (currentPrice - entryPrice) * amount
-                              pnl = (currentPrice - position.entryPrice) * (position.filledAmount || position.amount || 0);
-                            } else {
-                              // For sell positions: PNL = (entryPrice - currentPrice) * amount
-                              pnl = (position.entryPrice - currentPrice) * (position.filledAmount || position.amount || 0);
-                            }
-                          }
-                          
-                          return pnl !== undefined ? (
-                            <div className={`font-mono text-sm ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              PnL: {tokens?.fromUsd ? formatUsd(pnl * tokens.fromUsd) : pnl.toFixed(4)}
-                            </div>
-                          ) : null;
-                        })()}
-                        <button
-                          onClick={() => handleClosePosition(position.id)}
-                          className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded transition-colors"
-                          title="Close Position"
-                        >
+                      <div className="flex items-center gap-2">
+                        {pnl !== undefined && (
+                          <div className={`font-mono text-sm ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            PnL: {tokens?.fromUsd ? formatUsd(pnl * tokens.fromUsd) : pnl.toFixed(4)}
+                          </div>
+                        )}
+                        <Button size="xs" variant="danger" onClick={() => handleClosePosition(position.id)}>
                           Close
-                        </button>
+                        </Button>
                         {position.transactionSignature && (
                           <a
                             href={`https://solscan.io/tx/${position.transactionSignature}`}
@@ -526,8 +525,8 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
                       </div>
                     </div>
                     
-                    <div className="flex justify-between items-center text-xs text-gray-400">
-                <div className="flex items-center space-x-4">
+                    <div className="flex justify-between items-center text-xs text-gray-400 mt-2">
+                      <div className="flex items-center gap-4">
                         {(() => {
                           const side = position.plannedExitSide;
                           const price = position.plannedExitPrice;
@@ -542,259 +541,166 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
                             : undefined;
                           return (
                             <span className="text-gray-300">
-                              {label} @{(() => {
-                                // Show the intended grid level price directly to avoid confusing USD conversions
-                                return formatPrice(price);
-                              })()}
+                              {label} @{formatPrice(price)}
                               {typeof distPct === 'number' ? ` (${distPct >= 0 ? '+' : ''}${distPct.toFixed(2)}%)` : ''}
                             </span>
                           );
                         })()}
                         {position.timeSinceOpen && (
                           <span className="text-yellow-400 font-mono">
-                            Open: {formatTimeSinceOpen(position.timeSinceOpen)}
-                  </span>
+                            Open: {formatDuration(position.timeSinceOpen)}
+                          </span>
                         )}
-                </div>
+                      </div>
                       <div className="text-gray-500">
                         {position.openedAt ? new Date(position.openedAt).toLocaleTimeString() : ''}
-                </div>
-              </div>
-          </div>
-                );
-              })
-          ) : (
-            <div className="text-gray-400 text-center py-4">No active positions</div>
-          )}
-        </div>
-      </div>
-      )}
-
-      {showDetails && (
-        <div className="bg-gray-800 rounded-lg p-4">
-        <h3 className="text-lg font-semibold text-white mb-4">Trade Summary</h3>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-          {tradeHistory.length > 0 ? (
-            (() => {
-              // Group trades by cycles (buy/sell pairs)
-              const groupedTrades = tradeHistory.reduce((groups, position) => {
-                const key = position.pairedPositionId || position.id;
-                if (!groups[key]) {
-                  groups[key] = [];
-                }
-                groups[key].push(position);
-                return groups;
-              }, {} as Record<string, GridPosition[]>);
-
-              // Convert to array and sort by most recent
-              const sortedGroups = Object.values(groupedTrades)
-                .sort((a, b) => (b[0].openedAt || 0) - (a[0].openedAt || 0))
-                .slice(0, 20);
-
-              return sortedGroups.map((group, groupIndex) => {
-                const isCompleteCycle = group.length === 2 && 
-                  group.some(p => p.side === 'buy') && 
-                  group.some(p => p.side === 'sell');
-                
-                const buyTrade = group.find(p => p.side === 'buy');
-                const sellTrade = group.find(p => p.side === 'sell');
-                
-                // Calculate proper PNL for complete cycles in from-token units (receivedFrom - spentFrom)
-                let totalPnl = 0;
-                if (isCompleteCycle && buyTrade && sellTrade) {
-                  // For buy: spentFrom = buy.amount (from token)
-                  // For sell: receivedFrom = sell.filledAmount (from token)
-                  const spentFrom = buyTrade.amount || 0;
-                  const receivedFrom = sellTrade.filledAmount || 0;
-                  totalPnl = receivedFrom - spentFrom;
-                  
-                  logger.debug('Cycle PNL calculation', {
-                    spentFrom,
-                    receivedFrom,
-                    totalPnl,
-                    buyTradeId: buyTrade.id,
-                    sellTradeId: sellTrade.id
-                  });
-                } else {
-                  // For individual trades, use the existing PNL
-                  totalPnl = group.reduce((sum, p) => sum + (p.pnl || 0), 0);
-                }
-
-                if (isCompleteCycle && buyTrade && sellTrade) {
-                  // Show linked trades as one line with new format
-                  const buyFromAmt = buyTrade.amount || 0; // spent fromToken
-                  const buyToAmt = buyTrade.filledAmount || 0; // received toToken
-                  const sellFromAmt = sellTrade.amount || 0; // sold toToken
-                  const sellToAmt = sellTrade.filledAmount || 0; // received fromToken
-                  const buyPrice = buyTrade.entryPrice || 0;
-                  const sellPrice = (sellTrade.exitPrice ?? sellTrade.entryPrice ?? 0);
-                  
-                  return (
-                    <div key={`cycle-${groupIndex}`} className="flex justify-between items-center p-2 bg-gray-700 rounded text-xs">
-                      <div className="flex items-center space-x-2">
-                        <span className="px-2 py-1 rounded text-xs font-medium bg-blue-900 text-blue-200">
-                          CYCLE
-                        </span>
-                        <span className="text-white">BUY {formatAmount(buyFromAmt)} {tokens?.fromSymbol || 'USDC'} @{(() => {
-                          const u = (buyTrade as any).entryUsdPerTo as number | undefined;
-                          const isStableTo = typeof tokens?.toUsd === 'number' && Math.abs((tokens as any).toUsd - 1) < 0.03;
-                          if (isStableTo) {
-                            if (typeof u === 'number' && typeof buyPrice === 'number' && buyPrice > 0) return formatUsd(u / buyPrice);
-                            if (typeof (tokens as any).fromUsd === 'number') return formatUsd((tokens as any).fromUsd);
-                            return formatPrice(buyPrice);
-                          }
-                          if (typeof u === 'number') return formatUsd(u);
-                          if (tokens?.fromUsd) return formatPriceUsdFromPair(buyPrice);
-                          return formatPrice(buyPrice);
-                        })()}</span>
-                        <span className="text-gray-400">→</span>
-                        <span className="text-green-400">{formatAmount(buyToAmt)} {tokens?.toSymbol || 'SOL'}</span>
-                        <span className="text-gray-400">→</span>
-                        <span className="text-white">SELL {formatAmount(sellFromAmt)} {tokens?.toSymbol || 'SOL'} @{(() => {
-                          const u = ((sellTrade as any).exitUsdPerTo as number | undefined) ?? ((sellTrade as any).entryUsdPerTo as number | undefined);
-                          const isStableTo = typeof tokens?.toUsd === 'number' && Math.abs((tokens as any).toUsd - 1) < 0.03;
-                          if (isStableTo) {
-                            if (typeof u === 'number' && typeof sellPrice === 'number' && sellPrice > 0) return formatUsd(u / sellPrice);
-                            if (typeof (tokens as any).fromUsd === 'number') return formatUsd((tokens as any).fromUsd);
-                            return formatPrice(sellPrice);
-                          }
-                          if (typeof u === 'number') return formatUsd(u);
-                          if (tokens?.fromUsd) return formatPriceUsdFromPair(sellPrice);
-                          return formatPrice(sellPrice);
-                        })()}</span>
-                        <span className="text-gray-400">→</span>
-                        <span className="text-green-400">{formatAmount(sellToAmt)} {tokens?.fromSymbol || 'USDC'}</span>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        {(() => {
-                          const durationMs = Math.max(buyTrade?.timeSinceOpen || 0, sellTrade?.timeSinceOpen || 0);
-                          return durationMs > 0 ? (
-                            <span className="text-yellow-400 font-mono" title="Time in position">
-                              {formatDuration(durationMs)}
-                            </span>
-                          ) : null;
-                        })()}
-                        <div className={`font-mono ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {tokens?.fromUsd ? `${totalPnl >= 0 ? '+' : ''}${formatUsd(Math.abs(totalPnl) * tokens.fromUsd)}` : `${totalPnl >= 0 ? '+' : ''}${formatAmount(Math.abs(totalPnl))} ${tokens?.fromSymbol || 'USDC'}`}
-                        </div>
-                        {buyTrade.transactionSignature && (
-                          <a
-                            href={`https://solscan.io/tx/${buyTrade.transactionSignature}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 text-xs"
-                            title="View Buy on Solscan"
-                          >
-                            🔗B
-                          </a>
-                        )}
-                        {sellTrade.transactionSignature && (
-                          <a
-                            href={`https://solscan.io/tx/${sellTrade.transactionSignature}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 text-xs"
-                            title="View Sell on Solscan"
-                          >
-                            🔗S
-                          </a>
-                        )}
-                        <div className="text-gray-400 text-xs">
-                          {sellTrade.closedAt ? new Date(sellTrade.closedAt).toLocaleTimeString() :
-                           buyTrade.openedAt ? new Date(buyTrade.openedAt).toLocaleTimeString() : ''}
-                        </div>
                       </div>
                     </div>
-                  );
-                } else {
-                  // Show individual trades with new format using distinct from/to amounts
-                  return group.map((position) => {
-                    // For buy: fromAmt = amount spent (fromToken), toAmt = filledAmount (toToken received)
-                    // For sell: fromAmt = amount sold (toToken), toAmt = filledAmount (fromToken received)
-                    const fromAmt = position.amount || 0;
-                    const toAmt = position.filledAmount || 0;
-                    const price = position.entryPrice || 0;
-                    const exitPrice = (position.exitPrice ?? position.entryPrice ?? 0);
-                    
-                    return (
-                      <div key={position.id} className="flex justify-between items-center p-2 bg-gray-700 rounded text-xs">
-                        <div className="flex items-center space-x-2">
-                          <span className={`px-2 py-1 rounded text-xs font-medium ${
-                            position.side === 'buy' 
-                              ? 'bg-green-900 text-green-200' 
-                              : 'bg-red-900 text-red-200'
-                          }`}>
-                            {position.side?.toUpperCase() || 'TRADE'}
-                  </span>
-                          {position.side === 'buy' ? (
-                            <>
-                              <span className="text-white">{formatAmount(fromAmt)} {tokens?.fromSymbol || 'USDC'} @{(() => {
-                                const u = (position as any).entryUsdPerTo as number | undefined;
-                                const isStableTo = typeof tokens?.toUsd === 'number' && Math.abs((tokens as any).toUsd - 1) < 0.03;
-                                if (isStableTo) {
-                                  if (typeof u === 'number' && typeof price === 'number' && price > 0) return formatUsd(u / price);
-                                  if (typeof (tokens as any).fromUsd === 'number') return formatUsd((tokens as any).fromUsd);
-                                  return formatPrice(price);
-                                }
-                                if (typeof u === 'number') return formatUsd(u);
-                                if (tokens?.fromUsd) return formatPriceUsdFromPair(price);
-                                return formatPrice(price);
-                              })()}</span>
-                              <span className="text-gray-400">→</span>
-                              <span className="text-green-400">{formatAmount(toAmt)} {tokens?.toSymbol || 'SOL'}</span>
-                            </>
-                          ) : (
-                            <>
-                              <span className="text-white">{formatAmount(fromAmt)} {tokens?.toSymbol || 'SOL'} @{(() => {
-                                const u = ((position as any).exitUsdPerTo as number | undefined) ?? ((position as any).entryUsdPerTo as number | undefined);
-                                const isStableTo = typeof tokens?.toUsd === 'number' && Math.abs((tokens as any).toUsd - 1) < 0.03;
-                                if (isStableTo) {
-                                  if (typeof u === 'number' && typeof exitPrice === 'number' && exitPrice > 0) return formatUsd(u / exitPrice);
-                                  if (typeof (tokens as any).fromUsd === 'number') return formatUsd((tokens as any).fromUsd);
-                                  return formatPrice(exitPrice);
-                                }
-                                if (typeof u === 'number') return formatUsd(u);
-                                if (tokens?.fromUsd) return formatPriceUsdFromPair(exitPrice);
-                                return formatPrice(exitPrice);
-                              })()}</span>
-                              <span className="text-gray-400">→</span>
-                              <span className="text-green-400">{formatAmount(toAmt)} {tokens?.fromSymbol || 'USDC'}</span>
-                            </>
-                          )}
-                </div>
-                <div className="flex items-center space-x-2">
-                        {position.pnl !== undefined && (
-                          <div className={`font-mono ${position.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {tokens?.fromUsd ? formatUsd(position.pnl * tokens.fromUsd) : position.pnl.toFixed(4)}
-                          </div>
-                        )}
-                        {position.transactionSignature && (
-                          <a
-                            href={`https://solscan.io/tx/${position.transactionSignature}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 text-xs"
-                            title="View on Solscan"
-                          >
-                            🔗
-                          </a>
-                        )}
-                        <div className="text-gray-400 text-xs">
-                          {position.closedAt ? new Date(position.closedAt).toLocaleTimeString() :
-                           position.openedAt ? new Date(position.openedAt).toLocaleTimeString() : ''}
-                </div>
-              </div>
-          </div>
-                    );
-                  });
-                }
-              });
-            })()
+                  </div>
+                );
+              })}
+            </div>
           ) : (
-            <div className="text-gray-400 text-center py-4">No successful trades yet</div>
+            <EmptyState message="No active positions" />
           )}
         </div>
-      </div>
+      )}
+
+      {/* Trade History */}
+      {(showDetails || showHistoryDetail) && (
+        <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-white">Trade Summary</h3>
+            <Button size="xs" onClick={() => setShowHistoryDetail(!showHistoryDetail)}>
+              {showHistoryDetail ? 'Collapse' : 'Expand'}
+            </Button>
+          </div>
+          
+          {tradeHistory.length > 0 ? (
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {(() => {
+                const groupedTrades = tradeHistory.reduce((groups, position) => {
+                  const key = position.pairedPositionId || position.id;
+                  if (!groups[key]) groups[key] = [];
+                  groups[key].push(position);
+                  return groups;
+                }, {} as Record<string, GridPosition[]>);
+
+                const sortedGroups = Object.values(groupedTrades)
+                  .sort((a, b) => (b[0].openedAt || 0) - (a[0].openedAt || 0))
+                  .slice(0, 20);
+
+                return sortedGroups.map((group, groupIndex) => {
+                  const isCompleteCycle = group.length === 2 && 
+                    group.some(p => p.side === 'buy') && 
+                    group.some(p => p.side === 'sell');
+                  
+                  const buyTrade = group.find(p => p.side === 'buy');
+                  const sellTrade = group.find(p => p.side === 'sell');
+                  
+                  let totalPnl = 0;
+                  if (isCompleteCycle && buyTrade && sellTrade) {
+                    const spentFrom = buyTrade.amount || 0;
+                    const receivedFrom = sellTrade.filledAmount || 0;
+                    totalPnl = receivedFrom - spentFrom;
+                  } else {
+                    totalPnl = group.reduce((sum, p) => sum + (p.pnl || 0), 0);
+                  }
+
+                  if (isCompleteCycle && buyTrade && sellTrade) {
+                    const buyFromAmt = buyTrade.amount || 0;
+                    const buyToAmt = buyTrade.filledAmount || 0;
+                    const sellFromAmt = sellTrade.amount || 0;
+                    const sellToAmt = sellTrade.filledAmount || 0;
+                    
+                    return (
+                      <div key={`cycle-${groupIndex}`} className="flex justify-between items-center p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg text-xs">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="px-2 py-1 rounded text-xs font-medium bg-blue-900/50 text-blue-400">
+                            CYCLE
+                          </span>
+                          <span className="text-gray-300">
+                            BUY {formatAmount(buyFromAmt)} {tokens?.fromSymbol || 'USDC'}
+                          </span>
+                          <span className="text-gray-500">→</span>
+                          <span className="text-green-400">{formatAmount(buyToAmt)} {tokens?.toSymbol || 'SOL'}</span>
+                          <span className="text-gray-500">→</span>
+                          <span className="text-gray-300">
+                            SELL {formatAmount(sellFromAmt)} {tokens?.toSymbol || 'SOL'}
+                          </span>
+                          <span className="text-gray-500">→</span>
+                          <span className="text-green-400">{formatAmount(sellToAmt)} {tokens?.fromSymbol || 'USDC'}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {(() => {
+                            const durationMs = Math.max(buyTrade?.timeSinceOpen || 0, sellTrade?.timeSinceOpen || 0);
+                            return durationMs > 0 ? (
+                              <span className="text-yellow-400 font-mono" title="Time in position">
+                                {formatDuration(durationMs)}
+                              </span>
+                            ) : null;
+                          })()}
+                          <div className={`font-mono ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {tokens?.fromUsd ? `${totalPnl >= 0 ? '+' : ''}${formatUsd(Math.abs(totalPnl) * tokens.fromUsd)}` : `${totalPnl >= 0 ? '+' : ''}${formatAmount(Math.abs(totalPnl))} ${tokens?.fromSymbol || 'USDC'}`}
+                          </div>
+                          <div className="text-gray-500">
+                            {sellTrade.closedAt ? new Date(sellTrade.closedAt).toLocaleTimeString() :
+                             buyTrade.openedAt ? new Date(buyTrade.openedAt).toLocaleTimeString() : ''}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  } else {
+                    return group.map((position) => (
+                      <div key={position.id} className="flex justify-between items-center p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            position.side === 'buy' 
+                              ? 'bg-green-900/50 text-green-400' 
+                              : 'bg-red-900/50 text-red-400'
+                          }`}>
+                            {position.side?.toUpperCase() || 'TRADE'}
+                          </span>
+                          <span className="text-white font-mono">{formatAmount(position.amount || 0)}</span>
+                          <span className="text-gray-500">@</span>
+                          <span className="text-white font-mono">{formatPrice(position.entryPrice)}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {position.pnl !== undefined && (
+                            <div className={`font-mono ${position.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {tokens?.fromUsd ? formatUsd(position.pnl * tokens.fromUsd) : position.pnl.toFixed(4)}
+                            </div>
+                          )}
+                          <div className="text-gray-500">
+                            {position.closedAt ? new Date(position.closedAt).toLocaleTimeString() :
+                             position.openedAt ? new Date(position.openedAt).toLocaleTimeString() : ''}
+                          </div>
+                        </div>
+                      </div>
+                    ));
+                  }
+                });
+              })()}
+            </div>
+          ) : (
+            <EmptyState message="No successful trades yet" />
+          )}
+        </div>
+      )}
+
+      {/* Toggle Details Buttons */}
+      {!showDetails && (
+        <div className="flex items-center gap-2">
+          <Button size="xs" onClick={() => setShowLevelsDetail(!showLevelsDetail)}>
+            {showLevelsDetail ? 'Hide Levels' : 'Show Levels'}
+          </Button>
+          <Button size="xs" onClick={() => setShowPositionsDetail(!showPositionsDetail)}>
+            {showPositionsDetail ? 'Hide Positions' : 'Show Positions'}
+          </Button>
+          <Button size="xs" onClick={() => setShowHistoryDetail(!showHistoryDetail)}>
+            {showHistoryDetail ? 'Hide History' : 'Show History'}
+          </Button>
+        </div>
       )}
     </div>
   );

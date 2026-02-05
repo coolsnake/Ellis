@@ -33,29 +33,33 @@ export const CollapsibleSection: React.FC<{
   };
 
   return (
-    <section className={`bg-gray-900 rounded p-4 ${className}`}>
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            aria-expanded={!collapsed}
-            onClick={toggle}
-            className="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm"
-            title={collapsed ? 'Expand' : 'Collapse'}
+    <section className={`bg-gray-800 border border-gray-700 rounded-lg overflow-hidden ${className}`}>
+      <div
+        className="px-4 py-3 border-b border-gray-700 flex items-center justify-between bg-gray-800/80 cursor-pointer hover:bg-gray-750 transition-colors"
+        onClick={toggle}
+      >
+        <div className="flex items-center gap-3">
+          <svg
+            className={`w-4 h-4 text-gray-400 transition-transform ${collapsed ? '' : 'rotate-180'}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
           >
-            {collapsed ? '▸' : '▾'}
-          </button>
-          <h2 className="text-2xl font-semibold">{title}</h2>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+          <h2 className="text-lg font-semibold text-white">{title}</h2>
         </div>
         {!collapsed && rightActions ? (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             {rightActions}
           </div>
         ) : null}
       </div>
-      <div className={collapsed ? 'hidden' : ''}>
-        {children}
-      </div>
+      {!collapsed && (
+        <div className="p-4">
+          {children}
+        </div>
+      )}
     </section>
   );
 };

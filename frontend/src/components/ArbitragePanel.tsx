@@ -4,6 +4,7 @@ import { useSocket } from '../app/contexts/socket';
 import OpportunityList from './OpportunityList';
 import { enqueueCritical, enqueueFrame, throttle } from '../utils/scheduler';
 import { ExecutorControl } from './ExecutorControl';
+import { Panel, StatCard, Button, DataTable, DataTableRow, DataTableCell, EmptyState, Input, Select } from './ui';
 
 type BottleneckEdge = { from: string; to: string; dex: string; rate: number; liquidity: number; fee_bps: number };
 type Opportunity = {
@@ -78,7 +79,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [summary, setSummary] = useState<OpportunitiesSummary | null>(null);
   const [tokenMap, setTokenMap] = useState<Record<string, string>>({});
   const [quoteSize, setQuoteSize] = useState<number>(50);
-  const [quoteSizeMint, setQuoteSizeMint] = useState<string>('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'); // USDC default
+  const [quoteSizeMint, setQuoteSizeMint] = useState<string>('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
   const [sending, setSending] = useState<boolean>(false);
   const [sendMode, setSendMode] = useState<'USD'|'TOKENS'>('USD');
   const [sendAmount, setSendAmount] = useState<number>(50);
@@ -91,9 +92,6 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [execStats, setExecStats] = useState<any>(null);
   const [arbMetrics, setArbMetrics] = useState<any>(null);
   const [walletBalances, setWalletBalances] = useState<{ sol?: number; tokens?: Record<string, number> } | null>(null);
-  // Show-all toggle moved into OpportunityList
-
-  // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
 
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null || isNaN(n as any)) return '—';
@@ -123,7 +121,6 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     const list: RejectedOpportunity[] = Array.isArray(src) ? src : [];
     const filtered = list.filter((item) => allow.has(item.reason));
     
-    // Deduplicate by path + reason to avoid showing the same rejection multiple times
     const seen = new Set<string>();
     const deduplicated: RejectedOpportunity[] = [];
     for (const item of filtered) {
@@ -136,7 +133,6 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       }
     }
     
-    // Limit to 5 unique rejected opportunities
     return deduplicated.slice(0, 5);
   }, [summary?.rejected_opportunities]);
 
@@ -167,7 +163,6 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     } catch {}
   };
 
-  // Fetch wallet balances for balance checking (display only)
   const fetchWalletBalances = React.useCallback(async () => {
     try {
       const r = await fetch(`${apiBase}/wallet`);
@@ -179,24 +174,20 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         });
       }
     } catch (e) {
-      // Wallet might not be set up, that's okay - we'll just show all opportunities
       setWalletBalances(null);
     }
   }, [apiBase]);
 
-  // Store latest fetch function in ref to avoid dependency issues
   const fetchWalletBalancesRef = useRef(fetchWalletBalances);
   useEffect(() => {
     fetchWalletBalancesRef.current = fetchWalletBalances;
   }, [fetchWalletBalances]);
 
-  // Initial fallback fetch only
   const [lastDetectionTs, setLastDetectionTs] = useState<number>(0);
   useEffect(() => {
     fetchOpps();
     fetchTokenMap();
     fetchWalletBalances();
-    // Load quote size from arb config for display consistency
     (async () => {
       try { const r = await fetch(`${apiBase}${ROUTES.arb.config}`); const j = await r.json(); if (typeof j?.quote_size_usd === 'number') setQuoteSize(Number(j.quote_size_usd)||50); } catch {}
     })();
@@ -205,12 +196,10 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     })();
   }, []);
 
-  // Refresh wallet balances on wallet updates via socket (backend emits every 60s)
-  // Removed polling interval - rely solely on socket events to prevent excessive requests
   useEffect(() => {
     if (!effectiveSocket) return;
     let lastFetchTime = 0;
-    const MIN_FETCH_INTERVAL = 5000; // Throttle: max once per 5 seconds even if socket fires rapidly
+    const MIN_FETCH_INTERVAL = 5000;
     
     const onWalletUpdate = () => {
       const now = Date.now();
@@ -224,10 +213,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     return () => {
       try { effectiveSocket.off('wallet-update', onWalletUpdate); } catch {}
     };
-  }, [effectiveSocket]); // Removed fetchWalletBalances from deps to prevent effect re-runs
+  }, [effectiveSocket]);
 
-  // Subscribe to backend-bridged opportunities stream
-  // Throttle opportunities updates with reduced latency for critical updates (200ms for summary, 100ms for critical signals)
   useEffect(() => {
     if (!effectiveSocket) return;
     let lastAt = 0;
@@ -282,7 +269,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     const applyBulk = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }, isCritical = false) => {
       try {
         const now = Date.now();
-        const throttleMs = isCritical ? 100 : 200; // Reduced from 1000ms
+        const throttleMs = isCritical ? 100 : 200;
         if (now - lastAt < throttleMs) return;
         const sig = buildSignature(payload);
         if (sig === lastSig) return;
@@ -300,18 +287,15 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       } catch {}
     };
     const onOpps = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => { 
-      // Check if update is critical (new opportunities detected)
       const hasNewOpps = Array.isArray(payload?.items) && payload.items.length > 0;
       applyBulk(payload, hasNewOpps); 
       try { requestExecStats(); } catch {} 
     };
-    // Optional: critical fast-path if backend emits "arb:signal"; fallback derives from bulk head
     const onSignal = (sig: { items?: Opportunity[] }) => {
       try {
         const head = Array.isArray(sig?.items) ? (sig.items as Opportunity[]).slice(0, 3) : [];
         if (!head.length) return;
         enqueueCritical(() => {
-          // Update minimal, cheap critical state for immediate visibility
           setCriticalTop(head);
           setSummary((prev) => (prev ? { ...prev, last_detection_ms: Date.now() } as any : prev));
         });
@@ -333,7 +317,6 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     };
   }, [effectiveSocket]);
 
-  // Auto-highlight current near-miss on graph to visualize triangles for diagnostics
   useEffect(() => {
     try {
       const nm: any = summary?.near_miss as any;
@@ -356,6 +339,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       }
     } catch {}
   }, [summary?.near_miss, effectiveSocket]);
+  
   useEffect(() => {
     if (!effectiveSocket) return;
     const onTxAny = async () => {
@@ -379,109 +363,122 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     };
   }, [effectiveSocket]);
 
-  // Remove periodic polling; rely on socket-driven refreshes
-
   return (
-    <div className="p-2 border rounded bg-white/5">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-lg font-semibold">Arbitrage Opportunities</h3>
+    <Panel
+      title="Arbitrage Opportunities"
+      actions={
         <div className="flex items-center gap-2">
-          <button className="px-2 py-1 border rounded" onClick={()=>{ try { (window as any).dispatchEvent(new CustomEvent('open-graph-config')); } catch {} }}>Graph Config</button>
-          {onOpenExecConfig && <button className="px-2 py-1 border rounded" onClick={onOpenExecConfig}>Exec Config</button>}
-          <button className="px-2 py-1 border rounded" onClick={async()=>{
+          <Button onClick={()=>{ try { (window as any).dispatchEvent(new CustomEvent('open-graph-config')); } catch {} }}>
+            Graph Config
+          </Button>
+          {onOpenExecConfig && <Button onClick={onOpenExecConfig}>Exec Config</Button>}
+          <Button onClick={async()=>{
             try { await fetch(`${apiBase}${ROUTES.arb.metricsJson}`, { headers: { 'accept': 'application/json' } }); } catch {}
-            // Best-effort also refresh opportunities snapshot
             try { await fetchOpps(); } catch {}
-          }}>Refresh Metrics</button>
-          <button className="px-2 py-1 border rounded" onClick={onToggleGraph} title="Toggle Graph Visualizer">{showGraph ? 'Hide Graph' : 'Show Graph'}</button>
-          {loading ? <span className="text-xs opacity-70 animate-pulse">Refreshing…</span> : null}
+          }}>Refresh Metrics</Button>
+          <Button onClick={onToggleGraph}>{showGraph ? 'Hide Graph' : 'Show Graph'}</Button>
+          {loading && <span className="text-xs text-gray-400 animate-pulse">Refreshing…</span>}
         </div>
+      }
+    >
+      {error && <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">{error}</div>}
+      
+      {/* Summary Stats Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <StatCard label="Active Opps" value={fmt(summary?.count)} />
+        <StatCard label="Detection Cycles" value={fmt((arbMetrics as any)?.detection_cycles_total)} />
+        <StatCard label="Opps Detected" value={fmt((arbMetrics as any)?.opportunities_detected_total)} />
+        <StatCard 
+          label="Detector Hit Rate" 
+          value={(() => { 
+            try {
+              const hits = Number((arbMetrics as any)?.detection_hits_total || 0);
+              const misses = Number((arbMetrics as any)?.detection_misses_total || 0);
+              const total = hits + misses;
+              return total ? `${Math.round((100*hits)/total)}%` : '—';
+            } catch { return '—'; } 
+          })()} 
+        />
+        <StatCard 
+          label="Preflight Success" 
+          value={(() => { 
+            try {
+              const ok = Number((execStats as any)?.counts?.preflight_ok || 0);
+              const er = Number((execStats as any)?.counts?.preflight_err || 0);
+              const t = ok + er;
+              return t ? `${Math.round((100*ok)/t)}%` : '—';
+            } catch { return '—'; } 
+          })()} 
+          subValue={(() => { 
+            try {
+              const ok = Number((execStats as any)?.counts?.preflight_ok || 0);
+              const er = Number((execStats as any)?.counts?.preflight_err || 0);
+              return `${fmt(ok)}/${fmt(ok + er)}`;
+            } catch { return ''; } 
+          })()}
+        />
+        <StatCard 
+          label="Transactions Sent" 
+          value={(() => { 
+            try { 
+              const ok = Number((execStats as any)?.counts?.send_ok || 0); 
+              const er = Number((execStats as any)?.counts?.send_err || 0); 
+              return fmt(ok + er);
+            } catch { return '—'; } 
+          })()} 
+        />
+        <StatCard 
+          label="Send Success" 
+          value={(() => { 
+            try {
+              const ok = Number((execStats as any)?.counts?.send_ok || 0);
+              const er = Number((execStats as any)?.counts?.send_err || 0);
+              const t = ok + er;
+              return t ? `${Math.round((100*ok)/t)}%` : '—';
+            } catch { return '—'; } 
+          })()} 
+          subValue={(() => { 
+            try {
+              const ok = Number((execStats as any)?.counts?.send_ok || 0);
+              const er = Number((execStats as any)?.counts?.send_err || 0);
+              return `${fmt(ok)}/${fmt(ok + er)}`;
+            } catch { return ''; } 
+          })()}
+        />
+        <StatCard 
+          label="Tx Coverage" 
+          value={(() => { 
+            try {
+              const ok = Number((execStats as any)?.counts?.send_ok || 0);
+              const er = Number((execStats as any)?.counts?.send_err || 0);
+              const sent = ok + er;
+              const opps = Number((arbMetrics as any)?.opportunities_detected_total || 0);
+              return (opps > 0) ? (sent / opps).toFixed(2) : '—';
+            } catch { return '—'; } 
+          })()} 
+        />
       </div>
-      {error && <div className="text-red-400 text-sm mb-2">{error}</div>}
-      {/* Summary block */}
-      <div className="mb-3">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Active Opps</div>
-            <div className="text-sm">{fmt(summary?.count)}</div>
-          </div>
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Detection Cycles</div>
-            <div className="text-sm">{fmt((arbMetrics as any)?.detection_cycles_total)}</div>
-          </div>
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Opps Detected (total)</div>
-            <div className="text-sm">{fmt((arbMetrics as any)?.opportunities_detected_total)}</div>
-          </div>
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Detector Hit Rate</div>
-            <div className="text-sm">
-              {(() => { try {
-                const hits = Number((arbMetrics as any)?.detection_hits_total || 0);
-                const misses = Number((arbMetrics as any)?.detection_misses_total || 0);
-                const total = hits + misses;
-                return total ? `${Math.round((100*hits)/total)}%` : '—';
-              } catch { return '—'; } })()}
-            </div>
-          </div>
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Preflight Success</div>
-            <div className="text-sm">
-              {(() => { try {
-                const ok = Number((execStats as any)?.counts?.preflight_ok || 0);
-                const er = Number((execStats as any)?.counts?.preflight_err || 0);
-                const t = ok + er;
-                return t ? `${Math.round((100*ok)/t)}% (${fmt(ok)}/${fmt(t)})` : '—';
-              } catch { return '—'; } })()}
-            </div>
-          </div>
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Transactions Sent</div>
-            <div className="text-sm">{(() => { try { const ok = Number((execStats as any)?.counts?.send_ok || 0); const er = Number((execStats as any)?.counts?.send_err || 0); return fmt(ok + er);} catch { return '—'; } })()}</div>
-          </div>
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Send Success</div>
-            <div className="text-sm">
-              {(() => { try {
-                const ok = Number((execStats as any)?.counts?.send_ok || 0);
-                const er = Number((execStats as any)?.counts?.send_err || 0);
-                const t = ok + er;
-                return t ? `${Math.round((100*ok)/t)}% (${fmt(ok)}/${fmt(t)})` : '—';
-              } catch { return '—'; } })()}
-            </div>
-          </div>
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Tx Coverage</div>
-            <div className="text-sm">
-              {(() => { try {
-                const ok = Number((execStats as any)?.counts?.send_ok || 0);
-                const er = Number((execStats as any)?.counts?.send_err || 0);
-                const sent = ok + er;
-                const opps = Number((arbMetrics as any)?.opportunities_detected_total || 0);
-                return (opps > 0) ? (sent / opps).toFixed(2) : '—';
-              } catch { return '—'; } })()}
-            </div>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px] mt-2 opacity-80">
-          <div>Last Detection: {age(summary?.last_detection_ms)}</div>
-          <div>Detect Ms: {fmt(summary?.detection_duration_ms)}</div>
-          <div>Diff→Detect Ms: {fmt((summary as any)?.diff_to_detect_ms)}</div>
-          <div>Graph: {fmt(summary?.graph_nodes)} nodes / {fmt(summary?.graph_edges)} edges</div>
-          <div>Tx Build Ms: {fmt((execStats as any)?.build_ms?.p50)} p50 · {fmt((execStats as any)?.build_ms?.p95)} p95</div>
-          <div>Send Ms: {fmt((execStats as any)?.send_ms?.p50)} p50 · {fmt((execStats as any)?.send_ms?.p95)} p95</div>
-        </div>
+
+      {/* Timing Metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-xs text-gray-400 mb-4 p-3 bg-gray-900/50 rounded-lg">
+        <div>Last Detection: <span className="text-white">{age(summary?.last_detection_ms)}</span></div>
+        <div>Detect Ms: <span className="text-white">{fmt(summary?.detection_duration_ms)}</span></div>
+        <div>Diff→Detect Ms: <span className="text-white">{fmt((summary as any)?.diff_to_detect_ms)}</span></div>
+        <div>Graph: <span className="text-white">{fmt(summary?.graph_nodes)} nodes / {fmt(summary?.graph_edges)} edges</span></div>
+        <div>Tx Build Ms: <span className="text-white">{fmt((execStats as any)?.build_ms?.p50)} p50 · {fmt((execStats as any)?.build_ms?.p95)} p95</span></div>
+        <div>Send Ms: <span className="text-white">{fmt((execStats as any)?.send_ms?.p50)} p50 · {fmt((execStats as any)?.send_ms?.p95)} p95</span></div>
       </div>
-      {/* Critical top opportunities strip (fast path) */}
+
+      {/* Critical Top Opportunities */}
       {criticalTop.length > 0 && (
-        <div className="mb-3 border rounded bg-emerald-900/15 p-2 text-xs">
-          <div className="font-semibold mb-1">Top Opportunities (live)</div>
-          <div className="flex flex-col gap-1">
+        <div className="mb-4 p-3 bg-emerald-900/20 border border-emerald-700/50 rounded-lg">
+          <div className="text-sm font-semibold text-emerald-400 mb-2">Top Opportunities (live)</div>
+          <div className="space-y-1">
             {criticalTop.map((op, i) => (
-              <div key={`${(op.path||[]).join('>')}|${i}`} className="flex items-center gap-2">
-                <div className="px-1 py-0.5 rounded bg-black/20">#{i+1}</div>
-                <div className="font-mono truncate" title={(op.path||[]).join(' -> ')}>{(op.path||[]).map(sym).join(' → ')}</div>
-                <div className="ml-auto opacity-80">Net {fmtPctFromBps(op.net_bps ?? op.profit_bps)} · ${fmt(op.est_profit_usd, 2)}</div>
+              <div key={`${(op.path||[]).join('>')}|${i}`} className="flex items-center gap-3 text-sm">
+                <span className="px-2 py-0.5 bg-emerald-900/50 rounded text-emerald-400 text-xs font-mono">#{i+1}</span>
+                <span className="font-mono text-gray-300 truncate" title={(op.path||[]).join(' -> ')}>{(op.path||[]).map(sym).join(' → ')}</span>
+                <span className="ml-auto text-gray-400">Net {fmtPctFromBps(op.net_bps ?? op.profit_bps)} · <span className="text-green-400">${fmt(op.est_profit_usd, 2)}</span></span>
               </div>
             ))}
           </div>
@@ -489,42 +486,43 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       )}
 
       {/* Executor Control */}
-      <ExecutorControl apiBase={apiBase} socket={effectiveSocket} />
+      <div className="mb-4">
+        <ExecutorControl apiBase={apiBase} socket={effectiveSocket} />
+      </div>
 
+      {/* Near Miss */}
       {items.length === 0 && summary?.near_miss && !firstLoad && (
-        <div className="p-2 border rounded bg-yellow-900/20 text-xs mb-3">
-          <div className="font-semibold mb-1">Closest Path (below threshold by {fmt(summary?.near_miss_shortfall_bps)} bps)</div>
-          <div className="font-mono mb-1">
+        <div className="mb-4 p-4 bg-yellow-900/20 border border-yellow-700/50 rounded-lg">
+          <div className="text-sm font-semibold text-yellow-400 mb-2">
+            Closest Path (below threshold by {fmt(summary?.near_miss_shortfall_bps)} bps)
+          </div>
+          <div className="font-mono text-sm text-gray-300 mb-3">
             {(() => {
               const hops = summary.near_miss?.hop_dexes || [];
               const rates = summary.near_miss?.hop_rates || [];
-              // Derive amounts from hop_rates for display; ignore hop_outs to avoid scale confusion
-              const outs: number[] | undefined = undefined;
               const fees = (summary.near_miss as any)?.hop_fee_bps as number[] | undefined;
               const liqs = (summary.near_miss as any)?.hop_liquidity_display as number[] | undefined;
               const startMint = summary.near_miss?.path?.[0];
               const pathArr = summary.near_miss.path || [];
               const edgesCount = Math.max(0, pathArr.length - 1);
               const showClosing = Array.isArray(rates) && rates.length > edgesCount;
-              let amt = startMint === quoteSizeMint ? quoteSize : 1.0; // seed
+              let amt = startMint === quoteSizeMint ? quoteSize : 1.0;
               const pieces: React.ReactNode[] = [];
-              // forward edges
               for (let i = 0; i < pathArr.length; i++) {
                 const m = pathArr[i];
-                const sym = tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m);
+                const symName = tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m);
                 const dex = hops[i % (hops.length || 1)];
                 const color = dex === 'Raydium' ? 'text-green-400' : (dex === 'Orca' ? 'text-yellow-300' : 'text-blue-300');
                 const rate = Number.isFinite(rates[i % (rates.length || 1)]) ? rates[i % (rates.length || 1)] : undefined;
                 const fee = fees && Number.isFinite(fees[i % fees.length] as any) ? fees[i % fees.length] : undefined;
                 const liq = liqs && Number.isFinite(liqs[i % liqs.length] as any) ? liqs[i % liqs.length] : undefined;
-                const out = undefined;
                 pieces.push(
                   <span key={`${m}-${i}`}>
-                    <span className="font-semibold">{sym}</span>{i===0?` (${amt.toFixed(4)})`:''}
+                    <span className="font-semibold text-white">{symName}</span>{i===0?` (${amt.toFixed(4)})`:''}
                     {i < pathArr.length - 1 && (
                       <span>
                         {' '}
-                        <span className={`px-1 rounded ${color}`}>
+                        <span className={`px-1.5 py-0.5 rounded ${color} bg-gray-800`}>
                           {dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{rate ? ` · ×${rate.toFixed(4)} → ${(amt * rate).toFixed(4)}` : ''}
                         </span>
                         {' '}→{' '}
@@ -536,9 +534,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                   if (rate) amt = amt * rate;
                 }
               }
-              // closing hop to first (if present)
               if (showClosing) {
-                const i = edgesCount; // index for closing rate/dex
+                const i = edgesCount;
                 const last = pathArr[pathArr.length - 1];
                 const first = pathArr[0];
                 const dex = hops[i % (hops.length || 1)];
@@ -546,65 +543,54 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                 const rate = Number.isFinite(rates[i]) ? rates[i] : undefined;
                 const fee = fees && Number.isFinite(fees[i] as any) ? fees[i] : undefined;
                 const liq = liqs && Number.isFinite(liqs[i] as any) ? liqs[i] : undefined;
-                const out = undefined;
                 pieces.push(
                   <span key={`${last}-close`}>
-                    <span className="font-semibold">{tokenMap[last] || (last.length > 6 ? `${last.slice(0,4)}…${last.slice(-4)}` : last)}</span>
-                    <span> <span className={`px-1 rounded ${color}`}>{dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{rate ? ` · ×${rate.toFixed(4)} → ${(amt * (rate as number)).toFixed(4)}` : ''}</span> → </span>
-                    <span className="font-semibold">{tokenMap[first] || (first.length > 6 ? `${first.slice(0,4)}…${first.slice(-4)}` : first)}</span>
+                    <span className="font-semibold text-white">{tokenMap[last] || (last.length > 6 ? `${last.slice(0,4)}…${last.slice(-4)}` : last)}</span>
+                    <span> <span className={`px-1.5 py-0.5 rounded ${color} bg-gray-800`}>{dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{rate ? ` · ×${rate.toFixed(4)} → ${(amt * (rate as number)).toFixed(4)}` : ''}</span> → </span>
+                    <span className="font-semibold text-white">{tokenMap[first] || (first.length > 6 ? `${first.slice(0,4)}…${first.slice(-4)}` : first)}</span>
                   </span>
                 );
               }
               return pieces;
             })()}
           </div>
-          <div className="mt-1">
-            <button className="px-2 py-1 border rounded" onClick={()=>{
-              try {
-                const nm: any = summary?.near_miss as any;
-                const ids = (nm)?.hop_pool_ids as string[] | undefined;
-                if (ids && ids.length) {
-                  try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { edgeIds: ids } })); } catch {}
-                  if (socket) { try { socket.emit('graph-highlight', { edgeIds: ids }); } catch {} }
-                  return;
-                }
-                // Fallback: construct selectors from path + hop_dexes
-                const pathArr: string[] = Array.isArray(nm?.path) ? nm.path : [];
-                const hops: string[] = Array.isArray(nm?.hop_dexes) ? nm.hop_dexes : [];
-                const pairs: Array<{ source: string; target: string; dex?: string }> = [];
-                for (let i = 0; i < pathArr.length - 1; i++) {
-                  const source = pathArr[i];
-                  const target = pathArr[i+1];
-                  const dex = hops[i % (hops.length || 1)];
-                  pairs.push({ source, target, dex });
-                }
-                if (pairs.length) {
-                  try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { pairs } })); } catch {}
-                  if (socket) { try { socket.emit('graph-highlight', { pairs }); } catch {} }
-                }
-              } catch {}
-            }}>Highlight in graph</button>
+          <div className="text-xs text-gray-400 mb-3">
+            <span>Profit: {fmtPctFromBps(summary.near_miss.profit_bps)}</span>
+            <span className="mx-2">·</span>
+            <span>Net: {fmtPctFromBps(summary.near_miss.net_bps || summary.near_miss.profit_bps)}</span>
+            <span className="mx-2">·</span>
+            <span>Hops: {summary.near_miss.hop_count ?? summary.near_miss.path.length}</span>
+            <span className="mx-2">·</span>
+            <span>Links: {summary.near_miss.link_edges_used ?? 0}</span>
+            <span className="mx-2">·</span>
+            <span>Min Edge Liq: {fmt(summary.near_miss.min_edge_liquidity, 2)}</span>
           </div>
-          <div>Profit: {fmtPctFromBps(summary.near_miss.profit_bps)} · Net: {fmtPctFromBps(summary.near_miss.net_bps || summary.near_miss.profit_bps)}</div>
-          <div>Hops: {summary.near_miss.hop_count ?? summary.near_miss.path.length} · Links: {summary.near_miss.link_edges_used ?? 0} · Min Edge Liq: {fmt(summary.near_miss.min_edge_liquidity, 2)}</div>
           {summary.near_miss.bottleneck && (() => {
             const b = summary.near_miss!.bottleneck!;
             const fromSym = tokenMap[b.from] || (b.from.length > 6 ? `${b.from.slice(0,4)}…${b.from.slice(-4)}` : b.from);
             const toSym = tokenMap[b.to] || (b.to.length > 6 ? `${b.to.slice(0,4)}…${b.to.slice(-4)}` : b.to);
             const color = b.dex === 'Raydium' ? 'text-green-400' : (b.dex === 'Orca' ? 'text-yellow-300' : 'text-blue-300');
             return (
-              <div>
-                Bottleneck: <span className={`px-1 rounded ${color}`}>{b.dex}</span> {fromSym} → {toSym} · rate {fmt(b.rate, 6)} · liq {fmt(b.liquidity, 2)}
+              <div className="text-xs text-gray-400 mb-3">
+                Bottleneck: <span className={`px-1.5 py-0.5 rounded ${color} bg-gray-800`}>{b.dex}</span> {fromSym} → {toSym} · rate {fmt(b.rate, 6)} · liq {fmt(b.liquidity, 2)}
               </div>
             );
           })()}
-          <div className="mt-2 flex items-center gap-2">
-            <label className="text-[11px] opacity-80">Quote:</label>
-            <input className="px-1 py-0.5 bg-gray-700 border border-gray-600 rounded text-white w-24" type="number" step={0.0001} value={sendAmount} onChange={e=>setSendAmount(parseFloat(e.target.value)||0)} />
-            <select className="px-1 py-0.5 bg-gray-700 border border-gray-600 rounded text-white" value={sendMode} onChange={e=>setSendMode(e.target.value as any)}>
+          
+          {/* Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2 mt-3">
+            <span className="text-xs text-gray-500">Quote:</span>
+            <Input 
+              className="w-20" 
+              type="number" 
+              step={0.0001} 
+              value={sendAmount} 
+              onChange={e=>setSendAmount(parseFloat(e.target.value)||0)} 
+            />
+            <Select value={sendMode} onChange={e=>setSendMode(e.target.value as any)}>
               <option value="USD">USD</option>
               <option value="TOKENS">Tokens</option>
-            </select>
+            </Select>
             {(() => {
               const nm: any = summary?.near_miss as any;
               const hopIds = ((nm?.hop_pool_ids || []) as string[]);
@@ -614,72 +600,119 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
               const pathClosed = Array.isArray(nm?.path) && nm.path.length ? [...nm.path, nm.path[0]] : nm?.path;
               return (
                 <>
-                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !validHops} title={!validHops ? `Invalid hops: expected ${expectedHops}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async ()=>{
-                    if (!summary?.near_miss?.path?.length || !validHops) return;
-                    setSending(true);
-                    try {
-                      const body: any = { path: pathClosed, hopPoolIds: hopIds, dexes: hopDexes };
-                      if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                      setNmSimLogs(null); setNmSimErr(null);
-                      const r = await fetch(`${apiBase}${ROUTES.arb.simulateSend}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                      const j = await r.json().catch(()=>({}));
-                      if (!r.ok) {
-                        setNmSimErr(String((j && (j.error || j.err)) || 'preflight_failed'));
-                      } else {
-                        const logs = Array.isArray(j?.logs) ? (j.logs as string[]) : [];
-                        setNmSimLogs(logs.slice(-20));
-                        setNmSimErr(j?.err ? String(j.err) : null);
+                  <Button 
+                    size="xs"
+                    disabled={sending || !validHops} 
+                    title={!validHops ? `Invalid hops` : undefined} 
+                    onClick={async ()=>{
+                      if (!summary?.near_miss?.path?.length || !validHops) return;
+                      setSending(true);
+                      try {
+                        const body: any = { path: pathClosed, hopPoolIds: hopIds, dexes: hopDexes };
+                        if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                        setNmSimLogs(null); setNmSimErr(null);
+                        const r = await fetch(`${apiBase}${ROUTES.arb.simulateSend}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                        const j = await r.json().catch(()=>({}));
+                        if (!r.ok) {
+                          setNmSimErr(String((j && (j.error || j.err)) || 'preflight_failed'));
+                        } else {
+                          const logs = Array.isArray(j?.logs) ? (j.logs as string[]) : [];
+                          setNmSimLogs(logs.slice(-20));
+                          setNmSimErr(j?.err ? String(j.err) : null);
+                        }
+                        try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); const allItems = Array.isArray(jh?.items) ? jh.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
+                      } catch {}
+                      setSending(false);
+                    }}
+                  >
+                    Preflight Simulate
+                  </Button>
+                  <Button 
+                    size="xs"
+                    variant="primary"
+                    disabled={sending || !validHops} 
+                    onClick={async ()=>{
+                      if (!summary?.near_miss?.path?.length || !validHops) return;
+                      setSending(true);
+                      try {
+                        const body: any = { path: pathClosed, hopPoolIds: hopIds, dexes: hopDexes };
+                        if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                        body.forceDirect = true;
+                        setNmSimLogs(null); setNmSimErr(null);
+                        const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                        const j = await r.json().catch(()=>({}));
+                        if (!r.ok) {
+                          setNmSimErr(String((j && (j.error || j.err)) || 'send_failed'));
+                        } else if (j && j.mode && j.mode !== 'direct' && j.mode !== 'simulate_then_execute') {
+                          setNmSimErr(`Execution disabled (mode: ${j.mode}).`);
+                        }
+                        try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); const allItems = Array.isArray(jh?.items) ? jh.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
+                      } catch (e: any) {
+                        setNmSimErr(String(e?.message || e));
                       }
-                      try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); const allItems = Array.isArray(jh?.items) ? jh.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
-                    } catch {}
-                    setSending(false);
-                  }}>Preflight Simulate</button>
-                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !validHops} title={!validHops ? `Invalid hops: expected ${expectedHops}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async ()=>{
-                    if (!summary?.near_miss?.path?.length || !validHops) return;
-                    setSending(true);
-                    try {
-                      const body: any = { path: pathClosed, hopPoolIds: hopIds, dexes: hopDexes };
-                      if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                      body.forceDirect = true;
-                      setNmSimLogs(null); setNmSimErr(null);
-                      const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                      const j = await r.json().catch(()=>({}));
-                      if (!r.ok) {
-                        setNmSimErr(String((j && (j.error || j.err)) || 'send_failed'));
-                      } else if (j && j.mode && j.mode !== 'direct' && j.mode !== 'simulate_then_execute') {
-                        setNmSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' or 'simulate → execute' in Exec Config.`);
+                      setSending(false);
+                    }}
+                  >
+                    Execute Direct
+                  </Button>
+                  <Button 
+                    size="xs"
+                    disabled={sending || !summary?.near_miss?.path?.length} 
+                    onClick={async ()=>{
+                      if (!summary?.near_miss?.path?.length) return;
+                      setSending(true);
+                      try {
+                        const body: any = { path: pathClosed };
+                        if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                        body.hopDexes = Array.isArray(nm?.hop_dexes) ? nm.hop_dexes : [];
+                        body.strictMinOut = true;
+                        const r = await fetch(`${apiBase}${ROUTES.arb.jupiterExecute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                        const j = await r.json().catch(()=>({}));
+                        if (!r.ok) setNmSimErr(String((j && (j.error || j.err)) || 'send_failed'));
+                      } catch (e: any) {
+                        setNmSimErr(String(e?.message || e));
                       }
-                      try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); const allItems = Array.isArray(jh?.items) ? jh.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
-                    } catch (e: any) {
-                      setNmSimErr(String(e?.message || e));
-                    }
-                    setSending(false);
-                  }}>Execute Direct</button>
-                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !summary?.near_miss?.path?.length} onClick={async ()=>{
-                    if (!summary?.near_miss?.path?.length) return;
-                    setSending(true);
-                    try {
-                      const body: any = { path: pathClosed };
-                      if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                      body.hopDexes = Array.isArray(nm?.hop_dexes) ? nm.hop_dexes : [];
-                      body.strictMinOut = true;
-                      const r = await fetch(`${apiBase}${ROUTES.arb.jupiterExecute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                      const j = await r.json().catch(()=>({}));
-                      if (!r.ok) setNmSimErr(String((j && (j.error || j.err)) || 'send_failed'));
-                    } catch (e: any) {
-                      setNmSimErr(String(e?.message || e));
-                    }
-                    setSending(false);
-                  }}>Execute via Jupiter (strict)</button>
+                      setSending(false);
+                    }}
+                  >
+                    Execute via Jupiter
+                  </Button>
+                  <Button 
+                    size="xs"
+                    onClick={()=>{
+                      try {
+                        const ids = (nm)?.hop_pool_ids as string[] | undefined;
+                        if (ids && ids.length) {
+                          try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { edgeIds: ids } })); } catch {}
+                          if (socket) { try { socket.emit('graph-highlight', { edgeIds: ids }); } catch {} }
+                          return;
+                        }
+                        const pathArr: string[] = Array.isArray(nm?.path) ? nm.path : [];
+                        const hops: string[] = Array.isArray(nm?.hop_dexes) ? nm.hop_dexes : [];
+                        const pairs: Array<{ source: string; target: string; dex?: string }> = [];
+                        for (let i = 0; i < pathArr.length - 1; i++) {
+                          pairs.push({ source: pathArr[i], target: pathArr[i+1], dex: hops[i % (hops.length || 1)] });
+                        }
+                        if (pairs.length) {
+                          try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { pairs } })); } catch {}
+                          if (socket) { try { socket.emit('graph-highlight', { pairs }); } catch {} }
+                        }
+                      } catch {}
+                    }}
+                  >
+                    Highlight in Graph
+                  </Button>
                 </>
               );
             })()}
           </div>
+          
+          {/* Simulation Results */}
           {(nmSimErr || (nmSimLogs && nmSimLogs.length)) && (
-            <div className="mt-1 p-2 bg-black/30 rounded text-[11px]">
-              {nmSimErr && <div className="text-red-400">Preflight error: {nmSimErr}</div>}
+            <div className="mt-3 p-3 bg-gray-900/50 rounded-lg text-xs">
+              {nmSimErr && <div className="text-red-400 mb-2">Error: {nmSimErr}</div>}
               {nmSimLogs && nmSimLogs.length > 0 && (
-                <pre className="whitespace-pre-wrap break-words opacity-80">
+                <pre className="whitespace-pre-wrap break-words text-gray-400">
                   {nmSimLogs.join('\n')}
                 </pre>
               )}
@@ -687,66 +720,52 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           )}
         </div>
       )}
+
+      {/* Near Misses List */}
       {items.length === 0 && summary?.near_misses && summary.near_misses.length > 0 && (
-        <div className="p-2 border rounded bg-yellow-900/10 text-xs mb-3">
-          <div className="font-semibold mb-1">Near-misses this run</div>
-          <div className="space-y-1">
+        <div className="mb-4 p-3 bg-yellow-900/10 border border-yellow-700/30 rounded-lg">
+          <div className="text-sm font-semibold text-yellow-400 mb-2">Near-misses this run</div>
+          <div className="space-y-2">
             {summary.near_misses.slice(0, 10).map((nm, i) => (
-              <div key={i} className="font-mono">
-                <div className="mb-0.5">{(nm.path || []).map(m => tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m)).join(' → ')}</div>
-                <div>Profit: {fmtPctFromBps(nm.profit_bps)} · Net: {fmtPctFromBps((nm as any).net_bps || nm.profit_bps)} · Hops: {nm.hop_count ?? nm.path.length}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      {rejectedDebug.length > 0 && (
-        <div className="p-2 border rounded bg-red-900/10 text-xs mb-3">
-          <div className="font-semibold mb-1">Rejected Opportunities (debug)</div>
-          <div className="space-y-1">
-            {rejectedDebug.map((rej, i) => (
-              <div key={`${rej.reason}:${(rej.path || []).join('>')}:${i}`} className="font-mono space-y-1">
-                <div className="flex items-center gap-2 flex-wrap text-[11px]">
-                  <span className="px-1 py-0.5 rounded bg-red-900/40 text-red-100 uppercase tracking-wide">{formatRejectedReason(rej.reason)}</span>
-                  {typeof rej.hop_count === 'number' && <span>Hops: {rej.hop_count}</span>}
-                  {typeof rej.profit_bps === 'number' && <span>Profit: {fmtPctFromBps(rej.profit_bps)}</span>}
-                  {typeof rej.net_bps === 'number' && rej.net_bps !== rej.profit_bps && <span>Net: {fmtPctFromBps(rej.net_bps)}</span>}
+              <div key={i} className="text-xs font-mono text-gray-300">
+                <div className="mb-1">{(nm.path || []).map(m => tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m)).join(' → ')}</div>
+                <div className="text-gray-500">
+                  Profit: {fmtPctFromBps(nm.profit_bps)} · Net: {fmtPctFromBps((nm as any).net_bps || nm.profit_bps)} · Hops: {nm.hop_count ?? nm.path.length}
                 </div>
-                <div>{(rej.path || []).map(sym).join(' → ') || '—'}</div>
-                {Array.isArray(rej.dexes) && rej.dexes.length > 0 && (
-                  <div className="text-[11px] opacity-80">Dexes: {rej.dexes.join(', ')}</div>
-                )}
-                {(() => {
-                  const pathArr = Array.isArray(rej.path) ? rej.path : [];
-                  if (pathArr.length <= 1) return null;
-                  return (
-                    <div className="space-y-0.5 text-[11px] opacity-80">
-                      {pathArr.slice(0, -1).map((mint, idx) => {
-                        const next = pathArr[idx + 1];
-                        const dex = rej.hop_dexes?.[idx];
-                        const rate = rej.hop_rates?.[idx];
-                        const out = rej.hop_outs?.[idx];
-                        const pool = rej.hop_pool_ids?.[idx];
-                        const poolLabel = pool ? (pool.length > 10 ? `${pool.slice(0,4)}…${pool.slice(-4)}` : pool) : null;
-                        return (
-                          <div key={`${mint}->${next}:${idx}`} className="flex flex-wrap gap-2">
-                            <span className="font-semibold">{sym(mint)} → {sym(next)}</span>
-                            {dex && <span>{dex}</span>}
-                            {typeof rate === 'number' && isFinite(rate) && <span>rate {rate.toFixed(6)}</span>}
-                            {typeof out === 'number' && isFinite(out) && <span>out {fmt(out, 4)}</span>}
-                            {poolLabel && <span>pool {poolLabel}</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
               </div>
             ))}
           </div>
         </div>
       )}
-      {items.length === 0 && !firstLoad && (!summary?.near_misses || summary.near_misses.length === 0) && <div className="text-sm opacity-70">No opportunities</div>}
+
+      {/* Rejected Opportunities Debug */}
+      {rejectedDebug.length > 0 && (
+        <div className="mb-4 p-3 bg-red-900/10 border border-red-700/30 rounded-lg">
+          <div className="text-sm font-semibold text-red-400 mb-2">Rejected Opportunities (debug)</div>
+          <div className="space-y-2">
+            {rejectedDebug.map((rej, i) => (
+              <div key={`${rej.reason}:${(rej.path || []).join('>')}:${i}`} className="text-xs">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 uppercase tracking-wide text-[10px]">
+                    {formatRejectedReason(rej.reason)}
+                  </span>
+                  {typeof rej.hop_count === 'number' && <span className="text-gray-400">Hops: {rej.hop_count}</span>}
+                  {typeof rej.profit_bps === 'number' && <span className="text-gray-400">Profit: {fmtPctFromBps(rej.profit_bps)}</span>}
+                  {typeof rej.net_bps === 'number' && rej.net_bps !== rej.profit_bps && <span className="text-gray-400">Net: {fmtPctFromBps(rej.net_bps)}</span>}
+                </div>
+                <div className="font-mono text-gray-300">{(rej.path || []).map(sym).join(' → ') || '—'}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* No Opportunities Message */}
+      {items.length === 0 && !firstLoad && (!summary?.near_misses || summary.near_misses.length === 0) && (
+        <div className="mb-4 text-center py-8 text-gray-500">No opportunities detected</div>
+      )}
+
+      {/* Opportunity List */}
       <OpportunityList
         items={items}
         tokenMap={tokenMap}
@@ -758,71 +777,78 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         socket={effectiveSocket}
         walletBalances={walletBalances}
       />
-      <div className="mt-4 p-2 border rounded bg-black/10">
-        <div className="flex items-center justify-between mb-2">
-          <h4 className="font-semibold">Transactions</h4>
-          <button className="px-2 py-1 border rounded" onClick={async()=>{ try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); const allItems = Array.isArray(j?.items) ? j.items : []; setTxRows(allItems.slice(0, 10)); } catch {} }}>Refresh</button>
+
+      {/* Transactions Table */}
+      <div className="mt-6 bg-gray-900/50 border border-gray-700/50 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="font-semibold text-white">Transactions</h4>
+          <Button size="xs" onClick={async()=>{ 
+            try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); const allItems = Array.isArray(j?.items) ? j.items : []; setTxRows(allItems.slice(0, 10)); } catch {} 
+          }}>
+            Refresh
+          </Button>
         </div>
-        <div className="overflow-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-left opacity-70">
-                <th className="py-1 pr-2">Time</th>
-                <th className="py-1 pr-2">Path</th>
-                <th className="py-1 pr-2">Hops</th>
-                <th className="py-1 pr-2">Ix</th>
-                <th className="py-1 pr-2">Bytes</th>
-                <th className="py-1 pr-2">Status</th>
-                <th className="py-1 pr-2">Sig</th>
-                <th className="py-1 pr-2">Log</th>
-              </tr>
-            </thead>
-            <tbody>
-              {txRows.map((r) => {
-                const rowKey = `${r.id}:${r.status}:${r.timeMs}`;
-                return (
-                <>
-                  <tr key={rowKey} className="border-t border-white/10 cursor-pointer" onClick={()=> setExpandedKey(expandedKey===rowKey?null:rowKey)}>
-                    <td className="py-1 pr-2">{new Date(r.timeMs).toLocaleTimeString()}</td>
-                    <td className="py-1 pr-2 font-mono">{(r.path||[]).map(sym).join(' → ')}</td>
-                    <td className="py-1 pr-2">{r.hops.map((h, i) => `${sym(r.path[i])}→${sym(r.path[i+1])} (${h.dex}/${h.variant})`).join(', ')}</td>
-                    <td className="py-1 pr-2">{r.ixCount}</td>
-                    <td className="py-1 pr-2">{r.txSizeBytes}</td>
-                    <td className="py-1 pr-2">{r.status}</td>
-                    <td className="py-1 pr-2">{r.signature ? <a className="text-blue-400 underline" href={`https://solscan.io/tx/${r.signature}`} target="_blank" rel="noreferrer">{r.signature.slice(0,6)}…</a> : '—'}</td>
-                    <td className="py-1 pr-2">{r.logFile ? <a className="text-purple-400 hover:text-purple-300 underline" href={`https://files.mccurrach.xyz/files/lockstone-dev/backend/logs/execution-attempts/${r.logFile}`} target="_blank" rel="noreferrer" title={r.logFile}>📋</a> : '—'}</td>
-                  </tr>
-                  {expandedKey === rowKey && (
-                    <tr key={`${rowKey}-exp`} className="bg-black/20">
-                      <td colSpan={8} className="py-2 px-2">
-                        <div className="text-[11px] grid grid-cols-1 md:grid-cols-2 gap-2">
-                          <div>
-                            <div className="font-semibold mb-1">Hops</div>
-                            <div className="space-y-1">
-                              {r.hops.map((h, i) => (
-                                <div key={i} className="font-mono">{i+1}. {sym(r.path[i])} → {sym(r.path[i+1])} · {h.dex}/{h.variant} · pool {h.poolId}</div>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="opacity-80">
-                            <div className="font-semibold mb-1">Details</div>
-                            <div>Ix Count: {r.ixCount} · Size: {r.txSizeBytes} bytes · Status: {r.status}</div>
+        <DataTable 
+          headers={['Time', 'Path', 'Hops', 'Ix', 'Bytes', 'Status', 'Sig', 'Log']} 
+          compact
+        >
+          {txRows.length > 0 ? txRows.map((r) => {
+            const rowKey = `${r.id}:${r.status}:${r.timeMs}`;
+            return (
+              <React.Fragment key={rowKey}>
+                <DataTableRow onClick={() => setExpandedKey(expandedKey === rowKey ? null : rowKey)}>
+                  <DataTableCell compact>{new Date(r.timeMs).toLocaleTimeString()}</DataTableCell>
+                  <DataTableCell compact mono className="text-xs max-w-[200px] truncate">{(r.path||[]).map(sym).join(' → ')}</DataTableCell>
+                  <DataTableCell compact className="text-xs max-w-[200px] truncate">{r.hops.map((h, i) => `${h.dex}`).join(', ')}</DataTableCell>
+                  <DataTableCell compact mono>{r.ixCount}</DataTableCell>
+                  <DataTableCell compact mono>{r.txSizeBytes}</DataTableCell>
+                  <DataTableCell compact className={r.status === 'failed' ? 'text-red-400' : ''}>{r.status}</DataTableCell>
+                  <DataTableCell compact>
+                    {r.signature ? (
+                      <a className="text-blue-400 hover:underline" href={`https://solscan.io/tx/${r.signature}`} target="_blank" rel="noreferrer">
+                        {r.signature.slice(0,6)}…
+                      </a>
+                    ) : '—'}
+                  </DataTableCell>
+                  <DataTableCell compact>
+                    {r.logFile ? (
+                      <a className="text-purple-400 hover:text-purple-300" href={`https://files.mccurrach.xyz/files/lockstone-dev/backend/logs/execution-attempts/${r.logFile}`} target="_blank" rel="noreferrer" title={r.logFile}>
+                        📋
+                      </a>
+                    ) : '—'}
+                  </DataTableCell>
+                </DataTableRow>
+                {expandedKey === rowKey && (
+                  <tr className="bg-gray-900/80">
+                    <td colSpan={8} className="p-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                        <div>
+                          <div className="font-semibold text-gray-300 mb-2">Hops</div>
+                          <div className="space-y-1">
+                            {r.hops.map((h, i) => (
+                              <div key={i} className="font-mono text-gray-400">
+                                {i+1}. {sym(r.path[i])} → {sym(r.path[i+1])} · {h.dex}/{h.variant} · pool {h.poolId.slice(0,8)}...
+                              </div>
+                            ))}
                           </div>
                         </div>
-                      </td>
-                    </tr>
-                  )}
-                </>
-              )})}
-              {txRows.length === 0 && (
-                <tr><td className="py-2 opacity-70" colSpan={8}>No transactions</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                        <div>
+                          <div className="font-semibold text-gray-300 mb-2">Details</div>
+                          <div className="text-gray-400">
+                            Ix Count: {r.ixCount} · Size: {r.txSizeBytes} bytes · Status: {r.status}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          }) : (
+            <tr><td colSpan={8}><EmptyState message="No transactions" /></td></tr>
+          )}
+        </DataTable>
       </div>
-    </div>
+    </Panel>
   );
 };
-
-

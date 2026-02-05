@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ROUTES } from '../utils/routes';
 import { useSocketExtraEvents } from '../app/hooks/useSocketExtraEvents';
+import { Button, DataTable, DataTableRow, DataTableCell, EmptyState } from './ui';
 
 type LiquidatorItem = { key: string; status: { running: boolean; actionsLastMin?: number; errorsLastMin?: number } };
 
@@ -14,7 +15,6 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
     try {
       if (inflightRef.current) return;
       inflightRef.current = true;
-      // Abort any previous pending request and set a timeout to avoid piling up
       try { abortRef.current?.abort(); } catch {}
       const ac = new AbortController();
       abortRef.current = ac;
@@ -41,7 +41,6 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
     loadRef.current = load;
   }, [load]);
 
-  // Background refresh (fallback if socket updates are missing)
   useEffect(() => {
     const id = setInterval(() => {
       try { loadRef.current?.(); } catch {}
@@ -68,7 +67,6 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
 
   const list = Array.isArray(status?.liquidators) ? (status!.liquidators as LiquidatorItem[]) : [];
 
-  // Subscribe to socket updates so bots appear without manual refresh
   useSocketExtraEvents({
     onLiquidatorUpdate: async (payload: any) => {
       try {
@@ -80,39 +78,52 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
   });
 
   return (
-    <div className="bg-gray-800 rounded p-3">
+    <div className="space-y-3">
       {!hideHeader && (
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between">
           <h3 className="text-white font-semibold">Liquidators</h3>
-          <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={load} disabled={busy}>Refresh</button>
+          <Button onClick={load} disabled={busy}>Refresh</Button>
         </div>
       )}
-      <div className="space-y-2 text-sm">
-        {list.map((it) => (
-          <div key={it.key} className="p-2 bg-gray-700 rounded flex items-center justify-between">
-            <div className="text-gray-200">
-              <div>{it.key} — {it.status?.running ? 'running' : 'stopped'} · actions(1m)={it.status?.actionsLastMin ?? 0} · errors(1m)={it.status?.errorsLastMin ?? 0}</div>
-              <div className="text-xs text-gray-300 mt-0.5">
-                successRate={(() => {
-                  const a = Number(it.status?.actionsLastMin || 0);
-                  const e = Number(it.status?.errorsLastMin || 0);
-                  return a > 0 ? (((a - e) / a) * 100).toFixed(1) : '0.0';
-                })()}%
+      {list.length > 0 ? (
+        <div className="space-y-2">
+          {list.map((it) => {
+            const a = Number(it.status?.actionsLastMin || 0);
+            const e = Number(it.status?.errorsLastMin || 0);
+            const successRate = a > 0 ? (((a - e) / a) * 100).toFixed(1) : '0.0';
+            
+            return (
+              <div key={it.key} className="p-3 bg-gray-700/50 border border-gray-600/50 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3">
+                      <span className={`w-2 h-2 rounded-full ${it.status?.running ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]' : 'bg-gray-500'}`} />
+                      <span className="text-white font-medium">{it.key}</span>
+                      <span className={`px-2 py-0.5 rounded text-xs ${it.status?.running ? 'bg-green-900/50 text-green-400' : 'bg-gray-800 text-gray-400'}`}>
+                        {it.status?.running ? 'Running' : 'Stopped'}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex items-center gap-4 text-xs text-gray-400">
+                      <span>Actions (1m): <span className="text-white font-mono">{a}</span></span>
+                      <span>Errors (1m): <span className={e > 0 ? 'text-yellow-400 font-mono' : 'text-white font-mono'}>{e}</span></span>
+                      <span>Success: <span className="text-white font-mono">{successRate}%</span></span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="xs" variant="success" onClick={() => act('start', it.key)} disabled={busy}>Start</Button>
+                    <Button size="xs" variant="warning" onClick={() => act('stop', it.key)} disabled={busy}>Stop</Button>
+                    <Button size="xs" variant="danger" onClick={() => act('remove', it.key)} disabled={busy}>Remove</Button>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="space-x-2">
-              <button className="px-2 py-1 bg-green-600 text-white rounded text-xs" onClick={() => act('start', it.key)} disabled={busy}>Start</button>
-              <button className="px-2 py-1 bg-yellow-600 text-white rounded text-xs" onClick={() => act('stop', it.key)} disabled={busy}>Stop</button>
-              <button className="px-2 py-1 bg-red-600 text-white rounded text-xs" onClick={() => act('remove', it.key)} disabled={busy}>Remove</button>
-            </div>
-          </div>
-        ))}
-        {list.length === 0 && <div className="text-gray-400">No liquidators</div>}
-      </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState message="No liquidators" />
+      )}
     </div>
   );
 };
 
 export default LiquidatorStatus;
-
-
