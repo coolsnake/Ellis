@@ -74,7 +74,8 @@ export async function emit(event: string, payload: any) {
   // Log bot update emissions for debugging (avoid logging 'log' events to prevent recursion)
   try {
     if (event === 'trigger-update' || event === 'filler-update' || event === 'liquidator-update') {
-      logger.info('socketio.emit', { event, hasRef: !!ioRef, clientCount: ioRef?.sockets?.sockets?.size ?? 0, cat: 'drift' });
+      const clientCount = (ioRef as any)?.engine?.clientsCount ?? (ioRef as any)?.sockets?.sockets?.size ?? -1;
+      logger.info('socketio.emit', { event, hasRef: !!ioRef, clientCount, cat: 'drift' });
     }
   } catch {}
   ioRef?.emit(event, payload);
