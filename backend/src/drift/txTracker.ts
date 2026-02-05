@@ -387,7 +387,7 @@ export function summarizeAttemptRecords(records: AttemptRecord[], windowMs: numb
   };
 }
 
-export function getMetrics(params: { windowMs: number; action?: 'fill' | 'trigger'; bot?: string }): {
+export function getMetrics(params: { windowMs: number; action?: 'fill' | 'trigger' | 'liquidate'; bot?: string }): {
   attempts: number;
   successes: number;
   failures: number;

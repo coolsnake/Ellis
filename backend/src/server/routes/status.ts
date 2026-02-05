@@ -109,8 +109,8 @@ export function createStatusRouter(_io: SocketIOServer): Router {
         const { getQuarantineStats } = await import('../../execution/poolFailureTracker.js');
         const stats = getQuarantineStats();
         quarantineStatus = {
-          quarantined: stats.quarantinedCount || 0,
-          total: stats.totalTracked || 0,
+          quarantined: stats.quarantined || 0,
+          total: stats.tracked || 0,
         };
       } catch {}
 

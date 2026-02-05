@@ -102,7 +102,7 @@ process.on('message', async (msg: any) => {
       try {
         const { getMetrics } = await import('./txTracker.js');
         const windowMs = Number.isFinite(Number(msg?.payload?.windowMs)) ? Number(msg.payload.windowMs) : 60_000;
-        const action = kind === 'trigger' ? 'trigger' : (kind === 'filler' ? 'filler' : 'liquidator');
+        const action = kind === 'trigger' ? 'trigger' : (kind === 'filler' ? 'fill' : 'liquidate');
         const data = getMetrics({ windowMs, action, bot: key });
         respond(true, { windowMs, bot: key, ...data });
         return;
