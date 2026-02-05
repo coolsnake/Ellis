@@ -1150,12 +1150,3 @@ export const CONFIG = {
     })(),
   },
 };
-
-
-(raw) return raw.split(',').map(s => s.trim()).filter(Boolean);
-      return ['raydium', 'orca', 'meteora', 'pumpswap'];
-    })(),
-  },
-};
-
-
