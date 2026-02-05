@@ -457,18 +457,12 @@ export const DriftSection: React.FC<{
 
   return (
     <div className="space-y-4">
-      {/* Subaccounts Panel */}
+      {/* Stats Panel */}
       <Panel
-        title="Subaccounts"
+        title="Stats"
         badges={renderInfraBadges()}
         actions={
           <div className="flex items-center gap-2">
-            <Input
-              className="w-32"
-              placeholder="Name (optional)"
-              value={p.driftNewSubName}
-              onChange={(e) => p.setDriftNewSubName(e.target.value)}
-            />
             <Button onClick={loadStatusAndSubs} disabled={loading}>
               {loading ? 'Loading...' : 'Refresh'}
             </Button>
@@ -482,19 +476,14 @@ export const DriftSection: React.FC<{
             }} disabled={infraBusy}>
               Deactivate
             </Button>
-            <Button variant="primary" onClick={createSub} disabled={p.driftOpBusy}>
-              + Create
-            </Button>
             {!!p.onOpenExecConfig && (
               <Button onClick={() => p.onOpenExecConfig?.()}>Execution Config</Button>
             )}
           </div>
         }
       >
-        {error && <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">{error}</div>}
-        
         {/* Stats Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <StatCard
             label="Total Users"
             value={(() => {
@@ -530,7 +519,7 @@ export const DriftSection: React.FC<{
 
         {/* Event Index Stats */}
         {infra?.indexStats && (
-          <div className="grid grid-cols-3 gap-3 mb-6">
+          <div className="grid grid-cols-3 gap-3 mt-4">
             <StatCard
               label="Indexed Users"
               value={(infra.indexStats.users ?? 0).toLocaleString()}
@@ -548,6 +537,34 @@ export const DriftSection: React.FC<{
             />
           </div>
         )}
+
+        {/* Footer Info */}
+        <div className="mt-4 pt-3 border-t border-gray-700 text-xs text-gray-500">
+          {status?.cluster ? `Cluster: ${status.cluster}` : null}
+          {status?.programId ? ` - Program: ${status.programId}` : null}
+        </div>
+      </Panel>
+
+      {/* Subaccounts Panel */}
+      <Panel
+        title="Subaccounts"
+        collapsible
+        defaultCollapsed
+        actions={
+          <div className="flex items-center gap-2">
+            <Input
+              className="w-32"
+              placeholder="Name (optional)"
+              value={p.driftNewSubName}
+              onChange={(e) => p.setDriftNewSubName(e.target.value)}
+            />
+            <Button variant="primary" onClick={createSub} disabled={p.driftOpBusy}>
+              + Create
+            </Button>
+          </div>
+        }
+      >
+        {error && <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">{error}</div>}
 
         {/* Subaccount Selection & Deposit/Withdraw */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -651,12 +668,6 @@ export const DriftSection: React.FC<{
               <tr><td colSpan={3}><EmptyState message="No balances" /></td></tr>
             )}
           </DataTable>
-        </div>
-
-        {/* Footer Info */}
-        <div className="mt-4 pt-3 border-t border-gray-700 text-xs text-gray-500">
-          {status?.cluster ? `Cluster: ${status.cluster}` : null}
-          {status?.programId ? ` - Program: ${status.programId}` : null}
         </div>
       </Panel>
 
