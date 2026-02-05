@@ -43,7 +43,12 @@ export const TriggerStatus: React.FC<{ apiBase: string; hideHeader?: boolean }> 
 
   useEffect(() => {
     load();
-    return () => { try { abortRef.current?.abort(); } catch {} };
+    // Periodic refresh as fallback for missed WebSocket events (2s for faster UI updates)
+    const refreshId = setInterval(() => { load(); }, 2000);
+    return () => { 
+      try { abortRef.current?.abort(); } catch {} 
+      try { clearInterval(refreshId); } catch {}
+    };
   }, [apiBase]);
 
   useSocketExtraEvents({

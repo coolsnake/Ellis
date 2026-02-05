@@ -64,8 +64,11 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       // Emit immediate update to show "starting" state in UI
       try {
         const listNow = (DriftLiquidatorRegistry as any).list?.();
+        logger.info('drift.liquidator.emit_immediate', { liquidatorCount: listNow?.length ?? 0, cat: 'drift' });
         _io.emit('liquidator-update', { liquidators: listNow });
-      } catch {}
+      } catch (emitErr: any) {
+        logger.warn('drift.liquidator.emit_immediate_failed', { error: String(emitErr?.message || emitErr), cat: 'drift' });
+      }
       
       // Start asynchronously to avoid proxy timeouts; report status via logs/socket
       setImmediate(async () => {

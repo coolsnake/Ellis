@@ -67,8 +67,11 @@ export function createTriggerRouter(_io: SocketIOServer): Router {
       // Emit immediate update to show "starting" state in UI
       try {
         const listNow = (DriftTriggerRegistry as any).list?.();
+        logger.info('drift.trigger.emit_immediate', { triggerCount: listNow?.length ?? 0, cat: 'drift' });
         _io.emit('trigger-update', { triggers: listNow });
-      } catch {}
+      } catch (emitErr: any) {
+        logger.warn('drift.trigger.emit_immediate_failed', { error: String(emitErr?.message || emitErr), cat: 'drift' });
+      }
       
       setImmediate(async () => {
         try {
@@ -79,8 +82,11 @@ export function createTriggerRouter(_io: SocketIOServer): Router {
           emit('log', { level: 'info', message: `drift: trigger started ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
           try {
             const listNow = (DriftTriggerRegistry as any).list?.();
+            logger.info('drift.trigger.emit_after_start', { triggerCount: listNow?.length ?? 0, name, cat: 'drift' });
             _io.emit('trigger-update', { triggers: listNow });
-          } catch {}
+          } catch (emitErr: any) {
+            logger.warn('drift.trigger.emit_after_start_failed', { error: String(emitErr?.message || emitErr), cat: 'drift' });
+          }
         } catch (e: any) {
           logger.error('drift-trigger: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: trigger start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}

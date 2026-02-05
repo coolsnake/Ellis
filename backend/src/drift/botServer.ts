@@ -53,15 +53,31 @@ app.use((req, res, next) => {
 
 const emitToMain = (event: string, payload: any) => {
   try {
-    if (!callbackUrl) return;
+    if (!callbackUrl) {
+      try { logger.warn('drift.bots.emit_no_callback', { event, cat: 'drift' }); } catch {}
+      return;
+    }
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (secret) headers['x-drift-bots-secret'] = secret;
     if (basicAuth) headers['authorization'] = basicAuth;
     const body = JSON.stringify({ event, payload });
-    setImmediate(() => {
-      fetch(callbackUrl, { method: 'POST', headers, body }).catch(() => {});
+    // Log emit attempts at info level for visibility
+    try { logger.info('drift.bots.emit_to_main', { event, callbackUrl, payloadKeys: payload ? Object.keys(payload) : [], cat: 'drift' }); } catch {}
+    setImmediate(async () => {
+      try {
+        const res = await fetch(callbackUrl, { method: 'POST', headers, body });
+        if (res.ok) {
+          try { logger.info('drift.bots.emit_ok', { event, status: res.status, cat: 'drift' }); } catch {}
+        } else {
+          try { logger.warn('drift.bots.emit_failed', { event, status: res.status, statusText: res.statusText, cat: 'drift' }); } catch {}
+        }
+      } catch (e: any) {
+        try { logger.warn('drift.bots.emit_error', { event, error: String(e?.message || e), cat: 'drift' }); } catch {}
+      }
     });
-  } catch {}
+  } catch (e: any) {
+    try { logger.error('drift.bots.emit_exception', { event, error: String(e?.message || e), cat: 'drift' }); } catch {}
+  }
 };
 
 const ioProxy: IoProxy = {

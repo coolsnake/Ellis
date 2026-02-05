@@ -62,8 +62,11 @@ export function createFillerRouter(_io: SocketIOServer): Router {
       // Emit immediate update to show "starting" state in UI
       try {
         const listNow = (DriftFillerRegistry as any).list?.();
+        logger.info('drift.filler.emit_immediate', { fillerCount: listNow?.length ?? 0, cat: 'drift' });
         _io.emit('filler-update', { fillers: listNow });
-      } catch {}
+      } catch (emitErr: any) {
+        logger.warn('drift.filler.emit_immediate_failed', { error: String(emitErr?.message || emitErr), cat: 'drift' });
+      }
       
       setImmediate(async () => {
         try {

@@ -30,22 +30,15 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
       inflightRef.current = false;
     }
   };
-  const loadRef = useRef(load);
 
   useEffect(() => {
     load();
-    return () => { try { abortRef.current?.abort(); } catch {} };
-  }, [apiBase]);
-
-  useEffect(() => {
-    loadRef.current = load;
-  }, [load]);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      try { loadRef.current?.(); } catch {}
-    }, 30000);
-    return () => { try { clearInterval(id); } catch {} };
+    // Periodic refresh as fallback for missed WebSocket events (2s for faster UI updates)
+    const refreshId = setInterval(() => { load(); }, 2000);
+    return () => { 
+      try { abortRef.current?.abort(); } catch {} 
+      try { clearInterval(refreshId); } catch {}
+    };
   }, [apiBase]);
 
   const act = async (kind: 'start' | 'stop' | 'remove', key: string) => {
