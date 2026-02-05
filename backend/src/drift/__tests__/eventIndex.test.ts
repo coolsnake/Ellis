@@ -35,7 +35,8 @@ describe('DriftEventIndex', () => {
           getPerpPositions: () => [{ marketIndex: 1, baseAssetAmount: 10 }],
           getUserAccount: () => ({
             spotPositions: [{ marketIndex: 2, scaledBalance: 5 }],
-            orders: [{ marketIndex: 3, orderId: 7, orderType: { kind: 'triggerMarket' } }],
+            // Anchor enums are objects like { triggerMarket: {} } where the key is the variant
+            orders: [{ marketIndex: 3, orderId: 7, orderType: { triggerMarket: {} } }],
           }),
         };
       },

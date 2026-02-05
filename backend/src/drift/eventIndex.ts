@@ -203,8 +203,11 @@ export class DriftEventIndex {
           const ords: any[] = Array.isArray(ua?.orders) ? ua.orders : [];
           for (const ord of ords) {
             try {
-              const ot = ord?.orderType ? String(ord.orderType?.kind || ord.orderType?.__kind || ord.orderType) : '';
-              const otStr = String(ot || '').toLowerCase();
+              // Anchor enums are objects like { triggerMarket: {} } - extract key name
+              const ot = ord?.orderType && typeof ord.orderType === 'object'
+                ? Object.keys(ord.orderType)[0] ?? ''
+                : '';
+              const otStr = String(ot).toLowerCase();
               if (!otStr.includes('trigger')) continue;
               const mi = Number(ord?.marketIndex ?? ord?.market_index ?? -1);
               if (!Number.isFinite(mi) || mi < 0) continue;
@@ -245,8 +248,11 @@ export class DriftEventIndex {
         const miRaw = order?.marketIndex ?? order?.market_index ?? ev?.marketIndex ?? ev?.perpMarketIndex ?? ev?.spotMarketIndex;
         const mi = Number(miRaw);
         const orderId = String(order?.orderId ?? order?.order_id ?? '');
-        const ot = order?.orderType ? String(order.orderType?.kind || order.orderType?.__kind || order.orderType) : '';
-        const otStr = String(ot || '').toLowerCase();
+        // Anchor enums are objects like { triggerMarket: {} } - extract key name
+        const ot = order?.orderType && typeof order.orderType === 'object'
+          ? Object.keys(order.orderType)[0] ?? ''
+          : '';
+        const otStr = String(ot).toLowerCase();
         if (userPk && Number.isFinite(mi)) this.updateUserMarkets(userPk, [mi], 'ws_order');
         if (Number.isFinite(mi) && orderId && otStr.includes('trigger')) {
           this.trackConditionalOrder(mi, `${userPk || 'unk'}#${orderId}`, 'ws_order');
