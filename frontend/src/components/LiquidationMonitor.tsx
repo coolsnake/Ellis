@@ -5,6 +5,8 @@ import { StatCard, Button, EmptyState } from './ui';
 
 type QueueItem = { userPk: string; health: number; updatedAt: number };
 type UserItem = { userPk: string; health: number; updatedAt: number };
+type MarketFee = { marketIndex: number; symbol?: string; perpFee?: number; spotFee?: number };
+type LiqAttempt = { ts: number; type: string; marketIndex: number; user: string; sig?: string; ms: number; notionalUsd?: number; liqFeeRate?: number; ok: boolean; error?: string };
 
 interface Props {
   apiBase: string;
@@ -16,7 +18,7 @@ interface Props {
 export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidatorKey = 'liq#default', hideUserList = false }) => {
   const { socket: ctxSocket } = useSocket();
   const effectiveSocket = socket ?? ctxSocket;
-  const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users?: UserItem[] } | null>(null);
+  const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users?: UserItem[]; marketFees?: MarketFee[]; recentAttempts?: LiqAttempt[] } | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
 
   const fetchQueue = useCallback(async () => {
@@ -61,6 +63,8 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
             actionsLastMin: Number(evt.actionsLastMin || 0),
             errorsLastMin: Number(evt.errorsLastMin || 0),
             users: Array.isArray(evt.users) ? evt.users : [],
+            marketFees: Array.isArray(evt.marketFees) ? evt.marketFees : [],
+            recentAttempts: Array.isArray(evt.recentAttempts) ? evt.recentAttempts : [],
           });
           setLastUpdate(now);
         }
@@ -87,6 +91,41 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
       });
       setTimeout(fetchQueue, 800);
     } catch {}
+  };
+
+  // Group recent attempts by type
+  const attemptsByType = useMemo(() => {
+    const attempts = Array.isArray(queue?.recentAttempts) ? queue!.recentAttempts! : [];
+    const grouped: Record<string, LiqAttempt[]> = {};
+    for (const a of attempts) {
+      const t = a.type || 'unknown';
+      if (!grouped[t]) grouped[t] = [];
+      grouped[t].push(a);
+    }
+    // Sort each group by timestamp descending (newest first)
+    for (const t of Object.keys(grouped)) {
+      grouped[t].sort((a, b) => b.ts - a.ts);
+    }
+    return grouped;
+  }, [queue?.recentAttempts]);
+
+  const attemptStats = useMemo(() => {
+    const attempts = Array.isArray(queue?.recentAttempts) ? queue!.recentAttempts! : [];
+    const total = attempts.length;
+    const ok = attempts.filter(a => a.ok).length;
+    const totalRevenue = attempts.reduce((sum, a) => {
+      if (!a.ok || typeof a.notionalUsd !== 'number' || typeof a.liqFeeRate !== 'number') return sum;
+      return sum + a.notionalUsd * a.liqFeeRate;
+    }, 0);
+    return { total, ok, failed: total - ok, totalRevenue };
+  }, [queue?.recentAttempts]);
+
+  const TYPE_LABELS: Record<string, string> = {
+    perp: 'Perp',
+    perp_batch: 'Perp Batch',
+    perp_pnl_deposit: 'PnL Settle (Deposit)',
+    perp_pnl_borrow: 'PnL Settle (Borrow)',
+    spot: 'Spot',
   };
 
   const displayHealthMin = -0.02;
@@ -119,27 +158,47 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
         <span className="text-xs text-gray-400">{lastUpdate ? `Updated ${timeAgo(lastUpdate)}` : ''}</span>
       </div>
       
-      {/* Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-        <StatCard 
-          label="Tracked Markets" 
-          value={queue?.markets?.join(', ') || '-'}
-        />
-        <StatCard 
-          label="Queued Candidates" 
-          value={queue?.candidatesQueued ?? 0}
-        />
-        <StatCard 
-          label="Attempts (1m)" 
-          value={queue?.actionsLastMin ?? 0}
-        />
-        <StatCard 
-          label="Errors (1m)" 
+      {/* Stats Row */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+        <StatCard label="Queued Candidates" value={queue?.candidatesQueued ?? 0} />
+        <StatCard label="Actions (1m)" value={queue?.actionsLastMin ?? 0} />
+        <StatCard
+          label="Errors (1m)"
           value={queue?.errorsLastMin ?? 0}
           className={((queue?.errorsLastMin || 0) > 0) ? 'border-yellow-600/30' : ''}
         />
       </div>
-      <div className="text-xs text-gray-500 mb-3">Attempts include dry runs and test clicks.</div>
+
+      {/* Tracked Markets with Fees */}
+      {Array.isArray(queue?.marketFees) && queue!.marketFees!.length > 0 && (
+        <div className="mb-4">
+          <h4 className="text-sm font-medium text-gray-300 mb-2">Tracked Markets</h4>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-gray-400 text-xs uppercase tracking-wide border-b border-gray-700/50">
+                  <th className="text-left py-1.5 pr-4">Market</th>
+                  <th className="text-right py-1.5 px-3">Perp Fee</th>
+                  <th className="text-right py-1.5 px-3">Spot Fee</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue!.marketFees!.map((mf) => (
+                  <tr key={`mf-${mf.marketIndex}`} className="border-b border-gray-800/30">
+                    <td className="py-1.5 pr-4 text-gray-200 font-mono">{mf.symbol || `#${mf.marketIndex}`}</td>
+                    <td className="py-1.5 px-3 text-right font-mono text-gray-300">
+                      {typeof mf.perpFee === 'number' ? `${(mf.perpFee * 100).toFixed(2)}%` : '-'}
+                    </td>
+                    <td className="py-1.5 px-3 text-right font-mono text-gray-300">
+                      {typeof mf.spotFee === 'number' ? `${(mf.spotFee * 100).toFixed(2)}%` : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Market Exposures */}
       {Array.isArray(queue?.exposures) && queue!.exposures!.length > 0 && (
@@ -155,6 +214,100 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
           </div>
         </div>
       )}
+
+      {/* Liquidation Attempts */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-sm font-medium text-gray-300">Liquidation Attempts</h4>
+          {attemptStats.total > 0 && (
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-gray-400">{attemptStats.total} total</span>
+              <span className="text-green-400">{attemptStats.ok} ok</span>
+              {attemptStats.failed > 0 && <span className="text-red-400">{attemptStats.failed} failed</span>}
+              {attemptStats.totalRevenue > 0 && (
+                <span className="text-emerald-400 font-mono">~${attemptStats.totalRevenue.toFixed(4)} est. rev</span>
+              )}
+            </div>
+          )}
+        </div>
+        {Object.keys(attemptsByType).length === 0 ? (
+          <EmptyState message="No recent liquidation attempts" />
+        ) : (
+          <div className="space-y-3">
+            {Object.entries(attemptsByType).map(([type, attempts]) => (
+              <div key={`atype-${type}`} className="bg-gray-800/30 border border-gray-700/40 rounded-lg overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800/60 border-b border-gray-700/40">
+                  <span className="text-xs font-medium text-gray-200 uppercase tracking-wide">{TYPE_LABELS[type] || type}</span>
+                  <span className="text-xs text-gray-400">{attempts.length}</span>
+                </div>
+                <div className="max-h-48 overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-gray-500 uppercase tracking-wide">
+                        <th className="text-left py-1 px-2">Time</th>
+                        <th className="text-left py-1 px-2">User</th>
+                        <th className="text-right py-1 px-2">Mkt</th>
+                        <th className="text-right py-1 px-2">Notional</th>
+                        <th className="text-right py-1 px-2">Fee</th>
+                        <th className="text-right py-1 px-2">Est Rev</th>
+                        <th className="text-right py-1 px-2">ms</th>
+                        <th className="text-center py-1 px-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {attempts.map((a, i) => {
+                        const estRev = (a.ok && typeof a.notionalUsd === 'number' && typeof a.liqFeeRate === 'number')
+                          ? a.notionalUsd * a.liqFeeRate
+                          : null;
+                        return (
+                          <tr key={`att-${type}-${i}`} className="border-t border-gray-800/30 hover:bg-gray-800/40">
+                            <td className="py-1 px-2 text-gray-400 font-mono">{timeAgo(a.ts)}</td>
+                            <td className="py-1 px-2 text-gray-300 font-mono" title={a.user}>
+                              {a.user?.slice(0, 4)}…{a.user?.slice(-4)}
+                            </td>
+                            <td className="py-1 px-2 text-right text-gray-300 font-mono">{a.marketIndex}</td>
+                            <td className="py-1 px-2 text-right font-mono text-gray-300">
+                              {typeof a.notionalUsd === 'number' ? `$${a.notionalUsd.toFixed(2)}` : '-'}
+                            </td>
+                            <td className="py-1 px-2 text-right font-mono text-gray-400">
+                              {typeof a.liqFeeRate === 'number' ? `${(a.liqFeeRate * 100).toFixed(2)}%` : '-'}
+                            </td>
+                            <td className="py-1 px-2 text-right font-mono">
+                              {estRev !== null
+                                ? <span className="text-emerald-400">${estRev.toFixed(4)}</span>
+                                : <span className="text-gray-600">-</span>}
+                            </td>
+                            <td className="py-1 px-2 text-right font-mono text-gray-400">{a.ms}</td>
+                            <td className="py-1 px-2 text-center">
+                              {a.ok ? (
+                                a.sig ? (
+                                  <a
+                                    href={`https://solscan.io/tx/${a.sig}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-green-400 hover:text-green-300 underline"
+                                    title={a.sig}
+                                  >
+                                    ok
+                                  </a>
+                                ) : (
+                                  <span className="text-green-400">ok</span>
+                                )
+                              ) : (
+                                <span className="text-red-400 cursor-help" title={a.error || 'failed'}>err</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Users Under Threshold */}
       {!hideUserList && filteredUsers.length > 0 && (

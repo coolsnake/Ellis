@@ -28,6 +28,8 @@ export class DriftPriceService {
   private staleTimers: Map<number, any> = new Map();
   private scheduler: any | null = null;
   private nextPollAt: Map<number, number> = new Map();
+  private trackLogByMarket: Map<number, { mode: string; lastAt: number }> = new Map();
+  private summaryTimer: any | null = null;
 
   private constructor() {
     try {
@@ -74,7 +76,17 @@ export class DriftPriceService {
     // Prefer WS when enabled
     const cfg = getDriftConfig();
     const enableWs = !!cfg.enableWsPrices;
-    try { logger.info('drift.price.track_market', { cat: 'drift', marketIndex: idx, intervalMs, mode: (enableWs && this.ws) ? 'ws' : 'http' }); } catch {}
+    const mode = (enableWs && this.ws) ? 'ws' : 'http';
+    try {
+      const now = Date.now();
+      const interval = Math.max(1000, Number(cfg.priceTrackLogIntervalMs || 60000));
+      const last = this.trackLogByMarket.get(idx);
+      if (!last || last.mode !== mode || (now - last.lastAt) > interval) {
+        logger.info('drift.price.track_market', { cat: 'drift', marketIndex: idx, intervalMs, mode });
+        this.trackLogByMarket.set(idx, { mode, lastAt: now });
+      }
+    } catch {}
+    this.ensureSummaryTimer();
     if (enableWs && this.ws) {
       try { this.ws.subscribeMarket(idx); } catch {}
       // Staleness watchdog: if WS stalls, ensure HTTP fallback polling (unless wsOnlyPrices)
@@ -203,6 +215,31 @@ export class DriftPriceService {
     for (const fn of Array.from(ls)) {
       try { fn(sample); } catch {}
     }
+  }
+
+  private ensureSummaryTimer(): void {
+    if (this.summaryTimer) return;
+    const cfg = getDriftConfig();
+    const every = Math.max(5000, Number(cfg.priceSummaryIntervalMs || 30000));
+    this.summaryTimer = (globalThis as any).setInterval(() => {
+      try {
+        const wsTracked = this.staleTimers.size;
+        const httpTracked = this.nextPollAt.size;
+        const priceCount = this.prices.size;
+        if (wsTracked + httpTracked + priceCount === 0) return;
+        let stale = 0;
+        for (const v of this.prices.values()) {
+          if (v?.stale) stale += 1;
+        }
+        logger.info('drift.price.summary', {
+          cat: 'drift',
+          wsTracked,
+          httpTracked,
+          prices: priceCount,
+          stale
+        });
+      } catch {}
+    }, every);
   }
 
   private startScheduler(): void {

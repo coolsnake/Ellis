@@ -35,6 +35,8 @@ export type DriftConfig = {
   enableWsPrices?: boolean;
   wsOnlyPrices?: boolean;
   priceStaleMs?: number;
+  priceTrackLogIntervalMs?: number;
+  priceSummaryIntervalMs?: number;
   websocketIntervalMs?: number;
   dlobUrl?: string;
   dlobWsUrl?: string;
@@ -59,6 +61,8 @@ export function getDriftConfig(): DriftConfig {
     enableWsPrices: !!d.enableWsPrices,
     wsOnlyPrices: (d.wsOnlyPrices !== undefined ? !!d.wsOnlyPrices : true),
     priceStaleMs: Number(d.priceStaleMs || 3000),
+    priceTrackLogIntervalMs: Number(d.priceTrackLogIntervalMs || 60000),
+    priceSummaryIntervalMs: Number(d.priceSummaryIntervalMs || 30000),
     websocketIntervalMs: Number(d.websocketIntervalMs || 400),
     dlobUrl: d.dlobUrl || 'https://dlob.drift.trade',
     dlobWsUrl: d.dlobWsUrl || 'wss://dlob.drift.trade/ws',

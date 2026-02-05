@@ -2,6 +2,8 @@ import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import type { DriftMarketRef } from './types.js';
 
+const allowlistLogState: { lastAt: number; lastCount: number } = { lastAt: 0, lastCount: -1 };
+
 function readAllowlist(): string[] {
   try {
     const raw: any = (CONFIG as any)?.drift?.marketsAllowlist || [];
@@ -36,7 +38,15 @@ export function parseAllowlistMarkets(): DriftMarketRef[] {
       seen.add(m.marketIndex);
       return true;
     }).sort((a, b) => a.marketIndex - b.marketIndex);
-    try { logger.info('drift.markets.allowlist_parsed', { cat: 'drift', count: uniq.length, rawCount: out.length, sample: uniq.slice(0, 8) }); } catch {}
+    try {
+      const now = Date.now();
+      const shouldLog = (now - allowlistLogState.lastAt) > 60_000 || allowlistLogState.lastCount !== uniq.length;
+      if (shouldLog) {
+        allowlistLogState.lastAt = now;
+        allowlistLogState.lastCount = uniq.length;
+        logger.info('drift.markets.allowlist_parsed', { cat: 'drift', count: uniq.length, rawCount: out.length, sample: uniq.slice(0, 8) });
+      }
+    } catch {}
     return uniq;
   } catch { return []; }
 }

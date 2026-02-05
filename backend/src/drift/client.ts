@@ -52,6 +52,7 @@ export class DriftService {
   private sharedUserMap: any | null = null;
   private sharedDlobSubscriber: any | null = null;
   private sharedOrderSubscriber: any | null = null;
+  private activeSubaccountId: number | null = null;
   private txQueueInFlight = 0;
   private txQueue: Array<() => void> = [];
   private maxTxInFlight = 2;
@@ -1027,6 +1028,7 @@ export class DriftService {
     this.sharedSlotSubscriber = null;
     this.infraReady = false;
     this.infraReadyAtMs = 0;
+    this.activeSubaccountId = null;
   }
 
   // Public cleanup method for shutdown - ensures all subscriptions are properly torn down
@@ -1963,10 +1965,19 @@ export class DriftService {
     await this.init();
     try {
       const client: any = this.client;
+      const id = Number(_id);
+      if (Number.isFinite(id)) {
+        if (this.activeSubaccountId === id) return true;
+        if (Number.isFinite(Number(client?.activeUserId)) && Number(client.activeUserId) === id) {
+          this.activeSubaccountId = id;
+          return true;
+        }
+      }
       if (typeof client?.switchActiveUser === 'function') {
         await client.switchActiveUser(Number(_id));
         try { if (typeof client?.addUser === 'function') await client.addUser(Number(_id)); } catch {}
         try { if (typeof client?.initializeUserIfNotExists === 'function') await client.initializeUserIfNotExists(Number(_id)); } catch {}
+        this.activeSubaccountId = Number(_id);
         logger.info('drift.subaccount.switch_ok', { id: _id, cat: 'drift' });
         this.invalidateSubaccountsCache();
         return true;

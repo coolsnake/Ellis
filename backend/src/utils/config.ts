@@ -830,6 +830,9 @@ export const CONFIG = {
     wsOnlyPrices: (process.env.DRIFT_WS_ONLY_PRICES || 'true') === 'true',
     // Consider WS prices fresh within this window
     priceStaleMs: Number(process.env.DRIFT_PRICE_STALE_MS || 3000),
+    // Track-market log throttling + summary interval
+    priceTrackLogIntervalMs: Number(process.env.DRIFT_PRICE_TRACK_LOG_INTERVAL_MS || 60000),
+    priceSummaryIntervalMs: Number(process.env.DRIFT_PRICE_SUMMARY_INTERVAL_MS || 30000),
     // WS connection heartbeat/reconnect tuning
     wsHeartbeatMs: Number(process.env.DRIFT_WS_HEARTBEAT_MS || 15000),
     wsReconnectMinMs: Number(process.env.DRIFT_WS_RECONNECT_MIN_MS || 1000),
