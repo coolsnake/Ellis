@@ -67,6 +67,9 @@ export class DriftTriggerRunner {
   private lastFullScanAt: number = 0;
   private eventIndexSweepTimer: any | null = null;
   private eventIndexBound: boolean = false;
+  private summaryOnly: boolean = false;
+  private _summary: { since: number; loops: number; totalNodesPlanned: number; marketsWithNodes: number; priorityMarkets: number; scanModes: { full: number; targeted: number }; users?: number; slot?: number; indexStats?: { users: number; markets: number; marketToOrders: number }; triggersLastMin?: number; lastMs?: number; lastSample?: Array<{ m: number; t: string; u: string; id: string; cond?: string; otype?: string; ordTp?: string; oracle?: string; trig?: string }> } | null = null;
+  private _summaryTimer: any | null = null;
 
   constructor(cfg: TriggerConfig) {
     const allowlist = Array.isArray(cfg?.marketsAllowlist)
@@ -153,6 +156,41 @@ export class DriftTriggerRunner {
 
     logger.info('drift.trigger.started', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
 
+    // Start periodic summary logger when enabled
+    try {
+      const driftCfg: any = (CONFIG as any)?.drift || {};
+      const summaryOnly = !!driftCfg?.loopSummaryOnly;
+      const every = Math.max(2000, Number(driftCfg?.loopSummaryIntervalMs ?? 10000));
+      this.summaryOnly = summaryOnly;
+      if (summaryOnly) {
+        if (this._summaryTimer) { try { clearInterval(this._summaryTimer); } catch {} this._summaryTimer = null; }
+        if (!this._summary) this._summary = { since: Date.now(), loops: 0, totalNodesPlanned: 0, marketsWithNodes: 0, priorityMarkets: 0, scanModes: { full: 0, targeted: 0 } };
+        this._summaryTimer = setInterval(() => {
+          try {
+            const s = this._summary!;
+            logger.info('drift.trigger.loop_summary_10s', {
+              cat: TRIGGER_CAT,
+              subcat: TRIGGER_SUBCAT,
+              name: this.state.name,
+              windowMs: Date.now() - s.since,
+              loops: s.loops,
+              users: s.users,
+              slot: s.slot,
+              totalNodesPlanned: s.totalNodesPlanned,
+              marketsWithNodes: s.marketsWithNodes,
+              scanModes: s.scanModes,
+              priorityMarkets: s.priorityMarkets,
+              index: s.indexStats,
+              triggersLastMin: s.triggersLastMin,
+              lastMs: s.lastMs,
+              sample: s.lastSample,
+            });
+            this._summary = { since: Date.now(), loops: 0, totalNodesPlanned: 0, marketsWithNodes: 0, priorityMarkets: 0, scanModes: { full: 0, targeted: 0 } };
+          } catch {}
+        }, every);
+      }
+    } catch {}
+
     // Also drive ticks via slot updates for lower latency
     try {
       const onSlot = () => { try { setImmediate(() => { if (!this.inLoop && !this.abort) this.loop().catch(() => {}); }); } catch {} };
@@ -172,6 +210,8 @@ export class DriftTriggerRunner {
     this.state.running = false;
     this.abort = true;
     try { if ((this as any)._condStatsTimer) { clearInterval((this as any)._condStatsTimer); (this as any)._condStatsTimer = null; } } catch {}
+    try { if (this._summaryTimer) { clearInterval(this._summaryTimer); this._summaryTimer = null; } } catch {}
+    this._summary = null;
     try { if (this.eventIndexSweepTimer) { clearInterval(this.eventIndexSweepTimer); this.eventIndexSweepTimer = null; } } catch {}
     logger.info('drift.trigger.stopped', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
     try { (DriftService.getInstance() as any).unregisterBot?.(this.botKey); } catch {}
@@ -748,21 +788,36 @@ export class DriftTriggerRunner {
       }
 
 			const dur = Date.now() - t0;
-			logger.info('drift.trigger.loop', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, ms: dur, name: this.state.name });
-			logger.info('drift.trigger.loop_summary', {
-				cat: TRIGGER_CAT,
-				subcat: TRIGGER_SUBCAT,
-				ms: dur,
-				slot,
-				users: userCount,
-				totalNodesPlanned,
-				marketsWithNodes,
-				scanMode: doFullScan ? 'full' : 'targeted',
-				priorityMarkets: prioritySet.size,
-				index: driftEventIndex.getStats(),
-				triggersLastMin: this.getStatus().triggersLastMin,
-				sample: nodeSamples,
-			});
+      if (this._summary) {
+        this._summary.loops += 1;
+        this._summary.totalNodesPlanned += totalNodesPlanned;
+        this._summary.marketsWithNodes += marketsWithNodes;
+        this._summary.priorityMarkets += prioritySet.size;
+        this._summary.scanModes[doFullScan ? 'full' : 'targeted'] += 1;
+        this._summary.users = userCount;
+        this._summary.slot = slot;
+        this._summary.indexStats = driftEventIndex.getStats();
+        this._summary.triggersLastMin = this.getStatus().triggersLastMin;
+        this._summary.lastMs = dur;
+        if (nodeSamples.length > 0) this._summary.lastSample = nodeSamples;
+      }
+      if (!this.summaryOnly) {
+        logger.info('drift.trigger.loop', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, ms: dur, name: this.state.name });
+        logger.info('drift.trigger.loop_summary', {
+          cat: TRIGGER_CAT,
+          subcat: TRIGGER_SUBCAT,
+          ms: dur,
+          slot,
+          users: userCount,
+          totalNodesPlanned,
+          marketsWithNodes,
+          scanMode: doFullScan ? 'full' : 'targeted',
+          priorityMarkets: prioritySet.size,
+          index: driftEventIndex.getStats(),
+          triggersLastMin: this.getStatus().triggersLastMin,
+          sample: nodeSamples,
+        });
+      }
     } catch (e: any) {
       this.state.lastError = String(e?.message || e);
       logger.info('drift.trigger.error loop_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: this.state.lastError });
