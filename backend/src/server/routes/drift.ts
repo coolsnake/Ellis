@@ -556,6 +556,8 @@ export function createDriftRouter(io: SocketIOServer): Router {
 
   // Detailed user snapshot (collateral + spot collateral + perp positions)
   api.get('/drift/user/:pubkey', async (req: Request, res: Response) => {
+    let sdkUser: any = null;
+    let shouldUnsubscribe = false; // Track if we created the user (need to clean up)
     try {
       const pkStr = String(req.params.pubkey || '').trim();
       if (!pkStr) return res.status(400).json({ error: 'pubkey required' });
@@ -563,15 +565,14 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const svc = DriftService.getInstance();
       await svc.init();
       const client: any = (svc as any)?.client;
-      let sdkUser: any = null;
-      let shouldUnsubscribe = false; // Track if we created the user (need to clean up)
+      const conn = client?.connection || svc.getReadConnection();
       try {
         const { User, getUserAccountPublicKey, BulkAccountLoader } = await import('@drift-labs/sdk');
         const { PublicKey } = await import('@solana/web3.js');
         const inputPk = new PublicKey(pkStr);
         // Use polling subscription for one-shot reads -- data is available immediately
         // after subscribe, unlike websocket which needs time to push state
-        const loader = new BulkAccountLoader(svc.connection, 'confirmed', 0);
+        const loader = new BulkAccountLoader(conn, 'confirmed', 0);
         const pollingSubscription = { type: 'polling' as const, accountLoader: loader };
 
         // Check if user is already cached in the liquidator (avoids creating a new subscription)
