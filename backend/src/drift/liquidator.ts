@@ -1780,20 +1780,62 @@ export class DriftLiquidator {
         } catch {}
         const exposureUsd = posSummary.reduce((s, p) => s + (typeof p.notional === 'number' ? Math.abs(p.notional) : 0), 0);
         // Spot collateral snapshot (amounts + UI conversion)
-        let spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string }> = [];
+        // Use getSpotPositions() with fallback to raw getUserAccount().spotPositions
+        // and SDK's getTokenAmount() for correct amount conversion (scaledBalance is NOT token amount).
+        let spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; isBorrow?: boolean; valueUsd?: number }> = [];
         try {
-          const spots = (sdkUser as any)?.getSpotPositions?.() || [];
+          const sdk: any = await import('@drift-labs/sdk');
+          const getTokenAmount = (sdk as any)?.getTokenAmount;
+          const getVariant = (sdk as any)?.getVariant;
+          const isVariant = (sdk as any)?.isVariant;
+          const PRICE_PREC = Number((sdk as any)?.PRICE_PRECISION ?? 1_000_000);
+          let spots = (sdkUser as any)?.getSpotPositions?.() || [];
+          // Fallback: if getSpotPositions returns empty, try raw account data
+          if (!Array.isArray(spots) || spots.length === 0) {
+            const ua = (sdkUser as any)?.getUserAccount?.();
+            if (ua && Array.isArray(ua.spotPositions)) {
+              spots = ua.spotPositions;
+            }
+          }
           for (const sp of (spots || [])) {
             try {
               const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
               if (!Number.isFinite(idx)) continue;
-              const mktAcc = await (DriftService.getInstance() as any)?.client?.getSpotMarketAccount?.(idx);
+              const mktAcc = drift?.getSpotMarketAccount?.(idx);
+              if (!mktAcc) continue;
               const decimals = Number(mktAcc?.decimals ?? 6);
               const mint = String(mktAcc?.mint ?? '');
-              const amountRaw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || sp?.depositBalance || sp?.borrowBalance || 0);
-              const amountUi = amountRaw / Math.pow(10, decimals);
               const symbol = (mktAcc?.name || mktAcc?.symbol || '')?.toString?.()?.replace?.(/\0+$/g, '') || undefined;
-              spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint });
+              // Determine borrow vs deposit
+              const balanceType = sp?.balanceType;
+              let isBorrow = false;
+              try {
+                if (typeof isVariant === 'function') isBorrow = isVariant(balanceType, 'borrow');
+                else if (typeof getVariant === 'function') isBorrow = String(getVariant(balanceType)).toLowerCase().includes('borrow');
+                else isBorrow = String(balanceType || '').toLowerCase().includes('borrow');
+              } catch {}
+              // Use SDK's getTokenAmount for correct conversion from scaledBalance
+              let amountToken: any = null;
+              try {
+                if (typeof getTokenAmount === 'function' && sp?.scaledBalance && mktAcc) {
+                  amountToken = getTokenAmount(sp.scaledBalance, mktAcc, balanceType);
+                }
+              } catch {}
+              const amountRawAbs = Number(amountToken?.toString?.() || sp?.scaledBalance?.toString?.() || sp?.balance || 0);
+              if (amountRawAbs === 0) continue; // Skip empty positions
+              // Negate borrows so the frontend can filter: amountUi > 0 = deposit, < 0 = borrow
+              const sign = isBorrow ? -1 : 1;
+              const amountRaw = amountRawAbs * sign;
+              const amountUi = amountRaw / Math.pow(10, decimals);
+              // Oracle price for USD value
+              let valueUsd: number | undefined = undefined;
+              try {
+                const oracle = drift?.getOracleDataForSpotMarket?.(idx);
+                const priceRaw = Number(oracle?.price?.toString?.() || 0);
+                const priceUi = priceRaw > 0 ? priceRaw / PRICE_PREC : 0;
+                if (priceUi > 0) valueUsd = Math.abs(amountUi) * priceUi;
+              } catch {}
+              spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint, isBorrow, valueUsd });
             } catch {}
           }
         } catch {}

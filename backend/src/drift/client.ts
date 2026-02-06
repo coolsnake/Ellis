@@ -386,15 +386,37 @@ export class DriftService {
       }
       // Hydrate user account data. Oracle/market data is already loaded by
       // client.fetchAccounts() above, so we mainly need the user account struct.
-      // Retry a few times in case the user subscription takes a moment.
+      // Retry with recovery -- if this.client.user is null, re-attempt switchActiveUser.
       const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-      const maxHydrationAttempts = 3;
+      const maxHydrationAttempts = 6;
       const hydrationDelayMs = 500;
       let userHydrated = false;
       let oraclesReady = false;
       for (let attempt = 0; attempt < maxHydrationAttempts; attempt++) {
         try {
-          const user = (this.client as any)?.user;
+          let user = (this.client as any)?.user;
+          // Recovery: if user is null, switchActiveUser may not have worked; retry it
+          if (!user) {
+            try { logger.warn('drift.init.user_null_recovery', { subaccountId: defaultId, attempt, cat: 'drift' }); } catch {}
+            try {
+              if (typeof (this.client as any)?.switchActiveUser === 'function') {
+                await (this.client as any).switchActiveUser(defaultId);
+              }
+              user = (this.client as any)?.user;
+            } catch {}
+            // Still null? Try addUser + switchActiveUser fresh
+            if (!user) {
+              try {
+                if (typeof (this.client as any)?.addUser === 'function') {
+                  await (this.client as any).addUser(defaultId);
+                }
+                if (typeof (this.client as any)?.switchActiveUser === 'function') {
+                  await (this.client as any).switchActiveUser(defaultId);
+                }
+                user = (this.client as any)?.user;
+              } catch {}
+            }
+          }
           if (user && typeof user.fetchAccounts === 'function') {
             await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: `init.fetchAccounts.${attempt}` });
           }
@@ -430,14 +452,18 @@ export class DriftService {
             try { logger.info('drift.init.user_hydrated', { subaccountId: defaultId, attempt, oraclesReady, cat: 'drift' }); } catch {}
             break;
           }
+          // Log progress each attempt
+          if (attempt > 0 && attempt < maxHydrationAttempts - 1) {
+            try { logger.debug('drift.init.hydration_progress', { subaccountId: defaultId, attempt, userHydrated, oraclesReady, userNull: !(this.client as any)?.user, cat: 'drift' }); } catch {}
+          }
         } catch {}
-        // Wait before retrying -- give WS subscriptions time to push oracle data
+        // Wait before retrying
         if (attempt < maxHydrationAttempts - 1) {
           await new Promise(r => setTimeout(r, hydrationDelayMs));
         }
       }
       if (!userHydrated || !oraclesReady) {
-        try { logger.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, cat: 'drift' }); } catch {}
+        try { logger.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, userNull: !(this.client as any)?.user, cat: 'drift' }); } catch {}
       }
     } catch (e: any) {
       try { logger.warn('drift.init.user_setup_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
