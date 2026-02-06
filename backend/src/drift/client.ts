@@ -168,7 +168,7 @@ export class DriftService {
   async getUnrealizedPerpPnl(marketIndex: number): Promise<number | null> {
     await this.init();
     try {
-      const user: any = this.client?.user || null;
+      const user: any = (() => { try { return (this.client as any)?.user; } catch { return null; } })();
       const val = await (user?.getUnrealizedPerpPnl?.(marketIndex));
       const n = Number(val?.toString?.() || val || 0);
       return isFinite(n) ? n : 0;
@@ -181,7 +181,7 @@ export class DriftService {
   async getUnrealizedFundingPnl(marketIndex: number): Promise<number | null> {
     await this.init();
     try {
-      const user: any = this.client?.user || null;
+      const user: any = (() => { try { return (this.client as any)?.user; } catch { return null; } })();
       const val = await (user?.getUnrealizedFundingPnl?.(marketIndex));
       const n = Number(val?.toString?.() || val || 0);
       return isFinite(n) ? n : 0;
@@ -402,48 +402,71 @@ export class DriftService {
       // --- Phase A: Standard SDK addUser + switchActiveUser (WS-based) ---
       // Try a few times with short delays; WS subscription inside addUser may
       // need a moment before the user is stored in the internal map.
+      // Note: client.user is a getter that throws if the user isn't in the map,
+      // so we use hasUser() for the check.
       const wsAttempts = 3;
       const wsDelayMs = 800;
       for (let a = 0; a < wsAttempts; a++) {
         try {
           if (typeof client?.addUser === 'function') await client.addUser(defaultId);
           if (typeof client?.switchActiveUser === 'function') await client.switchActiveUser(defaultId);
-          if (client?.user) break;
+          const ok = typeof client?.hasUser === 'function' ? client.hasUser(defaultId) : false;
+          if (ok) break;
         } catch (e: any) { safeLog.debug('drift.init.ws_addUser', { attempt: a, error: String(e?.message || e), cat: 'drift' }); }
         if (a < wsAttempts - 1) await new Promise(r => setTimeout(r, wsDelayMs));
       }
 
-      // --- Phase B: RPC polling fallback ---
+      // --- Phase B: RPC fallback ---
       // If client.user is still null the WS-based subscribe inside addUser
-      // failed to deliver. Create the User directly with a polling (RPC)
-      // subscription which fetches the existing on-chain account immediately.
-      if (!client?.user) {
+      // failed to deliver account data in time.  Fix: fetch the existing
+      // on-chain user account via RPC and pass it to addUser() as the third
+      // argument so the SDK's User.subscribe() receives the data immediately
+      // instead of waiting for WebSocket.
+      //
+      // SDK internals (driftClient.js):
+      //   addUser(subAccountId, authority?, userAccount?)
+      //     → user.subscribe(userAccount)   // uses data if provided
+      //     → if (result) this.users.set(getUserMapKey(...), user)
+      //   getUserMapKey(id, auth) → `${id}_${auth.toString()}`
+      //   get user() → this.getUser(this.activeSubAccountId)
+      let hasUser = false;
+      try { hasUser = typeof client?.hasUser === 'function' ? client.hasUser(defaultId) : !!client?.user; } catch { hasUser = false; }
+      if (!hasUser) {
         safeLog.info('drift.init.user_rpc_fallback', { subaccountId: defaultId, cat: 'drift' });
         try {
-          const { User, BulkAccountLoader } = await loadSdk();
+          // 1. Fetch the user account data directly via RPC
           const userPk = typeof client?.getUserAccountPublicKey === 'function'
             ? await client.getUserAccountPublicKey(Number(defaultId))
             : null;
-          if (userPk && User) {
-            // Use a lightweight polling loader just for this user (1 s interval)
-            const pollingLoader = this.loader || new BulkAccountLoader(this.connection!, 'confirmed', 1000);
-            const userObj: any = new User({
-              driftClient: client,
-              userAccountPublicKey: userPk,
-              accountSubscription: { type: 'polling', accountLoader: pollingLoader },
-            });
-            await withRpcLimit(() => userObj.subscribe(), 1, { module: 'drift', method: 'user.rpcSubscribe' });
-            // Inject into the SDK's internal user map so client.user works
-            if (typeof client?.users?.set === 'function') {
-              client.users.set(defaultId, userObj);
-            }
-            if (typeof client?.switchActiveUser === 'function') {
-              await client.switchActiveUser(defaultId);
-            }
-            safeLog.info('drift.init.user_rpc_fallback_ok', { subaccountId: defaultId, userReady: !!client?.user, cat: 'drift' });
-          } else {
-            safeLog.warn('drift.init.user_rpc_fallback_skip', { reason: userPk ? 'no_User_class' : 'no_user_pk', cat: 'drift' });
+          let userAccountData: any = null;
+          if (userPk) {
+            try {
+              const accInfo = await withRpcLimit(
+                () => this.connection!.getAccountInfo(userPk, 'confirmed'),
+                1, { module: 'drift', method: 'user.getAccountInfo' }
+              );
+              if (accInfo?.data) {
+                // Decode the account using the SDK's program coder
+                const coder = client?.program?.coder?.accounts;
+                if (coder && typeof coder.decode === 'function') {
+                  userAccountData = coder.decode('User', accInfo.data);
+                }
+              }
+            } catch (e: any) { safeLog.debug('drift.init.user_rpc_fetch', { error: String(e?.message || e), cat: 'drift' }); }
           }
+
+          // 2. Re-call addUser with the pre-fetched account data so
+          //    User.subscribe() succeeds immediately without waiting for WS
+          if (typeof client?.addUser === 'function') {
+            const added = await client.addUser(defaultId, undefined, userAccountData ?? undefined);
+            safeLog.info('drift.init.user_rpc_addUser', { added, hasData: !!userAccountData, cat: 'drift' });
+          }
+          if (typeof client?.switchActiveUser === 'function') {
+            await client.switchActiveUser(defaultId);
+          }
+          let ready = false;
+          try { ready = typeof client?.hasUser === 'function' ? client.hasUser(defaultId) : !!client?.user; } catch { ready = false; }
+          safeLog.info('drift.init.user_rpc_fallback_ok', { subaccountId: defaultId, userReady: ready, cat: 'drift' });
         } catch (e: any) {
           safeLog.warn('drift.init.user_rpc_fallback_failed', { error: String(e?.message || e), cat: 'drift' });
         }
@@ -457,12 +480,15 @@ export class DriftService {
       // --- Phase C: Hydrate user account data via RPC ---
       // Oracle/market data is already loaded by client.fetchAccounts() above,
       // so we mainly need the user account struct.  Use exponential backoff.
+      // Note: client.user is a getter that THROWS if the user isn't in the
+      // internal map, so we use hasUser() + getUser() with try-catch.
+      const safeGetUser = (): any => { try { return typeof client?.getUser === 'function' ? client.getUser(defaultId) : client?.user; } catch { return null; } };
       const maxHydrationAttempts = 10;
       let userHydrated = false;
       let oraclesReady = false;
       for (let attempt = 0; attempt < maxHydrationAttempts; attempt++) {
         try {
-          const user = client?.user;
+          const user = safeGetUser();
           if (!user) {
             if (attempt < 3) {
               // Short grace period: WS subscription may still be propagating
@@ -518,7 +544,7 @@ export class DriftService {
         }
       }
       if (!userHydrated || !oraclesReady) {
-        safeLog.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, userNull: !client?.user, cat: 'drift' });
+        safeLog.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, userNull: !safeGetUser(), userReady: !!(typeof client?.hasUser === 'function' ? client.hasUser(defaultId) : false), cat: 'drift' });
       }
     } catch (e: any) {
       safeLog.warn('drift.init.user_setup_failed', { error: String(e?.message || e), cat: 'drift' });
@@ -1886,7 +1912,7 @@ export class DriftService {
     await this.init();
     try {
       const client: any = this.client;
-      let user = client?.user || null;
+      let user = (() => { try { return client?.user; } catch { return null; } })();
       // If no active user, try to force-add the configured subaccount
       if (!user) {
         try {
@@ -1895,7 +1921,7 @@ export class DriftService {
           if (typeof client?.addUser === 'function') await client.addUser(subId);
           if (typeof client?.switchActiveUser === 'function') await client.switchActiveUser(subId);
           this.activeSubaccountId = subId;
-          user = client?.user || null;
+          user = (() => { try { return client?.user; } catch { return null; } })();
         } catch (e: any) {
           safeLog.warn('drift.snapshot.recovery_failed', { error: String(e?.message || e), cat: 'drift' });
         }

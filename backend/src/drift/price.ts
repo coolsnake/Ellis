@@ -176,13 +176,20 @@ export class DriftPriceService {
     }
   }
 
+  private warmupCounter = 0;
+
   private ensureHttpPolling(idx: number, intervalMs: number): void {
     // Record initial backoff and schedule; start global scheduler if not running
     if (!this.backoffMs.has(idx)) this.backoffMs.set(idx, Math.max(200, intervalMs));
-    if (!this.nextPollAt.has(idx)) this.nextPollAt.set(idx, 0);
+    if (!this.nextPollAt.has(idx)) {
+      // Stagger initial warmup requests so we don't fire 79+ HTTP calls at once.
+      // Each newly tracked market is pushed 150 ms further out, spreading the
+      // burst over several seconds and letting the scheduler pick them up.
+      const stagger = Math.min(10_000, this.warmupCounter * 150);
+      this.warmupCounter++;
+      this.nextPollAt.set(idx, Date.now() + stagger);
+    }
     if (!this.scheduler) this.startScheduler();
-    // immediate warmup
-    this.refresh(idx).catch(() => {});
   }
 
   private stopHttpPolling(idx: number): void {
@@ -245,10 +252,12 @@ export class DriftPriceService {
 
   private startScheduler(): void {
     if (this.scheduler) return;
+    const maxConcurrent = 6; // cap parallel HTTP warmup/poll requests
     const tick = async () => {
       try {
         const now = Date.now();
         for (const idx of Array.from(this.nextPollAt.keys())) {
+          if (this.inFlight.size >= maxConcurrent) break; // cap in-flight
           const due = (this.nextPollAt.get(idx) || 0) <= now;
           if (due && !this.inFlight.has(idx)) {
             this.nextPollAt.set(idx, now + (this.backoffMs.get(idx) || 500));
