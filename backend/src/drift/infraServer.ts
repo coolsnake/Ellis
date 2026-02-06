@@ -2,6 +2,7 @@ import express from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { setIo } from '../server/realtime.js';
 import { createDriftRouter } from '../server/routes/drift.js';
 
@@ -31,7 +32,8 @@ const isLocalRequest = (req: express.Request): boolean => {
     const ipRaw = String(req.socket?.remoteAddress || req.ip || '');
     const ip = ipRaw.replace('::ffff:', '');
     return ip === '127.0.0.1' || ip === '::1';
-  } catch {
+  } catch (e: any) {
+    safeLog.debug('drift.infra.ip_check', { error: String(e?.message || e), cat: 'drift' });
     return false;
   }
 };
@@ -45,7 +47,8 @@ app.use((req, res, next) => {
     }
     if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     return next();
-  } catch {
+  } catch (e: any) {
+    safeLog.warn('drift.infra.auth_middleware', { error: String(e?.message || e), cat: 'drift' });
     return res.status(401).json({ error: 'unauthorized' });
   }
 });
@@ -53,28 +56,28 @@ app.use((req, res, next) => {
 const emitToMain = (event: string, payload: any) => {
   try {
     if (!callbackUrl) {
-      try { logger.warn('drift.infra.emit_no_callback', { event, cat: 'drift' }); } catch {}
+      safeLog.warn('drift.infra.emit_no_callback', { event, cat: 'drift' });
       return;
     }
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (secret) headers['x-drift-bots-secret'] = secret;
     if (basicAuth) headers['authorization'] = basicAuth;
     const body = JSON.stringify({ event, payload });
-    try { logger.info('drift.infra.emit_to_main', { event, callbackUrl, payloadKeys: payload ? Object.keys(payload) : [], cat: 'drift' }); } catch {}
+    safeLog.info('drift.infra.emit_to_main', { event, callbackUrl, payloadKeys: payload ? Object.keys(payload) : [], cat: 'drift' });
     setImmediate(async () => {
       try {
         const res = await fetch(callbackUrl, { method: 'POST', headers, body });
         if (res.ok) {
-          try { logger.info('drift.infra.emit_ok', { event, status: res.status, cat: 'drift' }); } catch {}
+          safeLog.info('drift.infra.emit_ok', { event, status: res.status, cat: 'drift' });
         } else {
-          try { logger.warn('drift.infra.emit_failed', { event, status: res.status, statusText: res.statusText, cat: 'drift' }); } catch {}
+          safeLog.warn('drift.infra.emit_failed', { event, status: res.status, statusText: res.statusText, cat: 'drift' });
         }
       } catch (e: any) {
-        try { logger.warn('drift.infra.emit_error', { event, error: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.infra.emit_error', { event, error: String(e?.message || e), cat: 'drift' });
       }
     });
   } catch (e: any) {
-    try { logger.error('drift.infra.emit_exception', { event, error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.error('drift.infra.emit_exception', { event, error: String(e?.message || e), cat: 'drift' });
   }
 };
 
@@ -93,7 +96,7 @@ api.use(createDriftRouter(ioProxy as any));
 app.use('/api', api);
 
 app.listen(port, () => {
-  try { logger.info('drift.infra.started', { port, callbackUrl, cat: 'drift' }); } catch {}
+  safeLog.info('drift.infra.started', { port, callbackUrl, cat: 'drift' });
 });
 
 // Optionally auto-activate infra on boot
@@ -107,7 +110,7 @@ if (cfg?.autostart) {
         updateFrequency: Math.max(200, Number(cfg?.updateFrequency ?? 1000)),
         preferOrderSubscriber: true
       });
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.infra.autostart', { error: String(e?.message || e), cat: 'drift' }); }
   });
 }
 

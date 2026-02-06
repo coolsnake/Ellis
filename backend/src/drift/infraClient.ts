@@ -1,5 +1,6 @@
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 
 export type TriggerNodesRequest = {
   markets: Array<{ marketIndex: number; marketType?: string | { perp?: unknown; spot?: unknown }; triggerPrice?: string }>;
@@ -53,7 +54,7 @@ function getInfraBaseUrl(): string | null {
   try {
     const env = String(process.env.DRIFT_INFRA_URL || '').trim();
     if (env) return env;
-  } catch {}
+  } catch (e: any) { safeLog.debug('drift.infra.env_read', { error: String(e?.message || e), cat: 'drift' }); }
   const cfg: any = (CONFIG as any)?.driftInfra || {};
   if (cfg?.baseUrl) return String(cfg.baseUrl);
   const port = Math.max(1, Number(process.env.DRIFT_INFRA_PORT || cfg?.port || 3020));
@@ -66,12 +67,12 @@ function getInfraSecretHeader(): Record<string, string> {
     const cfg: any = (CONFIG as any)?.driftInfra || {};
     const secret = String(process.env.DRIFT_INFRA_SECRET || cfg?.secret || '');
     if (secret) return { 'x-drift-infra-secret': secret };
-  } catch {}
+  } catch (e: any) { safeLog.debug('drift.infra.secret_read', { error: String(e?.message || e), cat: 'drift' }); }
   try {
     const cfgBots: any = (CONFIG as any)?.driftBots || {};
     const secret = String(process.env.DRIFT_BOTS_SECRET || cfgBots?.secret || '');
     if (secret) return { 'x-drift-bots-secret': secret };
-  } catch {}
+  } catch (e: any) { safeLog.debug('drift.infra.bots_secret_read', { error: String(e?.message || e), cat: 'drift' }); }
   return {};
 }
 
@@ -92,7 +93,7 @@ async function requestJson<T>(path: string, opts?: { method?: string; body?: any
     const res = await fetch(url, { method, headers, body, signal: ac.signal });
     const text = await res.text();
     if (!res.ok) throw new Error(`infra_http_${res.status}`);
-    try { return JSON.parse(text || '{}') as T; } catch { return {} as T; }
+    try { return JSON.parse(text || '{}') as T; } catch (e: any) { safeLog.debug('drift.infra.json_parse', { error: String(e?.message || e), cat: 'drift' }); return {} as T; }
   } finally {
     clearTimeout(t);
   }
@@ -106,7 +107,7 @@ export async function fetchInfraStatus(): Promise<InfraStatus> {
   try {
     return await requestJson<InfraStatus>('/api/drift/infra/status', { method: 'GET', timeoutMs: 5000 });
   } catch (e: any) {
-    try { logger.warn('drift.infra.status_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.warn('drift.infra.status_failed', { error: String(e?.message || e), cat: 'drift' });
     return {};
   }
 }
@@ -130,7 +131,7 @@ export async function fetchTriggerNodes(req: TriggerNodesRequest): Promise<Trigg
   try {
     return await requestJson<TriggerNodesResponse>('/api/drift/infra/dlob/trigger-nodes', { method: 'POST', body: req, timeoutMs: 12000 });
   } catch (e: any) {
-    try { logger.warn('drift.infra.trigger_nodes_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.warn('drift.infra.trigger_nodes_failed', { error: String(e?.message || e), cat: 'drift' });
     return {};
   }
 }
@@ -139,7 +140,7 @@ export async function fetchFillNodes(req: FillNodesRequest): Promise<FillNodesRe
   try {
     return await requestJson<FillNodesResponse>('/api/drift/infra/dlob/fill-nodes', { method: 'POST', body: req, timeoutMs: 15000 });
   } catch (e: any) {
-    try { logger.warn('drift.infra.fill_nodes_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.warn('drift.infra.fill_nodes_failed', { error: String(e?.message || e), cat: 'drift' });
     return {};
   }
 }
@@ -148,7 +149,7 @@ export async function fetchUserAccounts(pubkeys: string[]): Promise<UserAccounts
   try {
     return await requestJson<UserAccountsResponse>('/api/drift/infra/users/accounts', { method: 'POST', body: { pubkeys }, timeoutMs: 12000 });
   } catch (e: any) {
-    try { logger.warn('drift.infra.user_accounts_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.warn('drift.infra.user_accounts_failed', { error: String(e?.message || e), cat: 'drift' });
     return {};
   }
 }
@@ -157,7 +158,7 @@ export async function fetchPrices(markets: number[], opts?: { track?: boolean; p
   try {
     return await requestJson<PricesResponse>('/api/drift/infra/prices', { method: 'POST', body: { markets, track: !!opts?.track, pollMs: opts?.pollMs }, timeoutMs: 8000 });
   } catch (e: any) {
-    try { logger.warn('drift.infra.prices_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.warn('drift.infra.prices_failed', { error: String(e?.message || e), cat: 'drift' });
     return {};
   }
 }
@@ -167,7 +168,7 @@ export async function fetchEventIndex(limit?: number): Promise<EventIndexRespons
     const qs = Number.isFinite(Number(limit)) ? `?limit=${Number(limit)}` : '';
     return await requestJson<EventIndexResponse>(`/api/drift/infra/event-index${qs}`, { method: 'GET', timeoutMs: 5000 });
   } catch (e: any) {
-    try { logger.warn('drift.infra.event_index_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.warn('drift.infra.event_index_failed', { error: String(e?.message || e), cat: 'drift' });
     return {};
   }
 }
@@ -177,7 +178,7 @@ export async function fetchUserKeys(limit?: number): Promise<{ keys: string[] }>
     const qs = Number.isFinite(Number(limit)) ? `?limit=${Number(limit)}` : '';
     return await requestJson<{ keys: string[] }>(`/api/drift/infra/users/keys${qs}`, { method: 'GET', timeoutMs: 8000 });
   } catch (e: any) {
-    try { logger.warn('drift.infra.user_keys_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.warn('drift.infra.user_keys_failed', { error: String(e?.message || e), cat: 'drift' });
     return { keys: [] };
   }
 }

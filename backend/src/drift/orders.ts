@@ -1,5 +1,6 @@
 import type { LeveragedGridConfig } from './types.js';
 import { CONFIG } from '../utils/config.js';
+import { safeLog, guardExec } from './safeLogger.js';
 
 export type GridLevel = { side: 'buy' | 'sell'; price: number; size?: number; filled?: boolean };
 
@@ -32,7 +33,9 @@ export class DriftOrderEngine {
     try {
       this.makerFeeBps = Number((CONFIG as any)?.drift?.feeMakerBps || 0);
       this.takerFeeBps = Number((CONFIG as any)?.drift?.feeTakerBps || 5);
-    } catch {}
+    } catch (e: any) {
+      safeLog.debug('drift.order.config_read_failed', { error: String(e?.message || e), cat: 'drift' });
+    }
   }
 
   async cancelAll(marketIndex: number): Promise<void> {
@@ -40,7 +43,9 @@ export class DriftOrderEngine {
       if (typeof this.client?.cancelOrders === 'function') {
         await this.client.cancelOrders({ marketIndex, marketType: 0 });
       }
-    } catch {}
+    } catch (e: any) {
+      safeLog.warn('drift.order.cancelAll.failed', { marketIndex, error: String(e?.message || e), cat: 'drift' });
+    }
   }
 
   async placeLadder(marketIndex: number, ladder: GridLevel[], makerOnly: boolean): Promise<void> {
@@ -71,9 +76,13 @@ export class DriftOrderEngine {
           if (typeof this.client?.placePerpOrder === 'function') {
             await this.client.placePerpOrder(params);
           }
-        } catch {}
+        } catch (e: any) {
+          safeLog.warn('drift.order.placeLadder.order_failed', { marketIndex, side: lvl.side, price: lvl.price, error: String(e?.message || e), cat: 'drift' });
+        }
       }
-    } catch {}
+    } catch (e: any) {
+      safeLog.warn('drift.order.placeLadder.failed', { marketIndex, error: String(e?.message || e), cat: 'drift' });
+    }
   }
 
   private async getOpenOrdersForMarket(marketIndex: number): Promise<Array<{ id?: any; side?: 'buy'|'sell'; price?: number; size?: number }>> {
@@ -81,9 +90,15 @@ export class DriftOrderEngine {
       // Try various SDK shapes best-effort
       const user = this.client?.user;
       let orders: any[] | null = null;
-      try { orders = await this.client?.getOpenOrdersForMarket?.({ marketIndex, marketType: 0 }); } catch {}
-      if (!orders) { try { orders = await user?.getOpenOrders?.(); } catch {} }
-      if (!orders) { try { orders = await user?.getPerpOpenOrders?.(marketIndex); } catch {} }
+      try { orders = await this.client?.getOpenOrdersForMarket?.({ marketIndex, marketType: 0 }); } catch (e: any) {
+        safeLog.debug('drift.order.getOpenOrders.method1_failed', { marketIndex, error: String(e?.message || e), cat: 'drift' });
+      }
+      if (!orders) { try { orders = await user?.getOpenOrders?.(); } catch (e: any) {
+        safeLog.debug('drift.order.getOpenOrders.method2_failed', { marketIndex, error: String(e?.message || e), cat: 'drift' });
+      } }
+      if (!orders) { try { orders = await user?.getPerpOpenOrders?.(marketIndex); } catch (e: any) {
+        safeLog.debug('drift.order.getOpenOrders.method3_failed', { marketIndex, error: String(e?.message || e), cat: 'drift' });
+      } }
       if (!Array.isArray(orders)) return [];
       return orders
         .filter((o: any) => Number((o?.marketIndex ?? o?.market_index)) === Number(marketIndex))
@@ -94,7 +109,10 @@ export class DriftOrderEngine {
           const size = Number(o?.baseAssetAmount?.toString?.() || o?.size || 0) || undefined;
           return { id: (o?.orderId ?? o?.order_id ?? o?.id), side, price, size };
         });
-    } catch { return []; }
+    } catch (e: any) {
+      safeLog.debug('drift.order.getOpenOrders.failed', { marketIndex, error: String(e?.message || e), cat: 'drift' });
+      return [];
+    }
   }
 
   private async cancelOrderByIdSafe(order: { id?: any; marketIndex: number }): Promise<boolean> {
@@ -104,7 +122,9 @@ export class DriftOrderEngine {
         if (typeof this.client?.cancelOrderById === 'function') { await this.client.cancelOrderById(order.id); return true; }
         if (typeof this.client?.cancelOrderByUserId === 'function') { await this.client.cancelOrderByUserId(order.id); return true; }
       }
-    } catch {}
+    } catch (e: any) {
+      safeLog.warn('drift.order.cancelById.failed', { orderId: order?.id, marketIndex: order?.marketIndex, error: String(e?.message || e), cat: 'drift' });
+    }
     return false;
   }
 
@@ -120,7 +140,7 @@ export class DriftOrderEngine {
       const refreshStart = Date.now();
       const plannedLevels = Array.isArray(ladder) ? ladder.length : 0;
       const dbg = { marketIndex, plannedLevels, anchor, stepPct, maxOpenOrders, makerOnly };
-      try { (await import('../utils/logger.js')).logger.debug('drift.order.refresh.start', { ...dbg, cat: 'drift' }); } catch {}
+      safeLog.debug('drift.order.refresh.start', { ...dbg, cat: 'drift' });
       const now = Date.now();
       const lastAnchor = this.lastAnchorByMarket.get(marketIndex) || 0;
       const lastAt = this.lastActionAtByMarket.get(marketIndex) || 0;
@@ -140,7 +160,7 @@ export class DriftOrderEngine {
       const tolerance = Math.max(0.25 * stepPct, 0.0025);
       const toKeepFlags = new Array(desired.length).fill(false);
       const toCancel: Array<{ id?: any; marketIndex: number }> = [];
-      try { (await import('../utils/logger.js')).logger.debug('drift.order.existing', { marketIndex, existing: existing.length, tolerance, cat: 'drift' }); } catch {}
+      safeLog.debug('drift.order.existing', { marketIndex, existing: existing.length, tolerance, cat: 'drift' });
 
       // Match existing to desired by closest price on same side
       for (const ex of existing) {
@@ -165,15 +185,13 @@ export class DriftOrderEngine {
       for (let i = 0; i < desired.length; i += 1) {
         if (!toKeepFlags[i]) toPlace.push(desired[i]);
       }
-      try {
-        (await import('../utils/logger.js')).logger.debug('drift.order.delta', {
-          marketIndex,
-          cancelCount: toCancel.length,
-          placeCount: toPlace.length,
-          keepCount: desired.length - toPlace.length,
-          cat: 'drift'
-        });
-      } catch {}
+      safeLog.debug('drift.order.delta', {
+        marketIndex,
+        cancelCount: toCancel.length,
+        placeCount: toPlace.length,
+        keepCount: desired.length - toPlace.length,
+        cat: 'drift'
+      });
 
       // Dynamic pacing: cap operations per tick
       const maxOps = Math.max(2, Math.min(30, Number((CONFIG as any)?.drift?.gridMaxOpsPerTick || 10)));
@@ -190,9 +208,9 @@ export class DriftOrderEngine {
 
       this.lastAnchorByMarket.set(marketIndex, anchor);
       this.lastActionAtByMarket.set(marketIndex, now);
-      try { (await import('../utils/logger.js')).logger.info('drift.order.refresh.end', { marketIndex, opsUsed: ops, ms: Date.now() - refreshStart, cat: 'drift', code: 'DRIFT.ORDER.REFRESH_END' }); } catch {}
-    } catch {}
+      safeLog.info('drift.order.refresh.end', { marketIndex, opsUsed: ops, ms: Date.now() - refreshStart, cat: 'drift', code: 'DRIFT.ORDER.REFRESH_END' });
+    } catch (e: any) {
+      safeLog.warn('drift.order.refreshLadder.failed', { marketIndex, error: String(e?.message || e), cat: 'drift' });
+    }
   }
 }
-
-

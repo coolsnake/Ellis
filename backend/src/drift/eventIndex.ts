@@ -1,3 +1,4 @@
+import { safeLog, guardExec } from './safeLogger.js';
 import { hotlist } from './hotlist.js';
 
 type IndexEntry = { ts: number };
@@ -57,21 +58,21 @@ export class DriftEventIndex {
         this.marketToUsers.set(idx, users);
       }
       users.set(key, { ts: now });
-      try { hotlist.markMarket(idx, reason || 'index_update'); } catch {}
+      try { hotlist.markMarket(idx, reason || 'index_update'); } catch (e: any) { safeLog.debug('drift.eventIndex.mark_market', { error: String(e?.message || e), cat: 'drift' }); }
     }
-    try { hotlist.markUser(key, reason || 'index_update'); } catch {}
+    try { hotlist.markUser(key, reason || 'index_update'); } catch (e: any) { safeLog.debug('drift.eventIndex.mark_user', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   markMarket(marketIndex: number, reason?: string): void {
     const idx = Number(marketIndex);
     if (!Number.isFinite(idx)) return;
-    try { hotlist.markMarket(idx, reason || 'event'); } catch {}
+    try { hotlist.markMarket(idx, reason || 'event'); } catch (e: any) { safeLog.debug('drift.eventIndex.mark_market_event', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   markUser(userPk: string, reason?: string): void {
     const key = String(userPk || '').trim();
     if (!key) return;
-    try { hotlist.markUser(key, reason || 'event'); } catch {}
+    try { hotlist.markUser(key, reason || 'event'); } catch (e: any) { safeLog.debug('drift.eventIndex.mark_user_event', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   trackConditionalOrder(marketIndex: number, orderId: string, reason?: string): void {
@@ -85,7 +86,7 @@ export class DriftEventIndex {
       this.marketToOrders.set(idx, orders);
     }
     orders.set(key, { ts: Date.now() });
-    try { hotlist.markMarket(idx, reason || 'cond_orders'); } catch {}
+    try { hotlist.markMarket(idx, reason || 'cond_orders'); } catch (e: any) { safeLog.debug('drift.eventIndex.mark_market_cond', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   untrackConditionalOrder(marketIndex: number, orderId: string): void {
@@ -235,11 +236,12 @@ export class DriftEventIndex {
               if (!orderId) continue;
               this.trackConditionalOrder(mi, `${pk}#${orderId}`, reason);
               orders += 1;
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.eventIndex.bootstrap_order', { error: String(e?.message || e), cat: 'drift' }); }
           }
         }
         users += 1;
-      } catch {
+      } catch (e: any) {
+        safeLog.debug('drift.eventIndex.bootstrap_user', { error: String(e?.message || e), cat: 'drift' });
         users += 1;
       }
     }
@@ -259,7 +261,7 @@ export class DriftEventIndex {
           if (Number.isFinite(mi)) this.updateUserMarkets(userPk, [mi], 'ws_user_event');
           else this.markUser(userPk, 'ws_user_event');
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.eventIndex.ws_user_event', { error: String(e?.message || e), cat: 'drift' }); }
     };
     const onOrder = (ev: any) => {
       try {
@@ -277,10 +279,10 @@ export class DriftEventIndex {
         if (Number.isFinite(mi) && orderId && otStr.includes('trigger')) {
           this.trackConditionalOrder(mi, `${userPk || 'unk'}#${orderId}`, 'ws_order');
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.eventIndex.ws_order', { error: String(e?.message || e), cat: 'drift' }); }
     };
-    try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch {}
-    try { sub.eventEmitter?.on?.('OrderRecord', onOrder); } catch {}
+    try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch (e: any) { safeLog.debug('drift.eventIndex.bind_user_event', { error: String(e?.message || e), cat: 'drift' }); }
+    try { sub.eventEmitter?.on?.('OrderRecord', onOrder); } catch (e: any) { safeLog.debug('drift.eventIndex.bind_order_event', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   getStats(): { users: number; markets: number; marketToOrders: number } {
@@ -346,9 +348,9 @@ export class DriftEventIndex {
           const base = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
           const idx = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
           if (Number.isFinite(idx) && Math.abs(base) > 0) out.push(Number(idx));
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.eventIndex.extract_perp_position', { error: String(e?.message || e), cat: 'drift' }); }
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.eventIndex.extract_perp_positions', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const ua = user?.getUserAccount?.();
       const spot = (ua && Array.isArray(ua?.spotPositions)) ? ua.spotPositions : [];
@@ -357,9 +359,9 @@ export class DriftEventIndex {
           const raw = Number(sp?.scaledBalance?.toString?.() || sp?.scaledBalance || sp?.cumulativeDeposits || 0);
           const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
           if (Number.isFinite(idx) && Number.isFinite(raw) && raw !== 0) out.push(Number(idx));
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.eventIndex.extract_spot_position', { error: String(e?.message || e), cat: 'drift' }); }
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.eventIndex.extract_spot_positions', { error: String(e?.message || e), cat: 'drift' }); }
     return Array.from(new Set(out));
   }
 }

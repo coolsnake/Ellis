@@ -1,4 +1,5 @@
 // NOTE: type coverage tightened for key SDK surfaces only; keeping any for dynamic SDK
+// test
 import { Keypair, PublicKey, Connection } from '@solana/web3.js';
 import { createHash } from 'crypto';
 import { CONFIG } from '../utils/config.js';
@@ -6,6 +7,7 @@ import { ensureWallet } from '../wallet/wallet.js';
 import type { DriftStatus, SubaccountInfo, DriftMarketRef, DriftCluster } from './types.js';
 import { parseAllowlistMarkets } from './marketMapping.js';
 import { logger, maskUrl } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 
 // Lazy import SDK to keep startup fast and optional
 type DriftEnv = {
@@ -105,10 +107,10 @@ export class DriftService {
         try {
           if (res && typeof res.status === 'number' && res.status === 429) {
             let method: string | undefined;
-            try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch {}
-            try { logger.warn('rpc.429', { method, url: maskUrl(String(info)), cat: 'rpc' }); } catch {}
+            try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch (e: any) { safeLog.debug('drift.jsonParse', { error: String(e?.message || e), cat: 'drift' }); }
+            safeLog.warn('rpc.429', { method, url: maskUrl(String(info)), cat: 'rpc' });
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.jsonParse', { error: String(e?.message || e), cat: 'drift' }); }
         return res as any;
       };
       this.readConnection = new Connection(url, { commitment: 'processed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
@@ -128,7 +130,7 @@ export class DriftService {
         const v = await client.convertToSpotPrecision(Number(spotMarketIndex), Number(uiAmount));
         return Number(v);
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.sdk.spotPrecision', { error: String(e?.message || e), cat: 'drift' }); }
     return Number(Math.round(Number(uiAmount) * 1_000_000));
   }
 
@@ -137,12 +139,12 @@ export class DriftService {
       const sdk: any = await import('@drift-labs/sdk');
       const BN = (sdk as any).BN || (sdk as any).AnchorsBN || undefined;
       if (BN) return new BN(Number(n));
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.import.sdk', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const mod: any = await import('bn.js');
       const BN = mod?.BN || mod?.default?.BN || mod?.default;
       if (BN) return new BN(Number(n));
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.import.bnjs', { error: String(e?.message || e), cat: 'drift' }); }
     return Number(n);
   }
 
@@ -155,7 +157,8 @@ export class DriftService {
       const last = Number(mkt?.amm?.lastFundingRate?.toString?.() || 0) / PREC;
       const cum = Number(mkt?.amm?.cumulativeFundingRate?.toString?.() || 0) / PREC;
       return { lastFundingRate: last, cumulativeFunding: cum };
-    } catch {
+    } catch (e: any) {
+      safeLog.warn('drift.getFundingRate', { error: String(e?.message || e), cat: 'drift' });
       return null;
     }
   }
@@ -167,7 +170,8 @@ export class DriftService {
       const val = await (user?.getUnrealizedPerpPnl?.(marketIndex));
       const n = Number(val?.toString?.() || val || 0);
       return isFinite(n) ? n : 0;
-    } catch {
+    } catch (e: any) {
+      safeLog.warn('drift.getUnrealizedPerpPnl', { error: String(e?.message || e), cat: 'drift' });
       return null;
     }
   }
@@ -179,7 +183,8 @@ export class DriftService {
       const val = await (user?.getUnrealizedFundingPnl?.(marketIndex));
       const n = Number(val?.toString?.() || val || 0);
       return isFinite(n) ? n : 0;
-    } catch {
+    } catch (e: any) {
+      safeLog.warn('drift.getUnrealizedFundingPnl', { error: String(e?.message || e), cat: 'drift' });
       return null;
     }
   }
@@ -190,7 +195,7 @@ export class DriftService {
     if (this.cleanupPromise) {
       try {
         await this.cleanupPromise.catch(() => {});
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.cleanupWait', { error: String(e?.message || e), cat: 'drift' }); }
       this.cleanupPromise = null;
     }
     
@@ -203,10 +208,10 @@ export class DriftService {
       try {
         if (res && typeof res.status === 'number' && res.status === 429) {
           let method: string | undefined;
-          try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch {}
-          try { logger.warn('rpc.429', { method, url: maskUrl(String(info)), cat: 'rpc' }); } catch {}
+          try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch (e: any) { safeLog.debug('drift.jsonParse', { error: String(e?.message || e), cat: 'drift' }); }
+          safeLog.warn('rpc.429', { method, url: maskUrl(String(info)), cat: 'rpc' });
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.jsonParse', { error: String(e?.message || e), cat: 'drift' }); }
       return res as any;
     };
     this.connection = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
@@ -236,8 +241,8 @@ export class DriftService {
     // Only prepare shared loader when polling is explicitly requested
     try {
       this.loader = subType === 'polling' ? new BulkAccountLoader(this.connection, 'confirmed', 1000) : null;
-      try { (this.loader as any)?.on?.('error', (e: any) => { try { logger.warn('drift.loader.error', { error: String(e?.message || e), cat: 'drift' }); } catch {} }); } catch {}
-    } catch { this.loader = null; }
+      try { (this.loader as any)?.on?.('error', (e: any) => { safeLog.warn('drift.loader.error', { error: String(e?.message || e), cat: 'drift' }); }); } catch (e: any) { safeLog.debug('drift.eventListener.attach', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.warn('drift.init.bulkAccountLoader', { error: String(e?.message || e), cat: 'drift' }); this.loader = null; }
     const programIdOpt = (CONFIG as any).drift?.programId ? { programID: new PublicKey((CONFIG as any).drift.programId) } : {};
     const marketOpts = typeof getMarketsAndOraclesForSubscription === 'function' ? (getMarketsAndOraclesForSubscription as any)(this.cluster) : {};
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
@@ -246,7 +251,7 @@ export class DriftService {
     try {
       const { protectRpcWebSocket } = await import('./wsHelper.js');
       protectRpcWebSocket(this.connection, 'drift.init');
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.protectRpcWebSocket', { error: String(e?.message || e), cat: 'drift' }); }
     
     // Use shared utility to wait for WebSocket to be ready before subscribing
     // Import once at the top for use throughout the subscribe logic
@@ -256,9 +261,9 @@ export class DriftService {
     if (subType === 'websocket') {
       try {
         await waitUntilWsReady(this.connection, 'drift.init.pre-subscribe');
-        try { logger.debug('drift.ws pre-subscribe ready check passed', { cat: 'drift' }); } catch {}
+        safeLog.debug('drift.ws pre-subscribe ready check passed', { cat: 'drift' });
       } catch (e: any) {
-        try { logger.warn('drift.ws pre-subscribe ready check failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.ws pre-subscribe ready check failed', { error: String(e?.message || e), cat: 'drift' });
       }
     }
     
@@ -274,9 +279,9 @@ export class DriftService {
         if (subType === 'websocket') {
           try { 
             await waitUntilWsReady(this.connection, 'drift.init.subscribe');
-            try { logger.debug('drift.ws pre-subscribe ready check passed', { cat: 'drift' }); } catch {}
+            safeLog.debug('drift.ws pre-subscribe ready check passed', { cat: 'drift' });
           } catch (e: any) {
-            try { logger.warn('drift.ws pre-subscribe ready check failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+            safeLog.warn('drift.ws pre-subscribe ready check failed', { error: String(e?.message || e), cat: 'drift' });
           }
         }
         
@@ -298,23 +303,23 @@ export class DriftService {
             const isWsState = msg.includes('socket was not') || msg.includes('readyState');
             if (isWsState && attempt < maxRetries - 1) {
               const delay = baseDelayMs * Math.pow(1.5, attempt);
-              try { logger.debug('drift.ws subscribe retry', { attempt: attempt + 1, delay, error: msg, cat: 'drift' }); } catch {}
+              safeLog.debug('drift.ws subscribe retry', { attempt: attempt + 1, delay, error: msg, cat: 'drift' });
               await new Promise(r => setTimeout(r, delay));
               // Wait for WebSocket again before retrying
               if (subType === 'websocket') {
-                try { await waitUntilWsReady(this.connection, 'drift.init.retry'); } catch {}
+                try { await waitUntilWsReady(this.connection, 'drift.init.retry'); } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
               }
               continue;
             }
             // If not a WebSocket state error or out of retries, log and rethrow
-            try { logger.warn('drift.ws subscribe failed', { error: msg, attempt: attempt + 1, cat: 'drift' }); } catch {}
+            safeLog.warn('drift.ws subscribe failed', { error: msg, attempt: attempt + 1, cat: 'drift' });
             throw e;
           }
         }
       }
     } catch (e: any) {
       // Log but don't fail initialization - the client can still work with polling or retry later
-      try { logger.warn('drift.ws subscribe error (non-fatal)', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      safeLog.warn('drift.ws subscribe error (non-fatal)', { error: String(e?.message || e), cat: 'drift' });
     }
     // Force-load all state/market/oracle data from RPC immediately.
     // client.subscribe() only initiates WS subscriptions -- data arrives async.
@@ -333,11 +338,11 @@ export class DriftService {
         // for liquidateBorrowForPerpPnl / liquidateSpot SDK calls (.mint.toBuffer())
         const perpAccts = (this.client as any)?.getPerpMarketAccounts?.() || [];
         const spotAccts = (this.client as any)?.getSpotMarketAccounts?.() || [];
-        try { logger.info('drift.init.client_accounts_fetched', {
+        safeLog.info('drift.init.client_accounts_fetched', {
           perpMarkets: perpAccts.length,
           spotMarkets: spotAccts.length,
           cat: 'drift',
-        }); } catch {}
+        });
         // If spot markets are missing, attempt to force-load them individually.
         // The DriftClient state account tells us how many exist.
         if (spotAccts.length === 0) {
@@ -345,7 +350,7 @@ export class DriftService {
             const stateAccount = (this.client as any)?.getStateAccount?.();
             const numSpot = Number(stateAccount?.numberOfSpotMarkets ?? 0);
             if (numSpot > 0) {
-              try { logger.info('drift.init.force_loading_spot_markets', { expected: numSpot, cat: 'drift' }); } catch {}
+              safeLog.info('drift.init.force_loading_spot_markets', { expected: numSpot, cat: 'drift' });
               for (let i = 0; i < numSpot; i++) {
                 try {
                   // Some SDK versions have a fetch-and-cache method per market
@@ -353,19 +358,19 @@ export class DriftService {
                     await (this.client as any).accountSubscriber.fetch();
                     break; // This fetches all -- no need to loop
                   }
-                } catch {}
+                } catch (e: any) { safeLog.warn('drift.accountSubscriber.fetch', { error: String(e?.message || e), cat: 'drift' }); }
               }
               // Re-check after force fetch
               const spotRetry = (this.client as any)?.getSpotMarketAccounts?.() || [];
-              try { logger.info('drift.init.spot_markets_after_retry', { count: spotRetry.length, cat: 'drift' }); } catch {}
+              safeLog.info('drift.init.spot_markets_after_retry', { count: spotRetry.length, cat: 'drift' });
             }
           } catch (e: any) {
-            try { logger.warn('drift.init.spot_force_load_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+            safeLog.warn('drift.init.spot_force_load_failed', { error: String(e?.message || e), cat: 'drift' });
           }
         }
       }
     } catch (e: any) {
-      try { logger.warn('drift.init.client_fetch_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      safeLog.warn('drift.init.client_fetch_failed', { error: String(e?.message || e), cat: 'drift' });
     }
     // Ensure default user is initialized, registered, and set as active user
     try {
@@ -382,7 +387,7 @@ export class DriftService {
         await (this.client as any).initializeUserIfNotExists(defaultId);
       } else if (typeof (this.client as any)?.initializeUser === 'function') {
         // Some SDKs initialize the active/default user without args
-        try { await (this.client as any).initializeUser(defaultId); } catch { try { await (this.client as any).initializeUser(); } catch {} }
+        try { await (this.client as any).initializeUser(defaultId); } catch (e: any) { safeLog.warn('drift.initializeUser.withArgs', { error: String(e?.message || e), cat: 'drift' }); try { await (this.client as any).initializeUser(); } catch (e2: any) { safeLog.warn('drift.initializeUser', { error: String(e2?.message || e2), cat: 'drift' }); } }
       }
       // Hydrate user account data. Oracle/market data is already loaded by
       // client.fetchAccounts() above, so we mainly need the user account struct.
@@ -397,13 +402,13 @@ export class DriftService {
           let user = (this.client as any)?.user;
           // Recovery: if user is null, switchActiveUser may not have worked; retry it
           if (!user) {
-            try { logger.warn('drift.init.user_null_recovery', { subaccountId: defaultId, attempt, cat: 'drift' }); } catch {}
+            safeLog.warn('drift.init.user_null_recovery', { subaccountId: defaultId, attempt, cat: 'drift' });
             try {
               if (typeof (this.client as any)?.switchActiveUser === 'function') {
                 await (this.client as any).switchActiveUser(defaultId);
               }
               user = (this.client as any)?.user;
-            } catch {}
+            } catch (e: any) { safeLog.warn('drift.switchActiveUser', { error: String(e?.message || e), cat: 'drift' }); }
             // Still null? Try addUser + switchActiveUser fresh
             if (!user) {
               try {
@@ -414,7 +419,7 @@ export class DriftService {
                   await (this.client as any).switchActiveUser(defaultId);
                 }
                 user = (this.client as any)?.user;
-              } catch {}
+              } catch (e: any) { safeLog.warn('drift.userRecovery', { error: String(e?.message || e), cat: 'drift' }); }
             }
           }
           if (user && typeof user.fetchAccounts === 'function') {
@@ -442,31 +447,31 @@ export class DriftService {
                   const raw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || 0);
                   if (raw !== 0) { hasBalance = true; break; }
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.sdk.getPositions', { error: String(e?.message || e), cat: 'drift' }); }
               if (!hasBalance) {
                 oraclesReady = true; // Empty account -- 0 collateral is accurate
               }
             }
           }
           if (userHydrated && oraclesReady) {
-            try { logger.info('drift.init.user_hydrated', { subaccountId: defaultId, attempt, oraclesReady, cat: 'drift' }); } catch {}
+            safeLog.info('drift.init.user_hydrated', { subaccountId: defaultId, attempt, oraclesReady, cat: 'drift' });
             break;
           }
           // Log progress each attempt
           if (attempt > 0 && attempt < maxHydrationAttempts - 1) {
-            try { logger.debug('drift.init.hydration_progress', { subaccountId: defaultId, attempt, userHydrated, oraclesReady, userNull: !(this.client as any)?.user, cat: 'drift' }); } catch {}
+            safeLog.debug('drift.init.hydration_progress', { subaccountId: defaultId, attempt, userHydrated, oraclesReady, userNull: !(this.client as any)?.user, cat: 'drift' });
           }
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.userRecovery', { error: String(e?.message || e), cat: 'drift' }); }
         // Wait before retrying
         if (attempt < maxHydrationAttempts - 1) {
           await new Promise(r => setTimeout(r, hydrationDelayMs));
         }
       }
       if (!userHydrated || !oraclesReady) {
-        try { logger.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, userNull: !(this.client as any)?.user, cat: 'drift' }); } catch {}
+        safeLog.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, userNull: !(this.client as any)?.user, cat: 'drift' });
       }
     } catch (e: any) {
-      try { logger.warn('drift.init.user_setup_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      safeLog.warn('drift.init.user_setup_failed', { error: String(e?.message || e), cat: 'drift' });
     }
     logger.info('drift.sdk.ready', { pubkey: this.walletKp.publicKey?.toBase58?.(), ms: Date.now() - t0, cat: 'drift', code: 'DRIFT.SDK.READY' });
   }
@@ -495,7 +500,7 @@ export class DriftService {
 
     await this.init();
     let sdk: any = null;
-    try { sdk = await import('@drift-labs/sdk'); } catch {}
+    try { sdk = await import('@drift-labs/sdk'); } catch (e: any) { safeLog.warn('drift.import.sdk', { error: String(e?.message || e), cat: 'drift' }); }
     const drift: any = this.client;
     const connection = drift?.connection || this.connection;
     const program = drift?.program;
@@ -510,7 +515,7 @@ export class DriftService {
       const intervalMs = Math.max(300, Number(((CONFIG as any)?.drift?.blockhashWarmMs) ?? 400));
       // Prefer read RPC for frequent blockhash fetches to reduce contention/timeouts on primary
       startSharedBlockhash(this.getReadConnection(), { intervalMs });
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.import.blockhash', { error: String(e?.message || e), cat: 'drift' }); }
 
     // Gentle pacing between subscription attaches to avoid startup bursts
     const spacing = Math.max(0, Number(((CONFIG as any)?.drift?.subscribeSpacingMs) ?? 100));
@@ -535,7 +540,7 @@ export class DriftService {
         // Ensure slot timestamp listener is wired to the current emitter
         this.wireSlotTsListener(true);
         await sleep(spacing);
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.subscribe', { error: String(e?.message || e), cat: 'drift' }); }
     } else {
       // Best-effort resubscribe if previously unsubscribed
       try {
@@ -553,7 +558,7 @@ export class DriftService {
         
         this.wireSlotTsListener(true);
         await sleep(spacing);
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
     }
 
     if (!this.sharedEventSubscriber && sdk?.EventSubscriber) {
@@ -573,7 +578,7 @@ export class DriftService {
         );
         
         await sleep(spacing);
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.subscribe', { error: String(e?.message || e), cat: 'drift' }); }
     } else {
       try { 
         await waitReady();
@@ -589,7 +594,7 @@ export class DriftService {
         );
         
         await sleep(spacing); 
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
     }
 
     // Wire slot timestamp listener and start watchdog for stale resubscribe
@@ -598,7 +603,7 @@ export class DriftService {
         if (!this.lastSlotTs) this.lastSlotTs = Date.now();
         this.wireSlotTsListener(false);
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
 
     try {
       const slotStaleMs = Math.max(5000, Number(((CONFIG as any)?.drift?.slotStaleMs) ?? 15000));
@@ -623,7 +628,7 @@ export class DriftService {
                 this._staleCount = 0;
                 return;
               }
-            } catch {}
+            } catch (e: any) { safeLog.warn('drift.import.rpcLimiter', { error: String(e?.message || e), cat: 'drift' }); }
 
             // Escalating resubscribe: start with slot only, then event, then userMap, then DLOB
             const stage = Math.min(3, Math.max(0, this._staleCount));
@@ -638,7 +643,7 @@ export class DriftService {
                     { module: 'drift', method: 'slotSubscribe' }
                   );
                   this.wireSlotTsListener(true); 
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
               }
               if (stage >= 1) {
                 try { 
@@ -649,7 +654,7 @@ export class DriftService {
                     1,
                     { module: 'drift', method: 'logsSubscribe' }
                   );
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
               }
               if (stage >= 2) {
                 try { 
@@ -666,7 +671,7 @@ export class DriftService {
                     },
                     200
                   );
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
               }
               if (stage >= 3) {
                 try {
@@ -687,16 +692,16 @@ export class DriftService {
                       200
                     );
                   }
-                } catch {}
+                } catch (e: any) { safeLog.warn('drift.dlobSubscriber.subscribe', { error: String(e?.message || e), cat: 'drift' }); }
               }
             } finally {
               this._staleCount = Math.min(4, this._staleCount + 1);
             }
-            try { logger.warn('drift.subs.resubscribe', { cat: 'drift', reason: 'slot_stale', stage }); } catch {}
-          } catch {}
+            safeLog.warn('drift.subs.resubscribe', { cat: 'drift', reason: 'slot_stale', stage });
+          } catch (e: any) { safeLog.warn('drift.subscribe', { error: String(e?.message || e), cat: 'drift' }); }
         }, 2500);
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.subscribe', { error: String(e?.message || e), cat: 'drift' }); }
 
     if (!this.sharedUserMap && sdk?.UserMap) {
       const subType = String(((CONFIG as any)?.drift?.subscriptionType || 'websocket')).toLowerCase();
@@ -713,7 +718,8 @@ export class DriftService {
           includeIdle: !!(opts?.includeIdle),
           disableSyncOnTotalAccountsChange: true,
         });
-      } catch {
+      } catch (e: any) {
+        safeLog.warn('drift.userMap.createWithConnection', { error: String(e?.message || e), cat: 'drift' });
         try {
           this.sharedUserMap = new (sdk as any).UserMap({
             driftClient: drift,
@@ -722,7 +728,7 @@ export class DriftService {
             subscriptionConfig: { type: 'websocket' },
             includeIdle: !!(opts?.includeIdle),
           });
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.userMap.create', { error: String(e?.message || e), cat: 'drift' }); }
       }
       try { 
         await waitReady();
@@ -739,7 +745,7 @@ export class DriftService {
           200
         );
         await sleep(spacing); 
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
     } else {
       try { 
         await waitReady();
@@ -756,7 +762,7 @@ export class DriftService {
           200
         );
         await sleep(spacing); 
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
     }
 
     // Optional OrderSubscriber for improved DLOB order coverage
@@ -769,7 +775,8 @@ export class DriftService {
             eventSubscriber: this.sharedEventSubscriber,
             resyncIntervalMs: Number(((CONFIG as any)?.drift?.orderResyncIntervalMs) ?? 15000),
           });
-        } catch {
+        } catch (e: any) {
+          safeLog.warn('drift.orderSubscriber.create', { error: String(e?.message || e), cat: 'drift' });
           // fallback to legacy constructor
           this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
         }
@@ -777,14 +784,14 @@ export class DriftService {
           await waitReady();
           await this.sharedOrderSubscriber?.subscribe?.(); 
           await sleep(spacing); 
-        } catch {}
-      } catch {}
+        } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
+      } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
     } else {
       try { 
         await waitReady();
         await (this.sharedOrderSubscriber as any)?.subscribe?.(); 
         await sleep(spacing); 
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.ws.waitReady', { error: String(e?.message || e), cat: 'drift' }); }
     }
 
     const dlobSource = (opts?.preferOrderSubscriber && this.sharedOrderSubscriber) ? this.sharedOrderSubscriber : this.sharedUserMap;
@@ -795,7 +802,7 @@ export class DriftService {
           slotSource: this.sharedSlotSubscriber,
           updateFrequency: Math.max(200, Number(opts?.updateFrequency ?? 300)),
           driftClient: drift,
-          userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
+          userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch (e: any) { safeLog.debug('drift.userAccountSubscriptionConfig', { error: String(e?.message || e), cat: 'drift' }); return undefined; } })(),
         });
         await waitReady();
         const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
@@ -811,7 +818,7 @@ export class DriftService {
           200
         );
         await sleep(spacing);
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.subscribe', { error: String(e?.message || e), cat: 'drift' }); }
     } else {
       try {
         // If present but inactive, re-subscribe
@@ -836,7 +843,7 @@ export class DriftService {
             await sleep(spacing); 
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.dlobSubscriber.subscribe', { error: String(e?.message || e), cat: 'drift' }); }
     }
 
     return {
@@ -859,22 +866,22 @@ export class DriftService {
           maxMarkets: driftCfg?.eventIndexMaxMarkets,
           maxMarketsPerUser: driftCfg?.eventIndexMaxMarketsPerUser,
         });
-      } catch {}
-      try { driftEventIndex.bindEventSubscriber(infra?.eventSubscriber); } catch {}
+      } catch (e: any) { safeLog.debug('drift.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
+      try { driftEventIndex.bindEventSubscriber(infra?.eventSubscriber); } catch (e: any) { safeLog.debug('drift.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
       try {
         const limit = Math.max(100, Number(driftCfg?.eventIndexBootstrapUsers ?? driftCfg?.eventIndexMaxUsers ?? 2000));
         driftEventIndex.bootstrapFromUserMap(infra?.userMap, { limit, includeOrders: true, reason });
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
       try {
         const sweepMs = Math.max(10_000, Number(driftCfg?.eventIndexSweepMs ?? 45_000));
         const limit = Math.max(100, Number(driftCfg?.eventIndexSweepUsers ?? driftCfg?.eventIndexMaxUsers ?? 1000));
         if (!this.eventIndexSweepTimer) {
           this.eventIndexSweepTimer = setInterval(() => {
-            try { driftEventIndex.bootstrapFromUserMap(infra?.userMap, { limit, includeOrders: true, reason: 'infra_sweep' }); } catch {}
+            try { driftEventIndex.bootstrapFromUserMap(infra?.userMap, { limit, includeOrders: true, reason: 'infra_sweep' }); } catch (e: any) { safeLog.debug('drift.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
           }, sweepMs);
         }
-      } catch {}
-    } catch {}
+      } catch (e: any) { safeLog.debug('drift.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.import.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   // One-shot warmup to prepare infra and perform optional GPA bootstrap
@@ -888,13 +895,13 @@ export class DriftService {
       try {
         await this.init();
         const infra = await this.getSharedInfra({ includeIdle: !!opts?.includeIdle, updateFrequency: opts?.updateFrequency, preferOrderSubscriber: (opts?.preferOrderSubscriber ?? true) });
-        try { await this.setupEventIndex(infra, 'infra_bootstrap'); } catch {}
+        try { await this.setupEventIndex(infra, 'infra_bootstrap'); } catch (e: any) { safeLog.debug('drift.setupEventIndex', { error: String(e?.message || e), cat: 'drift' }); }
         const prefetchEnabled = driftCfg?.prefetchEnabled !== false;
         const activeOnly = driftCfg?.prefetchActiveOnly !== false;
         if (prefetchEnabled) {
-          try { await this.startUserPrefetcher(infra.dlobSubscriber, infra.userMap); } catch {}
+          try { await this.startUserPrefetcher(infra.dlobSubscriber, infra.userMap); } catch (e: any) { safeLog.warn('drift.startPrefetcher', { error: String(e?.message || e), cat: 'drift' }); }
         } else if (activeOnly) {
-          try { await this.warmActiveUsersOnce(); } catch {}
+          try { await this.warmActiveUsersOnce(); } catch (e: any) { safeLog.debug('drift.warmActiveUsers', { error: String(e?.message || e), cat: 'drift' }); }
         }
         // Optional GPA bootstrap on Helius endpoints
         try {
@@ -905,9 +912,9 @@ export class DriftService {
             const rawLim = driftCfg?.warmupGpaLimit ?? driftCfg?.prefetchGpaLimit ?? 1200;
             const limNum = Number(rawLim);
             const max = Math.max(100, Number.isFinite(limNum) ? limNum : 1200);
-            try { logger.info('drift.warmup.gpa_start', { limit: max, cat: 'drift' }); } catch {}
+            safeLog.info('drift.warmup.gpa_start', { limit: max, cat: 'drift' });
             let decoded: Map<string, any> | null = null;
-            try { decoded = await this.fetchUsersViaHeliusGpaV2(max, /*changedOnly*/ false); } catch { decoded = null; }
+            try { decoded = await this.fetchUsersViaHeliusGpaV2(max, /*changedOnly*/ false); } catch (e: any) { safeLog.warn('drift.warmup.gpaFetch', { error: String(e?.message || e), cat: 'drift' }); decoded = null; }
             if (decoded && decoded.size > 0) {
               for (const [pk, ua] of decoded.entries()) {
                 try {
@@ -916,48 +923,48 @@ export class DriftService {
                   try {
                     const ref = ua?.referrerInfo?.referrer;
                     if (ref && String(ref) !== '11111111111111111111111111111111') { await this.ensureRefStatsReady(ref); }
-                  } catch {}
-                } catch {}
+                  } catch (e: any) { safeLog.debug('drift.refStats', { error: String(e?.message || e), cat: 'drift' }); }
+                } catch (e: any) { safeLog.debug('drift.warmUsers', { error: String(e?.message || e), cat: 'drift' }); }
               }
-              try { logger.info('drift.warmup.gpa_done', { decoded: decoded.size, cat: 'drift' }); } catch {}
+              safeLog.info('drift.warmup.gpa_done', { decoded: decoded.size, cat: 'drift' });
             } else {
               // Fallback: enumerate keys (cheap) then fetch via MACI in small chunks
               try {
                 const fastKeys = await this.enumerateUserPubkeysViaHeliusGpaV2(max, false);
                 if (Array.isArray(fastKeys) && fastKeys.length > 0) {
-                  try { logger.info('drift.warmup.enumerate_ok', { keys: fastKeys.length, cat: 'drift' }); } catch {}
+                  safeLog.info('drift.warmup.enumerate_ok', { keys: fastKeys.length, cat: 'drift' });
                   const chunkSize = Math.max(10, Number(driftCfg?.prefetchChunkSize ?? 20));
                   for (let i = 0; i < Math.min(fastKeys.length, max); i += chunkSize) {
                     const slice = fastKeys.slice(i, i + chunkSize);
                     let map = new Map<string, any>();
-                    try { map = await this.fetchUsersDecoded(slice); } catch { map = new Map(); }
+                    try { map = await this.fetchUsersDecoded(slice); } catch (e: any) { safeLog.warn('drift.warmup.fetchUsersDecoded', { error: String(e?.message || e), cat: 'drift' }); map = new Map(); }
                     for (const [pk, ua] of map.entries()) {
                       try {
                         this.evictWarmUserIfNeeded();
                         this.warmUsers.set(pk, { ua, ts: Date.now() });
-                      } catch {}
+                      } catch (e: any) { safeLog.debug('drift.warmUsers', { error: String(e?.message || e), cat: 'drift' }); }
                     }
                   }
-                  try { logger.info('drift.warmup.fallback_done', { warmed: this.warmUsers.size, cat: 'drift' }); } catch {}
+                  safeLog.info('drift.warmup.fallback_done', { warmed: this.warmUsers.size, cat: 'drift' });
                 } else {
-                  try { logger.info('drift.warmup.gpa_empty', { cat: 'drift' }); } catch {}
+                  safeLog.info('drift.warmup.gpa_empty', { cat: 'drift' });
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.warmUsers', { error: String(e?.message || e), cat: 'drift' }); }
             }
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.warmUsers', { error: String(e?.message || e), cat: 'drift' }); }
         // Eagerly enumerate own subaccounts so cache is warm for bots/UI
-        try { await this.getSubaccounts(); } catch {}
+        try { await this.getSubaccounts(); } catch (e: any) { safeLog.warn('drift.getSubaccounts', { error: String(e?.message || e), cat: 'drift' }); }
         this.warmupDone = true;
         this.lastWarmupAtMs = Date.now();
-        try { logger.info('drift.warmup.ok', { ms: this.lastWarmupAtMs - t0, cat: 'drift' }); } catch {}
+        safeLog.info('drift.warmup.ok', { ms: this.lastWarmupAtMs - t0, cat: 'drift' });
       } catch (e: any) {
-        try { logger.warn('drift.warmup.failed', { err: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.warmup.failed', { err: String(e?.message || e), cat: 'drift' });
       } finally {
         this.warmupInProgress = false;
       }
     })();
-    try { await this.warmupPromise; } catch {}
+    try { await this.warmupPromise; } catch (e: any) { safeLog.warn('drift.warmup', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   async waitForWarmup(timeoutMs?: number): Promise<boolean> {
@@ -965,7 +972,7 @@ export class DriftService {
     if (this.warmupDone) return true;
     // If warmup is disabled, consider ready
     if (driftCfg?.warmupEnabled === false) return true;
-    try { await this.warmup(); } catch {}
+    try { await this.warmup(); } catch (e: any) { safeLog.warn('drift.warmup', { error: String(e?.message || e), cat: 'drift' }); }
     if (this.warmupDone) return true;
     const ms = Math.max(1000, Number(timeoutMs ?? driftCfg?.warmupTimeoutMs ?? 30000));
     try {
@@ -974,7 +981,8 @@ export class DriftService {
         new Promise((_, rej) => setTimeout(() => rej(new Error('WARMUP_TIMEOUT')), ms)),
       ]);
       return true;
-    } catch {
+    } catch (e: any) {
+      safeLog.debug('drift.warmup.timeout', { error: String(e?.message || e), cat: 'drift' });
       return false;
     }
   }
@@ -986,10 +994,10 @@ export class DriftService {
     try {
       const { DriftPriceService } = await import('./price.js');
       DriftPriceService.getInstance();
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.import.price', { error: String(e?.message || e), cat: 'drift' }); }
     this.infraReady = !!this.warmupDone;
     if (this.infraReady) this.infraReadyAtMs = Date.now();
-    try { logger.info('drift.infra.activated', { cat: 'drift', ready: this.infraReady }); } catch {}
+    safeLog.info('drift.infra.activated', { cat: 'drift', ready: this.infraReady });
   }
 
   deactivate(): void {
@@ -997,7 +1005,7 @@ export class DriftService {
     this.infraReady = false;
     this.infraReadyAtMs = 0;
     this.maybeTeardownInfra();
-    try { logger.info('drift.infra.deactivated', { cat: 'drift' }); } catch {}
+    safeLog.info('drift.infra.deactivated', { cat: 'drift' });
   }
 
   registerBot(key: string): void {
@@ -1005,8 +1013,8 @@ export class DriftService {
       const k = String(key || '').trim();
       if (!k) return;
       this.activeBots.add(k);
-      try { logger.debug('drift.infra.bot_register', { key: k, total: this.activeBots.size, cat: 'drift' }); } catch {}
-    } catch {}
+      safeLog.debug('drift.infra.bot_register', { key: k, total: this.activeBots.size, cat: 'drift' });
+    } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   unregisterBot(key: string): void {
@@ -1014,9 +1022,9 @@ export class DriftService {
       const k = String(key || '').trim();
       if (!k) return;
       this.activeBots.delete(k);
-      try { logger.debug('drift.infra.bot_unregister', { key: k, total: this.activeBots.size, cat: 'drift' }); } catch {}
+      safeLog.debug('drift.infra.bot_unregister', { key: k, total: this.activeBots.size, cat: 'drift' });
       this.maybeTeardownInfra();
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   getInfraStatus(): {
@@ -1101,7 +1109,7 @@ export class DriftService {
           updatedAtMs: Date.now(),
           source: 'helius-gpa',
         };
-        try { logger.info('drift.user_count.refresh', { total, capped, reason, cat: 'drift' }); } catch {}
+        safeLog.info('drift.user_count.refresh', { total, capped, reason, cat: 'drift' });
       } catch (e: any) {
         this.userCountCache = { ...prev, error: String(e?.message || e) };
       }
@@ -1148,7 +1156,7 @@ export class DriftService {
       if (!this.sharedSlotSubscriber) return;
       const onSlot = () => { this.lastSlotTs = Date.now(); };
       if (force && this._slotTsHandler) {
-        try { (this.sharedSlotSubscriber as any)?.eventEmitter?.off?.('slotUpdate', this._slotTsHandler); } catch {}
+        try { (this.sharedSlotSubscriber as any)?.eventEmitter?.off?.('slotUpdate', this._slotTsHandler); } catch (e: any) { safeLog.debug('drift.eventEmitter.off', { error: String(e?.message || e), cat: 'drift' }); }
       }
       try {
         if (typeof (this.sharedSlotSubscriber as any).onSlotChange === 'function') {
@@ -1156,33 +1164,33 @@ export class DriftService {
         } else {
           (this.sharedSlotSubscriber as any)?.eventEmitter?.on?.('slotUpdate', onSlot);
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.eventListener.attach', { error: String(e?.message || e), cat: 'drift' }); }
       this._slotTsHandler = onSlot;
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.eventEmitter.off', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async teardownInfra(): Promise<void> {
     // Stop timers and shared blockhash warmer
-    try { if (this.prefetchTimer) { clearInterval(this.prefetchTimer); this.prefetchTimer = null; } } catch {}
-    try { if (this.pollLoaderWarm) { try { (this.pollLoaderWarm as any)?.removeAllListeners?.(); } catch {} this.pollLoaderWarm = null; } } catch {}
-    try { const mod = await import('../utils/blockhash.js'); (mod as any)?.stopSharedBlockhash?.(); } catch {}
-    try { if (this.eventIndexSweepTimer) { clearInterval(this.eventIndexSweepTimer); this.eventIndexSweepTimer = null; } } catch {}
+    try { if (this.prefetchTimer) { clearInterval(this.prefetchTimer); this.prefetchTimer = null; } } catch (e: any) { safeLog.debug('drift.prefetch', { error: String(e?.message || e), cat: 'drift' }); }
+    try { if (this.pollLoaderWarm) { try { (this.pollLoaderWarm as any)?.removeAllListeners?.(); } catch (e: any) { safeLog.debug('drift.cleanup.removeListeners', { error: String(e?.message || e), cat: 'drift' }); } this.pollLoaderWarm = null; } } catch (e: any) { safeLog.debug('drift.cleanup.removeListeners', { error: String(e?.message || e), cat: 'drift' }); }
+    try { const mod = await import('../utils/blockhash.js'); (mod as any)?.stopSharedBlockhash?.(); } catch (e: any) { safeLog.warn('drift.import.blockhash', { error: String(e?.message || e), cat: 'drift' }); }
+    try { if (this.eventIndexSweepTimer) { clearInterval(this.eventIndexSweepTimer); this.eventIndexSweepTimer = null; } } catch { /* timer cleanup safe to swallow */ }
     // Stop infra watchdog and detach slot listener
-    try { if (this.infraWatchdogTimer) { clearInterval(this.infraWatchdogTimer); this.infraWatchdogTimer = null; } } catch {}
+    try { if (this.infraWatchdogTimer) { clearInterval(this.infraWatchdogTimer); this.infraWatchdogTimer = null; } } catch { /* timer cleanup safe to swallow */ }
     try {
       if (this._slotTsHandler && (this.sharedSlotSubscriber as any)?.eventEmitter?.off) {
         (this.sharedSlotSubscriber as any).eventEmitter.off('slotUpdate', this._slotTsHandler);
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.eventEmitter.off', { error: String(e?.message || e), cat: 'drift' }); }
     this._slotTsHandler = null;
     this.lastSlotTs = 0;
     this._staleCount = 0;
     // Unsubscribe subscribers in safe order
-    try { await (this.sharedDlobSubscriber as any)?.unsubscribe?.(); } catch {}
-    try { await (this.sharedOrderSubscriber as any)?.unsubscribe?.(); } catch {}
-    try { await (this.sharedUserMap as any)?.unsubscribe?.(); } catch {}
-    try { await (this.sharedEventSubscriber as any)?.unsubscribe?.(); } catch {}
-    try { await (this.sharedSlotSubscriber as any)?.unsubscribe?.(); } catch {}
+    try { await (this.sharedDlobSubscriber as any)?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.dlobSubscriber.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
+    try { await (this.sharedOrderSubscriber as any)?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.orderSubscriber.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
+    try { await (this.sharedUserMap as any)?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.userMap.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
+    try { await (this.sharedEventSubscriber as any)?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.eventSubscriber.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
+    try { await (this.sharedSlotSubscriber as any)?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.slotSubscriber.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
     this.sharedDlobSubscriber = null;
     this.sharedOrderSubscriber = null;
     this.sharedUserMap = null;
@@ -1206,7 +1214,7 @@ export class DriftService {
           if (this.client && typeof (this.client as any).unsubscribe === 'function') {
             await (this.client as any).unsubscribe().catch(() => {});
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.client.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
         
         // Unsubscribe all warm users
         const warmUnsubscribes: Array<Promise<any>> = [];
@@ -1216,10 +1224,10 @@ export class DriftService {
             if (user && typeof user.unsubscribe === 'function') {
               warmUnsubscribes.push((user as any).unsubscribe().catch(() => {}));
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.user.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
         }
         if (warmUnsubscribes.length > 0) {
-          try { await Promise.allSettled(warmUnsubscribes); } catch {}
+          try { await Promise.allSettled(warmUnsubscribes); } catch (e: any) { safeLog.debug('drift.cleanup.allSettled', { error: String(e?.message || e), cat: 'drift' }); }
         }
         this.warmUsers.clear();
 
@@ -1229,7 +1237,7 @@ export class DriftService {
           if (activeUser && typeof activeUser.unsubscribe === 'function') {
             await activeUser.unsubscribe().catch(() => {});
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.user.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
 
         // Clear the Connection's internal subscription maps to prevent _updateSubscriptions
         // from trying to resubscribe after shutdown
@@ -1239,14 +1247,14 @@ export class DriftService {
             if (rpcWs) {
               // Clear subscription maps
               if (rpcWs._subscriptionsByAccountChangeSubscriptionId) {
-                try { rpcWs._subscriptionsByAccountChangeSubscriptionId.clear?.(); } catch {}
+                try { rpcWs._subscriptionsByAccountChangeSubscriptionId.clear?.(); } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
               }
               if (rpcWs._subscriptionsByProgramAccountChangeSubscriptionId) {
-                try { rpcWs._subscriptionsByProgramAccountChangeSubscriptionId.clear?.(); } catch {}
+                try { rpcWs._subscriptionsByProgramAccountChangeSubscriptionId.clear?.(); } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
               }
               // Clear any pending timers that might trigger _updateSubscriptions
               if (rpcWs._subscriptionUpdateTimer) {
-                try { clearTimeout(rpcWs._subscriptionUpdateTimer); rpcWs._subscriptionUpdateTimer = null; } catch {}
+                try { clearTimeout(rpcWs._subscriptionUpdateTimer); rpcWs._subscriptionUpdateTimer = null; } catch { /* timer cleanup safe to swallow */ }
               }
               
               // Close the WebSocket connection to prevent lingering subscriptions
@@ -1255,10 +1263,10 @@ export class DriftService {
                 if (ws && typeof ws.close === 'function') {
                   ws.close();
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.ws.close', { error: String(e?.message || e), cat: 'drift' }); }
             }
           }
-        } catch {}
+        } catch { /* timer cleanup safe to swallow */ }
 
         // Teardown infrastructure (shared subscribers, timers, etc.)
         await this.teardownInfra();
@@ -1270,14 +1278,14 @@ export class DriftService {
         
         logger.info('drift.cleanup.complete', { cat: 'drift' });
       } catch (e: any) {
-        try { logger.warn('drift.cleanup.error', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.cleanup.error', { error: String(e?.message || e), cat: 'drift' });
       }
     })();
     
     // Wait for cleanup to complete
     try {
       await this.cleanupPromise;
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.cleanupWait', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private maybeTeardownInfra(): void {
@@ -1299,7 +1307,7 @@ export class DriftService {
     if (this.warmUsers.size < cap) return;
     const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
     if (oldest) {
-      try { (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {}
+      try { (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.user.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
       this.warmUsers.delete(oldest);
     }
   }
@@ -1341,7 +1349,8 @@ export class DriftService {
       const hash = createHash('sha256').update(label).digest();
       const first8 = hash.slice(0, 8);
       return this.base58Encode(first8);
-    } catch {
+    } catch (e: any) {
+      safeLog.debug('drift.accountDiscriminator', { error: String(e?.message || e), cat: 'drift' });
       return null;
     }
   }
@@ -1368,7 +1377,7 @@ export class DriftService {
       let fetched = 0;
       let page = 0;
       let coder: any = null;
-      try { coder = drift?.program?.coder?.accounts || null; } catch {}
+      try { coder = drift?.program?.coder?.accounts || null; } catch (e: any) { safeLog.debug('drift.sdk.coder', { error: String(e?.message || e), cat: 'drift' }); }
 
       while (page < maxPages && fetched < totalLimit) {
         const remaining = totalLimit - fetched;
@@ -1395,7 +1404,7 @@ export class DriftService {
             const jitter = 1 + (Math.random() * 0.2 - 0.1);
             const wait = Math.min(6000, Math.max(500, retryAfter || Math.round(delayMs * jitter)));
             delayMs = Math.min(6000, Math.round(delayMs * 2));
-            try { logger.warn('drift.prefetch.429', { delayMs: wait, attempt: attempt + 1, page, limit: lmt, changedOnly, cat: 'drift' }); } catch {}
+            safeLog.warn('drift.prefetch.429', { delayMs: wait, attempt: attempt + 1, page, limit: lmt, changedOnly, cat: 'drift' });
             await new Promise((r) => setTimeout(r, wait));
             continue;
           }
@@ -1406,7 +1415,7 @@ export class DriftService {
               const bodyV1: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccounts', params: [programId, params] };
               const res2: any = await execRpc(bodyV1, 'helius.gpa.page.fallback');
               json = await res2.json().catch(() => ({}));
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
           }
           const list = Array.isArray(json?.result?.accounts) ? json.result.accounts : (Array.isArray(json?.result) ? json.result : []);
           if (!Array.isArray(list) || list.length === 0) { page = maxPages; break; }
@@ -1418,22 +1427,22 @@ export class DriftService {
               if (!pk || !b64) continue;
               const raw = Buffer.from(b64, 'base64');
               let ua: any = null;
-              try { ua = coder?.decode?.('User', raw); } catch {}
-              if (!ua) { try { ua = drift?.program?.account?.user?.coder?.accounts?.decode?.('User', raw); } catch {} }
+              try { ua = coder?.decode?.('User', raw); } catch (e: any) { safeLog.debug('drift.decode', { error: String(e?.message || e), cat: 'drift' }); }
+              if (!ua) { try { ua = drift?.program?.account?.user?.coder?.accounts?.decode?.('User', raw); } catch (e: any) { safeLog.debug('drift.sdk.coder', { error: String(e?.message || e), cat: 'drift' }); } }
               if (ua) {
                 if (!out.has(pk)) { out.set(pk, ua); fetched += 1; }
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.decode', { error: String(e?.message || e), cat: 'drift' }); }
           }
           paginationKey = json?.result?.paginationKey || null;
-          try { logger.info('drift.prefetch.gpa_page', { page: page + 1, fetchedInPage: list?.length || 0, totalFetched: fetched, hasMore: !!paginationKey, cat: 'drift' }); } catch {}
+          safeLog.info('drift.prefetch.gpa_page', { page: page + 1, fetchedInPage: list?.length || 0, totalFetched: fetched, hasMore: !!paginationKey, cat: 'drift' });
           break;
         }
         if (!paginationKey) break;
         page += 1;
       }
-      try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
-    } catch {}
+      try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch (e: any) { safeLog.warn('drift.rpc', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.warn('drift.import.rpcLimiter', { error: String(e?.message || e), cat: 'drift' }); }
     return out;
   }
 
@@ -1486,7 +1495,7 @@ export class DriftService {
               { module: 'drift.helius', method: 'getProgramAccounts' }
             );
             json = await res2.json().catch(() => ({}));
-          } catch {}
+          } catch (e: any) { safeLog.warn('drift.rpc.fetch', { error: String(e?.message || e), cat: 'drift' }); }
         }
         const accounts = json?.result?.accounts || json?.result || [];
         if (!Array.isArray(accounts) || accounts.length === 0) break;
@@ -1495,11 +1504,11 @@ export class DriftService {
           if (pk && out.length < totalLimit) { out.push(pk); fetched += 1; }
         }
         paginationKey = json?.result?.paginationKey || null;
-        try { logger.info('drift.warmup.enumerate_page', { count: accounts?.length || 0, total: out.length, hasMore: !!paginationKey, cat: 'drift' }); } catch {}
+        safeLog.info('drift.warmup.enumerate_page', { count: accounts?.length || 0, total: out.length, hasMore: !!paginationKey, cat: 'drift' });
         if (!paginationKey) break;
       }
-      try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
-    } catch {}
+      try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch (e: any) { safeLog.warn('drift.rpc', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.warn('drift.import.rpcLimiter', { error: String(e?.message || e), cat: 'drift' }); }
     return out;
   }
   async fetchUsersDecoded(pks: (string | PublicKey)[]): Promise<Map<string, any>> {
@@ -1517,21 +1526,22 @@ export class DriftService {
       );
       const out = new Map<string, any>();
       let coder: any = null;
-      try { coder = (this.client as any)?.program?.coder?.accounts || null; } catch {}
+      try { coder = (this.client as any)?.program?.coder?.accounts || null; } catch (e: any) { safeLog.debug('drift.sdk.coder', { error: String(e?.message || e), cat: 'drift' }); }
       for (let i = 0; i < keys.length; i += 1) {
         try {
           const info = infos?.[i];
           if (!info?.data) continue;
           let ua: any = null;
-          try { ua = coder?.decode?.('User', info.data); } catch {}
+          try { ua = coder?.decode?.('User', info.data); } catch (e: any) { safeLog.debug('drift.decode', { error: String(e?.message || e), cat: 'drift' }); }
           if (!ua) {
-            try { ua = (this.client as any)?.program?.account?.user?.coder?.accounts?.decode?.('User', info.data); } catch {}
+            try { ua = (this.client as any)?.program?.account?.user?.coder?.accounts?.decode?.('User', info.data); } catch (e: any) { safeLog.debug('drift.sdk.coder', { error: String(e?.message || e), cat: 'drift' }); }
           }
           if (ua) out.set(keys[i].toBase58(), ua);
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.decode', { error: String(e?.message || e), cat: 'drift' }); }
       }
       return out;
-    } catch {
+    } catch (e: any) {
+      safeLog.warn('drift.fetchUsersDecoded', { error: String(e?.message || e), cat: 'drift' });
       return new Map<string, any>();
     }
   }
@@ -1539,7 +1549,7 @@ export class DriftService {
     await this.init();
     try {
       let sdk: any = null;
-      try { sdk = await import('@drift-labs/sdk'); } catch {}
+      try { sdk = await import('@drift-labs/sdk'); } catch (e: any) { safeLog.warn('drift.import.sdk', { error: String(e?.message || e), cat: 'drift' }); }
       const pk: PublicKey = (sdk as any).getUserStatsAccountPublicKey(this.client.program.programId, referrerAuth);
       const key = pk.toBase58();
       if (this.warmRefStats.has(key)) return pk;
@@ -1554,7 +1564,7 @@ export class DriftService {
       if (info) { this.warmRefStats.add(key); return pk; }
       this.missingRefStats.set(key, Date.now());
       return null;
-    } catch { return null; }
+    } catch (e: any) { safeLog.warn('drift.ensureRefStatsReady', { error: String(e?.message || e), cat: 'drift' }); return null; }
   }
   enqueueUsersForPrefetch(pks: string[]): void {
     const driftCfg: any = ((CONFIG as any)?.drift || {});
@@ -1575,7 +1585,7 @@ export class DriftService {
     const activeOnly = driftCfg?.prefetchActiveOnly !== false;
     let driftEventIndex: any = null;
     if (activeOnly) {
-      try { driftEventIndex = (await import('./eventIndex.js'))?.driftEventIndex; } catch {}
+      try { driftEventIndex = (await import('./eventIndex.js'))?.driftEventIndex; } catch (e: any) { safeLog.debug('drift.import.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
     }
     this.prefetchRunning = true;
     // Prepare polling loader for stability
@@ -1584,9 +1594,9 @@ export class DriftService {
       if (!this.pollLoaderWarm) {
         // Use a slightly slower polling frequency to reduce provider load
         this.pollLoaderWarm = new BulkAccountLoader(this.connection!, 'confirmed', 1500);
-        try { (this.pollLoaderWarm as any)?.on?.('error', (e: any) => { try { logger.warn('drift.pollLoaderWarm.error', { error: String(e?.message || e), cat: 'drift' }); } catch {} }); } catch {}
+        try { (this.pollLoaderWarm as any)?.on?.('error', (e: any) => { safeLog.warn('drift.pollLoaderWarm.error', { error: String(e?.message || e), cat: 'drift' }); }); } catch (e: any) { safeLog.debug('drift.eventListener.attach', { error: String(e?.message || e), cat: 'drift' }); }
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.eventListener.attach', { error: String(e?.message || e), cat: 'drift' }); }
 
     // Prefetch pacing config
     const intervalMs = Math.max(1500, Number(driftCfg?.prefetchIntervalMs ?? 3000));
@@ -1605,7 +1615,7 @@ export class DriftService {
           if (Array.isArray(perps)) {
             indices = perps.map((m: any) => Number(m?.marketIndex ?? m?.market_index ?? m?.idx)).filter((n: any) => Number.isFinite(n));
           }
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.sdk.getMarkets', { error: String(e?.message || e), cat: 'drift' }); }
         if (!Array.isArray(indices) || indices.length === 0) { indices = [0, 1, 2, 31, 45]; }
         for (const mi of indices) {
           try {
@@ -1615,11 +1625,11 @@ export class DriftService {
               const makers = Array.isArray(n?.makerNodes) ? n.makerNodes : [];
               for (const mn of makers) { const mk = String(mn?.userAccount || ''); if (mk) found.add(mk); }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.dlob', { error: String(e?.message || e), cat: 'drift' }); }
         }
         const MAX_KEYS = 1000;
         this.enqueueUsersForPrefetch(Array.from(found).slice(0, MAX_KEYS));
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.sdk.getMarkets', { error: String(e?.message || e), cat: 'drift' }); }
     };
 
     const collectFromActiveIndex = async () => {
@@ -1629,7 +1639,7 @@ export class DriftService {
         const maxKeys = Math.max(100, Number(capRaw));
         const keys = driftEventIndex.getActiveUsers(maxKeys) || [];
         this.enqueueUsersForPrefetch(keys);
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
     };
 
     // Choose prefetch method: auto => use GPA on Helius endpoints, else MACI
@@ -1638,7 +1648,7 @@ export class DriftService {
     const autoPick = activeOnly ? 'maci' : (/helius/i.test(rpcEndpoint) ? 'gpa' : 'maci');
     let method = cfgMethodRaw === 'auto' ? autoPick : cfgMethodRaw;
     if (activeOnly && method === 'gpa') method = 'maci';
-    try { logger.info('drift.prefetch.start', { method, rpc: rpcEndpoint.includes('helius') ? 'helius' : 'other', cat: 'drift' }); } catch {}
+    safeLog.info('drift.prefetch.start', { method, rpc: rpcEndpoint.includes('helius') ? 'helius' : 'other', cat: 'drift' });
     const step = async () => {
       try {
         if (method === 'gpa') {
@@ -1655,8 +1665,8 @@ export class DriftService {
                   if (ref && String(ref) !== '11111111111111111111111111111111') {
                     await this.ensureRefStatsReady(ref);
                   }
-                } catch {}
-              } catch {}
+                } catch (e: any) { safeLog.debug('drift.refStats', { error: String(e?.message || e), cat: 'drift' }); }
+              } catch (e: any) { safeLog.debug('drift.warmUsers', { error: String(e?.message || e), cat: 'drift' }); }
             }
           }
           return;
@@ -1672,7 +1682,7 @@ export class DriftService {
         for (let i = 0; i < batch.length; i += chunkSize) {
           const chunk = batch.slice(i, i + chunkSize);
           let decoded: Map<string, any> = new Map();
-          try { decoded = await this.fetchUsersDecoded(chunk); } catch { decoded = new Map(); }
+          try { decoded = await this.fetchUsersDecoded(chunk); } catch (e: any) { safeLog.warn('drift.prefetch.fetchUsersDecoded', { error: String(e?.message || e), cat: 'drift' }); decoded = new Map(); }
           for (const pk of chunk) {
             try {
               const ua = decoded.get(pk);
@@ -1684,17 +1694,17 @@ export class DriftService {
                 if (ref && String(ref) !== '11111111111111111111111111111111') {
                   await this.ensureRefStatsReady(ref);
                 }
-              } catch {}
-            } catch {}
+              } catch (e: any) { safeLog.debug('drift.refStats', { error: String(e?.message || e), cat: 'drift' }); }
+            } catch (e: any) { safeLog.debug('drift.warmUsers', { error: String(e?.message || e), cat: 'drift' }); }
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.warmUsers', { error: String(e?.message || e), cat: 'drift' }); }
     };
 
-    if (this.prefetchTimer) { try { clearInterval(this.prefetchTimer); } catch {} }
+    if (this.prefetchTimer) { try { clearInterval(this.prefetchTimer); } catch (e: any) { safeLog.debug('drift.prefetch', { error: String(e?.message || e), cat: 'drift' }); } }
     this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, intervalMs);
     // Run an immediate step to avoid waiting for the first interval
-    try { step().catch(() => {}); } catch {}
+    try { step().catch(() => {}); } catch (e: any) { safeLog.debug('drift.prefetch.step', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async warmActiveUsersOnce(): Promise<void> {
@@ -1710,7 +1720,7 @@ export class DriftService {
       for (let i = 0; i < keys.length; i += chunkSize) {
         const chunk = keys.slice(i, i + chunkSize);
         let decoded: Map<string, any> = new Map();
-        try { decoded = await this.fetchUsersDecoded(chunk); } catch { decoded = new Map(); }
+        try { decoded = await this.fetchUsersDecoded(chunk); } catch (e: any) { safeLog.warn('drift.warmActiveUsers.fetchUsersDecoded', { error: String(e?.message || e), cat: 'drift' }); decoded = new Map(); }
         for (const pk of chunk) {
           try {
             const ua = decoded.get(pk);
@@ -1722,12 +1732,12 @@ export class DriftService {
               if (ref && String(ref) !== '11111111111111111111111111111111') {
                 await this.ensureRefStatsReady(ref);
               }
-            } catch {}
-          } catch {}
+            } catch (e: any) { safeLog.debug('drift.refStats', { error: String(e?.message || e), cat: 'drift' }); }
+          } catch (e: any) { safeLog.debug('drift.warmUsers', { error: String(e?.message || e), cat: 'drift' }); }
         }
       }
-      try { logger.info('drift.prefetch.active_warm', { users: keys.length, cat: 'drift' }); } catch {}
-    } catch {}
+      safeLog.info('drift.prefetch.active_warm', { users: keys.length, cat: 'drift' });
+    } catch (e: any) { safeLog.debug('drift.import.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {
@@ -1759,7 +1769,7 @@ export class DriftService {
       try {
         return await primarySend();
       } catch (ePrimary: any) {
-        try { logger.warn('tx.send.primary_fail', { cat: 'tx', url: maskUrl((CONFIG as any)?.rpcUrl), err: String(ePrimary?.message || ePrimary) }); } catch {}
+        safeLog.warn('tx.send.primary_fail', { cat: 'tx', url: maskUrl((CONFIG as any)?.rpcUrl), err: String(ePrimary?.message || ePrimary) });
         // Secondary RPC fallback (tight timeouts, best-effort)
         const secondaries: string[] = Array.isArray((CONFIG as any)?.rpcSend?.secondaryRpcUrls) ? (CONFIG as any).rpcSend.secondaryRpcUrls : [];
         let lastErr: any = ePrimary;
@@ -1767,11 +1777,11 @@ export class DriftService {
           try {
             const alt = new Connection(String(url), { commitment: 'processed', disableRetryOnRateLimit: true } as any);
             const sig = await tryWithTimeout(alt, raw, Number(((CONFIG as any)?.rpcSend?.sendTimeoutMs) ?? 1200));
-            try { logger.info('tx.send.fallback_ok', { cat: 'tx', url: maskUrl(url) }); } catch {}
+            safeLog.info('tx.send.fallback_ok', { cat: 'tx', url: maskUrl(url) });
             return sig;
           } catch (eAlt: any) {
             lastErr = eAlt;
-            try { logger.warn('tx.send.fallback_fail', { cat: 'tx', url, err: String(eAlt?.message || eAlt) }); } catch {}
+            safeLog.warn('tx.send.fallback_fail', { cat: 'tx', url, err: String(eAlt?.message || eAlt) });
             continue;
           }
         }
@@ -1792,8 +1802,8 @@ export class DriftService {
       if (Number.isFinite(Number(opts?.maxInFlight))) {
         this.maxTxInFlight = Math.max(1, Number(opts!.maxInFlight));
       }
-      try { logger.info('drift.tx.throttle_config', { minGapMs: this.minTxGapMs, maxInFlight: this.maxTxInFlight, cat: 'drift' }); } catch {}
-    } catch {}
+      safeLog.info('drift.tx.throttle_config', { minGapMs: this.minTxGapMs, maxInFlight: this.maxTxInFlight, cat: 'drift' });
+    } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async ensureUserReady(subaccountId: number): Promise<void> {
@@ -1810,12 +1820,12 @@ export class DriftService {
           if (!exists && typeof client?.initializeUserAccount === 'function') {
             await client.initializeUserAccount(Number(subaccountId));
           }
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.initializeUser', { error: String(e?.message || e), cat: 'drift' }); }
       }
-    } catch {}
-    try { if (typeof client?.addUser === 'function') { await client.addUser(Number(subaccountId)); } } catch {}
-    try { if (typeof client?.switchActiveUser === 'function') { await client.switchActiveUser(Number(subaccountId)); } } catch {}
-    try { logger.debug('drift.user.ready', { subaccountId, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+    } catch (e: any) { safeLog.warn('drift.initializeUser', { error: String(e?.message || e), cat: 'drift' }); }
+    try { if (typeof client?.addUser === 'function') { await client.addUser(Number(subaccountId)); } } catch (e: any) { safeLog.warn('drift.addUser', { error: String(e?.message || e), cat: 'drift' }); }
+    try { if (typeof client?.switchActiveUser === 'function') { await client.switchActiveUser(Number(subaccountId)); } } catch (e: any) { safeLog.warn('drift.switchActiveUser', { error: String(e?.message || e), cat: 'drift' }); }
+    safeLog.debug('drift.user.ready', { subaccountId, ms: Date.now() - t0, cat: 'drift' });
   }
 
   async getActiveSubaccountSnapshot(): Promise<SubaccountInfo | null> {
@@ -1827,22 +1837,22 @@ export class DriftService {
       if (!user) {
         try {
           const subId = Number(this.activeSubaccountId ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
-          try { logger.debug('drift.snapshot.recovery', { subId, cat: 'drift' }); } catch {}
+          safeLog.debug('drift.snapshot.recovery', { subId, cat: 'drift' });
           if (typeof client?.addUser === 'function') await client.addUser(subId);
           if (typeof client?.switchActiveUser === 'function') await client.switchActiveUser(subId);
           this.activeSubaccountId = subId;
           user = client?.user || null;
         } catch (e: any) {
-          try { logger.warn('drift.snapshot.recovery_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+          safeLog.warn('drift.snapshot.recovery_failed', { error: String(e?.message || e), cat: 'drift' });
         }
       }
       if (!user) {
-        try { logger.debug('drift.snapshot.no_active_user', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
+        safeLog.debug('drift.snapshot.no_active_user', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' });
         return null;
       }
       const acct = user?.getUserAccount?.();
       if (!acct?.authority) {
-        try { logger.warn('drift.snapshot.user_not_hydrated', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
+        safeLog.warn('drift.snapshot.user_not_hydrated', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' });
         return null;
       }
       const id = Number((acct?.subAccountId) ?? (client?.activeUserId) ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
@@ -1852,11 +1862,11 @@ export class DriftService {
         const sdk: any = await import('@drift-labs/sdk');
         const cst: any = (sdk as any).constants || (sdk as any);
         QUOTE_PREC = Number(cst?.QUOTE_PRECISION ?? 1_000_000);
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.import.sdk', { error: String(e?.message || e), cat: 'drift' }); }
       const toUi = (val: any): number => {
         try {
           return Number(val?.toString?.() || val || 0) / QUOTE_PREC;
-        } catch { return Number(val?.toString?.() || val || 0) / QUOTE_PREC; }
+        } catch (e: any) { safeLog.debug('drift.toUi', { error: String(e?.message || e), cat: 'drift' }); return Number(val?.toString?.() || val || 0) / QUOTE_PREC; }
       };
       const totalCollateral = toUi(user?.getTotalCollateral?.('Maintenance'));
       const maint = toUi(user?.getMaintenanceMarginRequirement?.());
@@ -1871,7 +1881,7 @@ export class DriftService {
           const idx = Number(p?.marketIndex || 0);
           positions.push({ marketIndex: idx, base, entryPrice: undefined });
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.sdk.getPositions', { error: String(e?.message || e), cat: 'drift' }); }
       // If all dollar values are 0 but user has spot balances, oracles haven't loaded.
       // Return null so caller can fall through to getSubaccounts() polling path.
       if (totalCollateral === 0 && maint === 0 && free === 0 && initReq === 0) {
@@ -1882,14 +1892,15 @@ export class DriftService {
             const raw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || 0);
             if (raw !== 0) { hasSpotBalance = true; break; }
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.sdk.getPositions', { error: String(e?.message || e), cat: 'drift' }); }
         if (hasSpotBalance) {
-          try { logger.warn('drift.snapshot.oracle_not_loaded', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
+          safeLog.warn('drift.snapshot.oracle_not_loaded', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' });
           return null;
         }
       }
       return { id, freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions };
-    } catch {
+    } catch (e: any) {
+      safeLog.warn('drift.getActiveSubaccountSnapshot', { error: String(e?.message || e), cat: 'drift' });
       return null;
     }
   }
@@ -1905,9 +1916,9 @@ export class DriftService {
       if (snap && (snap.totalCollateral !== 0 || snap.freeCollateral !== 0 || snap.maintenanceRequirement !== 0)) {
         subs = [snap];
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.getSubaccounts', { error: String(e?.message || e), cat: 'drift' }); }
     if (subs.length === 0) {
-      try { subs = await this.getSubaccounts(); } catch { subs = []; }
+      try { subs = await this.getSubaccounts(); } catch (e: any) { safeLog.warn('drift.getSubaccounts.fallback', { error: String(e?.message || e), cat: 'drift' }); subs = []; }
     }
     logger.debug('drift.status', { markets: markets.length, subaccounts: subs.length, cat: 'drift' });
     return {
@@ -1943,7 +1954,7 @@ export class DriftService {
             return s || undefined;
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
       return undefined;
     };
     // Try SDK discovery first
@@ -1956,13 +1967,13 @@ export class DriftService {
         if (typeof client?.getPerpMarketAccounts === 'function') {
           accounts = await client.getPerpMarketAccounts();
         }
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.sdk.getMarkets', { error: String(e?.message || e), cat: 'drift' }); }
       // Anchor path: client.program?.account?.perpMarket?.all?.()
       if (!accounts) {
         try {
           const maybe = await client?.program?.account?.perpMarket?.all?.();
           if (Array.isArray(maybe)) accounts = maybe.map((x: any) => x?.account || x).filter(Boolean);
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.op', { error: String(e?.message || e), cat: 'drift' }); }
       }
       // Fallback: probe first 16 indices via getPerpMarketAccount
       if (!accounts) {
@@ -1971,7 +1982,7 @@ export class DriftService {
           try {
             const a = await client?.getPerpMarketAccount?.(i);
             if (a) temp.push(a);
-          } catch {}
+          } catch (e: any) { safeLog.warn('drift.sdk.getPerpMarket', { error: String(e?.message || e), cat: 'drift' }); }
         }
         accounts = temp;
       }
@@ -1983,7 +1994,7 @@ export class DriftService {
       }).filter(m => Number.isFinite(m.marketIndex)) : [];
       // If empty, fallback to allowlist
       if (markets.length > 0) {
-        try { logger.info('drift.markets.discovery.sdk', { count: markets.length, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+        safeLog.info('drift.markets.discovery.sdk', { count: markets.length, ms: Date.now() - t0, cat: 'drift' });
         return markets.sort((a, b) => a.marketIndex - b.marketIndex);
       }
       // Constants-based fallback from SDK when RPC queries return empty
@@ -2009,7 +2020,7 @@ export class DriftService {
           }
         }
         if (out.length > 0) {
-          try { logger.info('drift.markets.discovery.constants', { count: out.length, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+          safeLog.info('drift.markets.discovery.constants', { count: out.length, ms: Date.now() - t0, cat: 'drift' });
           return out.sort((a, b) => a.marketIndex - b.marketIndex);
         }
         const nameMap = constants?.MARKET_INDEX_TO_PERP_MARKET_NAME || constants?.PERP_MARKET_INDEX_TO_MARKET_NAME || null;
@@ -2021,15 +2032,15 @@ export class DriftService {
             if (Number.isFinite(idx)) out2.push({ marketIndex: idx, symbol: name });
           }
           if (out2.length > 0) {
-            try { logger.info('drift.markets.discovery.nameMap', { count: out2.length, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+            safeLog.info('drift.markets.discovery.nameMap', { count: out2.length, ms: Date.now() - t0, cat: 'drift' });
             return out2.sort((a, b) => a.marketIndex - b.marketIndex);
           }
         }
-      } catch {}
-    } catch {}
+      } catch (e: any) { safeLog.debug('drift.sdk.constants', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.warn('drift.import.sdk', { error: String(e?.message || e), cat: 'drift' }); }
     // Config-based fallback
     const fromCfg = this.parseAllowlistMarkets();
-    try { logger.warn('drift.markets.discovery.fallback', { count: fromCfg.length, cat: 'drift' }); } catch {}
+    safeLog.warn('drift.markets.discovery.fallback', { count: fromCfg.length, cat: 'drift' });
     return fromCfg;
   }
 
@@ -2057,14 +2068,14 @@ export class DriftService {
         const max = typeof getMaxNumberOfSubAccounts === 'function' ? Number(await getMaxNumberOfSubAccounts()) : 8;
         const cap = Number.isFinite(max) && max > 0 && max < 16 ? max : 8;
         for (let i = 0; i < cap; i += 1) ids.push(i);
-      } catch { for (let i = 0; i < 8; i += 1) ids.push(i); }
+      } catch (e: any) { safeLog.warn('drift.getMaxSubAccounts', { error: String(e?.message || e), cat: 'drift' }); for (let i = 0; i < 8; i += 1) ids.push(i); }
       // Load quote precision for scaling UI values
       let QUOTE_PREC = 1_000_000;
       try {
         const sdk: any = await import('@drift-labs/sdk');
         const cst: any = (sdk as any).constants || (sdk as any);
         QUOTE_PREC = Number(cst?.QUOTE_PRECISION ?? 1_000_000);
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.import.sdk', { error: String(e?.message || e), cat: 'drift' }); }
       const toUi = (val: any): number => Number(val?.toString?.() || val || 0) / QUOTE_PREC;
 
       // Step 1: Get all public keys in parallel
@@ -2072,7 +2083,7 @@ export class DriftService {
         try {
           const pk = await client.getUserAccountPublicKey?.(Number(id));
           return { id, pk };
-        } catch { return { id, pk: null }; }
+        } catch (e: any) { safeLog.debug('drift.getUserAccountPublicKey', { error: String(e?.message || e), cat: 'drift' }); return { id, pk: null }; }
       });
       const pkResults = await Promise.all(pkPromises);
       const validPks = pkResults.filter((r) => r.pk !== null) as Array<{ id: number; pk: any }>;
@@ -2127,7 +2138,7 @@ export class DriftService {
                 { module: 'drift', method: 'userSubscribe' }
               );
             }
-          } catch {}
+          } catch (e: any) { safeLog.warn('drift.user.subscribe', { error: String(e?.message || e), cat: 'drift' }); }
           const totalCollateral = toUi(user?.getTotalCollateral?.('Maintenance'));
           const maint = toUi(user?.getMaintenanceMarginRequirement?.());
           const initReq = toUi(user?.getInitialMarginRequirement?.());
@@ -2141,11 +2152,12 @@ export class DriftService {
               const idx = Number(p?.marketIndex || 0);
               positions.push({ marketIndex: idx, base, entryPrice: undefined });
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.sdk.getPositions', { error: String(e?.message || e), cat: 'drift' }); }
           // Unsubscribe after getting data to avoid leaks
-          try { await user?.unsubscribe?.(); } catch {}
+          try { await user?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.user.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
           return { id: Number(id), freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions };
-        } catch {
+        } catch (e: any) {
+          safeLog.warn('drift.subaccount.load', { error: String(e?.message || e), cat: 'drift' });
           return null;
         }
       });
@@ -2163,7 +2175,8 @@ export class DriftService {
       }
       this.subaccountsCache = { data: out, ts: Date.now() };
       return this.subaccountsCache.data;
-    } catch {
+    } catch (e: any) {
+      safeLog.warn('drift.getSubaccounts', { error: String(e?.message || e), cat: 'drift' });
       const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
       return [{ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] }];
     }
@@ -2187,8 +2200,8 @@ export class DriftService {
       }
       if (typeof client?.switchActiveUser === 'function') {
         await client.switchActiveUser(Number(_id));
-        try { if (typeof client?.addUser === 'function') await client.addUser(Number(_id)); } catch {}
-        try { if (typeof client?.initializeUserIfNotExists === 'function') await client.initializeUserIfNotExists(Number(_id)); } catch {}
+        try { if (typeof client?.addUser === 'function') await client.addUser(Number(_id)); } catch (e: any) { safeLog.warn('drift.addUser', { error: String(e?.message || e), cat: 'drift' }); }
+        try { if (typeof client?.initializeUserIfNotExists === 'function') await client.initializeUserIfNotExists(Number(_id)); } catch (e: any) { safeLog.warn('drift.initializeUser', { error: String(e?.message || e), cat: 'drift' }); }
         this.activeSubaccountId = Number(_id);
         logger.info('drift.subaccount.switch_ok', { id: _id, cat: 'drift' });
         this.invalidateSubaccountsCache();
@@ -2226,19 +2239,19 @@ export class DriftService {
           logger.error('drift.subaccount.create_failed', { error: lastReason, cat: 'drift' });
           return null;
         }
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.import.rpcLimiter', { error: String(e?.message || e), cat: 'drift' }); }
       // Discover existing subaccount ids and compute next unused id
       let maxCap = 8;
-      try { const { getMaxNumberOfSubAccounts } = await loadSdk(); const m = await getMaxNumberOfSubAccounts?.(); if (Number.isFinite(Number(m))) maxCap = Math.min(Math.max(Number(m), 1), 16); } catch {}
+      try { const { getMaxNumberOfSubAccounts } = await loadSdk(); const m = await getMaxNumberOfSubAccounts?.(); if (Number.isFinite(Number(m))) maxCap = Math.min(Math.max(Number(m), 1), 16); } catch (e: any) { safeLog.warn('drift.sdk.getMaxSubAccounts', { error: String(e?.message || e), cat: 'drift' }); }
       const existing = new Set<number>();
       try {
         for (let cid = 0; cid < maxCap; cid += 1) {
           try {
             const pk = await client.getUserAccountPublicKey?.(Number(cid));
             if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.connection!.getAccountInfo(pk, 'confirmed'), 1, { module: 'drift', method: 'getAccountInfo' }); if (acc) existing.add(Number(cid)); }
-          } catch {}
+          } catch (e: any) { safeLog.warn('drift.import.rpcLimiter', { error: String(e?.message || e), cat: 'drift' }); }
         }
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.import.rpcLimiter', { error: String(e?.message || e), cat: 'drift' }); }
       const currentIds = Array.from(existing.values()).sort((a, b) => a - b);
       const nextId = currentIds.length > 0 ? Math.min(currentIds[currentIds.length - 1] + 1, maxCap - 1) : 0;
       if (existing.has(nextId)) {
@@ -2275,9 +2288,9 @@ export class DriftService {
             }
           }
           // After init, ensure user mapping and switch
-          try { if (typeof client?.addUser === 'function') { await withBackoff(async () => client.addUser(candidate)); } } catch {}
-          try { if (typeof client?.switchActiveUser === 'function') { await withBackoff(async () => client.switchActiveUser(candidate)); } } catch {}
-          try { await this.ensureUserReady(candidate); } catch {}
+          try { if (typeof client?.addUser === 'function') { await withBackoff(async () => client.addUser(candidate)); } } catch (e: any) { safeLog.warn('drift.addUser', { error: String(e?.message || e), cat: 'drift' }); }
+          try { if (typeof client?.switchActiveUser === 'function') { await withBackoff(async () => client.switchActiveUser(candidate)); } } catch (e: any) { safeLog.warn('drift.switchActiveUser', { error: String(e?.message || e), cat: 'drift' }); }
+          try { await this.ensureUserReady(candidate); } catch (e: any) { safeLog.warn('drift.ensureUserReady', { error: String(e?.message || e), cat: 'drift' }); }
           logger.info('drift.subaccount.created', { id: candidate, cat: 'drift' });
           this.invalidateSubaccountsCache();
           return { id: candidate };
@@ -2294,15 +2307,15 @@ export class DriftService {
         const max = typeof getMaxNumberOfSubAccounts === 'function' ? Number(await getMaxNumberOfSubAccounts()) : 8;
         const cap = Number.isFinite(max) && max > 0 && max < 16 ? max : 8;
         for (let i = 0; i < cap; i += 1) candidateIds.push(i);
-      } catch { for (let i = 0; i < 8; i += 1) candidateIds.push(i); }
+      } catch (e: any) { safeLog.warn('drift.getMaxSubAccounts.candidates', { error: String(e?.message || e), cat: 'drift' }); for (let i = 0; i < 8; i += 1) candidateIds.push(i); }
       // Dedup and try in order; skip ids that already have a user account
       const seenIds = new Set<number>();
       const existing2 = new Set<number>();
       try {
         for (const cid of candidateIds) {
-          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'confirmed'), 1, { module: 'drift', method: 'getAccountInfo' }); if (acc) existing2.add(Number(cid)); } } catch {}
+          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'confirmed'), 1, { module: 'drift', method: 'getAccountInfo' }); if (acc) existing2.add(Number(cid)); } } catch (e: any) { safeLog.warn('drift.import.rpcLimiter', { error: String(e?.message || e), cat: 'drift' }); }
         }
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.import.rpcLimiter', { error: String(e?.message || e), cat: 'drift' }); }
       candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x))) && !existing2.has(Number(x))));
       for (const id of candidateIds) {
         try {
@@ -2318,9 +2331,9 @@ export class DriftService {
             break;
           }
           // After init, add/switch user for local mapping and active selection
-          try { if (typeof client?.addUser === 'function') { await withBackoff(async () => client.addUser(Number(id))); } } catch {}
-          try { if (typeof client?.switchActiveUser === 'function') { await withBackoff(async () => client.switchActiveUser(Number(id))); } } catch {}
-          try { await this.ensureUserReady(Number(id)); } catch {}
+          try { if (typeof client?.addUser === 'function') { await withBackoff(async () => client.addUser(Number(id))); } } catch (e: any) { safeLog.warn('drift.addUser', { error: String(e?.message || e), cat: 'drift' }); }
+          try { if (typeof client?.switchActiveUser === 'function') { await withBackoff(async () => client.switchActiveUser(Number(id))); } } catch (e: any) { safeLog.warn('drift.switchActiveUser', { error: String(e?.message || e), cat: 'drift' }); }
+          try { await this.ensureUserReady(Number(id)); } catch (e: any) { safeLog.warn('drift.ensureUserReady', { error: String(e?.message || e), cat: 'drift' }); }
           logger.info('drift.subaccount.created', { id: Number(id), cat: 'drift' });
           this.invalidateSubaccountsCache();
           return { id: Number(id) };
@@ -2329,7 +2342,7 @@ export class DriftService {
           logger.warn('drift.subaccount.create_attempt_failed', { id: Number(id), error: msg, cat: 'drift' });
           if (/exist|initialized|already/i.test(msg)) {
             // If it already exists, treat as success by switching to it
-            try { await this.ensureUserReady(Number(id)); } catch {}
+            try { await this.ensureUserReady(Number(id)); } catch (e: any) { safeLog.warn('drift.ensureUserReady', { error: String(e?.message || e), cat: 'drift' }); }
             logger.info('drift.subaccount.created_existing', { id: Number(id), cat: 'drift' });
             this.invalidateSubaccountsCache();
             return { id: Number(id) };

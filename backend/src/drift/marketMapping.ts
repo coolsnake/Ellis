@@ -1,5 +1,6 @@
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import type { DriftMarketRef } from './types.js';
 
 const allowlistLogState: { lastAt: number; lastCount: number } = { lastAt: 0, lastCount: -1 };
@@ -8,7 +9,7 @@ function readAllowlist(): string[] {
   try {
     const raw: any = (CONFIG as any)?.drift?.marketsAllowlist || [];
     return Array.isArray(raw) ? raw : [];
-  } catch { return []; }
+  } catch (e: any) { safeLog.debug('drift.markets.read_allowlist', { error: String(e?.message || e), cat: 'drift' }); return []; }
 }
 
 export function parseAllowlistMarkets(): DriftMarketRef[] {
@@ -46,9 +47,9 @@ export function parseAllowlistMarkets(): DriftMarketRef[] {
         allowlistLogState.lastCount = uniq.length;
         logger.info('drift.markets.allowlist_parsed', { cat: 'drift', count: uniq.length, rawCount: out.length, sample: uniq.slice(0, 8) });
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.markets.allowlist_log', { error: String(e?.message || e), cat: 'drift' }); }
     return uniq;
-  } catch { return []; }
+  } catch (e: any) { safeLog.debug('drift.markets.allowlist_parse', { error: String(e?.message || e), cat: 'drift' }); return []; }
 }
 
 export function getAllowlistIndices(): number[] {
@@ -60,7 +61,7 @@ export function indexToSymbol(idx: number): string | undefined {
     const list = parseAllowlistMarkets();
     const found = list.find(m => Number(m.marketIndex) === Number(idx));
     if (found?.symbol) return found.symbol;
-  } catch {}
+  } catch (e: any) { safeLog.debug('drift.markets.index_to_symbol', { error: String(e?.message || e), cat: 'drift' }); }
   const fallback: Record<number, string> = { 0: 'SOL-PERP', 1: 'BTC-PERP', 2: 'ETH-PERP' };
   return fallback[Number(idx)];
 }
@@ -77,7 +78,7 @@ export function symbolToIndex(name: string): number | undefined {
     if (/^sol/i.test(target)) return 0;
     if (/^btc/i.test(target)) return 1;
     if (/^eth/i.test(target)) return 2;
-  } catch {}
+  } catch (e: any) { safeLog.debug('drift.markets.symbol_to_index', { error: String(e?.message || e), cat: 'drift' }); }
   return undefined;
 }
 

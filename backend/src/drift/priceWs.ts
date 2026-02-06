@@ -1,6 +1,7 @@
 import { getDriftConfig } from '../utils/driftConfig.js';
 import { indexToSymbol, symbolToIndex } from './marketMapping.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { LogCode } from '../utils/logging.js';
 
 const rawDlobScale = Number(getDriftConfig().dlobPriceScale);
@@ -19,7 +20,7 @@ async function ensureWsCtor(): Promise<any> {
     const mod: any = await import('ws');
     WS = mod?.WebSocket || mod?.default || mod;
     if (WS) return WS;
-  } catch {}
+  } catch (e: any) { safeLog.debug('drift.ws.import_ws', { error: String(e?.message || e), cat: 'drift' }); }
   return null;
 }
 
@@ -55,6 +56,7 @@ export class DriftDlobWs {
   private reconnectTimer: any | null = null;
   private heartbeatTimer: any | null = null;
   private wsCid: string | null = null;
+  private reconnectAttempts = 0;
 
   async start(): Promise<void> {
     if (this.connected || this.socket) return;
@@ -75,11 +77,11 @@ export class DriftDlobWs {
   }
 
   stop(): void {
-    try { if (this.socket) this.socket.close(); } catch {}
+    try { if (this.socket) this.socket.close(); } catch (e: any) { safeLog.debug('drift.ws.stop_close', { error: String(e?.message || e), cat: 'drift' }); }
     this.socket = null;
     this.connected = false;
-    if (this.reconnectTimer) { try { (globalThis as any).clearTimeout(this.reconnectTimer); } catch {} this.reconnectTimer = null; }
-    if (this.heartbeatTimer) { try { (globalThis as any).clearInterval(this.heartbeatTimer); } catch {} this.heartbeatTimer = null; }
+    if (this.reconnectTimer) { try { (globalThis as any).clearTimeout(this.reconnectTimer); } catch { /* timer cleanup safe to swallow */ } this.reconnectTimer = null; }
+    if (this.heartbeatTimer) { try { (globalThis as any).clearInterval(this.heartbeatTimer); } catch { /* timer cleanup safe to swallow */ } this.heartbeatTimer = null; }
   }
 
   subscribeMarket(marketIndex: number): void {
@@ -115,7 +117,7 @@ export class DriftDlobWs {
     const ls = this.listeners.get(event);
     if (!ls || ls.size === 0) return;
     for (const fn of Array.from(ls)) {
-      try { (fn as Listener<T>)(payload); } catch {}
+      try { (fn as Listener<T>)(payload); } catch (e: any) { safeLog.debug('drift.ws.listener_error', { error: String(e?.message || e), cat: 'drift' }); }
     }
   }
 
@@ -124,20 +126,21 @@ export class DriftDlobWs {
     if (!s) return;
     s.onopen = () => {
       this.connected = true;
+      this.reconnectAttempts = 0; // Reset backoff on successful connect
       logger.info('drift.ws.open', { url: (s?.url || getDriftConfig().dlobWsUrl), cat: 'drift', code: LogCode.DRIFT_WS_OPEN, cid: this.wsCid || `ws:${s?.url || getDriftConfig().dlobWsUrl}`, span: 'start' });
       // Resubscribe desired markets
       if (this.wantMarkets.size > 0) this.flushSubscription('subscribe', Array.from(this.wantMarkets));
       // Heartbeat
       const hbMs = Math.max(5000, Number(getDriftConfig().wsHeartbeatMs || 15000));
-      if (this.heartbeatTimer) { try { (globalThis as any).clearInterval(this.heartbeatTimer); } catch {} }
+      if (this.heartbeatTimer) { try { (globalThis as any).clearInterval(this.heartbeatTimer); } catch { /* timer cleanup safe to swallow */ } }
       this.heartbeatTimer = (globalThis as any).setInterval(() => {
-        try { s.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch {}
+        try { s.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch (e: any) { safeLog.debug('drift.ws.heartbeat_send', { error: String(e?.message || e), cat: 'drift' }); }
       }, hbMs);
     };
     s.onclose = () => {
       this.connected = false;
       logger.warn('drift.ws.close', { cat: 'drift', code: LogCode.DRIFT_WS_CLOSE, cid: this.wsCid || undefined, span: 'end' });
-      if (this.heartbeatTimer) { try { (globalThis as any).clearInterval(this.heartbeatTimer); } catch {} this.heartbeatTimer = null; }
+      if (this.heartbeatTimer) { try { (globalThis as any).clearInterval(this.heartbeatTimer); } catch { /* timer cleanup safe to swallow */ } this.heartbeatTimer = null; }
       this.scheduleReconnect();
     };
     s.onerror = (e: any) => {
@@ -173,18 +176,22 @@ export class DriftDlobWs {
         const msg = { type, channel: 'orderbook', markets };
         (this.socket as any).send(JSON.stringify(msg));
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.ws.flush_subscription', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
-    const minMs = Math.max(500, Number(getDriftConfig().wsReconnectMinMs || 1000));
-    const jitter = Math.floor(Math.random() * 500);
+    const baseMs = Math.max(500, Number(getDriftConfig().wsReconnectMinMs || 1000));
+    const maxMs = Math.max(baseMs, Number(getDriftConfig().wsReconnectMaxMs || 30000));
+    const delay = Math.min(maxMs, baseMs * Math.pow(1.5, this.reconnectAttempts));
+    const jitter = Math.floor(Math.random() * Math.min(1000, delay * 0.2));
+    this.reconnectAttempts++;
+    safeLog.debug('drift.ws.scheduleReconnect', { attempt: this.reconnectAttempts, delayMs: delay + jitter, cat: 'drift' });
     this.reconnectTimer = (globalThis as any).setTimeout(() => {
       this.reconnectTimer = null;
-      try { this.stop(); } catch {}
+      try { this.stop(); } catch (e: any) { safeLog.debug('drift.ws.reconnect_stop', { error: String(e?.message || e), cat: 'drift' }); }
       this.start();
-    }, minMs + jitter);
+    }, delay + jitter);
   }
 
   private normalizeL2(marketIndex: number, raw: L2Update): NormalizedL2 | null {
@@ -213,14 +220,15 @@ export class DriftDlobWs {
         symbol: (raw as any)?.symbol,
         updatedAt: Date.now(),
       };
-    } catch {
+    } catch (e: any) {
+      safeLog.debug('drift.ws.normalizeL2', { error: String(e?.message || e), cat: 'drift' });
       return null;
     }
   }
 
   // Map helpers: we need to translate between index and name when talking to DLOB
   private mapMarketIndexToName(idx: number): string | undefined {
-    try { return indexToSymbol(Number(idx)); } catch { return undefined; }
+    try { return indexToSymbol(Number(idx)); } catch (e: any) { safeLog.debug('drift.ws.map_index_to_name', { error: String(e?.message || e), cat: 'drift' }); return undefined; }
   }
 
   private resolveMarketIndex(marketName: string | undefined, raw: any): number | undefined {
@@ -228,10 +236,9 @@ export class DriftDlobWs {
       // If message carried numeric index, use it
       const idx = Number(raw?.marketIndex ?? raw?.market_index ?? raw?.market?.index);
       if (Number.isFinite(idx)) return idx;
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.ws.resolve_market_index', { error: String(e?.message || e), cat: 'drift' }); }
     if (!marketName) return undefined;
-    try { return symbolToIndex(String(marketName)); } catch { return undefined; }
+    try { return symbolToIndex(String(marketName)); } catch (e: any) { safeLog.debug('drift.ws.symbol_to_index', { error: String(e?.message || e), cat: 'drift' }); return undefined; }
   }
 }
-
 

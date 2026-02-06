@@ -1,6 +1,7 @@
 import type { Server as SocketIOServer } from 'socket.io';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { setIo } from '../server/realtime.js';
 
 type BotKind = 'trigger' | 'filler' | 'liquidator';
@@ -9,7 +10,7 @@ type IoProxy = Pick<SocketIOServer, 'emit'>;
 const kind = String(process.env.DRIFT_WORKER_KIND || '').trim() as BotKind;
 const rawCfg = String(process.env.DRIFT_WORKER_CONFIG || '{}');
 let cfg: any = {};
-try { cfg = JSON.parse(rawCfg || '{}'); } catch {}
+try { cfg = JSON.parse(rawCfg || '{}'); } catch (e: any) { safeLog.warn('drift.worker.config_parse', { error: String(e?.message || e), cat: 'drift' }); }
 const name = String(process.env.DRIFT_WORKER_NAME || cfg?.name || 'default').trim() || 'default';
 
 const secret = String(process.env.DRIFT_BOTS_SECRET || (CONFIG as any)?.driftBots?.secret || '');
@@ -33,9 +34,9 @@ const emitToMain = (event: string, payload: any) => {
     if (basicAuth) headers['authorization'] = basicAuth;
     const body = JSON.stringify({ event, payload });
     setImmediate(async () => {
-      try { await fetch(callbackUrl, { method: 'POST', headers, body }); } catch {}
+      try { await fetch(callbackUrl, { method: 'POST', headers, body }); } catch (e: any) { safeLog.debug('drift.worker.emit_callback', { error: String(e?.message || e), cat: 'drift' }); }
     });
-  } catch {}
+  } catch (e: any) { safeLog.debug('drift.worker.emit_to_main', { error: String(e?.message || e), cat: 'drift' }); }
 };
 
 const ioProxy: IoProxy = { emit: emitToMain as any };
@@ -67,16 +68,16 @@ async function start(): Promise<void> {
   } else {
     throw new Error(`unsupported_kind_${kind}`);
   }
-  try { logger.info('drift.worker.started', { kind, key, cat: 'drift' }); } catch {}
+  safeLog.info('drift.worker.started', { kind, key, cat: 'drift' });
 }
 
 function getStatus(): any {
-  try { return runner?.getStatus?.(); } catch {}
+  try { return runner?.getStatus?.(); } catch (e: any) { safeLog.debug('drift.worker.get_status', { error: String(e?.message || e), cat: 'drift' }); }
   return { running: true, name };
 }
 
 function sendStatus(): void {
-  try { (process as any).send?.({ type: 'status', key, kind, status: getStatus() }); } catch {}
+  try { (process as any).send?.({ type: 'status', key, kind, status: getStatus() }); } catch (e: any) { safeLog.debug('drift.worker.send_status', { error: String(e?.message || e), cat: 'drift' }); }
 }
 
 const statusTimer = setInterval(() => { sendStatus(); }, 5000);
@@ -85,16 +86,16 @@ process.on('message', async (msg: any) => {
   try {
     const id = msg?.id ? String(msg.id) : '';
     const respond = (ok: boolean, data?: any, error?: any) => {
-      try { (process as any).send?.({ id, ok, data, error: error ? String(error) : undefined }); } catch {}
+      try { (process as any).send?.({ id, ok, data, error: error ? String(error) : undefined }); } catch (e: any) { safeLog.debug('drift.worker.send_response', { error: String(e?.message || e), cat: 'drift' }); }
     };
     if (msg?.type === 'status') {
       respond(true, getStatus());
       return;
     }
     if (msg?.type === 'stop') {
-      try { runner?.stop?.(); } catch {}
+      try { runner?.stop?.(); } catch (e: any) { safeLog.debug('drift.worker.stop_runner', { error: String(e?.message || e), cat: 'drift' }); }
       respond(true, { ok: true });
-      try { clearInterval(statusTimer); } catch {}
+      try { clearInterval(statusTimer); } catch { /* timer cleanup safe to swallow */ }
       setTimeout(() => process.exit(0), 50);
       return;
     }
@@ -136,19 +137,18 @@ process.on('message', async (msg: any) => {
       }
     }
     if (id) respond(false, null, 'unknown_request');
-  } catch {}
+  } catch (e: any) { safeLog.warn('drift.worker.message_handler', { error: String(e?.message || e), cat: 'drift' }); }
 });
 
 process.on('SIGTERM', () => {
-  try { runner?.stop?.(); } catch {}
-  try { clearInterval(statusTimer); } catch {}
+  try { runner?.stop?.(); } catch (e: any) { safeLog.debug('drift.worker.sigterm_stop', { error: String(e?.message || e), cat: 'drift' }); }
+  try { clearInterval(statusTimer); } catch { /* timer cleanup safe to swallow */ }
   setTimeout(() => process.exit(0), 50);
 });
 
 start()
   .then(() => { sendStatus(); })
   .catch((e) => {
-    try { logger.error('drift.worker.start_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.error('drift.worker.start_failed', { error: String(e?.message || e), cat: 'drift' });
     sendStatus();
   });
-

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { DriftService } from './client.js';
 import { CONFIG } from '../utils/config.js';
 
@@ -55,9 +55,13 @@ export class MarketFeeCache {
             if (Number.isFinite(idx) && Number.isFinite(fee) && fee > 0) {
               this.perpFees.set(idx, fee / PERCENTAGE_PRECISION);
             }
-          } catch {}
+          } catch (e: any) {
+            safeLog.debug('drift.unwind.perp_fee_parse_failed', { error: String(e?.message || e), cat: 'drift' });
+          }
         }
-      } catch {}
+      } catch (e: any) {
+        safeLog.warn('drift.unwind.perp_markets_fetch_failed', { error: String(e?.message || e), cat: 'drift' });
+      }
 
       // Spot markets
       try {
@@ -69,20 +73,22 @@ export class MarketFeeCache {
             if (Number.isFinite(idx) && Number.isFinite(fee) && fee > 0) {
               this.spotFees.set(idx, fee / PERCENTAGE_PRECISION);
             }
-          } catch {}
+          } catch (e: any) {
+            safeLog.debug('drift.unwind.spot_fee_parse_failed', { error: String(e?.message || e), cat: 'drift' });
+          }
         }
-      } catch {}
+      } catch (e: any) {
+        safeLog.warn('drift.unwind.spot_markets_fetch_failed', { error: String(e?.message || e), cat: 'drift' });
+      }
 
       this.lastRefreshMs = Date.now();
-      try {
-        logger.info('drift.unwind.fee_cache_refreshed', {
-          perpMarkets: this.perpFees.size,
-          spotMarkets: this.spotFees.size,
-          cat: 'drift',
-        });
-      } catch {}
+      safeLog.info('drift.unwind.fee_cache_refreshed', {
+        perpMarkets: this.perpFees.size,
+        spotMarkets: this.spotFees.size,
+        cat: 'drift',
+      });
     } catch (e: any) {
-      try { logger.warn('drift.unwind.fee_cache_refresh_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      safeLog.warn('drift.unwind.fee_cache_refresh_failed', { error: String(e?.message || e), cat: 'drift' });
     }
   }
 
@@ -113,7 +119,9 @@ export class MarketFeeCache {
       const feeCfg: any = (CONFIG as any)?.drift?.liquidator?.feeAssumptions || {};
       const rate = Number(feeCfg.liqFeeRate);
       if (Number.isFinite(rate) && rate > 0) return rate;
-    } catch {}
+    } catch (e: any) {
+      safeLog.debug('drift.unwind.fallback_config_failed', { error: String(e?.message || e), cat: 'drift' });
+    }
     return this.fallbackRate;
   }
 }
@@ -166,7 +174,7 @@ export class UnwindQueue {
         this.inFlight++;
         this.execute(task)
           .catch((e: any) => {
-            try { logger.warn('drift.unwind.task_error', { id: task.id, error: String(e?.message || e), cat: 'drift' }); } catch {}
+            safeLog.warn('drift.unwind.task_error', { id: task.id, error: String(e?.message || e), cat: 'drift' });
           })
           .finally(() => {
             this.inFlight--;
@@ -200,10 +208,14 @@ export class UnwindQueue {
       const OrderType = (sdk as any)?.OrderType;
       const PositionDirection = (sdk as any)?.PositionDirection;
       let BN = (sdk as any)?.BN;
-      if (!BN) { try { const mod: any = await import('bn.js'); BN = (mod as any)?.default || (mod as any)?.BN || mod; } catch {} }
+      if (!BN) {
+        try { const mod: any = await import('bn.js'); BN = (mod as any)?.default || (mod as any)?.BN || mod; } catch (e: any) {
+          safeLog.debug('drift.unwind.bn_import_failed', { error: String(e?.message || e), cat: 'drift' });
+        }
+      }
 
-      // User was long (positive base) → we acquired long → close by going SHORT
-      // User was short (negative base) → we acquired short → close by going LONG
+      // User was long (positive base) -> we acquired long -> close by going SHORT
+      // User was short (negative base) -> we acquired short -> close by going LONG
       const isLong = task.baseAmountRaw > 0;
       const absBase = Math.abs(task.baseAmountRaw);
 
@@ -226,31 +238,27 @@ export class UnwindQueue {
       if (typeof drift?.placePerpOrder === 'function') {
         const result = await drift.placePerpOrder(params);
         const sig = typeof result === 'string' ? result : (result?.txSig || result?.signature || null);
-        try {
-          logger.info('drift.unwind.perp_ok', {
-            marketIndex: task.marketIndex,
-            direction: isLong ? 'SHORT' : 'LONG',
-            absBase,
-            sig,
-            ms: Date.now() - t0,
-            liquidatedUser: task.userPk,
-            notionalUsd: task.notionalUsd,
-            cat: 'drift',
-          });
-        } catch {}
-      } else {
-        try { logger.warn('drift.unwind.perp_unavailable', { marketIndex: task.marketIndex, cat: 'drift' }); } catch {}
-      }
-    } catch (e: any) {
-      try {
-        logger.warn('drift.unwind.perp_failed', {
+        safeLog.info('drift.unwind.perp_ok', {
           marketIndex: task.marketIndex,
-          error: String(e?.message || e),
-          liquidatedUser: task.userPk,
+          direction: isLong ? 'SHORT' : 'LONG',
+          absBase,
+          sig,
           ms: Date.now() - t0,
+          liquidatedUser: task.userPk,
+          notionalUsd: task.notionalUsd,
           cat: 'drift',
         });
-      } catch {}
+      } else {
+        safeLog.warn('drift.unwind.perp_unavailable', { marketIndex: task.marketIndex, cat: 'drift' });
+      }
+    } catch (e: any) {
+      safeLog.warn('drift.unwind.perp_failed', {
+        marketIndex: task.marketIndex,
+        error: String(e?.message || e),
+        liquidatedUser: task.userPk,
+        ms: Date.now() - t0,
+        cat: 'drift',
+      });
     }
   }
 
@@ -261,7 +269,7 @@ export class UnwindQueue {
     const connection: any = (DriftService.getInstance() as any)?.connection;
     if (!drift || !task.spotDepositAmountRaw || !task.spotDepositMarketIndex) return;
 
-    // USDC is always spot market index 0 — if we already received USDC, nothing to do
+    // USDC is always spot market index 0 -- if we already received USDC, nothing to do
     if (task.spotDepositMarketIndex === 0) return;
 
     const t0 = Date.now();
@@ -270,10 +278,14 @@ export class UnwindQueue {
       const sdk: any = await import('@drift-labs/sdk');
       const JupiterClient = (sdk as any)?.JupiterClient;
       let BN = (sdk as any)?.BN;
-      if (!BN) { try { const mod: any = await import('bn.js'); BN = (mod as any)?.default || (mod as any)?.BN || mod; } catch {} }
+      if (!BN) {
+        try { const mod: any = await import('bn.js'); BN = (mod as any)?.default || (mod as any)?.BN || mod; } catch (e: any) {
+          safeLog.debug('drift.unwind.bn_import_failed', { error: String(e?.message || e), cat: 'drift' });
+        }
+      }
 
       if (typeof drift?.swap !== 'function') {
-        try { logger.warn('drift.unwind.spot_swap_unavailable', { reason: 'drift.swap not a function', cat: 'drift' }); } catch {}
+        safeLog.warn('drift.unwind.spot_swap_unavailable', { reason: 'drift.swap not a function', cat: 'drift' });
         return;
       }
 
@@ -282,7 +294,7 @@ export class UnwindQueue {
         try {
           jupiterClient = new JupiterClient({ connection });
         } catch (e: any) {
-          try { logger.warn('drift.unwind.jupiter_client_init_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+          safeLog.warn('drift.unwind.jupiter_client_init_failed', { error: String(e?.message || e), cat: 'drift' });
         }
       }
 
@@ -297,27 +309,23 @@ export class UnwindQueue {
       });
 
       const sig = typeof result === 'string' ? result : (result?.txSig || result?.signature || null);
-      try {
-        logger.info('drift.unwind.spot_ok', {
-          inMarketIndex: task.spotDepositMarketIndex,
-          outMarketIndex: 0,
-          amountRaw: task.spotDepositAmountRaw,
-          sig,
-          ms: Date.now() - t0,
-          liquidatedUser: task.userPk,
-          cat: 'drift',
-        });
-      } catch {}
+      safeLog.info('drift.unwind.spot_ok', {
+        inMarketIndex: task.spotDepositMarketIndex,
+        outMarketIndex: 0,
+        amountRaw: task.spotDepositAmountRaw,
+        sig,
+        ms: Date.now() - t0,
+        liquidatedUser: task.userPk,
+        cat: 'drift',
+      });
     } catch (e: any) {
-      try {
-        logger.warn('drift.unwind.spot_failed', {
-          inMarketIndex: task.spotDepositMarketIndex,
-          error: String(e?.message || e),
-          liquidatedUser: task.userPk,
-          ms: Date.now() - t0,
-          cat: 'drift',
-        });
-      } catch {}
+      safeLog.warn('drift.unwind.spot_failed', {
+        inMarketIndex: task.spotDepositMarketIndex,
+        error: String(e?.message || e),
+        liquidatedUser: task.userPk,
+        ms: Date.now() - t0,
+        cat: 'drift',
+      });
     }
   }
 }

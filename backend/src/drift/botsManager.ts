@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 
 type BotKind = 'trigger' | 'filler' | 'liquidator';
 
@@ -33,7 +34,8 @@ function splitLines(buf: any): string[] {
     if (typeof buf === 'string') s = buf;
     else if (buf && typeof (buf as any).toString === 'function') s = (buf as any).toString('utf8');
     else s = String(buf);
-  } catch {
+  } catch (e: any) {
+    safeLog.debug('drift.worker.splitLines', { error: String(e?.message || e), cat: 'drift' });
     s = String(buf);
   }
   return s.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -117,7 +119,7 @@ function attachWorkerHandlers(info: WorkerInfo): void {
           info.lastSeenMs = Date.now();
         }
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.worker.message_handler', { error: String(e?.message || e), cat: 'drift' }); }
   });
   info.proc.stdout.on('data', (buf) => {
     for (const line of splitLines(buf)) {
@@ -131,7 +133,7 @@ function attachWorkerHandlers(info: WorkerInfo): void {
         } else {
           logger.info(line, ctx);
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.worker.stdout_parse', { error: String(e?.message || e), cat: 'drift' }); }
     }
   });
   info.proc.stderr.on('data', (buf) => {
@@ -139,15 +141,15 @@ function attachWorkerHandlers(info: WorkerInfo): void {
       try {
         const parsed = parseChildLog(line);
         logger.warn(parsed.raw, { cat: 'drift.worker', kind: info.kind, key: info.key, fromChild: parsed.isFormatted });
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.worker.stderr_parse', { error: String(e?.message || e), cat: 'drift' }); }
     }
   });
   info.proc.on('exit', (code, signal) => {
-    try { logger.warn('drift.worker.exit', { key: info.key, kind: info.kind, code, signal }); } catch {}
+    safeLog.warn('drift.worker.exit', { key: info.key, kind: info.kind, code, signal });
     workers.delete(info.key);
   });
   info.proc.on('error', (err) => {
-    try { logger.error('drift.worker.error', { key: info.key, kind: info.kind, error: String(err?.message || err) }); } catch {}
+    safeLog.error('drift.worker.error', { key: info.key, kind: info.kind, error: String(err?.message || err) });
     workers.delete(info.key);
   });
 }
@@ -168,7 +170,7 @@ export async function listBotsFresh(kind: BotKind): Promise<Array<{ key: string;
     try {
       const status = await sendRequest(w, 'status', null, 2000).catch(() => w.status);
       if (status) w.status = status;
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.worker.status_refresh', { error: String(e?.message || e), key: w.key, cat: 'drift' }); }
     out.push({ key: w.key, status: w.status || { running: true, name: w.name } });
   }
   return out;
@@ -219,15 +221,15 @@ export async function startBot(kind: BotKind, cfg: any): Promise<{ key: string; 
   };
   workers.set(key, info);
   attachWorkerHandlers(info);
-  try { logger.info('drift.worker.spawn', { key, kind, pid: child.pid, entry }); } catch {}
+  safeLog.info('drift.worker.spawn', { key, kind, pid: child.pid, entry });
   return { key, pid: child.pid };
 }
 
 export async function stopBot(key: string): Promise<boolean> {
   const w = workers.get(key);
   if (!w) return false;
-  try { await sendRequest(w, 'stop', null, 2000).catch(() => {}); } catch {}
-  try { w.proc.kill('SIGTERM'); } catch {}
+  try { await sendRequest(w, 'stop', null, 2000).catch(() => {}); } catch (e: any) { safeLog.debug('drift.worker.stop_request', { error: String(e?.message || e), key, cat: 'drift' }); }
+  try { w.proc.kill('SIGTERM'); } catch (e: any) { safeLog.debug('drift.worker.kill', { error: String(e?.message || e), key, cat: 'drift' }); }
   workers.delete(key);
   return true;
 }

@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { fetchDlobL2 } from './marketdata.js';
 import { getDriftConfig } from '../utils/driftConfig.js';
 import { DriftDlobWs } from './priceWs.js';
@@ -34,7 +35,7 @@ export class DriftPriceService {
   private constructor() {
     try {
       const enableWs = !!getDriftConfig().enableWsPrices;
-      try { logger.info('drift.price.ws_enabled', { cat: 'drift', enabled: enableWs }); } catch {}
+      safeLog.info('drift.price.ws_enabled', { cat: 'drift', enabled: enableWs });
       if (enableWs) {
         this.ws = new DriftDlobWs();
         this.ws.on('l2', (u: any) => {
@@ -57,12 +58,12 @@ export class DriftPriceService {
             this.stopHttpPolling(idx);
             this.notify(idx, sample);
             // Optional broadcast to UI
-            try { emit('drift-price', { marketIndex: idx, mid: sample.mid, bid: sample.bid, ask: sample.ask, oracle: sample.oracle, symbol: sample.symbol, source: 'ws' }); } catch {}
-          } catch {}
+            try { emit('drift-price', { marketIndex: idx, mid: sample.mid, bid: sample.bid, ask: sample.ask, oracle: sample.oracle, symbol: sample.symbol, source: 'ws' }); } catch (e: any) { safeLog.debug('drift.price.emit_ws', { error: String(e?.message || e), cat: 'drift' }); }
+          } catch (e: any) { safeLog.warn('drift.price.ws_l2_handler', { error: String(e?.message || e), cat: 'drift' }); }
         });
         this.ws.start().catch(() => {});
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.price.constructor', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   static getInstance(): DriftPriceService {
@@ -85,10 +86,10 @@ export class DriftPriceService {
         logger.info('drift.price.track_market', { cat: 'drift', marketIndex: idx, intervalMs, mode });
         this.trackLogByMarket.set(idx, { mode, lastAt: now });
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.price.track_log', { error: String(e?.message || e), cat: 'drift' }); }
     this.ensureSummaryTimer();
     if (enableWs && this.ws) {
-      try { this.ws.subscribeMarket(idx); } catch {}
+      try { this.ws.subscribeMarket(idx); } catch (e: any) { safeLog.debug('drift.price.ws_subscribe', { error: String(e?.message || e), cat: 'drift' }); }
       // Staleness watchdog: if WS stalls, ensure HTTP fallback polling (unless wsOnlyPrices)
       const staleMs = Math.max(1000, Number(getDriftConfig().priceStaleMs || 3000));
       const watchdog = () => {
@@ -104,11 +105,11 @@ export class DriftPriceService {
             // WS is fresh; stop HTTP polling if any
             this.stopHttpPolling(idx);
           }
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.price.watchdog', { error: String(e?.message || e), cat: 'drift' }); }
       };
       // Set or reset stale timer
       const prev = this.staleTimers.get(idx);
-      if (prev) { try { (globalThis as any).clearInterval(prev); } catch {} }
+      if (prev) { try { (globalThis as any).clearInterval(prev); } catch { /* timer cleanup safe to swallow */ } }
       const st: any = (globalThis as any).setInterval(watchdog, Math.max(500, Math.min(staleMs, 2000)));
       this.staleTimers.set(idx, st);
       // Also warmup via HTTP immediately until first WS arrives (unless wsOnlyPrices)
@@ -125,9 +126,9 @@ export class DriftPriceService {
     if (t) (globalThis as any).clearInterval(t);
     this.timers.delete(idx);
     const st: any = this.staleTimers.get(idx);
-    if (st) { try { (globalThis as any).clearInterval(st); } catch {} }
+    if (st) { try { (globalThis as any).clearInterval(st); } catch { /* timer cleanup safe to swallow */ } }
     this.staleTimers.delete(idx);
-    try { this.ws?.unsubscribeMarket(idx); } catch {}
+    try { this.ws?.unsubscribeMarket(idx); } catch (e: any) { safeLog.debug('drift.price.ws_unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   getPrice(marketIndex: number): PriceSample | undefined {
@@ -146,10 +147,10 @@ export class DriftPriceService {
       const timeoutMs = Math.max(400, Math.min(2000, Number(getDriftConfig().httpTimeoutMs || 1200)));
       let to: any = null;
       if (ac) {
-        try { to = (globalThis as any).setTimeout(() => { try { ac.abort(); } catch {} }, timeoutMs); } catch {}
+        try { to = (globalThis as any).setTimeout(() => { try { ac.abort(); } catch { /* abort safe to swallow */ } }, timeoutMs); } catch { /* timer cleanup safe to swallow */ }
       }
       const l2 = await fetchDlobL2(idx);
-      if (to) { try { (globalThis as any).clearTimeout(to); } catch {} }
+      if (to) { try { (globalThis as any).clearTimeout(to); } catch { /* timer cleanup safe to swallow */ } }
       if (!l2) throw new Error('no l2');
       const bid = l2.bid?.[0]?.price;
       const ask = l2.ask?.[0]?.price;
@@ -157,7 +158,7 @@ export class DriftPriceService {
       const sample: PriceSample = { marketIndex: idx, oracle: l2.oracle, mid, bid, ask, symbol: l2.symbol, updatedAt: Date.now(), source: 'http', stale: false };
       this.prices.set(idx, sample);
       this.notify(idx, sample);
-      try { emit('drift-price', { marketIndex: idx, mid: sample.mid, bid: sample.bid, ask: sample.ask, oracle: sample.oracle, symbol: sample.symbol, source: 'http' }); } catch {}
+      try { emit('drift-price', { marketIndex: idx, mid: sample.mid, bid: sample.bid, ask: sample.ask, oracle: sample.oracle, symbol: sample.symbol, source: 'http' }); } catch (e: any) { safeLog.debug('drift.price.emit_http', { error: String(e?.message || e), cat: 'drift' }); }
       this.backoffMs.delete(idx);
       if (Date.now() - start > 1000) {
         logger.warn('drift.price.poll_slow', { marketIndex: idx, ms: Date.now() - start, cat: 'drift' });
@@ -186,7 +187,7 @@ export class DriftPriceService {
 
   private stopHttpPolling(idx: number): void {
     const t: any = this.timers.get(idx);
-    if (t) { try { (globalThis as any).clearInterval(t); } catch {} }
+    if (t) { try { (globalThis as any).clearInterval(t); } catch { /* timer cleanup safe to swallow */ } }
     this.timers.delete(idx);
     this.nextPollAt.delete(idx);
     this.backoffMs.delete(idx);
@@ -204,16 +205,16 @@ export class DriftPriceService {
     // Auto-untrack when last listener removed and WS not tracking
     const set = this.priceListeners.get(idx);
     if (!set || set.size === 0) {
-      try { this.untrackMarket(idx); } catch {}
+      try { this.untrackMarket(idx); } catch (e: any) { safeLog.debug('drift.price.untrack_cleanup', { error: String(e?.message || e), cat: 'drift' }); }
     }
   }
 
   private notify(idx: number, sample: PriceSample): void {
-    try { driftEventIndex.markMarket(idx, 'price_update'); } catch {}
+    try { driftEventIndex.markMarket(idx, 'price_update'); } catch (e: any) { safeLog.debug('drift.price.event_index_mark', { error: String(e?.message || e), cat: 'drift' }); }
     const ls = this.priceListeners.get(idx);
     if (!ls || ls.size === 0) return;
     for (const fn of Array.from(ls)) {
-      try { fn(sample); } catch {}
+      try { fn(sample); } catch (e: any) { safeLog.debug('drift.price.listener_error', { error: String(e?.message || e), cat: 'drift' }); }
     }
   }
 
@@ -238,7 +239,7 @@ export class DriftPriceService {
           prices: priceCount,
           stale
         });
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.price.summary_log', { error: String(e?.message || e), cat: 'drift' }); }
     }, every);
   }
 
@@ -254,10 +255,9 @@ export class DriftPriceService {
             this.refresh(idx).catch(() => {});
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.price.scheduler_tick', { error: String(e?.message || e), cat: 'drift' }); }
     };
     this.scheduler = (globalThis as any).setInterval(tick, 150);
   }
 }
-
 

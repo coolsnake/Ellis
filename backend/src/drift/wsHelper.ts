@@ -1,6 +1,7 @@
 import { Connection } from '@solana/web3.js';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 
 /**
  * Get the current WebSocket readyState
@@ -24,7 +25,7 @@ export function getWebSocketReadyState(connection: Connection): number | undefin
     }
     
     if ((connection as any)?._rpcWebSocketConnected === true) return 1;
-  } catch {}
+  } catch (e: any) { safeLog.debug('ws.readyState.error', { error: String(e?.message || e), cat: 'drift' }); }
   return undefined;
 }
 
@@ -44,33 +45,29 @@ export async function waitUntilWsReady(connection: Connection, location = 'unkno
       if (rs === 0 || rs === 1) {
         const waited = Date.now() - started;
         if (waited > 200) {
-          try { 
-            logger.debug('ws.waitUntilReady.waited', { 
-              ms: waited, 
-              location,
-              cat: 'ws' 
-            }); 
-          } catch {}
+          safeLog.debug('ws.waitUntilReady.waited', { 
+            ms: waited, 
+            location,
+            cat: 'ws' 
+          });
         }
         return;
       }
       if (Date.now() >= deadline) {
-        try { 
-          logger.debug('ws.waitUntilReady.timeout', { 
-            ms: Date.now() - started, 
-            readyState: rs,
-            location,
-            cat: 'ws' 
-          }); 
-        } catch {}
+        safeLog.debug('ws.waitUntilReady.timeout', { 
+          ms: Date.now() - started, 
+          readyState: rs,
+          location,
+          cat: 'ws' 
+        });
         return;
       }
       if (rs === undefined || rs === 3) {
-        try { await (connection as any)?._rpcWebSocket?.connect?.(); } catch {}
+        try { await (connection as any)?._rpcWebSocket?.connect?.(); } catch (e: any) { safeLog.debug('ws.waitUntilReady.reconnect', { error: String(e?.message || e), cat: 'drift' }); }
       }
       await sleep(150);
     }
-  } catch {}
+  } catch (e: any) { safeLog.debug('ws.waitUntilReady.outer', { error: String(e?.message || e), cat: 'drift' }); }
 }
 
 /**
@@ -113,14 +110,12 @@ export function protectRpcWebSocket(connection: Connection, location = 'unknown'
           
           // Log blocked calls for subscription methods (reduce noise for other methods)
           if (method && (method.includes('Subscribe') || method.includes('subscribe'))) {
-            try {
-              logger.debug('ws.protect.blocked_call', {
-                method,
-                readyState: rs,
-                location,
-                cat: 'ws'
-              });
-            } catch {}
+            safeLog.debug('ws.protect.blocked_call', {
+              method,
+              readyState: rs,
+              location,
+              cat: 'ws'
+            });
           }
 
           // Return a resolved promise with null to prevent unhandled rejection crashes
@@ -132,29 +127,23 @@ export function protectRpcWebSocket(connection: Connection, location = 'unknown'
         return originalCall(...args);
       } catch (e) {
         // If any error in wrapper, log but return null to prevent crash
-        try {
-          logger.warn('ws.protect.wrapper_error', { 
-            error: String(e), 
-            location, 
-            cat: 'ws' 
-          });
-        } catch {}
+        safeLog.warn('ws.protect.wrapper_error', { 
+          error: String(e), 
+          location, 
+          cat: 'ws' 
+        });
         return Promise.resolve(null);
       }
     };
 
-    try {
-      logger.debug('ws.protect.enabled', { location, cat: 'ws' });
-    } catch {}
+    safeLog.debug('ws.protect.enabled', { location, cat: 'ws' });
   } catch (err) {
     // Non-fatal: log but continue
-    try {
-      logger.warn('ws.protect.failed', {
-        error: String(err),
-        location,
-        cat: 'ws'
-      });
-    } catch {}
+    safeLog.warn('ws.protect.failed', {
+      error: String(err),
+      location,
+      cat: 'ws'
+    });
   }
 }
 
@@ -174,22 +163,18 @@ export async function safeCloseWebSocket(connection: Connection, location = 'unk
         ws.close();
         // Brief wait for socket to transition to CLOSED state
         await new Promise(r => setTimeout(r, 50));
-        try { 
-          logger.debug('ws.safeClose.completed', { 
-            location,
-            readyState: ws.readyState,
-            cat: 'ws' 
-          }); 
-        } catch {}
+        safeLog.debug('ws.safeClose.completed', { 
+          location,
+          readyState: ws.readyState,
+          cat: 'ws' 
+        });
       }
     } catch (err) {
-      try {
-        logger.debug('ws.safeClose.error', {
-          error: String(err),
-          location,
-          cat: 'ws'
-        });
-      } catch {}
+      safeLog.debug('ws.safeClose.error', {
+        error: String(err),
+        location,
+        cat: 'ws'
+      });
     }
 
     // Clear internal subscription maps to prevent resubscription attempts
@@ -204,15 +189,12 @@ export async function safeCloseWebSocket(connection: Connection, location = 'unk
         clearTimeout(rpcWs._subscriptionUpdateTimer);
         rpcWs._subscriptionUpdateTimer = null;
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('ws.safeClose.cleanup_subscriptions', { error: String(e?.message || e), cat: 'drift' }); }
   } catch (err) {
-    try {
-      logger.warn('ws.safeClose.failed', {
-        error: String(err),
-        location,
-        cat: 'ws'
-      });
-    } catch {}
+    safeLog.warn('ws.safeClose.failed', {
+      error: String(err),
+      location,
+      cat: 'ws'
+    });
   }
 }
-

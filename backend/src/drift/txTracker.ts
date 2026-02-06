@@ -1,12 +1,12 @@
-// @ts-nocheck
-import { Connection } from '@solana/web3.js';
+import type { Connection, VersionedTransactionResponse } from '@solana/web3.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
-import { logger } from '../utils/logger.js';
 import { logFillerTx } from '../utils/tradeSummary.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { emit } from '../server/realtime.js';
 import { sendDriftNotification } from '../notifications/push.js';
+import { safeLog, guardExec } from './safeLogger.js';
+import { CONFIG } from '../utils/config.js';
 
 export type DriftAttemptIn = {
   sig: string;
@@ -60,18 +60,18 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
   
   try {
     recordAttempt(initialRecord);
-    try {
-      logger.info('drift.tx.attempt_recorded', {
-        cat: 'drift',
-        action: a.action,
-        sig: a.sig,
-        bot: a.bot,
-        marketIndex: a.marketIndex,
-        buildMs: a.buildMs,
-        sendMs: a.sendMs,
-      });
-    } catch {}
-  } catch {}
+    safeLog.info('drift.tx.attempt_recorded', {
+      cat: 'drift',
+      action: a.action,
+      sig: a.sig,
+      bot: a.bot,
+      marketIndex: a.marketIndex,
+      buildMs: a.buildMs,
+      sendMs: a.sendMs,
+    });
+  } catch (e: any) {
+    safeLog.warn('drift.tx.record_initial_failed', { sig: a.sig, error: String(e?.message || e), cat: 'drift' });
+  }
 
   // Now poll for confirmation asynchronously
   try {
@@ -80,7 +80,7 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
     // Poll up to 30 seconds for confirmation
     const maxWaitMs = 30_000;
     const pollIntervalMs = 2_000;
-    let tx: any = null;
+    let tx: VersionedTransactionResponse | null = null;
     let attempts = 0;
     const maxAttempts = Math.ceil(maxWaitMs / pollIntervalMs);
     
@@ -88,7 +88,13 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
       attempts += 1;
       try {
         tx = await withRpcLimit(() => conn.getTransaction(a.sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' }));
-      } catch {}
+      } catch (e: any) {
+        const msg = String(e?.message || e);
+        const is429 = msg.includes('429') || msg.includes('rate');
+        const isTimeout = msg.includes('timeout') || msg.includes('ETIMEDOUT');
+        safeLog.warn('drift.tx.poll_error', { sig: a.sig, attempt: attempts, is429, isTimeout, error: msg, cat: 'drift' });
+        if (is429) await new Promise(r => setTimeout(r, pollIntervalMs * 2));
+      }
       if (!tx && attempts < maxAttempts) {
         await new Promise((r) => setTimeout(r, pollIntervalMs));
       }
@@ -102,14 +108,16 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
           confirmationStatus: 'not_found',
           confirmMs: Date.now() - (Number(a.sentAtMs) || tConfirm0),
         });
-        logger.warn('drift.tx.not_confirmed', { cat: 'drift', sig: a.sig, attempts, maxWaitMs });
-      } catch {}
+      } catch (e: any) {
+        safeLog.warn('drift.tx.update_not_found_failed', { sig: a.sig, error: String(e?.message || e), cat: 'drift' });
+      }
+      safeLog.warn('drift.tx.not_confirmed', { cat: 'drift', sig: a.sig, attempts, maxWaitMs });
       return null;
     }
     
     const logs: string[] = tx.meta.logMessages || [];
     const feeLamports = Number(tx.meta.fee || 0);
-    const cuConsumed = Number((tx.meta as any)?.computeUnitsConsumed || extractCuFromLogs(logs) || 0);
+    const cuConsumed = Number((tx.meta as Record<string, unknown>)?.computeUnitsConsumed || extractCuFromLogs(logs) || 0);
     const cuPriceMicro = Number(a.priorityFeeMicroLamports || 0);
     const priorityLamports = Math.floor((cuConsumed * cuPriceMicro) / 1_000_000);
     const lamportsPaid = feeLamports + priorityLamports;
@@ -128,100 +136,96 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
       quoteFilled: parsed.quoteFilled,
       confirmMs,
       slot: Number(tx?.slot || 0) || undefined,
-      confirmationStatus: String((tx as any)?.confirmationStatus || (tx as any)?.meta?.confirmationStatus || 'confirmed'),
-      err: (tx as any)?.meta?.err,
+      confirmationStatus: String((tx as Record<string, unknown>)?.confirmationStatus || 'confirmed'),
+      err: tx?.meta?.err,
     };
 
     // Update the existing record with confirmation data
-    try { updateAttemptRecord(a.sig, out); } catch {}
+    try { updateAttemptRecord(a.sig, out); } catch (e: any) {
+      safeLog.warn('drift.tx.update_record_failed', { sig: a.sig, error: String(e?.message || e), cat: 'drift' });
+    }
 
-    try {
-      logger.info('drift.tx.tracked', {
-        cat: 'drift',
-        action: a.action,
-        sig: a.sig,
-        bot: a.bot,
-        marketIndex: a.marketIndex,
-        taker: a.taker,
-        makers: a.makers,
-        orderId: a.orderId,
-        cuConsumed: out.cuConsumed,
-        feeLamports,
-        priorityLamports,
-        lamportsPaid,
-        success,
-        baseFilled: out.baseFilled,
-        quoteFilled: out.quoteFilled,
-        fillerRewardQuote: out.fillerRewardQuote,
-        buildMs: a.buildMs,
-        sendMs: a.sendMs,
-        confirmMs: out.confirmMs,
-        slot: out.slot,
-        confirmationStatus: out.confirmationStatus,
-      });
-    } catch {}
+    safeLog.info('drift.tx.tracked', {
+      cat: 'drift',
+      action: a.action,
+      sig: a.sig,
+      bot: a.bot,
+      marketIndex: a.marketIndex,
+      taker: a.taker,
+      makers: a.makers,
+      orderId: a.orderId,
+      cuConsumed: out.cuConsumed,
+      feeLamports,
+      priorityLamports,
+      lamportsPaid,
+      success,
+      baseFilled: out.baseFilled,
+      quoteFilled: out.quoteFilled,
+      fillerRewardQuote: out.fillerRewardQuote,
+      buildMs: a.buildMs,
+      sendMs: a.sendMs,
+      confirmMs: out.confirmMs,
+      slot: out.slot,
+      confirmationStatus: out.confirmationStatus,
+    });
 
     // Persist a filler tx record for easy post-hoc analysis
-    try {
-      await logFillerTx({
-        ts: new Date().toISOString(),
-        action: a.action,
-        sig: a.sig,
-        marketIndex: a.marketIndex,
-        taker: a.taker,
-        makers: a.makers,
-        orderId: a.orderId,
-        success: out.success,
-        baseFilled: out.baseFilled ?? null,
-        quoteFilled: out.quoteFilled ?? null,
-        fillerRewardQuote: out.fillerRewardQuote ?? null,
-        feeLamports: out.feeLamports,
-        priorityLamports: out.priorityLamports,
-        lamportsPaid: out.lamportsPaid,
-        cuConsumed: out.cuConsumed ?? null,
-        bot: a.bot,
-        buildMs: a.buildMs,
-        sendMs: a.sendMs,
-        confirmMs: out.confirmMs ?? null,
-        slot: out.slot ?? null,
-        confirmationStatus: out.confirmationStatus || null,
-      });
-    } catch {}
+    await guardExec(() => logFillerTx({
+      ts: new Date().toISOString(),
+      action: a.action,
+      sig: a.sig,
+      marketIndex: a.marketIndex,
+      taker: a.taker,
+      makers: a.makers,
+      orderId: a.orderId,
+      success: out.success,
+      baseFilled: out.baseFilled ?? null,
+      quoteFilled: out.quoteFilled ?? null,
+      fillerRewardQuote: out.fillerRewardQuote ?? null,
+      feeLamports: out.feeLamports,
+      priorityLamports: out.priorityLamports,
+      lamportsPaid: out.lamportsPaid,
+      cuConsumed: out.cuConsumed ?? null,
+      bot: a.bot,
+      buildMs: a.buildMs,
+      sendMs: a.sendMs,
+      confirmMs: out.confirmMs ?? null,
+      slot: out.slot ?? null,
+      confirmationStatus: out.confirmationStatus || null,
+    }), 'drift.tx.logFillerTx', 'warn');
 
     // Send push notification for drift transaction
-    try {
-      sendDriftNotification({
-        ts,
-        sig: a.sig,
-        action: a.action,
-        marketIndex: a.marketIndex,
-        taker: a.taker,
-        makers: a.makers,
-        orderId: a.orderId,
-        priorityFeeMicroLamports: a.priorityFeeMicroLamports,
-        cuLimit: a.cuLimit,
-        bot: a.bot,
-        buildMs: a.buildMs,
-        sendMs: a.sendMs,
-        sentAtMs: a.sentAtMs,
-        success: out.success,
-        feeLamports: out.feeLamports,
-        priorityLamports: out.priorityLamports,
-        lamportsPaid: out.lamportsPaid,
-        cuConsumed: out.cuConsumed,
-        fillerRewardQuote: out.fillerRewardQuote,
-        baseFilled: out.baseFilled,
-        quoteFilled: out.quoteFilled,
-        confirmMs: out.confirmMs,
-        slot: out.slot,
-        confirmationStatus: out.confirmationStatus,
-        err: out.err,
-      }).catch(() => {});
-    } catch {}
+    await guardExec(() => sendDriftNotification({
+      ts,
+      sig: a.sig,
+      action: a.action,
+      marketIndex: a.marketIndex,
+      taker: a.taker,
+      makers: a.makers,
+      orderId: a.orderId,
+      priorityFeeMicroLamports: a.priorityFeeMicroLamports,
+      cuLimit: a.cuLimit,
+      bot: a.bot,
+      buildMs: a.buildMs,
+      sendMs: a.sendMs,
+      sentAtMs: a.sentAtMs,
+      success: out.success,
+      feeLamports: out.feeLamports,
+      priorityLamports: out.priorityLamports,
+      lamportsPaid: out.lamportsPaid,
+      cuConsumed: out.cuConsumed,
+      fillerRewardQuote: out.fillerRewardQuote,
+      baseFilled: out.baseFilled,
+      quoteFilled: out.quoteFilled,
+      confirmMs: out.confirmMs,
+      slot: out.slot,
+      confirmationStatus: out.confirmationStatus,
+      err: out.err,
+    }), 'drift.tx.sendNotification', 'debug');
 
     return out;
   } catch (e: any) {
-    try { logger.warn('drift.tx.track_error', { cat: 'drift', sig: a.sig, err: String(e?.message || e) }); } catch {}
+    safeLog.warn('drift.tx.track_error', { cat: 'drift', sig: a.sig, err: String(e?.message || e) });
     return null;
   }
 }
@@ -243,28 +247,53 @@ function extractDriftFillStats(logs: string[]): { baseFilled?: number; quoteFill
   try {
     const m = joined.match(/filler.*reward[^\d]*(\d+)/i);
     if (m) fillerRewardQuote = Number(m[1]);
-  } catch {}
+  } catch (e: any) {
+    safeLog.debug('drift.tx.extractFillStats.regex_failed', { error: String(e?.message || e), cat: 'drift' });
+  }
   return { success, fillerRewardQuote };
 }
 
 // Persistence / aggregation
 type AttemptRecord = DriftAttemptIn & DriftAttemptOut & { ts: number };
+const MAX_ATTEMPTS_STORE_DEFAULT = 10_000;
+function getMaxAttemptsStore(): number {
+  try {
+    const v = Number((CONFIG as Record<string, any>)?.drift?.maxAttemptStoreSize);
+    if (Number.isFinite(v) && v > 0) return v;
+  } catch { /* config read failure - use default */ }
+  return MAX_ATTEMPTS_STORE_DEFAULT;
+}
 const attemptsStore: AttemptRecord[] = [];
 const fsPath = path.resolve(process.cwd(), 'logs', 'keeper_attempts.jsonl');
 
 async function appendJsonl(obj: any) {
   try {
     const dir = path.dirname(fsPath);
-    await fs.mkdir(dir, { recursive: true } as any).catch(() => {});
+    await fs.mkdir(dir, { recursive: true }).catch(() => {});
     await fs.appendFile(fsPath, JSON.stringify(obj) + '\n');
-  } catch {}
+  } catch (e: any) {
+    safeLog.debug('drift.tx.appendJsonl.failed', { error: String(e?.message || e), cat: 'drift' });
+  }
 }
 
 export function recordAttempt(rec: AttemptRecord): void {
-  try { attemptsStore.push(rec); } catch {}
-  try { appendJsonl(rec).catch(() => {}); } catch {}
+  try {
+    attemptsStore.push(rec);
+    // Evict oldest when over cap to prevent unbounded memory growth
+    const cap = getMaxAttemptsStore();
+    if (attemptsStore.length > cap) {
+      attemptsStore.splice(0, attemptsStore.length - cap);
+    }
+  } catch (e: any) {
+    safeLog.warn('drift.tx.recordAttempt.push_failed', { error: String(e?.message || e), cat: 'drift' });
+  }
+  try { appendJsonl(rec).catch(() => {}); } catch (e: any) {
+    safeLog.debug('drift.tx.recordAttempt.persist_failed', { error: String(e?.message || e), cat: 'drift' });
+  }
   // Emit real-time event for frontend
-  try { emit('drift-tx', { type: 'new', record: rec }); } catch {}
+  try { emit('drift-tx', { type: 'new', record: rec }); } catch (e: any) {
+    safeLog.debug('drift.tx.recordAttempt.emit_failed', { error: String(e?.message || e), cat: 'drift' });
+  }
 }
 
 /**
@@ -278,13 +307,19 @@ export function updateAttemptRecord(sig: string, update: Partial<DriftAttemptOut
       if (attemptsStore[i].sig === sig) {
         Object.assign(attemptsStore[i], update);
         // Append the updated record to JSONL for persistence
-        try { appendJsonl({ ...attemptsStore[i], _updated: Date.now() }).catch(() => {}); } catch {}
+        try { appendJsonl({ ...attemptsStore[i], _updated: Date.now() }).catch(() => {}); } catch (e: any) {
+          safeLog.debug('drift.tx.updateRecord.persist_failed', { sig, error: String(e?.message || e), cat: 'drift' });
+        }
         // Emit real-time event for frontend
-        try { emit('drift-tx', { type: 'update', record: attemptsStore[i] }); } catch {}
+        try { emit('drift-tx', { type: 'update', record: attemptsStore[i] }); } catch (e: any) {
+          safeLog.debug('drift.tx.updateRecord.emit_failed', { sig, error: String(e?.message || e), cat: 'drift' });
+        }
         break;
       }
     }
-  } catch {}
+  } catch (e: any) {
+    safeLog.warn('drift.tx.updateRecord.failed', { sig, error: String(e?.message || e), cat: 'drift' });
+  }
 }
 
 async function readJsonlTail(filePath: string, maxBytes: number): Promise<string[]> {
@@ -303,7 +338,7 @@ async function readJsonlTail(filePath: string, maxBytes: number): Promise<string
       if (start > 0) lines.shift(); // drop partial line
       return lines.filter((l) => l && l.trim().length > 0);
     } finally {
-      try { await fh.close(); } catch {}
+      try { await fh.close(); } catch { /* file handle close is safe to swallow */ }
     }
   } catch {
     return [];
@@ -320,7 +355,7 @@ export async function readAttemptHistory(params: { limit?: number; maxBytes?: nu
       if (obj && typeof obj === 'object' && Number.isFinite(Number(obj.ts || 0))) {
         items.push(obj as AttemptRecord);
       }
-    } catch {}
+    } catch { /* individual JSONL line parse failure is expected for malformed entries */ }
   }
   const sinceMs = Number(params.sinceMs || 0);
   let filtered = items;
@@ -362,11 +397,11 @@ export function summarizeAttemptRecords(records: AttemptRecord[], windowMs: numb
   const confirmVals: number[] = [];
   for (const r of slice) {
     if (r.success) successes += 1;
-    costLamports += Number((r as any).lamportsPaid || 0);
-    if (r.action === 'fill') revenueQuote += Number((r as any).fillerRewardQuote || 0);
-    if (Number.isFinite(Number((r as any).buildMs))) buildVals.push(Number((r as any).buildMs));
-    if (Number.isFinite(Number((r as any).sendMs))) sendVals.push(Number((r as any).sendMs));
-    if (Number.isFinite(Number((r as any).confirmMs))) confirmVals.push(Number((r as any).confirmMs));
+    costLamports += Number(r.lamportsPaid || 0);
+    if (r.action === 'fill') revenueQuote += Number(r.fillerRewardQuote || 0);
+    if (Number.isFinite(Number(r.buildMs))) buildVals.push(Number(r.buildMs));
+    if (Number.isFinite(Number(r.sendMs))) sendVals.push(Number(r.sendMs));
+    if (Number.isFinite(Number(r.confirmMs))) confirmVals.push(Number(r.confirmMs));
   }
   const failures = Math.max(0, attempts - successes);
   const failureRate = attempts > 0 ? failures / attempts : 0;
@@ -414,9 +449,9 @@ export function getMetrics(params: { windowMs: number; action?: 'fill' | 'trigge
     if (r.success) successes += 1;
     costLamports += Number(r.lamportsPaid || 0);
     if (r.action === 'fill') revenueQuote += Number(r.fillerRewardQuote || 0);
-    if (Number.isFinite(Number((r as any).buildMs))) buildVals.push(Number((r as any).buildMs));
-    if (Number.isFinite(Number((r as any).sendMs))) sendVals.push(Number((r as any).sendMs));
-    if (Number.isFinite(Number((r as any).confirmMs))) confirmVals.push(Number((r as any).confirmMs));
+    if (Number.isFinite(Number(r.buildMs))) buildVals.push(Number(r.buildMs));
+    if (Number.isFinite(Number(r.sendMs))) sendVals.push(Number(r.sendMs));
+    if (Number.isFinite(Number(r.confirmMs))) confirmVals.push(Number(r.confirmMs));
   }
   const failures = Math.max(0, attempts - successes);
   const failureRate = attempts > 0 ? failures / attempts : 0;

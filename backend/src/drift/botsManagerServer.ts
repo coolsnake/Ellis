@@ -2,6 +2,7 @@ import express from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { setIo } from '../server/realtime.js';
 import { createTriggerRouter } from '../server/routes/strategies/trigger.js';
 import { createFillerRouter } from '../server/routes/strategies/filler.js';
@@ -32,7 +33,8 @@ const isLocalRequest = (req: express.Request): boolean => {
     const ipRaw = String(req.socket?.remoteAddress || req.ip || '');
     const ip = ipRaw.replace('::ffff:', '');
     return ip === '127.0.0.1' || ip === '::1';
-  } catch {
+  } catch (e: any) {
+    safeLog.debug('drift.bots.ip_check', { error: String(e?.message || e), cat: 'drift' });
     return false;
   }
 };
@@ -46,7 +48,8 @@ app.use((req, res, next) => {
     }
     if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     return next();
-  } catch {
+  } catch (e: any) {
+    safeLog.warn('drift.bots.auth_middleware', { error: String(e?.message || e), cat: 'drift' });
     return res.status(401).json({ error: 'unauthorized' });
   }
 });
@@ -54,28 +57,28 @@ app.use((req, res, next) => {
 const emitToMain = (event: string, payload: any) => {
   try {
     if (!callbackUrl) {
-      try { logger.warn('drift.bots.emit_no_callback', { event, cat: 'drift' }); } catch {}
+      safeLog.warn('drift.bots.emit_no_callback', { event, cat: 'drift' });
       return;
     }
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (secret) headers['x-drift-bots-secret'] = secret;
     if (basicAuth) headers['authorization'] = basicAuth;
     const body = JSON.stringify({ event, payload });
-    try { logger.info('drift.bots.emit_to_main', { event, callbackUrl, payloadKeys: payload ? Object.keys(payload) : [], cat: 'drift' }); } catch {}
+    safeLog.info('drift.bots.emit_to_main', { event, callbackUrl, payloadKeys: payload ? Object.keys(payload) : [], cat: 'drift' });
     setImmediate(async () => {
       try {
         const res = await fetch(callbackUrl, { method: 'POST', headers, body });
         if (res.ok) {
-          try { logger.info('drift.bots.emit_ok', { event, status: res.status, cat: 'drift' }); } catch {}
+          safeLog.info('drift.bots.emit_ok', { event, status: res.status, cat: 'drift' });
         } else {
-          try { logger.warn('drift.bots.emit_failed', { event, status: res.status, statusText: res.statusText, cat: 'drift' }); } catch {}
+          safeLog.warn('drift.bots.emit_failed', { event, status: res.status, statusText: res.statusText, cat: 'drift' });
         }
       } catch (e: any) {
-        try { logger.warn('drift.bots.emit_error', { event, error: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.bots.emit_error', { event, error: String(e?.message || e), cat: 'drift' });
       }
     });
   } catch (e: any) {
-    try { logger.error('drift.bots.emit_exception', { event, error: String(e?.message || e), cat: 'drift' }); } catch {}
+    safeLog.error('drift.bots.emit_exception', { event, error: String(e?.message || e), cat: 'drift' });
   }
 };
 
@@ -97,6 +100,6 @@ api.use(createLiquidatorRouter(ioProxy as any));
 app.use('/api', api);
 
 app.listen(port, () => {
-  try { logger.info('drift.bots.manager.started', { port, callbackUrl, cat: 'drift' }); } catch {}
+  safeLog.info('drift.bots.manager.started', { port, callbackUrl, cat: 'drift' });
 });
 

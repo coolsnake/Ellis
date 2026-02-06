@@ -1,5 +1,6 @@
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { driftEventIndex } from './eventIndex.js';
 
 export type Dl2Level = { price: number; size: number };
@@ -34,9 +35,7 @@ const shouldSkipDlob = (marketIndex: number, kind: DlobKind): boolean => {
 };
 const markDlobBadRequest = (marketIndex: number, status: number | undefined, kind: DlobKind): void => {
   dlobBadRequestUntil[kind].set(Number(marketIndex), Date.now() + DLOB_BAD_REQUEST_COOLDOWN_MS);
-  try {
-    logger.warn('drift.dlob.bad_request_skip', { marketIndex, status, kind, cooldownMs: DLOB_BAD_REQUEST_COOLDOWN_MS, cat: 'drift' });
-  } catch {}
+  safeLog.warn('drift.dlob.bad_request_skip', { marketIndex, status, kind, cooldownMs: DLOB_BAD_REQUEST_COOLDOWN_MS, cat: 'drift' });
 };
 
 const rawDlobScale = Number((CONFIG as any)?.drift?.dlobPriceScale);
@@ -51,7 +50,7 @@ export async function fetchDlobL2(marketIndex: number): Promise<DlobL2 | null> {
   const base = (CONFIG as any).drift?.dlobUrl || 'https://dlob.drift.trade';
   const cluster = (CONFIG as any).drift?.cluster || 'mainnet-beta';
   if (shouldSkipDlob(marketIndex, 'l2')) {
-    try { logger.debug('drift.dlob.skip_bad_request', { marketIndex, kind: 'l2', cat: 'drift' }); } catch {}
+    safeLog.debug('drift.dlob.skip_bad_request', { marketIndex, kind: 'l2', cat: 'drift' });
     return null;
   }
   const candidates = [
@@ -67,7 +66,7 @@ export async function fetchDlobL2(marketIndex: number): Promise<DlobL2 | null> {
       logger.debug('drift.dlob.fetch_l2', { url, marketIndex, cat: 'drift' });
       const res = await fetchAny(url as any, { headers: { Accept: 'application/json' } } as any);
       if (res && typeof res.status === 'number' && res.status === 429) {
-        try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=drift kind=dlob_l2 marketIndex=${marketIndex}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+        try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=drift kind=dlob_l2 marketIndex=${marketIndex}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch (e: any) { safeLog.debug('drift.dlob.emit_429', { error: String(e?.message || e), cat: 'drift' }); }
         logger.warn('drift.dlob 429', { marketIndex, url, cat: 'drift' });
         throw new Error('HTTP 429');
       }
@@ -109,7 +108,7 @@ export async function fetchDlobTopMakers(marketIndex: number): Promise<DlobTopMa
   const base = (CONFIG as any).drift?.dlobUrl || 'https://dlob.drift.trade';
   const cluster = (CONFIG as any).drift?.cluster || 'mainnet-beta';
   if (shouldSkipDlob(marketIndex, 'topMakers')) {
-    try { logger.debug('drift.dlob.skip_bad_request', { marketIndex, kind: 'topMakers', cat: 'drift' }); } catch {}
+    safeLog.debug('drift.dlob.skip_bad_request', { marketIndex, kind: 'topMakers', cat: 'drift' });
     return null;
   }
   const sides: Array<'bid' | 'ask'> = ['bid', 'ask'];
@@ -168,7 +167,7 @@ export async function fetchDlobTopMakers(marketIndex: number): Promise<DlobTopMa
     for (const [maker, size] of makerSizes.entries()) {
       out.makers.push({ maker, marketIndex, size });
     }
-    try { driftEventIndex.ingestMakers(marketIndex, out.makers.map((m) => m.maker), 'dlob_top'); } catch {}
+    try { driftEventIndex.ingestMakers(marketIndex, out.makers.map((m) => m.maker), 'dlob_top'); } catch (e: any) { safeLog.debug('drift.dlob.ingest_makers_top', { error: String(e?.message || e), cat: 'drift' }); }
     return out;
   }
   if (isBadRequestStatus(lastStatus)) {
@@ -182,7 +181,7 @@ export async function fetchDlobL3Makers(marketIndex: number): Promise<string[]> 
   const base = (CONFIG as any).drift?.dlobUrl || 'https://dlob.drift.trade';
   const cluster = (CONFIG as any).drift?.cluster || 'mainnet-beta';
   if (shouldSkipDlob(marketIndex, 'l3')) {
-    try { logger.debug('drift.dlob.skip_bad_request', { marketIndex, kind: 'l3', cat: 'drift' }); } catch {}
+    safeLog.debug('drift.dlob.skip_bad_request', { marketIndex, kind: 'l3', cat: 'drift' });
     return [];
   }
   const candidates = [
@@ -216,7 +215,7 @@ export async function fetchDlobL3Makers(marketIndex: number): Promise<string[]> 
           }
         };
         dig(bids); dig(asks);
-        try { driftEventIndex.ingestMakers(marketIndex, Array.from(makers), 'dlob_l3'); } catch {}
+        try { driftEventIndex.ingestMakers(marketIndex, Array.from(makers), 'dlob_l3'); } catch (e: any) { safeLog.debug('drift.dlob.ingest_makers_l3', { error: String(e?.message || e), cat: 'drift' }); }
         return Array.from(makers);
       } catch (e: any) {
         lastError = e;

@@ -43,6 +43,7 @@ export type DriftConfig = {
   dlobPriceScale?: number;
   wsHeartbeatMs?: number;
   wsReconnectMinMs?: number;
+  wsReconnectMaxMs?: number;
   wsResubChunkSize?: number;
   httpTimeoutMs?: number;
   liquidator?: LiquidatorCfg;
@@ -69,6 +70,7 @@ export function getDriftConfig(): DriftConfig {
     dlobPriceScale: Number(d.dlobPriceScale || 1_000_000),
     wsHeartbeatMs: Number(d.wsHeartbeatMs || 15000),
     wsReconnectMinMs: Number(d.wsReconnectMinMs || 1000),
+    wsReconnectMaxMs: Number(d.wsReconnectMaxMs || 30000),
     wsResubChunkSize: Number(d.wsResubChunkSize || 25),
     httpTimeoutMs: Number(d.httpTimeoutMs || 1200),
     liquidator: d.liquidator || {},

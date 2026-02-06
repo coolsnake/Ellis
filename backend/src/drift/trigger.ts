@@ -60,6 +60,7 @@ import {
 	PythLazerSubscriber,
 } from '../pythLazerSubscriber';
 import { HermesClient } from '@pythnetwork/hermes-client';
+import { safeLog, guardExec } from './safeLogger.js';
 import { OracleUpdater } from './oracles/oracleUpdater.js';
 
 const TRIGGER_ORDER_COOLDOWN_MS = 10000; // time to wait between triggering an order
@@ -297,7 +298,7 @@ export class TriggerBot implements Bot {
 			// Shared updater for reuse later (even if we still keep the existing code paths here)
 			try {
 				this.oracleUpdater = new OracleUpdater({ sdk: require('@drift-labs/sdk'), driftClient: this.driftClient, cluster: this.globalConfig.driftEnv });
-			} catch {}
+			} catch (e: any) { safeLog.warn('drift.trigger.oracle_updater_init', { error: String(e?.message || e), cat: 'drift' }); }
 
 			for (const market of [...spotMarkets, ...perpMarkets]) {
 				const isSpotMarket = 'precision' in market;
@@ -507,7 +508,7 @@ export class TriggerBot implements Bot {
 			const { getFreshBlockhashOrFetch } = await import('../utils/blockhash.js');
 			const bh = await getFreshBlockhashOrFetch(300);
 			if (bh) return bh;
-		} catch {}
+		} catch (e: any) { safeLog.debug('drift.trigger.blockhash_fetch', { error: String(e?.message || e), cat: 'drift' }); }
 		// Fallback to direct RPC if shared fetch failed
 		const recentBlockhash = await (await import('../utils/rpcLimiter.js')).withRpcLimit(
 			() => this.driftClient.connection.getLatestBlockhash({ commitment: 'confirmed' }),

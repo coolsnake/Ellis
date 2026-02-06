@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { ComputeBudgetProgram, PublicKey, TransactionMessage, VersionedTransaction, AddressLookupTableAccount } from '@solana/web3.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { buildTipIx } from '../execution/jitoTip.js';
@@ -11,6 +10,7 @@ import { hotlist } from './hotlist.js';
 import { driftEventIndex } from './eventIndex.js';
 import { OracleUpdater } from './oracles/oracleUpdater.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { CONFIG } from '../utils/config.js';
 import { getPriceByMint } from '../server/priceStore.js';
 import { hasInfra, fetchFillNodes, fetchUserAccounts, fetchEventIndex, waitForInfraReady } from './infraClient.js';
@@ -221,7 +221,7 @@ export class DriftFillerRunner {
       const svc = DriftService.getInstance() as any;
       (svc as any).registerBot?.(this.botKey);
       await (svc as any).init?.();
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.filler.service_init', { error: String(e?.message || e), cat: 'drift' }); }
     const svc: any = DriftService.getInstance();
     this.connection = (svc as any).connection;
     this.client = (svc as any).client;
@@ -245,7 +245,7 @@ export class DriftFillerRunner {
     this.sdk = await import('@drift-labs/sdk');
     this.useInfra = hasInfra();
     // Configure throttle early (reduced gaps, higher concurrency for lower latency)
-    try { (svc as any).configureTxThrottle?.({ minGapMs: 30, maxInFlight: 8 }); } catch {}
+    try { (svc as any).configureTxThrottle?.({ minGapMs: 30, maxInFlight: 8 }); } catch (e: any) { safeLog.warn('drift.filler.configure_throttle', { error: String(e?.message || e), cat: 'drift' }); }
 
     // Kick off discovery after infra warmup, then start timers
     setImmediate(async () => {
@@ -256,16 +256,16 @@ export class DriftFillerRunner {
         if (requireWarm) {
           if (this.useInfra) {
             const ok = await waitForInfraReady(Number(driftCfg?.infraReadyTimeoutMs ?? driftCfg?.warmupTimeoutMs ?? 30000));
-            try { logger.info('drift.filler.infra_gate', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, ok }); } catch {}
+            safeLog.info('drift.filler.infra_gate', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, ok });
           } else {
             const ok = await (svcGate as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
-            try { logger.info('drift.filler.warmup_gate', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, ok }); } catch {}
+            safeLog.info('drift.filler.warmup_gate', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, ok });
           }
         }
         const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
         await withRpcTimeout(this.initDiscovery(), 5000, 'initDiscovery');
       } catch (e: any) {
-        try { logger.warn('drift.filler.discovery_degraded', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+        safeLog.warn('drift.filler.discovery_degraded', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) });
       }
       // Start backstop loop timer only after discovery
       const tick = async () => {
@@ -282,7 +282,7 @@ export class DriftFillerRunner {
         const summaryOnly = !!driftCfg?.loopSummaryOnly;
         const every = Math.max(2000, Number(driftCfg?.loopSummaryIntervalMs ?? 10000));
         if (summaryOnly) {
-          if (this._summaryTimer) { try { clearInterval(this._summaryTimer); } catch {} this._summaryTimer = null; }
+          if (this._summaryTimer) { try { clearInterval(this._summaryTimer); } catch { /* timer cleanup safe to swallow */ } this._summaryTimer = null; }
           if (!this._summary) this._summary = { since: Date.now(), loops: 0, planned: 0, sent: 0, processed: 0, skipped: {}, markets: { total: 0, paused: 0, oracleStale: 0 }, scanModes: { full: 0, targeted: 0 } };
           this._summaryTimer = setInterval(() => {
             try {
@@ -302,10 +302,10 @@ export class DriftFillerRunner {
                 index: s.indexStats,
               });
               this._summary = { since: Date.now(), loops: 0, planned: 0, sent: 0, processed: 0, skipped: {}, markets: { total: 0, paused: 0, oracleStale: 0 }, scanModes: { full: 0, targeted: 0 } };
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.loop_summary_emit', { error: String(e?.message || e), cat: 'drift' }); }
           }, every);
         }
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.filler.summary_timer_init', { error: String(e?.message || e), cat: 'drift' }); }
       // Slot-driven tick once slotSubscriber is available
       try {
         const onSlot = () => { try { setImmediate(() => { tick().catch(() => {}); }); } catch { /* noop */ } };
@@ -314,7 +314,7 @@ export class DriftFillerRunner {
         } else {
           this.slotSubscriber?.eventEmitter?.on?.('slotUpdate', onSlot);
         }
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.filler.slot_subscriber_init', { error: String(e?.message || e), cat: 'drift' }); }
     });
   }
 
@@ -323,14 +323,14 @@ export class DriftFillerRunner {
       clearInterval(this.timer as NodeJS.Timeout);
       this.timer = null;
     }
-    if (this.bhWarmTimer) { try { clearInterval(this.bhWarmTimer); } catch {} this.bhWarmTimer = null; }
-    if (this.altRefreshTimer) { try { clearInterval(this.altRefreshTimer); } catch {} this.altRefreshTimer = null; }
-    if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch {} this.wsNudgeTimer = null; }
-    if (this.eventIndexSweepTimer) { try { clearInterval(this.eventIndexSweepTimer); } catch {} this.eventIndexSweepTimer = null; }
+    if (this.bhWarmTimer) { try { clearInterval(this.bhWarmTimer); } catch { /* timer cleanup safe to swallow */ } this.bhWarmTimer = null; }
+    if (this.altRefreshTimer) { try { clearInterval(this.altRefreshTimer); } catch { /* timer cleanup safe to swallow */ } this.altRefreshTimer = null; }
+    if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch { /* timer cleanup safe to swallow */ } this.wsNudgeTimer = null; }
+    if (this.eventIndexSweepTimer) { try { clearInterval(this.eventIndexSweepTimer); } catch { /* timer cleanup safe to swallow */ } this.eventIndexSweepTimer = null; }
     this.state.running = false;
     this.abort = true;
     logger.info('drift.filler.stopped', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
-    try { (DriftService.getInstance() as any).unregisterBot?.(this.botKey); } catch {}
+    try { (DriftService.getInstance() as any).unregisterBot?.(this.botKey); } catch (e: any) { safeLog.debug('drift.filler.unregister_bot', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async initDiscovery(): Promise<void> {
@@ -344,17 +344,17 @@ export class DriftFillerRunner {
       this.orderSubscriber = (infra as any).orderSubscriber;
       logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, shared: true });
     } else {
-      try { logger.info('drift.filler.infra_remote', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name }); } catch {}
+      safeLog.info('drift.filler.infra_remote', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
     }
     try {
       if (!this.oracleUpdater) {
         this.oracleUpdater = new OracleUpdater({ sdk: this.sdk, driftClient: this.client, cluster: (CONFIG as any)?.drift?.cluster || 'mainnet-beta' });
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.filler.oracle_updater_init', { error: String(e?.message || e), cat: 'drift' }); }
     // Start user prefetcher once shared infra is ready
     if (!this.useInfra) {
-      try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
-      try { this.setupEventIndex(); } catch {}
+      try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch (e: any) { safeLog.warn('drift.filler.start_user_prefetcher', { error: String(e?.message || e), cat: 'drift' }); }
+      try { this.setupEventIndex(); } catch (e: any) { safeLog.warn('drift.filler.setup_event_index', { error: String(e?.message || e), cat: 'drift' }); }
     }
     // Initialize blockhash subscriber and priority fee strategy
     try {
@@ -375,7 +375,7 @@ export class DriftFillerRunner {
             1,
             { module: 'drift', method: 'slotSubscribe' }
           );
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.filler.blockhash_subscriber_init', { error: String(e?.message || e), cat: 'drift' }); }
       }
       if (PriorityFeeSubscriber) {
         this.priorityFeeSubscriber = new PriorityFeeSubscriber({
@@ -407,23 +407,23 @@ export class DriftFillerRunner {
             new PublicKey('8UJgxaiQx5nTrdDgph5FiahMmzduuLTLf5WmsPegYA6W'),
             this.client?.program?.programId,
           ].filter(Boolean));
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.filler.priority_fee_addresses', { error: String(e?.message || e), cat: 'drift' }); }
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.filler.subscriber_init', { error: String(e?.message || e), cat: 'drift' }); }
     // Preload ALTs for v0
     try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch { this.lookupTableAccounts = []; }
     // Periodic ALT refresh
     try {
       const every = Math.max(60_000, Number(((CONFIG as any)?.drift?.altRefreshMs) ?? 300_000));
-      if (this.altRefreshTimer) { try { clearInterval(this.altRefreshTimer); } catch {} }
+      if (this.altRefreshTimer) { try { clearInterval(this.altRefreshTimer); } catch { /* timer cleanup safe to swallow */ } }
       this.altRefreshTimer = setInterval(async () => {
-        try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch {}
+        try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch (e: any) { safeLog.debug('drift.filler.alt_fetch', { error: String(e?.message || e), cat: 'drift' }); }
       }, every);
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.filler.alt_refresh_timer_init', { error: String(e?.message || e), cat: 'drift' }); }
     // Blockhash warming is provided by shared utils/blockhash via DriftService
     // Sender / RPC connection warming ping
     try {
-      if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch {} this.wsNudgeTimer = null; }
+      if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch { /* timer cleanup safe to swallow */ } this.wsNudgeTimer = null; }
       const pingEveryMs = Math.max(30_000, Number(((CONFIG as any)?.sender?.pingIntervalMs) ?? 60_000));
       const doPing = async () => {
         try {
@@ -435,22 +435,22 @@ export class DriftFillerRunner {
             if (scfg?.apiKey) params.push(`api-key=${encodeURIComponent(String(scfg.apiKey))}`);
             if (scfg?.swqosOnly) params.push('swqos_only=true');
             if (params.length > 0) endpoint += (endpoint.includes('?') ? '&' : '?') + params.join('&');
-            try { await fetch(endpoint.replace(/\/fast$/, '/ping'), { method: 'GET' }); } catch {}
+            try { await fetch(endpoint.replace(/\/fast$/, '/ping'), { method: 'GET' }); } catch (e: any) { safeLog.debug('drift.filler.sender_ping', { error: String(e?.message || e), cat: 'drift' }); }
           }
           // Warm Helius RPC via a cheap call
           try { 
             const { withRpcLimit } = await import('../utils/rpcLimiter.js');
             await withRpcLimit(() => this.connection.getBlockHeight('processed'), 1, { module: 'drift', method: 'getBlockHeight' }); 
-          } catch {}
-        } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.rpc_warmup', { error: String(e?.message || e), cat: 'drift' }); }
+        } catch (e: any) { safeLog.debug('drift.filler.warmup_ping', { error: String(e?.message || e), cat: 'drift' }); }
       };
       doPing().catch(() => {});
       this.wsNudgeTimer = setInterval(() => { doPing().catch(() => {}); }, pingEveryMs);
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.filler.ws_nudge_timer_init', { error: String(e?.message || e), cat: 'drift' }); }
     // Start Jito tip feed cache (non-blocking)
-    try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch {}
+    try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch (e: any) { safeLog.warn('drift.filler.tip_feed_init', { error: String(e?.message || e), cat: 'drift' }); }
     // Prepare WS fallback (lazy start on degradation)
-    try { this.dlobWsFallback = null; } catch {}
+    try { this.dlobWsFallback = null; } catch { /* assignment safe to swallow */ }
   }
 
   private signatureForNode(nodeToFill: any): string {
@@ -520,8 +520,8 @@ export class DriftFillerRunner {
             this.preparedFills.delete(entries[i][0]);
           }
         }
-      } catch {}
-    } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.prune_prepared_fills', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.filler.prune_maps', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private setupEventIndex(): void {
@@ -536,19 +536,19 @@ export class DriftFillerRunner {
         maxMarkets: driftCfg?.eventIndexMaxMarkets,
         maxMarketsPerUser: driftCfg?.eventIndexMaxMarketsPerUser,
       });
-    } catch {}
-    try { driftEventIndex.bindEventSubscriber(this.eventSubscriber); } catch {}
+    } catch (e: any) { safeLog.warn('drift.filler.event_index_configure', { error: String(e?.message || e), cat: 'drift' }); }
+    try { driftEventIndex.bindEventSubscriber(this.eventSubscriber); } catch (e: any) { safeLog.warn('drift.filler.event_index_bind', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));
       driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: false, reason: 'filler_bootstrap' });
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.filler.event_index_bootstrap', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const sweepMs = Math.max(10_000, Number(driftCfg.eventIndexSweepMs ?? 45_000));
       const limit = Math.max(100, Number(driftCfg.eventIndexSweepUsers ?? 1000));
       this.eventIndexSweepTimer = setInterval(() => {
-        try { driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: false, reason: 'filler_sweep' }); } catch {}
+        try { driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: false, reason: 'filler_sweep' }); } catch (e: any) { safeLog.debug('drift.filler.event_index_sweep', { error: String(e?.message || e), cat: 'drift' }); }
       }, sweepMs);
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.filler.event_index_sweep_timer', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private getSolPriceUsd(): number | undefined {
@@ -564,7 +564,7 @@ export class DriftFillerRunner {
       const bh = this.blockhashSubscriber?.getLatestBlockhash?.(maxAgeSlots);
       const v = String((bh as any)?.blockhash || '');
       if (v) return v;
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.filler.blockhash_query', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       return getCachedBlockhash(maxAgeMs) || this.bhCacheStr;
     } catch {
@@ -581,7 +581,7 @@ export class DriftFillerRunner {
       const warm = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr);
       const ua = warm?.getUserAccount?.();
       if (ua) return ua;
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.filler.warm_user_lookup', { error: String(e?.message || e), cat: 'drift' }); }
     // Try userMap quickly, but keep very tight bound
     try {
       const wrap = await Promise.race([
@@ -590,7 +590,7 @@ export class DriftFillerRunner {
       ]).catch(() => null);
       const ua = (wrap as any)?.getUserAccount?.();
       if (ua) return ua;
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.filler.usermap_lookup', { error: String(e?.message || e), cat: 'drift' }); }
     return null;
   }
 
@@ -606,7 +606,7 @@ export class DriftFillerRunner {
           try {
             const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
             makerUa = warm?.getUserAccount?.() || null;
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.warm_user_lookup', { error: String(e?.message || e), cat: 'drift' }); }
           // Fall back to userMap if not in warm cache
           if (!makerUa && this.userMap) {
             try {
@@ -615,7 +615,7 @@ export class DriftFillerRunner {
                 new Promise((_, rej) => setTimeout(() => rej(new Error('MAKER_UA_TIMEOUT')), 150)),
               ]).catch(() => null);
               makerUa = (wrap as any)?.getUserAccount?.() || null;
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.usermap_lookup', { error: String(e?.message || e), cat: 'drift' }); }
           }
         }
         if (!makerUa) continue;
@@ -624,7 +624,7 @@ export class DriftFillerRunner {
         try {
           const { getUserStatsAccountPublicKey } = this.sdk;
           makerStats = getUserStatsAccountPublicKey(this.client.program.programId, makerAuth);
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.maker_stats_lookup', { error: String(e?.message || e), cat: 'drift' }); }
         const makerNodeOrder = (nodeToFill?.makerNodes || []).find((mn: any) => String(mn?.userAccount || '') === m)?.order;
         makerInfos.push({
           maker: new PublicKey(m),
@@ -632,7 +632,7 @@ export class DriftFillerRunner {
           order: makerNodeOrder,
           makerStats,
         });
-      } catch {}
+      } catch (e: any) { safeLog.warn('drift.filler.build_maker_info', { error: String(e?.message || e), cat: 'drift' }); }
     }
     return makerInfos;
   }
@@ -777,7 +777,7 @@ export class DriftFillerRunner {
         : [];
       const maxMakers = Math.max(0, Number(this.config.maxMakersPerFill ?? 1));
       const makers = makersRaw.slice(0, maxMakers);
-      const makerKeys = (Array.isArray(prepared?.makerKeys) && (prepared as any).makerKeys.length > 0) ? (prepared as any).makerKeys : makers;
+      const makerKeys = makers;
       const allowAmm = this.config.allowAmmFills !== false;
       if ((!Array.isArray(nodeToFill?.makerNodes) || nodeToFill.makerNodes.length === 0) && !allowAmm) return false;
       const makerInfos = await this.buildMakerInfos(makers, nodeToFill);
@@ -814,7 +814,7 @@ export class DriftFillerRunner {
     try {
       const sig = this.signatureForNode(nodeToFill);
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
-      try { hotlist.markUser(takerPkStr, 'filler_try'); } catch {}
+      try { hotlist.markUser(takerPkStr, 'filler_try'); } catch (e: any) { safeLog.debug('drift.filler.hotlist_mark_user', { error: String(e?.message || e), cat: 'drift' }); }
       const { getUserAccountPublicKey } = this.sdk;
       const t0 = Date.now();
       const timings: any = { t0, hyd: 0, mk: 0, fillPri: 0, fillFb: 0, bh: 0, upd: 0, rev: 0, tip: 0, compile: 0 };
@@ -826,8 +826,8 @@ export class DriftFillerRunner {
       const takerUa = prepared?.takerUa || await this.getTakerUaQuick(takerPkStr);
       timings.hyd = Date.now();
       if (!takerUa) {
-        try { if (this._loopStatsTmp?.skips) this._loopStatsTmp.skips.takerHydration = (this._loopStatsTmp.skips.takerHydration || 0) + 1; } catch {}
-        try { logger.debug('drift.filler.skip_taker_hydration_timeout', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+        try { if (this._loopStatsTmp?.skips) this._loopStatsTmp.skips.takerHydration = (this._loopStatsTmp.skips.takerHydration || 0) + 1; } catch (e: any) { safeLog.debug('drift.filler.stats_taker_hydration', { error: String(e?.message || e), cat: 'drift' }); }
+        safeLog.debug('drift.filler.skip_taker_hydration_timeout', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex });
         return false;
       }
 
@@ -839,13 +839,13 @@ export class DriftFillerRunner {
             const svc = DriftService.getInstance() as any;
             const ok = await (svc.ensureRefStatsReady?.(ref));
             if (!ok) {
-              try { if (this._loopStatsTmp?.skips) this._loopStatsTmp.skips.missingRefStats = (this._loopStatsTmp.skips.missingRefStats || 0) + 1; } catch {}
-              try { logger.info('drift.filler.skip_missing_referrer_stats', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+              try { if (this._loopStatsTmp?.skips) this._loopStatsTmp.skips.missingRefStats = (this._loopStatsTmp.skips.missingRefStats || 0) + 1; } catch (e: any) { safeLog.debug('drift.filler.stats_missing_ref', { error: String(e?.message || e), cat: 'drift' }); }
+              safeLog.info('drift.filler.skip_missing_referrer_stats', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex });
               return false;
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.ensure_ref_stats', { error: String(e?.message || e), cat: 'drift' }); }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.referrer_check', { error: String(e?.message || e), cat: 'drift' }); }
 
       const makersRaw: string[] = Array.isArray(nodeToFill?.makerNodes)
         ? nodeToFill.makerNodes.map((mn: any) => String(mn?.userAccount || '')).filter(Boolean)
@@ -858,7 +858,7 @@ export class DriftFillerRunner {
       if ((!Array.isArray(nodeToFill?.makerNodes) || nodeToFill.makerNodes.length === 0) && !allowAmm) {
         try {
           logger.debug('drift.filler.skip_no_makers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.skip_no_makers.catch', { error: String(e?.message || e), cat: 'drift' }); }
         return false;
       }
 
@@ -868,8 +868,8 @@ export class DriftFillerRunner {
         const o = nodeToFill?.node?.order;
         const otype = o?.orderType ? String(getVariant(o.orderType)).toLowerCase() : undefined;
         const dir = o?.direction ? String(getVariant(o.direction)).toLowerCase() : undefined;
-        try { logger.debug('drift.filler.precheck', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, dir, otype }); } catch {}
-      } catch {}
+        safeLog.debug('drift.filler.precheck', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, dir, otype });
+      } catch (e: any) { safeLog.debug('drift.filler.precheck_diag', { error: String(e?.message || e), cat: 'drift' }); }
 
       let makerInfos: any[] = Array.isArray(prepared?.makerInfos) ? prepared!.makerInfos : [];
       if (!prepared) {
@@ -894,7 +894,7 @@ export class DriftFillerRunner {
             const ix = await withRpcTimeout(this.client.getUpdateFillerIx(), updateBudgetMs, 'upd_ix_fast');
             return ix || null;
           }
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.filler.update_filler_ix', { error: String(e?.message || e), cat: 'drift' }); }
         return null;
       })() : Promise.resolve(null);
       const fillIxP = prepared?.fillIx ? null : this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
@@ -909,7 +909,7 @@ export class DriftFillerRunner {
           const upd = await this.oracleUpdater.getOracleUpdateIxsForPerp({ marketIndex, currentSlot: Number(curSlot), oracleSlot: Number(odSlot) });
           if (Array.isArray(upd) && upd.length > 0) oracleUpdateIxs = upd;
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.oracle_update_ixs', { error: String(e?.message || e), cat: 'drift' }); }
       // Prefer cached blockhash; only fetch live if no cache available
       let cachedBhEarly = this.getBestBlockhash(200, 5);
       let updateFillerIx: any = null, fillIx: any = prepared?.fillIx, revertIx: any = null, bh: any;
@@ -918,9 +918,10 @@ export class DriftFillerRunner {
       let usedNoMakersFallback = false;
       if (!cachedBhEarly) {
         try {
+          const { getFreshBlockhashOrFetch } = await import('../utils/blockhash.js');
           const bhStr = await getFreshBlockhashOrFetch(250);
           if (bhStr) { this.bhCacheStr = bhStr; this.bhCacheTs = Date.now(); cachedBhEarly = bhStr; timings.bh = Date.now(); }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.blockhash_refresh', { error: String(e?.message || e), cat: 'drift' }); }
       }
       if (cachedBhEarly) {
         if (!fillIx) {
@@ -938,10 +939,10 @@ export class DriftFillerRunner {
                 'fill_ix_fb'
               );
               usedNoMakersFallback = true;
-              try { logger.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') }); } catch {}
+              safeLog.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
               timings.fillFb = Date.now();
             } catch (e: any) {
-              try { logger.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+              safeLog.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) });
               return false;
             }
           }
@@ -953,7 +954,7 @@ export class DriftFillerRunner {
         if (updateFillerIx) { this.lastUpdateFillerMs = Date.now(); }
       } else {
         // No fresh cached blockhash; defer quickly to avoid stalling the loop
-        try { logger.info('drift.filler.defer_no_cached_bh', { cat: FILLER_CAT, subcat: FILLER_SUBCAT }); } catch {}
+        safeLog.info('drift.filler.defer_no_cached_bh', { cat: FILLER_CAT, subcat: FILLER_SUBCAT });
         return false;
       }
 
@@ -969,10 +970,10 @@ export class DriftFillerRunner {
               (fillIx as any).keys.push({ pubkey: refStatsPk, isSigner: false, isWritable: true });
             }
           } else {
-            try { logger.info('drift.filler.missing_referrer_stats_proceed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+            safeLog.info('drift.filler.missing_referrer_stats_proceed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex });
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.ensure_ref_stats', { error: String(e?.message || e), cat: 'drift' }); }
 
       // Optionally append Jito tip inside the same transaction (no ALT), then add fill
       let ixsFill: any[] = [fillIx];
@@ -1002,11 +1003,11 @@ export class DriftFillerRunner {
                 const acc = new PublicKey('jitodontfront111111111111111111111111111111');
                 ixsFill[0].keys.push({ pubkey: acc, isSigner: false, isWritable: false });
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.dont_front_account', { error: String(e?.message || e), cat: 'drift' }); }
           }
         }
         // Do not enforce tips for Sender; Sender can be used without tipping per requirement
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.tip_computation', { error: String(e?.message || e), cat: 'drift' }); }
       timings.tip = Date.now();
 
       const ixsFillOnly = [
@@ -1049,7 +1050,7 @@ export class DriftFillerRunner {
           tipLamports: plannedTipLamports,
           tipAccount: plannedTipAccount,
         });
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.tx_plan.catch', { error: String(e?.message || e), cat: 'drift' }); }
 
       // Emit build timing breakdown before dispatch
       try {
@@ -1073,7 +1074,7 @@ export class DriftFillerRunner {
           bhSource: (() => { const cached = (() => { try { return getCachedBlockhash(5); } catch { return undefined; } })(); return cached ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown')); })(),
           usedNoMakersFallback,
         });
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.build_timing.catch', { error: String(e?.message || e), cat: 'drift' }); }
 
       if (this.state.dryRun) {
         logger.info('drift.filler.dry_run', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), marketIndex });
@@ -1082,7 +1083,7 @@ export class DriftFillerRunner {
 
       const cachedBh = this.getBestBlockhash(250, 5);
       const recentBlockhash = String(cachedBh || cachedBhEarly || (bh as any)?.blockhash);
-      try { if (recentBlockhash) { this.bhCacheStr = recentBlockhash; this.bhCacheTs = Date.now(); } } catch {}
+      try { if (recentBlockhash) { this.bhCacheStr = recentBlockhash; this.bhCacheTs = Date.now(); } } catch (e: any) { safeLog.debug('drift.filler.blockhash_cache_update', { error: String(e?.message || e), cat: 'drift' }); }
       const toV0Tx = (instructions: any[]) => {
         const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash, instructions }).compileToV0Message(this.lookupTableAccounts || []);
         const vtx = new VersionedTransaction(msg);
@@ -1124,18 +1125,18 @@ export class DriftFillerRunner {
           if ((json as any)?.error) throw new Error(String((json as any).error?.message || 'SENDER_ERROR'));
           const sig = String((json as any)?.result || '');
           if (!sig) throw new Error('SENDER_NO_RESULT');
-          try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'sender', ms: Date.now() - t0send }); } catch {}
+          safeLog.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'sender', ms: Date.now() - t0send });
           return sig;
         };
         const rpcSend = async () => {
           const sig = await DriftService.getInstance().sendRawTransaction(raw, opts);
-          try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'rpc', ms: Date.now() - t0send }); } catch {}
+          safeLog.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'rpc', ms: Date.now() - t0send });
           return sig;
         };
         const beSend = async () => {
           const sig = await sendToBlockEngine(base64, { beUrl: (CONFIG as any)?.jito?.blockEngineUrl, timeoutMs: (CONFIG as any)?.jito?.bundleTimeoutMs });
           this.beFailCount = 0; this.beCoolUntilMs = 0;
-          try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'jito-be', ms: Date.now() - t0send }); } catch {}
+          safeLog.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'jito-be', ms: Date.now() - t0send });
           return sig;
         };
         // Prefer Sender when enabled (it already dual-routes to validators and Jito)
@@ -1143,19 +1144,20 @@ export class DriftFillerRunner {
           try {
             return await senderSend();
           } catch (e: any) {
-            try { logger.warn('drift.filler.sender_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+            safeLog.warn('drift.filler.sender_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) });
             // Continue to BE/RPC fallbacks
           }
         }
         if (beEnabled && raceRpc) {
           try {
+            // @ts-expect-error -- Promise.any requires ES2021 lib
             return await Promise.any([
-              beSend().catch((e) => { this.beFailCount += 1; throw e; }),
+              beSend().catch((e: any) => { this.beFailCount += 1; throw e; }),
               rpcSend(),
             ]);
           } catch (e: any) {
             if (this.beFailCount >= 3) { this.beCoolUntilMs = Date.now() + 60_000; }
-            try { logger.warn('drift.filler.jito_be_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+            safeLog.warn('drift.filler.jito_be_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) });
             // If race failed entirely, bubble up
             throw e;
           }
@@ -1166,7 +1168,7 @@ export class DriftFillerRunner {
           } catch (e: any) {
             this.beFailCount += 1;
             if (this.beFailCount >= 3) { this.beCoolUntilMs = Date.now() + 60_000; }
-            try { logger.warn('drift.filler.jito_be_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+            safeLog.warn('drift.filler.jito_be_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) });
           }
         }
         return await rpcSend();
@@ -1194,7 +1196,7 @@ export class DriftFillerRunner {
               tipLamports: plannedTipLamports,
               tipAccount: plannedTipAccount,
             });
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.try_sent.catch', { error: String(e?.message || e), cat: 'drift' }); }
           const preferJito = !!((CONFIG as any)?.jito?.enabled);
           const hadTip = !!(plannedTipLamports && plannedTipAccount);
           const tSend = Date.now();
@@ -1210,7 +1212,7 @@ export class DriftFillerRunner {
               action: 'fill',
               marketIndex,
               taker: takerPkStr,
-              makers: makerKeys,
+              makers,
               orderId: String(nodeToFill?.node?.order?.orderId || ''),
               priorityFeeMicroLamports: priorityForSend,
               cuLimit,
@@ -1219,7 +1221,7 @@ export class DriftFillerRunner {
               sendMs,
               sentAtMs,
             }).catch(() => {});
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.track_attempt', { error: String(e?.message || e), cat: 'drift' }); }
         } catch (e: any) {
           const msg = String(e?.message || e || '');
           const classifySendErr = (er: any): string => {
@@ -1243,9 +1245,11 @@ export class DriftFillerRunner {
               const msgRetry = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsRetry }).compileToV0Message(this.lookupTableAccounts || []);
               const vRetry = new VersionedTransaction(msgRetry);
               vRetry.sign([this.client.wallet.payer]);
-              try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: priorityForSend, reason: 'blockhash_refresh' }); } catch {}
+              safeLog.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: priorityForSend, reason: 'blockhash_refresh' });
               const tSend = Date.now();
-              const sigTx = await sendV0(vRetry);
+              const preferJitoRetry = !!((CONFIG as any)?.jito?.enabled);
+              const hadTipRetry = !!(plannedTipLamports && plannedTipAccount);
+              const sigTx = await sendV0(vRetry, preferJitoRetry, hadTipRetry);
               const retrySendMs = Math.max(0, Date.now() - tSend);
               this.fillsInWindow.push(Date.now());
               logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
@@ -1256,7 +1260,7 @@ export class DriftFillerRunner {
                   action: 'fill',
                   marketIndex,
                   taker: takerPkStr,
-                  makers: makerKeys,
+                  makers,
                   orderId: String(nodeToFill?.node?.order?.orderId || ''),
                   priorityFeeMicroLamports: priorityForSend,
                   cuLimit,
@@ -1264,16 +1268,16 @@ export class DriftFillerRunner {
                   sendMs: retrySendMs,
                   sentAtMs: tSend,
                 }).catch(() => {});
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.filler.track_attempt', { error: String(e?.message || e), cat: 'drift' }); }
               return;
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.blockhash_refresh', { error: String(e?.message || e), cat: 'drift' }); }
           }
           if (/0x185f|RevertFill/i.test(msg)) {
             // Mark taker on cooldown; likely JIT preemption for place-and-make
             try {
               const ttl = Math.max(5000, Number(this.config.denyJitTakersTtlMs ?? 15000));
               this.jitTakerCooldown.set(takerPkStr, Date.now() + ttl);
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.jit_cooldown_set', { error: String(e?.message || e), cat: 'drift' }); }
             try {
               const [bh2, upd2] = await Promise.all([
                 (async () => { try { const { getFreshBlockhashOrFetch } = await import('../utils/blockhash.js'); const v = await getFreshBlockhashOrFetch(300); return { blockhash: v }; } catch { return { blockhash: undefined as any }; } })(),
@@ -1301,9 +1305,9 @@ export class DriftFillerRunner {
                 const msgUpd = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsUpd }).compileToV0Message(this.lookupTableAccounts || []);
                 const vUpd = new VersionedTransaction(msgUpd);
                 vUpd.sign([this.client.wallet.payer]);
-                try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: boosted, reason: 'revert_retry' }); } catch {}
+                safeLog.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: boosted, reason: 'revert_retry' });
                 retrySentAtMs = Date.now();
-                sigTx = await sendV0(vUpd);
+                sigTx = await sendV0(vUpd, !!((CONFIG as any)?.jito?.enabled), !!(plannedTipLamports && plannedTipAccount));
                 retrySendMs = Math.max(0, Date.now() - retrySentAtMs);
               } else {
                 const msgFo = new TransactionMessage({
@@ -1317,9 +1321,9 @@ export class DriftFillerRunner {
                 }).compileToV0Message(this.lookupTableAccounts || []);
                 const vFill = new VersionedTransaction(msgFo);
                 vFill.sign([this.client.wallet.payer]);
-                try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: boosted, reason: 'revert_retry' }); } catch {}
+                safeLog.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: boosted, reason: 'revert_retry' });
                 retrySentAtMs = Date.now();
-                sigTx = await sendV0(vFill);
+                sigTx = await sendV0(vFill, !!((CONFIG as any)?.jito?.enabled), !!(plannedTipLamports && plannedTipAccount));
                 retrySendMs = Math.max(0, Date.now() - retrySentAtMs);
               }
               this.fillsInWindow.push(Date.now());
@@ -1331,7 +1335,7 @@ export class DriftFillerRunner {
                   action: 'fill',
                   marketIndex,
                   taker: takerPkStr,
-                  makers: makerKeys,
+                  makers,
                   orderId: String(nodeToFill?.node?.order?.orderId || ''),
                   priorityFeeMicroLamports: boosted,
                   cuLimit,
@@ -1339,7 +1343,7 @@ export class DriftFillerRunner {
                   sendMs: retrySendMs,
                   sentAtMs: retrySentAtMs,
                 }).catch(() => {});
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.filler.track_attempt', { error: String(e?.message || e), cat: 'drift' }); }
             } catch (e2: any) {
               logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: String(e2?.message || e2) });
               // Record failed revert attempt as well
@@ -1351,7 +1355,7 @@ export class DriftFillerRunner {
                   action: 'fill',
                   marketIndex,
                   taker: takerPkStr,
-                  makers: makerKeys,
+                  makers,
                   orderId: String(nodeToFill?.node?.order?.orderId || ''),
                   priorityFeeMicroLamports: Math.max(priorityForSend, 30_000),
                   cuLimit,
@@ -1361,7 +1365,7 @@ export class DriftFillerRunner {
                   priorityLamports: 0,
                   lamportsPaid: 0,
                 } as any);
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.filler.record_attempt', { error: String(e?.message || e), cat: 'drift' }); }
             }
           } else {
             try {
@@ -1380,7 +1384,7 @@ export class DriftFillerRunner {
               action: 'fill',
               marketIndex,
               taker: takerPkStr,
-              makers: makerKeys,
+              makers,
               orderId: String(nodeToFill?.node?.order?.orderId || ''),
               priorityFeeMicroLamports: priorityForSend,
               cuLimit,
@@ -1390,13 +1394,13 @@ export class DriftFillerRunner {
               priorityLamports: 0,
               lamportsPaid: 0,
             } as any);
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.record_attempt', { error: String(e?.message || e), cat: 'drift' }); }
         }
       };
 
       // Fire-and-continue; do not await
       dispatch().catch(() => {});
-      try { logger.debug('drift.filler.dispatched', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), blockhash: recentBlockhash }); } catch {}
+      safeLog.debug('drift.filler.dispatched', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), blockhash: recentBlockhash });
       return true;
     } catch (e: any) {
       logger.info('drift.filler.warn fill_node_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, err: String(e?.message || e) });
@@ -1458,16 +1462,16 @@ export class DriftFillerRunner {
         logger.info('drift.filler.warn dlob_unavailable', { cat: FILLER_CAT, subcat: FILLER_SUBCAT });
         this.dlobUnavailableCount = (this.dlobUnavailableCount || 0) + 1;
         if (this.dlobUnavailableCount >= 3) {
-          try { await this.initDiscovery(); } catch {}
+          try { await this.initDiscovery(); } catch (e: any) { safeLog.warn('drift.filler.init_discovery_retry', { error: String(e?.message || e), cat: 'drift' }); }
           try {
             if (!this.wsNudgeTimer) {
               this.wsNudgeTimer = setInterval(() => {
                 try {
                   if (!this.inLoop && !this.abort) setImmediate(() => { this.loop().catch(() => {}); });
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.filler.loop_nudge', { error: String(e?.message || e), cat: 'drift' }); }
               }, 1000);
             }
-          } catch {}
+          } catch (e: any) { safeLog.warn('drift.filler.ws_nudge_timer_init', { error: String(e?.message || e), cat: 'drift' }); }
           // Start WS fallback to nudge when orderbooks update
           try {
             if (!this.dlobWsFallback) {
@@ -1475,11 +1479,11 @@ export class DriftFillerRunner {
               const markets = Array.isArray(await this.client.getPerpMarketAccounts?.())
                 ? (await this.client.getPerpMarketAccounts?.()).map((m: any) => Number(m?.marketIndex || 0)).filter((n: any) => Number.isFinite(n))
                 : [0,1,2];
-              const onNudge = () => { try { if (!this.inLoop && !this.abort) setImmediate(() => { this.loop().catch(() => {}); }); } catch {} };
+              const onNudge = () => { try { if (!this.inLoop && !this.abort) setImmediate(() => { this.loop().catch(() => {}); }); } catch (e: any) { safeLog.debug('drift.filler.loop_nudge', { error: String(e?.message || e), cat: 'drift' }); } };
               this.dlobWsFallback = new DlobFallback(onNudge);
               await this.dlobWsFallback.start(markets);
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.dlob_fallback_start', { error: String(e?.message || e), cat: 'drift' }); }
         }
         return;
       } else if (!dlob && this.useInfra) {
@@ -1508,7 +1512,7 @@ export class DriftFillerRunner {
           const remote = await fetchEventIndex(Math.max(1, Number(driftCfg?.eventIndexMarketsPerLoop ?? 50)));
           if (remote?.stats) indexStats = remote.stats;
           if (Array.isArray(remote?.activeMarkets)) indexMarketsRemote = remote.activeMarkets;
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.fetch_event_index', { error: String(e?.message || e), cat: 'drift' }); }
       }
 
       try {
@@ -1525,7 +1529,7 @@ export class DriftFillerRunner {
           this._summary.loops += 1;
           this._summary.markets.total += Array.isArray(perps) ? perps.length : 0;
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.summary_update', { error: String(e?.message || e), cat: 'drift' }); }
 
       let totalPlanned = 0;
       let sent = 0;
@@ -1550,12 +1554,12 @@ export class DriftFillerRunner {
           this._summary.scanModes[doFullScan ? 'full' : 'targeted'] += 1;
           this._summary.indexStats = indexStats;
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.scan_modes_update', { error: String(e?.message || e), cat: 'drift' }); }
       if (hotMarkets.length > 0) {
-        try { logger.debug('drift.filler.hotlist', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, count: hotMarkets.length }); } catch {}
+        safeLog.debug('drift.filler.hotlist', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, count: hotMarkets.length });
       }
       if (indexMarkets.length > 0) {
-        try { logger.debug('drift.filler.index_markets', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, count: indexMarkets.length }); } catch {}
+        safeLog.debug('drift.filler.index_markets', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, count: indexMarkets.length });
       }
       const seen = new Set<number>();
       const perpsArr = Array.isArray(perps) ? perps : [];
@@ -1605,7 +1609,7 @@ export class DriftFillerRunner {
               });
             }
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.fetch_fill_nodes', { error: String(e?.message || e), cat: 'drift' }); }
       }
 
       for (const market of marketsOrdered) {
@@ -1619,11 +1623,11 @@ export class DriftFillerRunner {
         try {
           const statusStr = (() => { try { return String(getVariant((market as any)?.status)).toLowerCase(); } catch { return 'unknown'; } })();
           if (statusStr !== 'active') {
-            try { logger.info('drift.filler.skip_paused_market', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, status: statusStr }); } catch {}
+            safeLog.info('drift.filler.skip_paused_market', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, status: statusStr });
             loopStats.marketsPaused += 1;
             continue;
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.market_status_parse', { error: String(e?.message || e), cat: 'drift' }); }
         let vAsk: any = null;
         let vBid: any = null;
         let nodesToFill: any[] = [];
@@ -1631,7 +1635,7 @@ export class DriftFillerRunner {
           const remote = remoteByMarket?.get(idx);
           if (!remote) continue;
           if (remote.oracleStale) {
-            try { logger.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: remote.oracleDelay, maxDelay: Math.max(0, Number(((CONFIG as any)?.drift?.maxOracleDelaySlots) ?? 40)) }); } catch {}
+            safeLog.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: remote.oracleDelay, maxDelay: Math.max(0, Number(((CONFIG as any)?.drift?.maxOracleDelaySlots) ?? 40)) });
             loopStats.marketsOracleStale += 1;
             continue;
           }
@@ -1648,7 +1652,7 @@ export class DriftFillerRunner {
               vAsk: String((vAsk as any)?.toString?.() || vAsk || ''),
               slot,
             });
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.market_scan.catch', { error: String(e?.message || e), cat: 'drift' }); }
         } else {
           const mmOraclePriceData = this.client.getMMOracleDataForPerpMarket?.(idx);
           // Skip markets with stale oracle data to avoid zero-fills due to SafeMM checks
@@ -1658,11 +1662,11 @@ export class DriftFillerRunner {
             const curSlot = this.slotSubscriber?.getSlot?.() ?? 0;
             const maxDelay = Math.max(0, Number(((CONFIG as any)?.drift?.maxOracleDelaySlots) ?? 40));
             if (odSlot > 0 && (curSlot - odSlot) > maxDelay) {
-              try { logger.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: (curSlot - odSlot), maxDelay }); } catch {}
+              safeLog.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: (curSlot - odSlot), maxDelay });
               loopStats.marketsOracleStale += 1;
               continue;
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.oracle_data_check', { error: String(e?.message || e), cat: 'drift' }); }
           vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
           vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
 
@@ -1676,7 +1680,7 @@ export class DriftFillerRunner {
               vAsk: String((vAsk as any)?.toString?.() || vAsk || ''),
               slot,
             });
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.market_scan.catch', { error: String(e?.message || e), cat: 'drift' }); }
 
           nodesToFill = dlob.findNodesToFill(
             idx, vBid, vAsk, slot,
@@ -1697,8 +1701,8 @@ export class DriftFillerRunner {
         const droppedTriggers = nodesToFill.length - prefiltered.length;
         if (droppedTriggers > 0) { loopStats.skips.triggerOrder += droppedTriggers; }
         if (prefiltered.length > 0) {
-          try { hotlist.markMarket(idx, 'filler_nodes'); } catch {}
-          try { driftEventIndex.markMarket(idx, 'filler_nodes'); } catch {}
+          try { hotlist.markMarket(idx, 'filler_nodes'); } catch (e: any) { safeLog.debug('drift.filler.hotlist_mark_market', { error: String(e?.message || e), cat: 'drift' }); }
+          try { driftEventIndex.markMarket(idx, 'filler_nodes'); } catch (e: any) { safeLog.debug('drift.filler.event_index_mark_market', { error: String(e?.message || e), cat: 'drift' }); }
         }
 
         totalPlanned += prefiltered.length;
@@ -1711,7 +1715,7 @@ export class DriftFillerRunner {
             marketIndex: idx,
             nodes: nodesToFill.length,
           });
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.market_nodes.catch', { error: String(e?.message || e), cat: 'drift' }); }
 
         // Enqueue taker/maker accounts for prefetch warming
         if (!this.useInfra) {
@@ -1728,9 +1732,9 @@ export class DriftFillerRunner {
                 if (!k) continue;
                 driftEventIndex.updateUserMarkets(k, [idx], 'filler_node');
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.event_index_update_users', { error: String(e?.message || e), cat: 'drift' }); }
             svc.enqueueUsersForPrefetch?.(keys);
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.event_index_update_users', { error: String(e?.message || e), cat: 'drift' }); }
         }
 
         // Diagnostics: maker vs non-maker nodes
@@ -1743,7 +1747,7 @@ export class DriftFillerRunner {
           });
           loopStats.makersBreakdown.withMakers += withMakers;
           loopStats.makersBreakdown.withoutMakers += withoutMakers;
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.market_nodes_breakdown.catch', { error: String(e?.message || e), cat: 'drift' }); }
 
         // Additional JIT-avoidance prefilters
         const requireMakers = (this.config.requireExistingMakers !== false);
@@ -1760,7 +1764,7 @@ export class DriftFillerRunner {
 
             // Age gate
             if (skipYoungMs > 0 && ageMs < skipYoungMs) {
-              try { logger.debug('drift.filler.skip_young_order', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, ageMs }); } catch {}
+              safeLog.debug('drift.filler.skip_young_order', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, ageMs });
               (loopStats.skips as any).young = ((loopStats.skips as any).young || 0) + 1;
               return false;
             }
@@ -1769,7 +1773,7 @@ export class DriftFillerRunner {
             const takerPk = String(node?.node?.userAccount || '');
             const untilMs = this.jitTakerCooldown.get(takerPk) || 0;
             if (untilMs > nowMs) {
-              try { logger.debug('drift.filler.skip_jit_taker_cooldown', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, taker: takerPk }); } catch {}
+              safeLog.debug('drift.filler.skip_jit_taker_cooldown', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, taker: takerPk });
               (loopStats.skips as any).jitCooldown = ((loopStats.skips as any).jitCooldown || 0) + 1;
               return false;
             }
@@ -1778,7 +1782,7 @@ export class DriftFillerRunner {
             if (requireMakers) {
               const makersLen = Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0;
               if (makersLen < minMakers) {
-                try { logger.debug('drift.filler.skip_no_makers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, makersLen, minMakers }); } catch {}
+                safeLog.debug('drift.filler.skip_no_makers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, makersLen, minMakers });
                 (loopStats.skips as any).noMakers = ((loopStats.skips as any).noMakers || 0) + 1;
                 return false;
               }
@@ -1794,7 +1798,7 @@ export class DriftFillerRunner {
                   (loopStats.skips as any).tipFloor = ((loopStats.skips as any).tipFloor || 0) + 1;
                   return false;
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.filler.tip_computation', { error: String(e?.message || e), cat: 'drift' }); }
             }
 
             return true;
@@ -1869,13 +1873,14 @@ export class DriftFillerRunner {
               const bps = Math.min(500, prebuildBps);
               const vBidNear = (vBid && typeof vBid.mul === 'function') ? vBid.mul(new BN(10000 + bps)).div(new BN(10000)) : vBid;
               const vAskNear = (vAsk && typeof vAsk.mul === 'function') ? vAsk.mul(new BN(10000 - bps)).div(new BN(10000)) : vAsk;
+              const mmOracleNear = this.client.getMMOracleDataForPerpMarket?.(idx);
               nearNodes = dlob.findNodesToFill(
                 idx, vBidNear, vAskNear, slot,
                 Math.floor(Date.now() / 1000) - 60,
-                MarketType.PERP, mmOraclePriceData,
+                MarketType.PERP, mmOracleNear,
                 stateAcc, this.client.getPerpMarketAccount?.(idx)
               ) || [];
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.prebuild_near_nodes', { error: String(e?.message || e), cat: 'drift' }); }
           }
           const requireMakersPre = (this.config.requireExistingMakers !== false);
           const minMakersPre = Math.max(0, Number(this.config.minMakerCountPerNode ?? 1));
@@ -1911,13 +1916,13 @@ export class DriftFillerRunner {
         for (const node of nodesForAttempt) {
           if ((Date.now() - t0) > LOOP_BUDGET_MS || processedNodes >= MAX_NODES_PER_LOOP) {
             budgetExceeded = true;
-            try { logger.debug('drift.filler.loop_budget_exhausted', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, processedNodes, ms: Date.now() - t0 }); } catch {}
+            safeLog.debug('drift.filler.loop_budget_exhausted', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, processedNodes, ms: Date.now() - t0 });
             loopStats.budget.exhausted = true;
             loopStats.budget.processedNodes = processedNodes;
             break;
           }
           iter += 1;
-          if ((iter % 50) === 0) { try { await new Promise((r) => setImmediate(r)); } catch {} }
+          if ((iter % 50) === 0) { try { await new Promise((r) => setImmediate(r)); } catch { /* yield safe to swallow */ } }
           try {
             if (!node?.node?.order) continue;
             const allowAmm = this.config.allowAmmFills !== false; // default allow
@@ -1931,7 +1936,7 @@ export class DriftFillerRunner {
                     taker: String(node?.node?.userAccount || ''),
                     orderId: String(node?.node?.order?.orderId || ''),
                   });
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.filler.skip_vamm_node.catch', { error: String(e?.message || e), cat: 'drift' }); }
                 loopStats.skips.vammDisallowed += 1;
                 continue;
               } else {
@@ -1943,7 +1948,7 @@ export class DriftFillerRunner {
                     taker: String(node?.node?.userAccount || ''),
                     orderId: String(node?.node?.order?.orderId || ''),
                   });
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.filler.amm_fill_candidate.catch', { error: String(e?.message || e), cat: 'drift' }); }
                 // fall through to attempt AMM fill
               }
             }
@@ -1966,7 +1971,7 @@ export class DriftFillerRunner {
                       minOrder: String((minSz as any)?.toString?.() || minSz || ''),
                       taker: String(node?.node?.userAccount || ''), orderId: String(o?.orderId || ''),
                     });
-                  } catch {}
+                  } catch (e: any) { safeLog.debug('drift.filler.skip_below_min_order.catch', { error: String(e?.message || e), cat: 'drift' }); }
                   loopStats.skips.ammBelowMin += 1;
                   continue;
                 }
@@ -1984,20 +1989,20 @@ export class DriftFillerRunner {
                         orderPrice: String(priceBn?.toString?.() || ''), vBid: String(vBid?.toString?.() || ''), vAsk: String(vAsk?.toString?.() || ''),
                         taker: String(node?.node?.userAccount || ''), orderId: String(o?.orderId || ''),
                       });
-                    } catch {}
+                    } catch (e: any) { safeLog.debug('drift.filler.amm_size_check', { error: String(e?.message || e), cat: 'drift' }); }
                     loopStats.skips.ammNotCrossing += 1;
                     continue;
                   }
                 }
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.order_type_parse', { error: String(e?.message || e), cat: 'drift' }); }
 
             // Identify order type; skip true trigger orders (TriggerMarket/TriggerLimit) until triggered
             const o = node?.node?.order;
             let orderTypeStr: string | undefined = undefined;
-            try { orderTypeStr = o?.orderType ? String(getVariant(o.orderType)) : undefined; } catch {}
+            try { orderTypeStr = o?.orderType ? String(getVariant(o.orderType)) : undefined; } catch (e: any) { safeLog.debug('drift.filler.order_type_parse', { error: String(e?.message || e), cat: 'drift' }); }
             let triggerCondStr: string | undefined = undefined;
-            try { triggerCondStr = o?.triggerCondition ? String(getVariant(o.triggerCondition)) : undefined; } catch {}
+            try { triggerCondStr = o?.triggerCondition ? String(getVariant(o.triggerCondition)) : undefined; } catch (e: any) { safeLog.debug('drift.filler.trigger_cond_parse', { error: String(e?.message || e), cat: 'drift' }); }
             const isTriggerType = !!orderTypeStr && ['triggermarket', 'triggerlimit'].includes(orderTypeStr.toLowerCase());
             if (isTriggerType) {
               try {
@@ -2021,7 +2026,7 @@ export class DriftFillerRunner {
                     orderType: orderTypeStr,
                   });
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.filler.skip_trigger_order.catch', { error: String(e?.message || e), cat: 'drift' }); }
               loopStats.skips.triggerOrder += 1;
               continue;
             }
@@ -2037,7 +2042,7 @@ export class DriftFillerRunner {
                   signature: sig,
                   orderId: String(node?.node?.order?.orderId || ''),
                 });
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.filler.cooldown_skip.catch', { error: String(e?.message || e), cat: 'drift' }); }
               loopStats.skips.cooldown += 1;
               continue;
             }
@@ -2066,7 +2071,7 @@ export class DriftFillerRunner {
                   triggerCondition: triggerCondStr,
                 });
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.node_info.catch', { error: String(e?.message || e), cat: 'drift' }); }
 
             try {
               if (shouldLogNode()) {
@@ -2082,7 +2087,7 @@ export class DriftFillerRunner {
                   dryRun: !!this.state.dryRun,
                 });
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.filler.try_fill.catch', { error: String(e?.message || e), cat: 'drift' }); }
 
             // Count budget once node is eligible for a send attempt
             processedNodes += 1;
@@ -2091,7 +2096,7 @@ export class DriftFillerRunner {
 
             const ok = await this.tryFillNode(idx, node);
             if (ok) { sent += 1; loopStats.nodesSent += 1; }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.filler.node_process', { error: String(e?.message || e), cat: 'drift' }); }
         }
 
         try {
@@ -2101,7 +2106,7 @@ export class DriftFillerRunner {
             marketIndex: idx,
             ms: Date.now() - mStart,
           });
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.market_done.catch', { error: String(e?.message || e), cat: 'drift' }); }
       }
 
       const dur = Date.now() - t0;
@@ -2136,7 +2141,7 @@ export class DriftFillerRunner {
             (this._summary.skipped as any)[k] = ((this._summary.skipped as any)[k] || 0) + Number(v || 0);
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.loop_stats.catch', { error: String(e?.message || e), cat: 'drift' }); }
       try {
         const econ = loopStats.econ || {};
         const count = Number(econ.count || 0);
@@ -2157,7 +2162,7 @@ export class DriftFillerRunner {
           prebuildCache: this.preparedFills.size,
           prebuildStats: this.prebuildStats,
         };
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.filler.loop_stats_compute', { error: String(e?.message || e), cat: 'drift' }); }
       if (totalPlanned === 0) {
         try {
           logger.info('drift.filler.loop_noop', {
@@ -2166,7 +2171,7 @@ export class DriftFillerRunner {
             slot,
             perpsCount: Array.isArray(perps) ? perps.length : 0,
           });
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.filler.loop_noop.catch', { error: String(e?.message || e), cat: 'drift' }); }
       }
     } catch (e: any) {
       this.state.lastError = String(e?.message || e);

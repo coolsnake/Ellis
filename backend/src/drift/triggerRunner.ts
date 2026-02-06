@@ -5,6 +5,7 @@ import { hotlist } from './hotlist.js';
 import { driftEventIndex } from './eventIndex.js';
 import { computeTriggerPriorityFee } from './triggerUtils.js';
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { CONFIG } from '../utils/config.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { buildTipIx } from '../execution/jitoTip.js';
@@ -150,7 +151,7 @@ export class DriftTriggerRunner {
       const svc = DriftService.getInstance() as any;
       (svc as any).registerBot?.(this.botKey);
       await (svc as any).init?.();
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.init_service', { error: String(e?.message || e), cat: 'drift' }); }
     const svc: any = DriftService.getInstance();
     this.connection = (svc as any).connection;
     this.client = (svc as any).client;
@@ -179,21 +180,21 @@ export class DriftTriggerRunner {
       if (requireWarm) {
         if (this.useInfra) {
           const ok = await waitForInfraReady(Number(driftCfg?.infraReadyTimeoutMs ?? driftCfg?.warmupTimeoutMs ?? 30000));
-          try { logger.info('drift.trigger.infra_gate', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, ok }); } catch {}
+          safeLog.info('drift.trigger.infra_gate', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, ok });
         } else {
           const ok = await (svc as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
-          try { logger.info('drift.trigger.warmup_gate', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, ok }); } catch {}
+          safeLog.info('drift.trigger.warmup_gate', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, ok });
         }
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.warmup_gate_setup', { error: String(e?.message || e), cat: 'drift' }); }
     await this.initDiscovery();
 
     try {
-      if ((this as any)._condStatsTimer) { try { clearInterval((this as any)._condStatsTimer); } catch {} }
+      if ((this as any)._condStatsTimer) { try { clearInterval((this as any)._condStatsTimer); } catch { /* timer cleanup safe to swallow */ } }
       (this as any)._condStatsTimer = setInterval(() => {
         this.reportConditionalOrderStats().catch(() => {});
       }, 30000);
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.cond_stats_timer_setup', { error: String(e?.message || e), cat: 'drift' }); }
 
     const tick = async () => {
       if (this.abort || this.inLoop) return;
@@ -212,7 +213,7 @@ export class DriftTriggerRunner {
       const every = Math.max(2000, Number(driftCfg?.loopSummaryIntervalMs ?? 10000));
       this.summaryOnly = summaryOnly;
       if (summaryOnly) {
-        if (this._summaryTimer) { try { clearInterval(this._summaryTimer); } catch {} this._summaryTimer = null; }
+        if (this._summaryTimer) { try { clearInterval(this._summaryTimer); } catch { /* timer cleanup safe to swallow */ } this._summaryTimer = null; }
         if (!this._summary) this._summary = { since: Date.now(), loops: 0, totalNodesPlanned: 0, marketsWithNodes: 0, priorityMarkets: 0, scanModes: { full: 0, targeted: 0 } };
         this._summaryTimer = setInterval(() => {
           try {
@@ -235,20 +236,20 @@ export class DriftTriggerRunner {
               sample: s.lastSample,
             });
             this._summary = { since: Date.now(), loops: 0, totalNodesPlanned: 0, marketsWithNodes: 0, priorityMarkets: 0, scanModes: { full: 0, targeted: 0 } };
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.trigger.loop_summary_emit', { error: String(e?.message || e), cat: 'drift' }); }
         }, every);
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.summary_timer_setup', { error: String(e?.message || e), cat: 'drift' }); }
 
     // Also drive ticks via slot updates for lower latency
     try {
-      const onSlot = () => { try { setImmediate(() => { if (!this.inLoop && !this.abort) this.loop().catch(() => {}); }); } catch {} };
+      const onSlot = () => { try { setImmediate(() => { if (!this.inLoop && !this.abort) this.loop().catch(() => {}); }); } catch { /* timer cleanup safe to swallow */ } };
       if (typeof (this.slotSubscriber?.onSlotChange) === 'function') {
         this.slotSubscriber.onSlotChange(onSlot, 1);
       } else {
         this.slotSubscriber?.eventEmitter?.on?.('slotUpdate', onSlot);
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.slot_binding', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   stop(): void {
@@ -258,12 +259,12 @@ export class DriftTriggerRunner {
     }
     this.state.running = false;
     this.abort = true;
-    try { if ((this as any)._condStatsTimer) { clearInterval((this as any)._condStatsTimer); (this as any)._condStatsTimer = null; } } catch {}
-    try { if (this._summaryTimer) { clearInterval(this._summaryTimer); this._summaryTimer = null; } } catch {}
+    try { if ((this as any)._condStatsTimer) { clearInterval((this as any)._condStatsTimer); (this as any)._condStatsTimer = null; } } catch { /* timer cleanup safe to swallow */ }
+    try { if (this._summaryTimer) { clearInterval(this._summaryTimer); this._summaryTimer = null; } } catch { /* timer cleanup safe to swallow */ }
     this._summary = null;
-    try { if (this.eventIndexSweepTimer) { clearInterval(this.eventIndexSweepTimer); this.eventIndexSweepTimer = null; } } catch {}
+    try { if (this.eventIndexSweepTimer) { clearInterval(this.eventIndexSweepTimer); this.eventIndexSweepTimer = null; } } catch { /* timer cleanup safe to swallow */ }
     logger.info('drift.trigger.stopped', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
-    try { (DriftService.getInstance() as any).unregisterBot?.(this.botKey); } catch {}
+    try { (DriftService.getInstance() as any).unregisterBot?.(this.botKey); } catch (e: any) { safeLog.debug('drift.trigger.unregister_bot', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async initDiscovery(): Promise<void> {
@@ -277,10 +278,10 @@ export class DriftTriggerRunner {
       logger.info('drift.trigger.dlob_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, shared: true });
 
       // Warm user prefetcher once shared infra is ready
-      try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
-      try { this.setupEventIndex(); } catch {}
+      try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch (e: any) { safeLog.warn('drift.trigger.start_user_prefetcher', { error: String(e?.message || e), cat: 'drift' }); }
+      try { this.setupEventIndex(); } catch (e: any) { safeLog.warn('drift.trigger.setup_event_index', { error: String(e?.message || e), cat: 'drift' }); }
     } else {
-      try { logger.info('drift.trigger.infra_remote', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name }); } catch {}
+      safeLog.info('drift.trigger.infra_remote', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
     }
 
     // Initialize priority fee strategy
@@ -310,20 +311,20 @@ export class DriftTriggerRunner {
           200
         );
         
-        try { this.priorityFeeSubscriber.updateAddresses([ this.client?.program?.programId ].filter(Boolean)); } catch {}
+        try { this.priorityFeeSubscriber.updateAddresses([ this.client?.program?.programId ].filter(Boolean)); } catch (e: any) { safeLog.debug('drift.trigger.priority_fee_update_addresses', { error: String(e?.message || e), cat: 'drift' }); }
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.priority_fee_init', { error: String(e?.message || e), cat: 'drift' }); }
 
     // Preload ALTs for v0
     try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch { this.lookupTableAccounts = []; }
     // Periodic ALT refresh
     try {
       const every = Math.max(60_000, Number(((CONFIG as any)?.drift?.altRefreshMs) ?? 300_000));
-      setInterval(async () => { try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch {} }, every);
-    } catch {}
+      setInterval(async () => { try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch (e: any) { safeLog.debug('drift.trigger.alt_refresh', { error: String(e?.message || e), cat: 'drift' }); } }, every);
+    } catch (e: any) { safeLog.warn('drift.trigger.alt_refresh_timer_setup', { error: String(e?.message || e), cat: 'drift' }); }
 
     // Start Jito tip feed cache (non-blocking)
-    try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch {}
+    try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch (e: any) { safeLog.warn('drift.trigger.start_tip_feed', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private setupEventIndex(): void {
@@ -338,19 +339,19 @@ export class DriftTriggerRunner {
         maxMarkets: driftCfg?.eventIndexMaxMarkets,
         maxMarketsPerUser: driftCfg?.eventIndexMaxMarketsPerUser,
       });
-    } catch {}
-    try { driftEventIndex.bindEventSubscriber(this.eventSubscriber); } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.event_index_configure', { error: String(e?.message || e), cat: 'drift' }); }
+    try { driftEventIndex.bindEventSubscriber(this.eventSubscriber); } catch (e: any) { safeLog.warn('drift.trigger.event_index_bind', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));
       driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: true, reason: 'trigger_bootstrap' });
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.event_index_bootstrap', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const sweepMs = Math.max(10_000, Number(driftCfg.eventIndexSweepMs ?? 45_000));
       const limit = Math.max(100, Number(driftCfg.eventIndexSweepUsers ?? 1000));
       this.eventIndexSweepTimer = setInterval(() => {
-        try { driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: true, reason: 'trigger_sweep' }); } catch {}
+        try { driftEventIndex.bootstrapFromUserMap(this.userMap, { limit, includeOrders: true, reason: 'trigger_sweep' }); } catch (e: any) { safeLog.debug('drift.trigger.event_index_sweep', { error: String(e?.message || e), cat: 'drift' }); }
       }, sweepMs);
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.trigger.event_index_sweep_timer_setup', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async reportConditionalOrderStats(): Promise<void> {
@@ -375,14 +376,14 @@ export class DriftTriggerRunner {
                 if (typeof ot === 'string' && ot.toLowerCase().includes('trigger') && Number.isFinite(mi) && mi >= 0) {
                   counts.set(mi, 1 + (counts.get(mi) || 0));
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.trigger.order_type_parse', { error: String(e?.message || e), cat: 'drift' }); }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.trigger.user_account_read', { error: String(e?.message || e), cat: 'drift' }); }
         }
       }
       const sample = Array.from(counts.entries()).slice(0, 10).map(([m, c]) => ({ m, c }));
       logger.info('drift.trigger.cond_orders_stats', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, scanned, markets: counts.size, sample });
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.trigger.cond_order_stats', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private signatureForNode(nodeToTrigger: any): string {
@@ -416,7 +417,7 @@ export class DriftTriggerRunner {
         const overflow = this.nodesCooldown.size - maxSize;
         for (let i = 0; i < overflow; i += 1) this.nodesCooldown.delete(entries[i][0]);
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.trigger.prune_maps', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async getMarketLists(): Promise<{ perps: any[]; spots: any[] }> {
@@ -444,6 +445,7 @@ export class DriftTriggerRunner {
     const nodeLogSampleRate = Math.max(0, Math.min(1, Number(driftCfg?.nodeLogSampleRate ?? 0)));
     const shouldLogNode = () => verboseNodeLogs || (nodeLogSampleRate > 0 && Math.random() < nodeLogSampleRate);
     const nodeLogger = verboseNodeLogs ? logger.info : logger.debug;
+    const safeNodeLogger = verboseNodeLogs ? safeLog.info : safeLog.debug;
 
     try {
 			const dlob = this.dlobSubscriber?.getDLOB?.();
@@ -462,7 +464,7 @@ export class DriftTriggerRunner {
           const remote = await fetchEventIndex(Math.max(1, Number(driftCfg?.condMarketsPerLoop ?? 50)));
           if (remote?.stats) indexStats = remote.stats;
           if (Array.isArray(remote?.condMarkets)) condMarkets = remote.condMarkets;
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.trigger.fetch_event_index', { error: String(e?.message || e), cat: 'drift' }); }
       }
 			const userCount = this.useInfra
         ? Number((indexStats as any)?.users ?? 0)
@@ -505,7 +507,7 @@ export class DriftTriggerRunner {
 											const mi = Number(ord?.marketIndex || ord?.market_index || -1);
 											if (Number.isFinite(mi) && mi >= 0) condByMarket.set(mi, 1 + (condByMarket.get(mi) || 0));
 										}
-									} catch {}
+									} catch (e: any) { safeLog.debug('drift.trigger.sample_order_parse', { error: String(e?.message || e), cat: 'drift' }); }
 								}
 								sampledUsers += 1;
 							} catch { sampledUsers += 1; }
@@ -520,7 +522,7 @@ export class DriftTriggerRunner {
 						totalConditionalOrders,
 						condMarketsSample,
 					});
-				} catch {}
+				} catch (e: any) { safeLog.debug('drift.trigger.user_sample_scan', { error: String(e?.message || e), cat: 'drift' }); }
 			}
 
 			let totalNodesPlanned = 0;
@@ -561,7 +563,7 @@ export class DriftTriggerRunner {
 						try {
 							const rawTrigger = isVariant(type, 'perp') ? freshest : freshest;
 							nodesRaw = dlob.findNodesToTrigger(idx, slot, rawTrigger, type, stateAcc) || [];
-						} catch {}
+						} catch (e: any) { safeLog.debug('drift.trigger.raw_trigger_nodes', { error: String(e?.message || e), cat: 'drift' }); }
           }
 					totalNodesPlanned += Array.isArray(nodes) ? nodes.length : 0;
 					if (Array.isArray(nodes) && nodes.length > 0) marketsWithNodes += 1;
@@ -577,7 +579,7 @@ export class DriftTriggerRunner {
 								else if (cond === 'below') condBelow += 1;
 								if (ot === 'triggerMarket') typeTrigMkt += 1;
 								else if (ot === 'triggerLimit') typeTrigLmt += 1;
-							} catch {}
+							} catch (e: any) { safeLog.debug('drift.trigger.node_cond_parse', { error: String(e?.message || e), cat: 'drift' }); }
 						}
 					}
 
@@ -600,21 +602,19 @@ export class DriftTriggerRunner {
           let iter = 0;
           for (const node of nodes) {
             iter += 1;
-            if ((iter % 50) === 0) { try { await new Promise((r) => setImmediate(r)); } catch {} }
+            if ((iter % 50) === 0) { try { await new Promise((r) => setImmediate(r)); } catch { /* timer cleanup safe to swallow */ } }
             const sig = this.signatureForNode(node);
             const last = this.nodesCooldown.get(sig) || 0;
             if (last + COOLDOWN_MS > Date.now()) {
-							try {
-								if (shouldLogNode()) {
-									nodeLogger('drift.trigger.cooldown_skip', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, signature: sig });
-								}
-							} catch {}
+							if (shouldLogNode()) {
+								safeNodeLogger('drift.trigger.cooldown_skip', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, signature: sig });
+							}
               continue;
             }
             this.nodesCooldown.set(sig, Date.now());
             const orderId = String(node?.node?.order?.orderId || '');
             const userPkStr = String(node?.node?.userAccount || '');
-            try { if (userPkStr) driftEventIndex.updateUserMarkets(userPkStr, [idx], 'trigger_node'); } catch {}
+            try { if (userPkStr) driftEventIndex.updateUserMarkets(userPkStr, [idx], 'trigger_node'); } catch (e: any) { safeLog.debug('drift.trigger.update_user_markets', { error: String(e?.message || e), cat: 'drift' }); }
 						if (nodeSamples.length < 5) {
 							const o = node?.node?.order;
 							nodeSamples.push({
@@ -630,11 +630,9 @@ export class DriftTriggerRunner {
 							});
 						}
 
-            try {
-              if (shouldLogNode()) {
-                nodeLogger('drift.trigger.try', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId, onChainPrice: String(oracleData?.price?.toString?.() || '') });
-              }
-            } catch {}
+            if (shouldLogNode()) {
+              safeNodeLogger('drift.trigger.try', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId, onChainPrice: String(oracleData?.price?.toString?.() || '') });
+            }
 
             let user: any = null;
             let userAccount: any = null;
@@ -645,7 +643,7 @@ export class DriftTriggerRunner {
                 user = await this.userMap.mustGet(userPkStr);
                 userAccount = user?.getUserAccount?.();
               }
-            } catch {}
+            } catch (e: any) { safeLog.warn('drift.trigger.user_lookup', { error: String(e?.message || e), cat: 'drift' }); }
             if (!userAccount) {
               logger.info('drift.trigger.warn user_not_found', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId });
               continue;
@@ -662,7 +660,7 @@ export class DriftTriggerRunner {
                 logger.info('drift.trigger.skip_missing_order', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId });
                 continue;
               }
-            } catch {}
+            } catch (e: any) { safeLog.warn('drift.trigger.order_existence_check', { error: String(e?.message || e), cat: 'drift' }); }
 
             // Dynamic CU limit
             let cuUnits = Math.max(100_000, Number(this.config.cuLimit ?? 220_000));
@@ -674,7 +672,7 @@ export class DriftTriggerRunner {
               const openOrders = Number(userAccount?.openOrders || 0);
               cuUnits += activePositions * 15_000;
               cuUnits += openOrders * 5_000;
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.trigger.cu_limit_calc', { error: String(e?.message || e), cat: 'drift' }); }
 
             // Dynamic priority fee
             const suggestedMul = Number(this.client?.txSender?.getSuggestedPriorityFeeMultiplier?.() || 1.0);
@@ -723,7 +721,7 @@ export class DriftTriggerRunner {
                   plannedTipAccount = tipPk2.toBase58();
                 }
               }
-            } catch {}
+            } catch (e: any) { safeLog.warn('drift.trigger.tip_calc', { error: String(e?.message || e), cat: 'drift' }); }
 
             if (this.state.dryRun) {
               logger.info('drift.trigger.dry_run', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId, marketIndex: idx, marketType: typeStr });
@@ -733,7 +731,7 @@ export class DriftTriggerRunner {
             const { getCachedBlockhash, getFreshBlockhashOrFetch } = await import('../utils/blockhash.js');
             let bhStr = getCachedBlockhash(250);
             if (!bhStr) {
-              try { bhStr = String(await getFreshBlockhashOrFetch(300) || ''); } catch {}
+              try { bhStr = String(await getFreshBlockhashOrFetch(300) || ''); } catch (e: any) { safeLog.warn('drift.trigger.blockhash_fetch', { error: String(e?.message || e), cat: 'drift' }); }
             }
             if (!bhStr) { logger.info('drift.trigger.defer_no_cached_bh', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT }); continue; }
 
@@ -817,7 +815,7 @@ export class DriftTriggerRunner {
               try {
                 hotlist.markMarket(idx, 'trigger');
                 hotlist.markUser(userPkStr, 'trigger');
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.trigger.hotlist_mark', { error: String(e?.message || e), cat: 'drift' }); }
               try {
                 const { trackDriftAttempt } = await import('./txTracker.js');
                 trackDriftAttempt(this.connection as any, {
@@ -833,7 +831,7 @@ export class DriftTriggerRunner {
                   sendMs,
                   sentAtMs,
                 }).catch(() => {});
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.trigger.tx_tracker', { error: String(e?.message || e), cat: 'drift' }); }
             } catch (e: any) {
               const logs = (e?.logs && Array.isArray(e.logs)) ? e.logs : undefined;
               logger.info('drift.trigger.error send_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId, err: String(e?.message || e), logs });
@@ -859,10 +857,10 @@ export class DriftTriggerRunner {
       const doFullScan = prioritySet.size === 0 || ((Date.now() - this.lastFullScanAt) > fullScanEveryMs);
       if (doFullScan) this.lastFullScanAt = Date.now();
       if (hotMarkets.length > 0) {
-        try { logger.debug('drift.trigger.hotlist', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, count: hotMarkets.length }); } catch {}
+        safeLog.debug('drift.trigger.hotlist', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, count: hotMarkets.length });
       }
       if (condMarkets.length > 0) {
-        try { logger.debug('drift.trigger.cond_markets', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, count: condMarkets.length }); } catch {}
+        safeLog.debug('drift.trigger.cond_markets', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, count: condMarkets.length });
       }
       const processed = new Set<number>();
       const perpByIndex = new Map<number, any>();
@@ -905,7 +903,7 @@ export class DriftTriggerRunner {
             }
           }
           if (remoteSlot > 0) slot = remoteSlot;
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.trigger.remote_nodes_fetch', { error: String(e?.message || e), cat: 'drift' }); }
       }
       for (const idx of prioritySet) {
         if (!Number.isFinite(Number(idx))) continue;
@@ -974,5 +972,3 @@ export class DriftTriggerRegistry {
   static stop(key: string): boolean { return this.reg.stop(key); }
   static remove(key: string): boolean { return this.reg.remove(key); }
 }
-
-

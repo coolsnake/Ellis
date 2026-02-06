@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import type { LeveragedGridConfig, GridRuntimeState } from './types.js';
 import { DriftService } from './client.js';
 import { canPlaceOrders } from './risk.js';
@@ -11,6 +12,8 @@ import { RunnerRegistry } from '../utils/runnerRegistry.js';
 
 export class DriftGridRunner {
   private timer: any | null = null;
+  private engine: DriftOrderEngine | null = null;
+  private _onPrice: ((p: any) => void) | null = null;
   private state: GridRuntimeState = { running: false, openOrders: 0, netExposure: 0, effectiveLeverage: 0, liquidationBuffer: Infinity };
   private tickScheduledAt: number = 0;
   private lastTickAt: number = 0;
@@ -48,16 +51,15 @@ export class DriftGridRunner {
         }
         this.tick().catch(() => {});
       };
-      (this as any)._onPrice = onPrice;
+      this._onPrice = onPrice;
       svc.onPrice(this.config.market.marketIndex, onPrice);
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.grid.price_subscribe', { error: String(e?.message || e), cat: 'drift' }); }
     // Initialize order engine once
     try {
       const drift = DriftService.getInstance();
       await drift.init();
-      const engine = new DriftOrderEngine((drift as any)?.client);
-      (this as any)._engine = engine;
-    } catch {}
+      this.engine = new DriftOrderEngine((drift as any)?.client);
+    } catch (e: any) { safeLog.warn('drift.grid.engine_init', { error: String(e?.message || e), cat: 'drift' }); }
     this.timer = (globalThis as any).setInterval(() => {
       this.tick().catch((e) => logger.error('drift.grid.tick_error', { error: String(e), cat: 'drift', code: 'DRIFT.GRID.TICK_ERROR' }));
     }, Math.max(500, pollMs));
@@ -70,8 +72,8 @@ export class DriftGridRunner {
     logger.info('drift.grid.stop', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, cat: 'drift', code: 'DRIFT.GRID.STOP', span: 'end' });
     try {
       const svc = DriftPriceService.getInstance();
-      if ((this as any)._onPrice) svc.offPrice(this.config.market.marketIndex, (this as any)._onPrice);
-    } catch {}
+      if (this._onPrice) svc.offPrice(this.config.market.marketIndex, this._onPrice);
+    } catch (e: any) { safeLog.debug('drift.grid.price_unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   async tick(): Promise<void> {
@@ -99,17 +101,15 @@ export class DriftGridRunner {
         logger.warn('drift.grid.no_subaccount', { requested: this.config.subaccountId, cat: 'drift' });
         return;
       }
-      try {
-        logger.debug('drift.grid.sub_snapshot', {
-          subaccountId: sub.id,
-          freeCollateral: sub.freeCollateral,
-          totalCollateral: sub.totalCollateral,
-          maintenanceRequirement: sub.maintenanceRequirement,
-          initialRequirement: sub.initialRequirement,
-          positions: Array.isArray(sub.positions) ? sub.positions.length : 0,
-          cat: 'drift'
-        });
-      } catch {}
+      safeLog.debug('drift.grid.sub_snapshot', {
+        subaccountId: sub.id,
+        freeCollateral: sub.freeCollateral,
+        totalCollateral: sub.totalCollateral,
+        maintenanceRequirement: sub.maintenanceRequirement,
+        initialRequirement: sub.initialRequirement,
+        positions: Array.isArray(sub.positions) ? sub.positions.length : 0,
+        cat: 'drift'
+      });
 
       // For scaffold: compute proposed notional as sum of per-level notionals
       const perSide = Math.max(0, Number(this.config.levels || 0));
@@ -122,7 +122,7 @@ export class DriftGridRunner {
           if (fr && typeof fr.lastFundingRate === 'number') {
             fundingApy = fr.lastFundingRate * 365 * 24;
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.grid.funding_rate', { error: String(e?.message || e), cat: 'drift' }); }
       }
       const gate = canPlaceOrders(this.config, sub, proposedNotional, fundingApy);
       if (!gate.ok) {
@@ -207,9 +207,8 @@ export class DriftGridRunner {
         });
         // Order refresh lifecycle (maker-only optional)
         try {
-          const engine: DriftOrderEngine | undefined = (this as any)._engine;
-          if (engine) {
-            await engine.refreshLadder(
+          if (this.engine) {
+            await this.engine.refreshLadder(
               this.config.market.marketIndex,
               ladder,
               !!this.config.makerOnly,
@@ -224,24 +223,24 @@ export class DriftGridRunner {
               cat: 'drift'
             });
           }
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.grid.engine_refresh', { error: String(e?.message || e), cat: 'drift' }); }
         // Fetch PnL metrics (best-effort)
         let unrealizedPnl: number | undefined = undefined;
         let unrealizedFunding: number | undefined = undefined;
         try {
           const pnl = await DriftService.getInstance().getUnrealizedPerpPnl(this.config.market.marketIndex);
           if (typeof pnl === 'number') unrealizedPnl = pnl;
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.grid.unrealized_pnl', { error: String(e?.message || e), cat: 'drift' }); }
         try {
           const f = await DriftService.getInstance().getUnrealizedFundingPnl(this.config.market.marketIndex);
           if (typeof f === 'number') unrealizedFunding = f;
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.grid.unrealized_funding', { error: String(e?.message || e), cat: 'drift' }); }
         // Estimate fees and funding
         let fundingApy: number | undefined = undefined;
         try {
           const fr = await DriftService.getInstance().getFundingRate(this.config.market.marketIndex);
           if (fr && typeof fr.lastFundingRate === 'number') fundingApy = fr.lastFundingRate * 365 * 24;
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.grid.funding_apy', { error: String(e?.message || e), cat: 'drift' }); }
         const feeMakerBps = Number((CONFIG as any)?.drift?.feeMakerBps || 0);
         const feeTakerBps = Number((CONFIG as any)?.drift?.feeTakerBps || 5);
         const feeBps = this.config.makerOnly ? feeMakerBps : feeTakerBps;

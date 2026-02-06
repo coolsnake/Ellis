@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { logger } from '../utils/logger.js';
+import { safeLog, guardExec } from './safeLogger.js';
 import { DriftService } from './client.js';
 import { DriftPriceService } from './price.js';
 import { fetchDlobL2 } from './marketdata.js';
@@ -76,14 +76,14 @@ function toPublicKey(val: any): PublicKey | null {
     if (typeof val === 'string') {
       const s = val.trim();
       if (s.length > 0) {
-        try { return new PublicKey(s); } catch {}
-        try { const bytes = bs58.decode(s); if (bytes && bytes.length === 32) return new PublicKey(bytes); } catch {}
+        try { return new PublicKey(s); } catch { /* parse attempt */ }
+        try { const bytes = bs58.decode(s); if (bytes && bytes.length === 32) return new PublicKey(bytes); } catch { /* parse attempt */ }
       }
     }
     if (val && (val as any).length === 32) {
-      try { return new PublicKey(Uint8Array.from(val as any)); } catch {}
+      try { return new PublicKey(Uint8Array.from(val as any)); } catch { /* parse attempt */ }
     }
-  } catch {}
+  } catch { /* parse attempt */ }
   return null;
 }
 
@@ -190,6 +190,7 @@ export class DriftLiquidator {
   private lastDiscoverySlot: number = 0;
   private discoveredRecentUsers: Set<string> = new Set();
   private scanCursor: number = 0; // deprecated; retained for minimal impact
+  private recentCursor: number = 0;
   private probeProcessing: boolean = false;
   private unsubscribingUsers: Set<string> = new Set();
   private liveMonitors: Map<string, any> = new Map();
@@ -217,11 +218,11 @@ export class DriftLiquidator {
         try {
           const maxConc = Math.max(1, Number(this.config.maxConcurrentTargets || 2));
           this.drainQueue(maxConc);
-        } catch {} finally {
+        } catch (e: any) { safeLog.debug('drift.liquidator.requestImmediateDrain.config', { error: String(e?.message || e), cat: 'drift' }); } finally {
           this.drainRequested = false;
         }
       }, 0);
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.requestImmediateDrain.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
   }
   private probeTimestamps: number[] = [];
   private currentPollMs: number = 1500;
@@ -284,9 +285,9 @@ export class DriftLiquidator {
     // Ensure Drift client is initialized
     try {
       await DriftService.getInstance().init();
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.liquidator.start.driftInit', { error: String(e?.message || e), cat: 'drift' }); }
     // Populate per-market liquidator fee cache from on-chain accounts
-    try { await this.feeCache.refresh(); } catch {}
+    try { await this.feeCache.refresh(); } catch (e: any) { safeLog.warn('drift.liquidator.start.feeRefresh', { error: String(e?.message || e), cat: 'drift' }); }
     this.useInfra = hasInfra();
     try {
       const driftCfg: any = (CONFIG as any)?.drift || {};
@@ -294,22 +295,22 @@ export class DriftLiquidator {
       if (requireWarm) {
         if (this.useInfra) {
           const ok = await waitForInfraReady(Number(driftCfg?.infraReadyTimeoutMs ?? driftCfg?.warmupTimeoutMs ?? 30000));
-          try { logger.info('drift.liquidator.infra_gate', { name: this.config.name, ok, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.infra_gate', { name: this.config.name, ok, cat: 'drift' });
         } else {
           const ok = await (DriftService.getInstance() as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
-          try { logger.info('drift.liquidator.warmup_gate', { name: this.config.name, ok, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.warmup_gate', { name: this.config.name, ok, cat: 'drift' });
         }
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.liquidator.start.warmup', { error: String(e?.message || e), cat: 'drift' }); }
     // Ensure configured subaccount is active for liquidation actions
     try {
       const subId = Number((this.config as any)?.subaccountId ?? ((CONFIG as any)?.drift?.liquidator?.subaccountId) ?? ((CONFIG as any)?.drift?.defaultSubaccountId));
       if (Number.isFinite(subId)) {
         const svc = DriftService.getInstance();
         await svc.switchSubaccount(Number(subId));
-        try { logger.info('drift.liquidator.subaccount_selected', { name: this.config.name, subaccountId: Number(subId), cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.subaccount_selected', { name: this.config.name, subaccountId: Number(subId), cat: 'drift' });
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.liquidator.start.subaccountSetup', { error: String(e?.message || e), cat: 'drift' }); }
     // Preflight: ensure wallet has some SOL for fees unless dryRun
     try {
       if (!this.config.dryRun) {
@@ -318,7 +319,7 @@ export class DriftLiquidator {
         const kp: any = driftSvc?.walletKp;
         if (conn && kp?.publicKey) {
           const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-          const bal = await withRpcLimit(() => conn.getBalance(kp.publicKey, (CONFIG as any)?.system?.txCommitment || 'confirmed'));
+          const bal = await withRpcLimit(() => conn.getBalance(kp.publicKey, (CONFIG as any)?.system?.txCommitment || 'confirmed')) as number;
           if (bal < 0.001 * 1_000_000_000) {
             logger.warn('drift.liquidator.preflight_insufficient_sol', { lamports: bal, cat: 'drift' });
             // Force dryRun to avoid tx failures
@@ -326,22 +327,22 @@ export class DriftLiquidator {
           }
         }
       }
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.liquidator.start.preflightBalance', { error: String(e?.message || e), cat: 'drift' }); }
     // Increase event index TTL so indexed users persist long enough for background rescans
-    try { driftEventIndex.configure({ ttlMs: 300_000 }); } catch {}
+    try { driftEventIndex.configure({ ttlMs: 300_000 }); } catch (e: any) { safeLog.warn('drift.liquidator.start.configure', { error: String(e?.message || e), cat: 'drift' }); }
     // Initialize discovery and subscriptions (WS-only sources first)
-    try { await this.initDiscovery(); this.initialized = true; } catch {}
-    try { await this.initEventSubscriptions(); } catch {}
-    try { await this.initDlobSources(); } catch {}
-    try { await this.seedFromDlobUserMap(); } catch {}
-    try { await this.seedFromDlobHttp(); } catch {}
+    try { await this.initDiscovery(); this.initialized = true; } catch (e: any) { safeLog.warn('drift.liquidator.start.initDiscovery', { error: String(e?.message || e), cat: 'drift' }); }
+    try { await this.initEventSubscriptions(); } catch (e: any) { safeLog.warn('drift.liquidator.start.initEvents', { error: String(e?.message || e), cat: 'drift' }); }
+    try { await this.initDlobSources(); } catch (e: any) { safeLog.warn('drift.liquidator.start.initDlob', { error: String(e?.message || e), cat: 'drift' }); }
+    try { await this.seedFromDlobUserMap(); } catch (e: any) { safeLog.warn('drift.liquidator.start.seed', { error: String(e?.message || e), cat: 'drift' }); }
+    try { await this.seedFromDlobHttp(); } catch (e: any) { safeLog.warn('drift.liquidator.start.seed', { error: String(e?.message || e), cat: 'drift' }); }
     // Optional: bootstrap enumerate all Drift user accounts via Helius GPA
     try {
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
       const doEnum = (this.config as any)?.enumerateAllOnStart ?? liqCfg.enumerateAllOnStart;
       if (doEnum) {
         const max = Math.max(1000, Number((this.config as any)?.enumerateMax ?? liqCfg.enumerateMax ?? 200000));
-        try { logger.info('drift.liquidator.enumerate_helius_start', { max, cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.enumerate_helius_start', { max, cat: 'drift' });
         const list = await this.discoverUsersViaHeliusGpaV2(max);
         if (Array.isArray(list) && list.length > 0) {
           const set = new Set<string>(this.userKeys);
@@ -354,21 +355,21 @@ export class DriftLiquidator {
             this.userKeys = Array.from(set);
             enqueued += slice.length;
             if (enqueued % 20000 === 0 || enqueued === list.length) {
-              try { logger.info('drift.liquidator.enumerate_helius_progress', { enqueued, total: list.length, cat: 'drift' }); } catch {}
+              safeLog.info('drift.liquidator.enumerate_helius_progress', { enqueued, total: list.length, cat: 'drift' });
             }
-            if (delayMs > 0) { try { await new Promise(r => setTimeout(r, delayMs)); } catch {} }
+            if (delayMs > 0) { try { await new Promise(r => setTimeout(r, delayMs)); } catch { /* sleep/delay safe to swallow */ } }
           }
-          try { logger.info('drift.liquidator.enumerate_helius_complete', { total: list.length, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.enumerate_helius_complete', { total: list.length, cat: 'drift' });
         } else {
-          try { logger.info('drift.liquidator.enumerate_helius_empty', { cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.enumerate_helius_empty', { cat: 'drift' });
         }
       }
     } catch (e: any) {
-      try { logger.warn('drift.liquidator.enumerate_helius_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      safeLog.warn('drift.liquidator.enumerate_helius_failed', { error: String(e?.message || e), cat: 'drift' });
     }
-    try { await this.initPriceTriggers(); } catch {}
+    try { await this.initPriceTriggers(); } catch (e: any) { safeLog.warn('drift.liquidator.start.initPrice', { error: String(e?.message || e), cat: 'drift' }); }
     // Full sweep of event index at startup to seed atRiskUsers
-    try { await this.sweepIndexForAtRisk(); } catch {}
+    try { await this.sweepIndexForAtRisk(); } catch (e: any) { safeLog.warn('drift.liquidator.start.sweep', { error: String(e?.message || e), cat: 'drift' }); }
     // Periodic non-blocking background rescan to pick up newly at-risk users
     // Only re-sweep once the probe queue from the previous sweep has been fully drained
     try {
@@ -381,7 +382,7 @@ export class DriftLiquidator {
         if (this.abort || this._sweepInFlight) return;
         // Skip rescan if probe queue still has users from the previous sweep
         if (this.pendingProbeQueue.length > 0) {
-          try { logger.debug('drift.liquidator.sweep_deferred', { remaining: this.pendingProbeQueue.length, cat: 'drift' }); } catch {}
+          safeLog.debug('drift.liquidator.sweep_deferred', { remaining: this.pendingProbeQueue.length, cat: 'drift' });
           return;
         }
         this._sweepInFlight = true;
@@ -389,7 +390,7 @@ export class DriftLiquidator {
           .catch(() => {})
           .finally(() => { this._sweepInFlight = false; });
       }, rescanMs);
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.liquidator.start.sweep', { error: String(e?.message || e), cat: 'drift' }); }
     const guardedTick = async () => {
       if (this.abort || (this as any)._inTick) return;
       (this as any)._inTick = true;
@@ -400,7 +401,7 @@ export class DriftLiquidator {
     this.timer = (globalThis as any).setInterval(() => { guardedTick().catch(() => {}); }, pollMs);
     // Periodic summary/stats emission
     try {
-      if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} }
+      if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch { /* timer cleanup safe to swallow */ } }
       const summaryOnly = this.loopSummaryOnly;
       const summaryIntervalMs = Math.max(2000, Number(driftCfg?.loopSummaryIntervalMs ?? 10000));
       const statsIntervalMs = Math.max(5000, Number(this.config.statsIntervalMs ?? ((CONFIG as any)?.drift?.liquidator?.statsIntervalMs) ?? 15000));
@@ -432,10 +433,10 @@ export class DriftLiquidator {
               logger.info('drift.liquidator.stats', payload);
             }
             emit('drift-liquidation', { type: 'stats', ...snapshot }).catch(() => {});
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.emit.emit', { error: String(e?.message || e), cat: 'drift' }); }
         })().catch(() => {});
       }, everyMs);
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.emit.caught', { error: String(e?.message || e), cat: 'drift' }); }
 
     // Discovery scheduling based on flags
     try {
@@ -443,38 +444,38 @@ export class DriftLiquidator {
       const wsOnly = (this.config.wsOnlyDiscovery === true) || (this.config.wsOnlyDiscovery === undefined && liqCfg.wsOnlyDiscovery === true);
       const limitedHttp = (this.config.limitedHttpDiscovery === true) || (this.config.limitedHttpDiscovery === undefined && liqCfg.limitedHttpDiscovery === true);
       if (wsOnly) {
-        if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
+        if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch { /* timer cleanup safe to swallow */ } }
         this.discoveryTimer = null;
-        try { logger.info('drift.liquidator.discovery_http_disabled', { cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.discovery_http_disabled', { cat: 'drift' });
       } else if (limitedHttp) {
         const every = Math.max(15000, Number((this.config as any).discoveryIntervalMs ?? liqCfg.discoveryIntervalMs ?? 30000));
-        if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
+        if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch { /* timer cleanup safe to swallow */ } }
         this.discoveryTimer = (globalThis as any).setInterval(() => {
           this.tryRecentDiscovery().catch(() => {});
         }, every);
-        try { logger.info('drift.liquidator.discovery_http_limited', { intervalMs: every, cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.discovery_http_limited', { intervalMs: every, cat: 'drift' });
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.emit.info', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   stop(): void {
     this.abort = true;
-    try { this.unwindQueue.shutdown(); } catch {}
+    try { this.unwindQueue.shutdown(); } catch (e: any) { safeLog.warn('drift.liquidator.stop.unwindShutdown', { error: String(e?.message || e), cat: 'drift' }); }
     if (this.timer) (globalThis as any).clearInterval(this.timer);
     this.timer = null;
-    if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
-    if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} this.discoveryTimer = null; }
-    if (this.eventIndexSweepTimer) { try { (globalThis as any).clearInterval(this.eventIndexSweepTimer); } catch {} this.eventIndexSweepTimer = null; }
-    if (this.sweepTimer) { try { (globalThis as any).clearInterval(this.sweepTimer); } catch {} this.sweepTimer = null; }
-    if (this.userMapSeedRetryTimer) { try { (globalThis as any).clearTimeout(this.userMapSeedRetryTimer); } catch {} this.userMapSeedRetryTimer = null; }
+    if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch { /* timer cleanup safe to swallow */ } this.statsTimer = null; }
+    if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch { /* timer cleanup safe to swallow */ } this.discoveryTimer = null; }
+    if (this.eventIndexSweepTimer) { try { (globalThis as any).clearInterval(this.eventIndexSweepTimer); } catch { /* timer cleanup safe to swallow */ } this.eventIndexSweepTimer = null; }
+    if (this.sweepTimer) { try { (globalThis as any).clearInterval(this.sweepTimer); } catch { /* timer cleanup safe to swallow */ } this.sweepTimer = null; }
+    if (this.userMapSeedRetryTimer) { try { (globalThis as any).clearTimeout(this.userMapSeedRetryTimer); } catch { /* timer cleanup safe to swallow */ } this.userMapSeedRetryTimer = null; }
     // Do not unsubscribe shared event subscriber owned by DriftService
-    try { this.eventSub = null; } catch {}
+    try { this.eventSub = null; } catch (e: any) { safeLog.debug('drift.liquidator.stop.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
     // Cleanup DLOB helpers and periodic seed timer
     try {
       const seed = (this as any)._dlobSeedTimer;
-      if (seed) { try { (globalThis as any).clearInterval(seed); } catch {} }
-      try { delete (this as any)._dlobSeedTimer; } catch {}
-    } catch {}
+      if (seed) { try { (globalThis as any).clearInterval(seed); } catch { /* timer cleanup safe to swallow */ } }
+      try { delete (this as any)._dlobSeedTimer; } catch { /* timer cleanup safe to swallow */ }
+    } catch { /* timer cleanup safe to swallow */ }
     try {
       const um = (this as any)._dlobUserMap;
       if (um && typeof um.unsubscribe === 'function') {
@@ -484,10 +485,10 @@ export class DriftLiquidator {
             new Promise<void>((resolve) => { try { (globalThis as any).setTimeout(resolve, 2000); } catch { resolve(); } }),
           ]);
           (race as any)?.catch?.(() => {});
-        } catch {}
+        } catch { /* timeout resolve safe to swallow */ }
       }
-      try { delete (this as any)._dlobUserMap; } catch {}
-    } catch {}
+      try { delete (this as any)._dlobUserMap; } catch (e: any) { safeLog.debug('drift.liquidator.stop.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.liquidator.stop.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const os = (this as any)._dlobOrderSub;
       if (os && typeof os.unsubscribe === 'function') {
@@ -497,10 +498,10 @@ export class DriftLiquidator {
             new Promise<void>((resolve) => { try { (globalThis as any).setTimeout(resolve, 2000); } catch { resolve(); } }),
           ]);
           (race2 as any)?.catch?.(() => {});
-        } catch {}
+        } catch { /* timeout resolve safe to swallow */ }
       }
-      try { delete (this as any)._dlobOrderSub; } catch {}
-    } catch {}
+      try { delete (this as any)._dlobOrderSub; } catch (e: any) { safeLog.debug('drift.liquidator.stop.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.liquidator.stop.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
     this.state.running = false;
     logger.info('drift.liquidator.stop', { name: this.config.name, cat: 'drift', code: 'DRIFT.LIQ.STOP', span: 'end' });
     // Cleanup price triggers and timers
@@ -509,9 +510,9 @@ export class DriftLiquidator {
       for (const idx of indices) {
         try {
           const t: any = this.priceTriggerTimers.get(Number(idx));
-          if (t) { try { (globalThis as any).clearTimeout(t); } catch {} }
+          if (t) { try { (globalThis as any).clearTimeout(t); } catch { /* timer cleanup safe to swallow */ } }
           this.priceTriggerTimers.delete(Number(idx));
-        } catch {}
+        } catch { /* timer cleanup safe to swallow */ }
       }
       if (!this.useInfra) {
         const svc = DriftPriceService.getInstance();
@@ -519,15 +520,15 @@ export class DriftLiquidator {
           try {
             const handler = (this as any)[`_onPrice_liq_${idx}`];
             if (handler) {
-              try { svc.offPrice(Number(idx), handler); } catch {}
-              try { svc.untrackMarket(Number(idx)); } catch {}
-              try { delete (this as any)[`_onPrice_liq_${idx}`]; } catch {}
+              try { svc.offPrice(Number(idx), handler); } catch (e: any) { safeLog.debug('drift.liquidator.stop.price', { error: String(e?.message || e), cat: 'drift' }); }
+              try { svc.untrackMarket(Number(idx)); } catch (e: any) { safeLog.debug('drift.liquidator.stop.price', { error: String(e?.message || e), cat: 'drift' }); }
+              try { delete (this as any)[`_onPrice_liq_${idx}`]; } catch (e: any) { safeLog.debug('drift.liquidator.stop.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.stop.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
         }
       }
       this.trackedMarkets.clear();
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
     // Unsubscribe all User websocket subscriptions (skip when WS not ready)
     try {
       const drift: any = (DriftService.getInstance() as any).client;
@@ -538,35 +539,35 @@ export class DriftLiquidator {
         try {
           if (!canRpc) continue;
           const u = this.userCache.get(String(key));
-          const p = (async () => { try { await (u as any)?.unsubscribe?.(); } catch {} })();
+          const p = (async () => { try { await (u as any)?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.liquidator.stop.userCache', { error: String(e?.message || e), cat: 'drift' }); } })();
           (p as any)?.catch?.(() => {});
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.stop.caught', { error: String(e?.message || e), cat: 'drift' }); }
       }
       this.subscribedUsers.clear();
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
     // Stop all live monitors
     try {
-      for (const [key] of this.liveMonitors) { try { this.stopLiveMonitor(key); } catch {} }
+      for (const [key] of this.liveMonitors) { try { this.stopLiveMonitor(key); } catch (e: any) { safeLog.debug('drift.liquidator.stop.stopLiveMonitor', { error: String(e?.message || e), cat: 'drift' }); } }
       this.liveMonitors.clear();
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
     // Clear internal state to avoid leaks
-    try { this.heap.clear(); } catch {}
-    try { this.inHeap.clear(); } catch {}
-    try { this.inFlightTargets.clear(); } catch {}
-    try { this.marketScanInFlight.clear(); } catch {}
-    try { this.userToMarkets.clear(); this.marketToUsers.clear(); } catch {}
-    try { this.pendingProbeQueue = []; this.inProbeQueue.clear(); } catch {}
-    try { this.userCache.clear(); } catch {}
+    try { this.heap.clear(); } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
+    try { this.inHeap.clear(); } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
+    try { this.inFlightTargets.clear(); } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
+    try { this.marketScanInFlight.clear(); } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
+    try { this.userToMarkets.clear(); this.marketToUsers.clear(); } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
+    try { this.pendingProbeQueue = []; this.inProbeQueue.clear(); } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
+    try { this.userCache.clear(); } catch (e: any) { safeLog.debug('drift.liquidator.stop.clear', { error: String(e?.message || e), cat: 'drift' }); }
     this.initialized = false;
   }
 
   async tick(): Promise<void> {
     try {
-      if (!this.initialized) { try { await this.initDiscovery(); this.initialized = true; } catch {} }
+      if (!this.initialized) { try { await this.initDiscovery(); this.initialized = true; } catch (e: any) { safeLog.warn('drift.liquidator.tick.initDiscovery', { error: String(e?.message || e), cat: 'drift' }); } }
       // Lazy-refresh per-market fee cache if stale
       if (this.feeCache.needsRefresh()) this.feeCache.refresh().catch(() => {});
       const candidates = await this.findUnhealthyCandidates();
-      try { await this.processProbeQueue(); } catch {}
+      try { await this.processProbeQueue(); } catch (e: any) { safeLog.warn('drift.liquidator.tick.feeRefresh', { error: String(e?.message || e), cat: 'drift' }); }
       // Opportunistically refresh a small set of stale at-risk users to keep UI metrics fresh
       try {
         const now = Date.now();
@@ -579,7 +580,7 @@ export class DriftLiquidator {
             refreshed += 1;
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.tick.enqueueProbe', { error: String(e?.message || e), cat: 'drift' }); }
       // Incremental updates: add candidates, avoid rebuilding entire heap
       for (const c of candidates) this.addOrQueueCandidate({ userPk: c.userPk, health: c.health, updatedAt: Date.now() } as any);
       this.state.candidatesQueued = this.heap.size();
@@ -606,7 +607,7 @@ export class DriftLiquidator {
   private async initDiscovery(): Promise<void> {
     try {
       // WS-only discovery: seed from DLOB/UserMap and events. Do not do HTTP discovery here.
-      try { await this.seedFromDlobUserMap(); } catch {}
+      try { await this.seedFromDlobUserMap(); } catch (e: any) { safeLog.warn('drift.liquidator.initDiscovery.seed', { error: String(e?.message || e), cat: 'drift' }); }
       // Seed with active/liquidatable users via event subscriber (if present)
       try {
         const set = new Set<string>(this.userKeys);
@@ -617,7 +618,7 @@ export class DriftLiquidator {
           // no-op: listeners are live only
         }
         this.userKeys = Array.from(set);
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.initDiscovery.from', { error: String(e?.message || e), cat: 'drift' }); }
       // Allow explicit allowlist override
       try {
         const cfg = ((CONFIG as any)?.drift?.liquidator) || {};
@@ -628,17 +629,17 @@ export class DriftLiquidator {
           const ks = allow.map((s) => String(s || '').trim()).filter(Boolean);
           if (ks.length > 0) this.userKeys = ks;
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.initDiscovery.map', { error: String(e?.message || e), cat: 'drift' }); }
       // Fallback: include our own user only
       if (this.userKeys.length === 0) {
         try {
           const drift = (DriftService.getInstance() as any).client;
           const pk = await drift?.getUserAccountPublicKey?.();
           if (pk) this.userKeys = [String(pk?.toBase58?.() || pk)];
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.initDiscovery.caught', { error: String(e?.message || e), cat: 'drift' }); }
       }
       logger.info('drift.liquidator.discovery_ready', { users: this.userKeys.length, cat: 'drift' });
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.initDiscovery.userKeys', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private computeAnchorDiscriminatorB58(name: string): string | null {
@@ -690,7 +691,7 @@ export class DriftLiquidator {
         paginationKey = json?.result?.paginationKey || null;
         if (!paginationKey) break;
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.discoverUsersViaHeliusGpaV2.caught', { error: String(e?.message || e), cat: 'drift' }); }
     return out;
   }
 
@@ -718,7 +719,7 @@ export class DriftLiquidator {
       const json = await res.json();
       const accounts = json?.result?.accounts || json?.result || [];
       if (Array.isArray(accounts) && accounts.length > 0) {
-        try { logger.info('drift.liquidator.discovery_recent', { fetched: accounts.length, lastSlot: this.lastDiscoverySlot, cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.discovery_recent', { fetched: accounts.length, lastSlot: this.lastDiscoverySlot, cat: 'drift' });
         // Further narrow recent users to those with activity in tracked markets by sampling a small subset immediately
         const sample = accounts.slice(0, Math.min(200, accounts.length));
         for (const a of sample) { const pk = String(a?.pubkey || a?.account || ''); if (pk) this.discoveredRecentUsers.add(pk); }
@@ -734,8 +735,8 @@ export class DriftLiquidator {
         for (const v of this.discoveredRecentUsers) set.add(v);
         this.userKeys = Array.from(set);
       }
-      try { this.lastDiscoverySlot = Number(await conn.getSlot('processed')); } catch {}
-    } catch {}
+      try { this.lastDiscoverySlot = Number(await conn.getSlot('processed')); } catch (e: any) { safeLog.warn('drift.liquidator.tryRecentDiscovery.getSlot', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.warn('drift.liquidator.tryRecentDiscovery.getSlot', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   /**
@@ -758,18 +759,18 @@ export class DriftLiquidator {
       for (const mkt of this.trackedMarkets) {
         try {
           const idxUsers = this.useInfra
-            ? ((await fetchEventIndex())?.getUsersForMarket?.(Number(mkt), indexLimit) ?? [])
+            ? ((await fetchEventIndex() as any)?.getUsersForMarket?.(Number(mkt), indexLimit) ?? [])
             : driftEventIndex.getUsersForMarket(Number(mkt), indexLimit);
           for (const u of idxUsers) allUsers.add(String(u));
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.sweepIndexForAtRisk.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
       }
       // Also fold in broadly active users from the index
       try {
         const activeUsers = this.useInfra
-          ? ((await fetchEventIndex())?.getActiveUsers?.(indexLimit) ?? [])
+          ? ((await fetchEventIndex() as any)?.getActiveUsers?.(indexLimit) ?? [])
           : driftEventIndex.getActiveUsers(indexLimit);
         for (const u of activeUsers) allUsers.add(String(u));
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.sweepIndexForAtRisk.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
       this.userKeys = Array.from(allUsers);
       // Enqueue all for probing in controlled batches
       const chunk = Math.max(100, Number(
@@ -806,13 +807,13 @@ export class DriftLiquidator {
           generation: this._probeStats.sweepGeneration,
           cat: 'drift',
         });
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.sweepIndexForAtRisk.trackedMarkets', { error: String(e?.message || e), cat: 'drift' }); }
     } catch (e: any) {
       try {
         logger.warn('drift.liquidator.index_sweep_failed', {
           error: String(e?.message || e), cat: 'drift',
         });
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.sweepIndexForAtRisk.warn', { error: String(e?.message || e), cat: 'drift' }); }
     }
   }
 
@@ -827,21 +828,21 @@ export class DriftLiquidator {
         if (Array.isArray(a) && a.length > 0) {
           indices = (a as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n));
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.isArray', { error: String(e?.message || e), cat: 'drift' }); }
       try {
         if (indices.length === 0) {
           const b = (this.config as any)?.trackedMarketIndices;
           if (Array.isArray(b) && b.length > 0) indices = (b as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n));
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.caught', { error: String(e?.message || e), cat: 'drift' }); }
       try {
         if (indices.length === 0 && Array.isArray(this.config.marketIndices) && this.config.marketIndices.length > 0) {
           indices = (this.config.marketIndices as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n));
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.config', { error: String(e?.message || e), cat: 'drift' }); }
       try {
         // no-op: keep indices as configured or default allowlist
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.ter', { error: String(e?.message || e), cat: 'drift' }); }
       if (indices.length === 0) indices = getAllowlistIndices();
       // Default to first few common markets
       if (indices.length === 0) indices.push(0, 1, 2);
@@ -849,16 +850,16 @@ export class DriftLiquidator {
       if (this.useInfra) {
         for (const idx of indices) {
           this.trackedMarkets.add(Number(idx));
-          try { void this.getPriceSample(Number(idx), pollMs); } catch {}
+          try { void this.getPriceSample(Number(idx), pollMs); } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.price', { error: String(e?.message || e), cat: 'drift' }); }
         }
         return;
       }
       const svc = DriftPriceService.getInstance();
       const debounceMs = Math.max(600, Math.min(5000, Number((this.config.priceTriggerDebounceMs ?? liqCfg.priceTriggerDebounceMs ?? ((CONFIG as any)?.websocketIntervalMs) ?? 800))));
       for (const idx of indices) {
-        try { svc.trackMarket(idx, pollMs); } catch {}
+        try { svc.trackMarket(idx, pollMs); } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.price', { error: String(e?.message || e), cat: 'drift' }); }
         this.trackedMarkets.add(Number(idx));
-        try { logger.info('drift.liquidator.track_market_add', { marketIndex: Number(idx), tracked: this.trackedMarkets.size, cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.track_market_add', { marketIndex: Number(idx), tracked: this.trackedMarkets.size, cat: 'drift' });
         const onPrice = () => {
           // One-shot throttle: if a timer exists, let it run; else schedule
           if (this.priceTriggerTimers.has(idx)) return;
@@ -871,15 +872,15 @@ export class DriftLiquidator {
                 })
                 .catch(() => {});
             } finally {
-              try { this.priceTriggerTimers.delete(idx); } catch {}
+              try { this.priceTriggerTimers.delete(idx); } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
             }
           }, debounceMs);
           this.priceTriggerTimers.set(idx, t);
         };
         (this as any)[`_onPrice_liq_${idx}`] = onPrice;
-        try { svc.onPrice(idx, onPrice as any); } catch {}
+        try { svc.onPrice(idx, onPrice as any); } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.price', { error: String(e?.message || e), cat: 'drift' }); }
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.initPriceTriggers.price', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private ensurePriceTriggerForMarket(marketIndex: number): void {
@@ -891,7 +892,7 @@ export class DriftLiquidator {
       const pollMs = Math.max(800, Number((this.config.httpPollMs ?? liqCfg.httpPollMs ?? 1200)));
       if (this.useInfra) {
         this.trackedMarkets.add(idx);
-        try { void this.getPriceSample(idx, pollMs); } catch {}
+        try { void this.getPriceSample(idx, pollMs); } catch (e: any) { safeLog.debug('drift.liquidator.ensurePriceTriggerForMarket.price', { error: String(e?.message || e), cat: 'drift' }); }
         return;
       }
       // If already registered, ensure tracking and return
@@ -900,12 +901,12 @@ export class DriftLiquidator {
         try {
           const svc = DriftPriceService.getInstance();
           svc.trackMarket(idx, pollMs);
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.ensurePriceTriggerForMarket.price', { error: String(e?.message || e), cat: 'drift' }); }
         this.trackedMarkets.add(idx);
         return;
       }
       const svc = DriftPriceService.getInstance();
-      try { svc.trackMarket(idx, pollMs); } catch {}
+      try { svc.trackMarket(idx, pollMs); } catch (e: any) { safeLog.debug('drift.liquidator.ensurePriceTriggerForMarket.price', { error: String(e?.message || e), cat: 'drift' }); }
       const debounceMs = Math.max(600, Math.min(5000, Number((this.config.priceTriggerDebounceMs ?? liqCfg.priceTriggerDebounceMs ?? ((CONFIG as any)?.websocketIntervalMs) ?? 800))));
       const onPrice = () => {
         if (this.priceTriggerTimers.has(idx)) return;
@@ -918,15 +919,15 @@ export class DriftLiquidator {
               })
               .catch(() => {});
           } finally {
-            try { this.priceTriggerTimers.delete(idx); } catch {}
+            try { this.priceTriggerTimers.delete(idx); } catch (e: any) { safeLog.debug('drift.liquidator.ensurePriceTriggerForMarket.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
           }
         }, debounceMs);
         this.priceTriggerTimers.set(idx, t);
       };
       (this as any)[`_onPrice_liq_${idx}`] = onPrice;
-      try { svc.onPrice(idx, onPrice as any); } catch {}
+      try { svc.onPrice(idx, onPrice as any); } catch (e: any) { safeLog.debug('drift.liquidator.ensurePriceTriggerForMarket.price', { error: String(e?.message || e), cat: 'drift' }); }
       this.trackedMarkets.add(idx);
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.ensurePriceTriggerForMarket.price', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async initEventSubscriptions(): Promise<void> {
@@ -939,19 +940,19 @@ export class DriftLiquidator {
       this.sharedUserMap = userMap || null;
       if (!sub) return;
       this.eventSub = sub;
-      try { this.setupEventIndex(userMap); } catch {}
+      try { this.setupEventIndex(userMap); } catch (e: any) { safeLog.debug('drift.liquidator.initEventSubscriptions.userMap', { error: String(e?.message || e), cat: 'drift' }); }
       // Listen for position updates and order events to prioritize scanning affected users
       const onUserEvent = async (ev: any) => {
         try {
           const userPk: string = String(ev?.user?.toBase58?.() || ev?.user || '');
           if (!userPk) return;
           this.enqueueProbe(userPk);
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.initEventSubscriptions.enqueueProbe', { error: String(e?.message || e), cat: 'drift' }); }
       };
-      try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch {}
-      try { sub.eventEmitter?.on?.('OrderRecord', onUserEvent); } catch {}
-      try { sub.eventEmitter?.on?.('LiquidationRecord', onUserEvent); } catch {}
-    } catch {}
+      try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch (e: any) { safeLog.debug('drift.liquidator.initEventSubscriptions.enqueueProbe', { error: String(e?.message || e), cat: 'drift' }); }
+      try { sub.eventEmitter?.on?.('OrderRecord', onUserEvent); } catch (e: any) { safeLog.debug('drift.liquidator.initEventSubscriptions.caught', { error: String(e?.message || e), cat: 'drift' }); }
+      try { sub.eventEmitter?.on?.('LiquidationRecord', onUserEvent); } catch (e: any) { safeLog.debug('drift.liquidator.initEventSubscriptions.caught', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.liquidator.initEventSubscriptions.caught', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private setupEventIndex(userMap?: any): void {
@@ -966,19 +967,19 @@ export class DriftLiquidator {
         maxMarkets: driftCfg?.eventIndexMaxMarkets,
         maxMarketsPerUser: driftCfg?.eventIndexMaxMarketsPerUser,
       });
-    } catch {}
-    try { driftEventIndex.bindEventSubscriber(this.eventSub); } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.setupEventIndex.caught', { error: String(e?.message || e), cat: 'drift' }); }
+    try { driftEventIndex.bindEventSubscriber(this.eventSub); } catch (e: any) { safeLog.warn('drift.liquidator.setupEventIndex.bindEvents', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const limit = Math.max(100, Number(driftCfg.eventIndexBootstrapUsers ?? 2000));
       driftEventIndex.bootstrapFromUserMap(userMap, { limit, includeOrders: false, reason: 'liquidator_bootstrap' });
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.liquidator.setupEventIndex.bootstrap', { error: String(e?.message || e), cat: 'drift' }); }
     try {
       const sweepMs = Math.max(10_000, Number(driftCfg.eventIndexSweepMs ?? 45_000));
       const limit = Math.max(100, Number(driftCfg.eventIndexSweepUsers ?? 1000));
       this.eventIndexSweepTimer = (globalThis as any).setInterval(() => {
-        try { driftEventIndex.bootstrapFromUserMap(userMap, { limit, includeOrders: false, reason: 'liquidator_sweep' }); } catch {}
+        try { driftEventIndex.bootstrapFromUserMap(userMap, { limit, includeOrders: false, reason: 'liquidator_sweep' }); } catch (e: any) { safeLog.warn('drift.liquidator.setupEventIndex.bootstrap', { error: String(e?.message || e), cat: 'drift' }); }
       }, sweepMs);
-    } catch {}
+    } catch (e: any) { safeLog.warn('drift.liquidator.setupEventIndex.bootstrap', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async enqueueIfUnhealthy(pkStr: string): Promise<void> {
@@ -987,7 +988,7 @@ export class DriftLiquidator {
       let user = this.userCache.get(String(pkStr));
       if (!user) {
         let pk: any = pkStr;
-        try { if (typeof pkStr === 'string') pk = new PublicKey(pkStr); } catch {}
+        try { if (typeof pkStr === 'string') pk = new PublicKey(pkStr); } catch { /* parse attempt */ }
         user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
         this.userCache.set(String(pkStr), user);
       }
@@ -1017,7 +1018,7 @@ export class DriftLiquidator {
           
           this.subscribedUsers.add(String(pkStr));
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.async.subscribedUsers', { error: String(e?.message || e), cat: 'drift' }); }
       const exists = await (user as any).exists?.();
       if (!exists) return;
       const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
@@ -1029,18 +1030,18 @@ export class DriftLiquidator {
       try {
         if (this.hasOracleOutlierForUser(user)) {
           this.applyOracleGuardCooldown(pkStr);
-          try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.skip_target', { user: pkStr, reason: 'ORACLE_TWAP_GUARD', cat: 'drift' }); } catch {}
+          if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.skip_target', { user: pkStr, reason: 'ORACLE_TWAP_GUARD', cat: 'drift' });
           return;
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.async.t', { error: String(e?.message || e), cat: 'drift' }); }
       if (health < riskThresh) {
         this.addOrQueueCandidate({ userPk: pkStr, health, updatedAt: Date.now() } as any);
-        try { hotlist.markUser(pkStr, 'liquidator_risk'); } catch {}
-        try { await this.refreshIndexForUser(user, pkStr); } catch {}
+        try { hotlist.markUser(pkStr, 'liquidator_risk'); } catch (e: any) { safeLog.debug('drift.liquidator.async.hotlist', { error: String(e?.message || e), cat: 'drift' }); }
+        try { await this.refreshIndexForUser(user, pkStr); } catch (e: any) { safeLog.debug('drift.liquidator.async.hotlist', { error: String(e?.message || e), cat: 'drift' }); }
         this.state.candidatesQueued = this.heap.size();
         this.maybeEmitQueue();
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.async.refreshIndex', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async findUnhealthyCandidates(): Promise<Array<{ userPk: string; health: number }>> {
@@ -1072,7 +1073,7 @@ export class DriftLiquidator {
         this.scanCursor = 0;
       }
       const maxConc = 2;
-      const maxNewUsers = Math.max(0, Math.min(2000, Number((this.config.maxNewUsersPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxNewUsersPerTick) ?? 250))));
+      const maxNewUsers = Math.max(0, Math.min(2000, Number(((this.config as any).maxNewUsersPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxNewUsersPerTick) ?? 250))));
       let newUsersAdded = 0;
       let cursor = 0;
       const self = this;
@@ -1087,7 +1088,7 @@ export class DriftLiquidator {
         }
         if (newUsersAdded >= maxNewUsers) return null;
         let pk: any = key;
-        try { if (typeof key === 'string') pk = new PublicKey(key); } catch {}
+        try { if (typeof key === 'string') pk = new PublicKey(key); } catch { /* parse attempt */ }
         u = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
         self.userCache.set(key, u);
         const maxSize = Math.max(50, Math.min(5000, Number((this.config.userCacheMax ?? ((CONFIG as any)?.drift?.liquidator?.userCacheMax) ?? 500))));
@@ -1095,9 +1096,9 @@ export class DriftLiquidator {
           // evict oldest (first inserted)
           const firstKey = self.userCache.keys().next().value;
           if (firstKey) {
-            try { await (self.userCache.get(firstKey) as any)?.unsubscribe?.(); } catch {}
+            try { await (self.userCache.get(firstKey) as any)?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.liquidator.findUnhealthyCandidates.keys', { error: String(e?.message || e), cat: 'drift' }); }
             self.userCache.delete(firstKey);
-            try { self.subscribedUsers.delete(String(firstKey)); } catch {}
+            try { self.subscribedUsers.delete(String(firstKey)); } catch (e: any) { safeLog.debug('drift.liquidator.findUnhealthyCandidates.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
           }
         }
         // subscribe before returning to ensure reads are live
@@ -1105,7 +1106,7 @@ export class DriftLiquidator {
           if (!self.subscribedUsers.has(key) && typeof (u as any)?.subscribe === 'function') {
             // Defer subscription to probe stage; we only stage keys here
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.findUnhealthyCandidates.caught', { error: String(e?.message || e), cat: 'drift' }); }
         newUsersAdded += 1;
         return u;
       };
@@ -1118,7 +1119,7 @@ export class DriftLiquidator {
           try {
             // Don't subscribe or compute here; enqueue for probing
             this.enqueueProbe(pkStr);
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.findUnhealthyCandidates.enqueueProbe', { error: String(e?.message || e), cat: 'drift' }); }
         }
       };
       const runners: Promise<void>[] = [];
@@ -1147,8 +1148,8 @@ export class DriftLiquidator {
           exposureMarkets: exposure.exposureMarkets,
           cat: 'drift',
         });
-      } catch {}
-    } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.findUnhealthyCandidates.caught', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.liquidator.findUnhealthyCandidates.caught', { error: String(e?.message || e), cat: 'drift' }); }
     return out;
   }
 
@@ -1165,13 +1166,13 @@ export class DriftLiquidator {
         else if (Array.isArray(tracked) && tracked.length > 0) allowed = new Set<number>((tracked as any[]).map((n: any) => Number(n)).filter(Number.isFinite));
         else if (Array.isArray(this.config.marketIndices) && this.config.marketIndices.length > 0) allowed = new Set<number>((this.config.marketIndices as any[]).map((n: any) => Number(n)).filter(Number.isFinite));
         else allowed = new Set<number>(getAllowlistIndices());
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.map', { error: String(e?.message || e), cat: 'drift' }); }
       for (const p of positions) {
         try {
           const base = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
           const idx = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
           if (Number.isFinite(idx) && Math.abs(base) > 0 && (!allowed || allowed.has(Number(idx)))) active.push(Number(idx));
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.caught', { error: String(e?.message || e), cat: 'drift' }); }
       }
       // Optionally include spot exposure (non-zero deposits or borrows) so users are indexed for price-trigger scans
       try {
@@ -1185,10 +1186,10 @@ export class DriftLiquidator {
               const raw = Number(sp?.scaledBalance?.toString?.() || sp?.scaledBalance || sp?.cumulativeDeposits || 0);
               const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
               if (Number.isFinite(idx) && Number.isFinite(raw) && raw !== 0 && (!allowed || allowed.has(Number(idx)))) active.push(Number(idx));
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.caught', { error: String(e?.message || e), cat: 'drift' }); }
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.inite', { error: String(e?.message || e), cat: 'drift' }); }
       // If markets are specified in config, filter to those
       try {
         const conf = this.config;
@@ -1199,13 +1200,13 @@ export class DriftLiquidator {
         if (allowed) {
           for (const v of Array.from(active)) { if (!allowed.has(v)) active.splice(active.indexOf(v), 1); }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.caught', { error: String(e?.message || e), cat: 'drift' }); }
       const newSet = new Set<number>(active);
       try {
         for (const m of Array.from(newSet)) {
           hotlist.markMarket(Number(m), 'liquidator_exposure');
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.hotlist', { error: String(e?.message || e), cat: 'drift' }); }
       const prev = this.userToMarkets.get(userPk) || new Set<number>();
       for (const m of Array.from(prev)) {
         if (!newSet.has(m)) {
@@ -1222,14 +1223,14 @@ export class DriftLiquidator {
         }
       }
       this.userToMarkets.set(userPk, prev);
-      try { driftEventIndex.updateUserMarkets(userPk, Array.from(newSet), 'liquidator_exposure'); } catch {}
+      try { driftEventIndex.updateUserMarkets(userPk, Array.from(newSet), 'liquidator_exposure'); } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
       // Dynamically ensure price triggers for newly active markets
       try {
         for (const m of Array.from(prev)) {
-          try { this.ensurePriceTriggerForMarket(Number(m)); } catch {}
+          try { this.ensurePriceTriggerForMarket(Number(m)); } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.price', { error: String(e?.message || e), cat: 'drift' }); }
         }
-      } catch {}
-    } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.price', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.liquidator.refreshIndexForUser.price', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async partialUpdateForMarket(marketIndex: number): Promise<void> {
@@ -1242,12 +1243,12 @@ export class DriftLiquidator {
       try {
         const pollMs = Math.max(800, Number((this.config.httpPollMs ?? ((CONFIG as any)?.drift?.liquidator?.httpPollMs ?? 1200))));
         if (this.useInfra) {
-          try { await this.getPriceSample(idx, pollMs); } catch {}
+          try { await this.getPriceSample(idx, pollMs); } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.price', { error: String(e?.message || e), cat: 'drift' }); }
         } else {
           const svc = DriftPriceService.getInstance();
           svc.trackMarket(idx, pollMs);
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.price', { error: String(e?.message || e), cat: 'drift' }); }
       const eventUsers = driftEventIndex.getUsersForMarket(idx, Math.max(50, Number((this.config.maxUsersPerPriceTick ?? ((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) ?? 40)) * 4));
       const users = Array.from(new Set<string>([
         ...Array.from(this.marketToUsers.get(idx) || []),
@@ -1277,7 +1278,7 @@ export class DriftLiquidator {
             }
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.has', { error: String(e?.message || e), cat: 'drift' }); }
 
       // Recompute health/exposure/profitability for slice using WS-cached user state and current prices
       let recomputed = 0;
@@ -1287,19 +1288,19 @@ export class DriftLiquidator {
           if (!user) {
             // Instantiate and subscribe on-demand (WS only)
             let pk: any = key;
-            try { if (typeof key === 'string') pk = new PublicKey(key); } catch {}
+            try { if (typeof key === 'string') pk = new PublicKey(key); } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.demand', { error: String(e?.message || e), cat: 'drift' }); }
             user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
             this.userCache.set(String(key), user);
-            try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(String(key)); } catch {}
+            try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(String(key)); } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.userCache', { error: String(e?.message || e), cat: 'drift' }); }
           }
           // Occasional truth refresh
           try {
             const last = this.userLastRefresh.get(String(key)) || 0;
             if ((Date.now() - last) > Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000))) {
-              try { await this.fetchAccountsLimited(user, 'fetchAccounts.probeRefresh'); } catch {}
+              try { await this.fetchAccountsLimited(user, 'fetchAccounts.probeRefresh'); } catch (e: any) { safeLog.warn('drift.liquidator.partialUpdateForMarket.fetchAccounts', { error: String(e?.message || e), cat: 'drift' }); }
               this.userLastRefresh.set(String(key), Date.now());
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.userLastRefresh', { error: String(e?.message || e), cat: 'drift' }); }
 
           // Collateral/maintenance (quote precision)
           const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
@@ -1312,11 +1313,11 @@ export class DriftLiquidator {
             const sdk: any = await import('@drift-labs/sdk');
             const cst: any = (sdk as any).constants || (sdk as any);
             if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION);
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.caught', { error: String(e?.message || e), cat: 'drift' }); }
           const totalUi = total / QUOTE_PREC;
           const maintUi = maint / QUOTE_PREC;
           let freeUi = 0;
-          try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch {}
+          try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.positionCalc', { error: String(e?.message || e), cat: 'drift' }); }
 
           // Positions and pricing
           let BASE_PREC = 1_000_000_000;
@@ -1324,9 +1325,9 @@ export class DriftLiquidator {
             const sdk: any = await import('@drift-labs/sdk');
             const cst: any = (sdk as any).constants || (sdk as any);
             if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION);
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.caught', { error: String(e?.message || e), cat: 'drift' }); }
           let positions = (user as any)?.getPerpPositions?.() || [];
-          try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (user as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch {}
+          try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (user as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.ay', { error: String(e?.message || e), cat: 'drift' }); }
           const posSummary: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }> = [];
           for (const p of positions) {
             try {
@@ -1339,7 +1340,7 @@ export class DriftLiquidator {
                 const acct = await (DriftService.getInstance() as any)?.client?.getPerpMarketAccount?.(Number(m));
                 const maybe = Number(acct?.amm?.basePrecision ?? acct?.basePrecision);
                 if (Number.isFinite(maybe) && maybe > 0) basePrecForMarket = maybe;
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.caught', { error: String(e?.message || e), cat: 'drift' }); }
               const baseUi = raw / basePrecForMarket;
               const symbol = (indexToSymbol(Number(m)) || '').split('-')[0] || undefined;
               // Price sample for this market
@@ -1355,7 +1356,7 @@ export class DriftLiquidator {
                       : undefined;
                     cur = (typeof mid === 'number') ? mid : (typeof l2.oracle === 'number' ? l2.oracle : cur);
                   }
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.caught', { error: String(e?.message || e), cat: 'drift' }); }
               }
               let notional: number | undefined = undefined;
               let liqPrice: number | undefined = undefined;
@@ -1381,7 +1382,7 @@ export class DriftLiquidator {
                 profitability = attemptNotional > 0 ? (bonus - expectedFees) / attemptNotional : undefined;
               }
               posSummary.push({ marketIndex: m, symbol, base: baseUi, notional, liqPrice, profitability });
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.push', { error: String(e?.message || e), cat: 'drift' }); }
           }
           const exposureUsd = posSummary.reduce((s, p) => s + (typeof p.notional === 'number' ? Math.abs(p.notional) : 0), 0);
           // Gate reason precompute
@@ -1411,19 +1412,18 @@ export class DriftLiquidator {
             exposureUsd,
           } as any;
           this.atRiskUsers.set(String(key), summary);
-          try { const { emitUserSummary } = await import('../server/realtime.js'); emitUserSummary({ userPk: String(key), ...summary }); } catch {}
+          try { const { emitUserSummary } = await import('../server/realtime.js'); emitUserSummary({ userPk: String(key), ...summary }); } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.emitSummary', { error: String(e?.message || e), cat: 'drift' }); }
           this.startLiveMonitor(String(key), health);
           // If still at-risk, queue candidate and drain immediately
           if (health < riskThresh) { this.addOrQueueCandidate({ userPk: String(key), health, updatedAt: Date.now() }); this.requestImmediateDrain(); }
           recomputed += 1;
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.requestImmediateDrain', { error: String(e?.message || e), cat: 'drift' }); }
       }
       this.state.candidatesQueued = this.heap.size();
       this.maybeEmitQueue();
-      try { logger.info('drift.liquidator.market_recompute', { marketIndex: idx, trackedUsers: users.length, recomputed, cat: 'drift' }); } catch {}
-    } catch {
-    } finally {
-      try { this.marketScanInFlight.delete(Number(marketIndex)); } catch {}
+      safeLog.info('drift.liquidator.market_recompute', { marketIndex: idx, trackedUsers: users.length, recomputed, cat: 'drift' });
+    } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.Queue', { error: String(e?.message || e), cat: 'drift' }); } finally {
+      try { this.marketScanInFlight.delete(Number(marketIndex)); } catch (e: any) { safeLog.debug('drift.liquidator.partialUpdateForMarket.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
     }
   }
 
@@ -1446,15 +1446,15 @@ export class DriftLiquidator {
               if (typeof dist === 'number') {
                 if (best === null || dist < best) best = dist;
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.addOrQueueCandidate.caught', { error: String(e?.message || e), cat: 'drift' }); }
           }
           if (best !== null) (c as any).distance = best;
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.addOrQueueCandidate.caught', { error: String(e?.message || e), cat: 'drift' }); }
       this.heap.push(c);
       this.inHeap.add(key);
       this.requestImmediateDrain();
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.addOrQueueCandidate.heap', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private drainQueue(maxConc: number): void {
@@ -1478,13 +1478,13 @@ export class DriftLiquidator {
           .catch((e) => this.recordError(e))
           .finally(() => this.inFlightTargets.delete(key));
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.drainQueue.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async handleTarget(target: { userPk: string; health: number }, opts?: HandleTargetOpts): Promise<void> {
     try {
       // Received a test/queue attempt request
-      try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.attempt_received', { user: target.userPk, health: target.health, name: this.config?.name, mode: opts?.tag || 'normal', cat: 'drift' }); } catch {}
+      if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.attempt_received', { user: target.userPk, health: target.health, name: this.config?.name, mode: opts?.tag || 'normal', cat: 'drift' });
       const dry = !!this.config.dryRun;
       if (dry) {
         this.recordAction();
@@ -1502,9 +1502,9 @@ export class DriftLiquidator {
         const subId = Number((this.config as any)?.subaccountId ?? ((CONFIG as any)?.drift?.liquidator?.subaccountId) ?? ((CONFIG as any)?.drift?.defaultSubaccountId));
         if (Number.isFinite(subId)) {
           await (DriftService.getInstance() as any).switchSubaccount(Number(subId));
-          try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.ensure_subaccount', { user: target.userPk, subaccountId: Number(subId), cat: 'drift' }); } catch {}
+          if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.ensure_subaccount', { user: target.userPk, subaccountId: Number(subId), cat: 'drift' });
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.ttempt', { error: String(e?.message || e), cat: 'drift' }); }
       const drift: any = (DriftService.getInstance() as any).client;
       // Liquidation state variables for this attempt
       let spotDeposit: any | null = null;
@@ -1514,6 +1514,7 @@ export class DriftLiquidator {
       let forceCancelAttempted = false;
       let userAccount: any = null;
       let BN: any = null;
+      let spotCacheOk = true;
       const toBn = (val: any): any => {
         try {
           if (!BN) return val;
@@ -1527,10 +1528,10 @@ export class DriftLiquidator {
       // Parse user public key for SDK calls in this attempt scope
       let userPublicKey: PublicKey | null = toPublicKey(target.userPk);
       if (!userPublicKey) {
-        try { logger.warn('drift.liquidator.skip_target', { user: target.userPk, reason: 'INVALID_PUBKEY', cat: 'drift' }); } catch {}
+        safeLog.warn('drift.liquidator.skip_target', { user: target.userPk, reason: 'INVALID_PUBKEY', cat: 'drift' });
         return;
       }
-      try { logger.debug('drift.liquidator.pubkey_ok', { user: target.userPk, pubkey: (userPublicKey as any)?.toBase58?.() || null, cat: 'drift' }); } catch {}
+      safeLog.debug('drift.liquidator.pubkey_ok', { user: target.userPk, pubkey: (userPublicKey as any)?.toBase58?.() || null, cat: 'drift' });
       // Precheck: compute current user health and skip if above execution gate
       // ALWAYS force a fresh fetchAccounts here (no debounce) -- we're about to send a tx
       // and need the most current on-chain state to avoid "sufficient collateral" rejections
@@ -1540,25 +1541,25 @@ export class DriftLiquidator {
         let user = this.userCache.get(String(target.userPk));
         if (!user) {
           let pk: any = target.userPk;
-          try { pk = new PublicKey(String(target.userPk)); } catch {}
+          try { pk = new PublicKey(String(target.userPk)); } catch { /* parse attempt */ }
           user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
           this.userCache.set(String(target.userPk), user);
-          try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
+          try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.subscribedUsers', { error: String(e?.message || e), cat: 'drift' }); }
         }
         try {
           // Unconditional fetch -- freshest possible data before execution decision
           await this.fetchAccountsLimited(user, 'fetchAccounts.preExec');
           this.userLastRefresh.set(String(target.userPk), Date.now());
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.liquidator.handleTarget.fetchAccounts', { error: String(e?.message || e), cat: 'drift' }); }
         try {
           const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           // Health = (totalCollateral - maintenanceMargin) / totalCollateral
           // This matches Drift SDK's User.getHealth() formula.
           if (isFinite(total) && isFinite(maint) && total > 0) healthNow = (total - maint) / total;
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.getHealth', { error: String(e?.message || e), cat: 'drift' }); }
         if (opts?.bypassExecGate && typeof healthNow === 'number' && isFinite(healthNow)) {
-          try { logger.info('drift.liquidator.exec_gate_bypassed', { user: target.userPk, healthNow, execGate, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.exec_gate_bypassed', { user: target.userPk, healthNow, execGate, cat: 'drift' });
         }
         // Drift's on-chain liquidation check adds a ~1% margin_buffer (100 bps) to the
         // maintenance margin requirement. Users are only liquidatable when:
@@ -1571,12 +1572,12 @@ export class DriftLiquidator {
           ? -(DRIFT_MARGIN_BUFFER_BPS / 10_000) // e.g. -0.01 → only attempt when health < -1%
           : execGate;
         if (!opts?.bypassExecGate && typeof healthNow === 'number' && isFinite(healthNow) && healthNow > effectiveGate) {
-          try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'HEALTHY_EXEC_GATE', healthNow, execGate, effectiveGate, cat: 'drift' }); } catch {}
+          if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'HEALTHY_EXEC_GATE', healthNow, execGate, effectiveGate, cat: 'drift' });
           return;
         }
         // Passed execution gate; mark formal start with the latest health
-        try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.attempt_start', { user: target.userPk, health: healthNow, execGate, name: this.config?.name, cat: 'drift' }); } catch {}
-      } catch {}
+        if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.attempt_start', { user: target.userPk, health: healthNow, execGate, name: this.config?.name, cat: 'drift' });
+      } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.info', { error: String(e?.message || e), cat: 'drift' }); }
       // Compute remaining notional cap (USD) if configured
       let remainingNotional = Infinity;
       try {
@@ -1591,8 +1592,8 @@ export class DriftLiquidator {
             ? Math.min(remainingNotional, overrideCap)
             : overrideCap;
         }
-        try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.cap_state', { user: target.userPk, maxAttemptNotional: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
-      } catch {}
+        if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.cap_state', { user: target.userPk, maxAttemptNotional: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' });
+      } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
       // Dynamic sizing: cap at own subaccount's available free collateral
       let ownFreeCollateral: number | null = null;
       try {
@@ -1612,21 +1613,21 @@ export class DriftLiquidator {
               const pk = await client.getUserAccountPublicKey?.(Number(subId));
               if (pk) {
                 const ownUser = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: loader } });
-                try { await (ownUser as any).subscribe?.(); } catch {}
+                try { await (ownUser as any).subscribe?.(); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
                 let QUOTE_PREC = 1_000_000;
-                try { const sdk: any = await import('@drift-labs/sdk'); QUOTE_PREC = Number((sdk as any)?.constants?.QUOTE_PRECISION ?? (sdk as any)?.QUOTE_PRECISION ?? 1_000_000); } catch {}
+                try { const sdk: any = await import('@drift-labs/sdk'); QUOTE_PREC = Number((sdk as any)?.constants?.QUOTE_PRECISION ?? (sdk as any)?.QUOTE_PRECISION ?? 1_000_000); } catch { /* sdk import fallback */ }
                 const toUi = (v: any) => Number(v?.toString?.() || v || 0) / QUOTE_PREC;
                 const free = toUi(ownUser?.getFreeCollateral?.());
                 const total = toUi(ownUser?.getTotalCollateral?.('Maintenance'));
                 const maint = toUi(ownUser?.getMaintenanceMarginRequirement?.());
-                try { await (ownUser as any).unsubscribe?.(); } catch {}
+                try { await (ownUser as any).unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.positionCalc', { error: String(e?.message || e), cat: 'drift' }); }
                 if (isFinite(free) && (free !== 0 || total !== 0)) {
                   snap = { id: subId, freeCollateral: free, totalCollateral: total, maintenanceRequirement: maint, initialRequirement: 0, effectiveLeverage: 0, positions: [] };
-                  try { logger.info('drift.liquidator.own_capacity_polling_fallback', { user: target.userPk, free, total, maint, cat: 'drift' }); } catch {}
+                  safeLog.info('drift.liquidator.own_capacity_polling_fallback', { user: target.userPk, free, total, maint, cat: 'drift' });
                 }
               }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
         }
         if (snap && typeof snap.freeCollateral === 'number' && isFinite(snap.freeCollateral)) {
           ownFreeCollateral = snap.freeCollateral;
@@ -1634,17 +1635,17 @@ export class DriftLiquidator {
           const ownCap = Math.max(0, ownFreeCollateral * margin);
           if (ownCap < 1) {
             // Less than $1 of usable balance – cannot liquidate
-            try { logger.warn('drift.liquidator.skip_target', { user: target.userPk, reason: 'OWN_BALANCE_ZERO', ownFreeCollateral, ownCap, cat: 'drift' }); } catch {}
+            safeLog.warn('drift.liquidator.skip_target', { user: target.userPk, reason: 'OWN_BALANCE_ZERO', ownFreeCollateral, ownCap, cat: 'drift' });
             return;
           }
           remainingNotional = (Number.isFinite(remainingNotional) && remainingNotional !== Infinity)
             ? Math.min(remainingNotional, ownCap)
             : ownCap;
-          try { logger.info('drift.liquidator.own_capacity', { user: target.userPk, ownFreeCollateral, margin, ownCap, effectiveCap: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.own_capacity', { user: target.userPk, ownFreeCollateral, margin, ownCap, effectiveCap: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' });
         } else {
-          try { logger.warn('drift.liquidator.own_capacity_unavailable', { user: target.userPk, snapNull: !snap, freeCollateral: snap?.freeCollateral, cat: 'drift' }); } catch {}
+          safeLog.warn('drift.liquidator.own_capacity_unavailable', { user: target.userPk, snapNull: !snap, freeCollateral: snap?.freeCollateral, cat: 'drift' });
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
       // Build notional/base lookups by market for this user (perp positions only)
       const userSummary = this.atRiskUsers.get(String(target.userPk));
       const posNotionalByMarket: Map<number, number> = new Map();
@@ -1656,16 +1657,16 @@ export class DriftLiquidator {
           const n = Math.abs(Number(ps?.notional || 0));
           if (Number.isFinite(idx) && Number.isFinite(n) && n > 0) posNotionalByMarket.set(idx, n);
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
       // Build snapshot of raw information for logging and decisioning
       try {
         let sdkUser = this.userCache.get(String(target.userPk));
         if (!sdkUser) {
           let pk: any = target.userPk;
-          try { pk = new PublicKey(String(target.userPk)); } catch {}
+          try { pk = new PublicKey(String(target.userPk)); } catch { /* parse attempt */ }
           sdkUser = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
           this.userCache.set(String(target.userPk), sdkUser);
-          try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
+          try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.subscribedUsers', { error: String(e?.message || e), cat: 'drift' }); }
         }
         try {
           const last = this.userLastRefresh.get(String(target.userPk)) || 0;
@@ -1674,20 +1675,20 @@ export class DriftLiquidator {
             await this.fetchAccountsLimited(sdkUser, 'fetchAccounts.snapshotRefresh');
             this.userLastRefresh.set(String(target.userPk), Date.now());
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.userLastRefresh', { error: String(e?.message || e), cat: 'drift' }); }
         // Early bankruptcy handling: skip normal liquidation and optionally resolve
         try {
           if (opts?.bypassBankruptcy) {
-            try { logger.info('drift.liquidator.bankruptcy_bypassed', { user: target.userPk, cat: 'drift' }); } catch {}
+            safeLog.info('drift.liquidator.bankruptcy_bypassed', { user: target.userPk, cat: 'drift' });
           } else {
             const bankrupt = await this.isUserBankrupt(sdkUser);
             if (bankrupt) {
-              try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'BANKRUPT', cat: 'drift' }); } catch {}
+              if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'BANKRUPT', cat: 'drift' });
               try {
                 const resolvePerp = (DriftService.getInstance() as any)?.client?.resolvePerpBankruptcy;
                 if (typeof resolvePerp === 'function') {
                   let BASE_PREC = 1_000_000_000;
-                  try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch {}
+                  try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
                   const positions = (sdkUser as any)?.getPerpPositions?.() || [];
                   for (const p of (positions || [])) {
                     try {
@@ -1695,21 +1696,21 @@ export class DriftLiquidator {
                       const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
                       if (!Number.isFinite(m) || rawBase === 0) continue;
                       await resolvePerp(userPublicKey, m);
-                      try { logger.info('drift.liquidator.bankruptcy_perp_resolve_ok', { user: target.userPk, marketIndex: m, cat: 'drift' }); } catch {}
+                      safeLog.info('drift.liquidator.bankruptcy_perp_resolve_ok', { user: target.userPk, marketIndex: m, cat: 'drift' });
                     } catch (e: any) {
-                      try { logger.warn('drift.liquidator.bankruptcy_perp_resolve_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                      safeLog.warn('drift.liquidator.bankruptcy_perp_resolve_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' });
                     }
                   }
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
               this.recordAction();
               return;
             }
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.recordAction', { error: String(e?.message || e), cat: 'drift' }); }
         // Collateral values (native + UI)
         let QUOTE_PREC = 1_000_000;
-        try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION); } catch {}
+        try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
         const total = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
         const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
         const free = Number((sdkUser as any)?.getFreeCollateral?.()?.toString?.() || (sdkUser as any)?.getFreeCollateral?.() || 0);
@@ -1718,9 +1719,9 @@ export class DriftLiquidator {
         const freeUi = free / QUOTE_PREC;
         // Positions summary with pricing (mid/oracle fallback via DLOB)
         let BASE_PREC = 1_000_000_000;
-        try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch {}
+        try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
         let positions = (sdkUser as any)?.getPerpPositions?.() || [];
-        try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (sdkUser as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch {}
+        try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (sdkUser as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
         const posSummary: Array<{ marketIndex: number; symbol?: string; base: number; price?: number; notional?: number; liqPrice?: number; profitability?: number } & { baseRaw?: number }> = [];
         for (const p of (positions || [])) {
           try {
@@ -1732,14 +1733,14 @@ export class DriftLiquidator {
               const acc = await (DriftService.getInstance() as any)?.client?.getPerpMarketAccount?.(Number(m));
               const maybe = Number(acc?.amm?.basePrecision ?? acc?.basePrecision);
               if (Number.isFinite(maybe) && maybe > 0) basePrecForMarket = maybe;
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.ber', { error: String(e?.message || e), cat: 'drift' }); }
             const baseUi = rawBase / basePrecForMarket;
             const symbol = (indexToSymbol(Number(m)) || '').split('-')[0] || undefined;
             const pollMs = Math.max(800, Number((this.config.httpPollMs ?? ((CONFIG as any)?.drift?.liquidator?.httpPollMs ?? 1200))));
             let priceSample = await this.getPriceSample(Number(m), pollMs);
             let cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
             if (!(typeof cur === 'number' && isFinite(cur))) {
-              try { const l2 = await fetchDlobL2(Number(m)); if (l2) { const mid = (typeof l2.bid?.[0]?.price === 'number' && typeof l2.ask?.[0]?.price === 'number') ? (l2.bid[0].price + l2.ask[0].price) / 2 : undefined; cur = (typeof mid === 'number') ? mid : (typeof l2.oracle === 'number' ? l2.oracle : cur); } } catch {}
+              try { const l2 = await fetchDlobL2(Number(m)); if (l2) { const mid = (typeof l2.bid?.[0]?.price === 'number' && typeof l2.ask?.[0]?.price === 'number') ? (l2.bid[0].price + l2.ask[0].price) / 2 : undefined; cur = (typeof mid === 'number') ? mid : (typeof l2.oracle === 'number' ? l2.oracle : cur); } } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
             }
             let notional: number | undefined = undefined;
             let liqPrice: number | undefined = undefined;
@@ -1765,9 +1766,9 @@ export class DriftLiquidator {
               profitability = attemptNotional > 0 ? (bonus - expectedFees) / attemptNotional : undefined;
             }
             posSummary.push({ marketIndex: m, symbol, base: baseUi, baseRaw: rawBase, price: typeof cur === 'number' ? cur : undefined, notional, liqPrice, profitability });
-            try { posBaseRawByMarket.set(Number(m), Math.abs(Number(rawBase))); } catch {}
-            try { posBaseSignByMarket.set(Number(m), Math.sign(Number(rawBase)) || 1); } catch {}
-          } catch {}
+            try { posBaseRawByMarket.set(Number(m), Math.abs(Number(rawBase))); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.set', { error: String(e?.message || e), cat: 'drift' }); }
+            try { posBaseSignByMarket.set(Number(m), Math.sign(Number(rawBase)) || 1); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.set', { error: String(e?.message || e), cat: 'drift' }); }
+          } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.abs', { error: String(e?.message || e), cat: 'drift' }); }
         }
         // Recompute notional by market from fresh posSummary to avoid stale cache
         try {
@@ -1777,7 +1778,7 @@ export class DriftLiquidator {
             const n = Math.abs(Number(ps?.notional || 0));
             if (Number.isFinite(idx) && Number.isFinite(n) && n > 0) posNotionalByMarket.set(idx, n);
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.r', { error: String(e?.message || e), cat: 'drift' }); }
         const exposureUsd = posSummary.reduce((s, p) => s + (typeof p.notional === 'number' ? Math.abs(p.notional) : 0), 0);
         // Spot collateral snapshot (amounts + UI conversion)
         // Use getSpotPositions() with fallback to raw getUserAccount().spotPositions
@@ -1813,14 +1814,14 @@ export class DriftLiquidator {
                 if (typeof isVariant === 'function') isBorrow = isVariant(balanceType, 'borrow');
                 else if (typeof getVariant === 'function') isBorrow = String(getVariant(balanceType)).toLowerCase().includes('borrow');
                 else isBorrow = String(balanceType || '').toLowerCase().includes('borrow');
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.toLowerCase', { error: String(e?.message || e), cat: 'drift' }); }
               // Use SDK's getTokenAmount for correct conversion from scaledBalance
               let amountToken: any = null;
               try {
                 if (typeof getTokenAmount === 'function' && sp?.scaledBalance && mktAcc) {
                   amountToken = getTokenAmount(sp.scaledBalance, mktAcc, balanceType);
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.getTokenAmount', { error: String(e?.message || e), cat: 'drift' }); }
               const amountRawAbs = Number(amountToken?.toString?.() || sp?.scaledBalance?.toString?.() || sp?.balance || 0);
               if (amountRawAbs === 0) continue; // Skip empty positions
               // Negate borrows so the frontend can filter: amountUi > 0 = deposit, < 0 = borrow
@@ -1834,11 +1835,11 @@ export class DriftLiquidator {
                 const priceRaw = Number(oracle?.price?.toString?.() || 0);
                 const priceUi = priceRaw > 0 ? priceRaw / PRICE_PREC : 0;
                 if (priceUi > 0) valueUsd = Math.abs(amountUi) * priceUi;
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
               spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint, isBorrow, valueUsd });
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.push', { error: String(e?.message || e), cat: 'drift' }); }
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.push', { error: String(e?.message || e), cat: 'drift' }); }
         try {
           userAccount = (sdkUser as any)?.getUserAccount?.();
           // Validate userAccount has essential fields that the SDK needs for tx building.
@@ -1857,25 +1858,25 @@ export class DriftLiquidator {
                 hasSubAccountId,
                 keys: Object.keys(userAccount || {}).slice(0, 10),
                 cat: 'drift',
-              }); } catch {}
+              }); } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.keys', { error: String(e?.message || e), cat: 'drift' }); }
               // Try one more fetchAccounts to hydrate
-              try { await this.fetchAccountsLimited(sdkUser, 'fetchAccounts.rehydrate'); } catch {}
+              try { await this.fetchAccountsLimited(sdkUser, 'fetchAccounts.rehydrate'); } catch (e: any) { safeLog.warn('drift.liquidator.handleTarget.fetchAccounts', { error: String(e?.message || e), cat: 'drift' }); }
               userAccount = (sdkUser as any)?.getUserAccount?.();
               const retryOk = !!(userAccount?.authority && typeof userAccount.authority.toBuffer === 'function' && userAccount.subAccountId !== undefined);
               if (!retryOk) {
-                try { logger.warn('drift.liquidator.user_account_still_incomplete', { user: target.userPk, cat: 'drift' }); } catch {}
+                safeLog.warn('drift.liquidator.user_account_still_incomplete', { user: target.userPk, cat: 'drift' });
                 userAccount = null;
               }
             }
           }
           openOrdersCount = Number(userAccount?.openOrders || 0);
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
         try {
           const spotTargets = await this.getSpotLiqCandidates(sdkUser);
           spotDeposit = spotTargets.deposit || null;
           spotBorrow = spotTargets.borrow || null;
-        } catch {}
-        try { perpPositionsForPnl = Array.isArray(positions) ? positions : []; } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.getSpotLiqCandidates', { error: String(e?.message || e), cat: 'drift' }); }
+        try { perpPositionsForPnl = Array.isArray(positions) ? positions : []; } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.isArray', { error: String(e?.message || e), cat: 'drift' }); }
         let userProfit: number | undefined = undefined;
         for (const ps of posSummary) { if (typeof ps.profitability === 'number') userProfit = (typeof userProfit === 'number') ? Math.min(userProfit, ps.profitability) : ps.profitability; }
         const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
@@ -1909,7 +1910,7 @@ export class DriftLiquidator {
           const minNotional = (this.config as any)?.minNotional ?? cfgAssume.minNotional;
           const sizeFraction = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? cfgAssume.perpSizeFraction ?? 0.05))));
           let maxAttemptNotionalLocal = 0;
-          try { for (const ps of posSummary) { if (typeof ps.notional === 'number') maxAttemptNotionalLocal = Math.max(maxAttemptNotionalLocal, ps.notional * sizeFraction); } } catch {}
+          try { for (const ps of posSummary) { if (typeof ps.notional === 'number') maxAttemptNotionalLocal = Math.max(maxAttemptNotionalLocal, ps.notional * sizeFraction); } } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
           if (minNotional !== undefined && Number.isFinite(Number(minNotional)) && maxAttemptNotionalLocal < Number(minNotional)) {
             logger.info('drift.liquidator.decision', { user: target.userPk, proceed: false, reason: 'SIZE_TOO_SMALL', gate: { minNotional, attemptNotional: maxAttemptNotionalLocal }, cat: 'drift' } as any);
             return;
@@ -1919,19 +1920,19 @@ export class DriftLiquidator {
             return;
           }
           logger.info('drift.liquidator.decision', { user: target.userPk, proceed: true, reason: 'OK', gate: { minNotional, minProfitability, attemptNotional: maxAttemptNotionalLocal, profitability: userProfit }, cat: 'drift' } as any);
-        } catch {}
-      } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
+      } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
       try {
         const sdkUserGuard = this.userCache.get(String(target.userPk));
         if (opts?.bypassOracleGuard && sdkUserGuard) {
-          try { logger.info('drift.liquidator.oracle_guard_bypassed', { user: target.userPk, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.oracle_guard_bypassed', { user: target.userPk, cat: 'drift' });
         }
         if (!opts?.bypassOracleGuard && sdkUserGuard && this.hasOracleOutlierForUser(sdkUserGuard)) {
-          try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'ORACLE_TWAP_GUARD', cat: 'drift' }); } catch {}
+          if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'ORACLE_TWAP_GUARD', cat: 'drift' });
           this.applyOracleGuardCooldown(target.userPk);
           return;
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.oracleGuard', { error: String(e?.message || e), cat: 'drift' }); }
       const marketsForUser = Array.from(this.userToMarkets.get(String(target.userPk)) || []);
       // Start with cached market set; will be enriched from live posSummary after snapshot
       let perpMarkets: number[] = [...marketsForUser];
@@ -1943,7 +1944,7 @@ export class DriftLiquidator {
         for (const mkt of posBaseRawByMarket.keys()) {
           if (!perpMarkets.includes(mkt)) perpMarkets.push(mkt);
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
       if (perpMarkets.length === 0) perpMarkets = [0, 1, 2]; // last-resort fallback
       let anySuccess = false;
       // Step 1: attempt perp liquidation FIRST for speed (best-effort, capped and obeying maxAttemptNotional when set)
@@ -1953,13 +1954,13 @@ export class DriftLiquidator {
         const baseSizeFrac = withSizeFrac(Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05)))));
         // Prefer SDK BN; fallback to Anchor BN, then bn.js and polyfill toBuffer when missing
         if (!BN) {
-          try { const sdk: any = await import('@drift-labs/sdk'); BN = (sdk as any)?.BN || (sdk as any)?.AnchorsBN || null; } catch {}
-          if (!BN) { try { const anchor: any = await import('@coral-xyz/anchor'); BN = (anchor as any)?.BN || (anchor as any)?.default?.BN || null; } catch {} }
+          try { const sdk: any = await import('@drift-labs/sdk'); BN = (sdk as any)?.BN || (sdk as any)?.AnchorsBN || null; } catch { /* sdk import fallback */ }
+          if (!BN) { try { const anchor: any = await import('@coral-xyz/anchor'); BN = (anchor as any)?.BN || (anchor as any)?.default?.BN || null; } catch { /* sdk import fallback */ } }
           if (!BN) {
             try {
               const mod: any = await import('bn.js');
               BN = (mod as any)?.BN || (mod as any)?.default?.BN || (mod as any)?.default || null;
-            } catch {}
+            } catch { /* sdk import fallback */ }
           }
           // Polyfill toBuffer on whichever BN we resolved -- SDK/Anchor BN may also lack it
           try {
@@ -1969,9 +1970,9 @@ export class DriftLiquidator {
                 return buf;
               };
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.bnPolyfill', { error: String(e?.message || e), cat: 'drift' }); }
           if (!BN) {
-            try { logger.warn('drift.liquidator.bn_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
+            safeLog.warn('drift.liquidator.bn_unavailable', { user: target.userPk, cat: 'drift' });
           }
         }
         if (typeof drift?.liquidatePerp === 'function' && userPublicKey && userAccount && BN) {
@@ -1981,10 +1982,10 @@ export class DriftLiquidator {
             const mkt = Number(idx);
             try {
               if (!opts?.bypassOracleGuard && this.isOracleOutlier(mkt, 'perp')) {
-                try { logger.info('drift.liquidator.perp_skip_oracle_guard', { user: target.userPk, marketIndex: mkt, cat: 'drift' }); } catch {}
+                safeLog.info('drift.liquidator.perp_skip_oracle_guard', { user: target.userPk, marketIndex: mkt, cat: 'drift' });
                 continue;
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.handleTarget.caught', { error: String(e?.message || e), cat: 'drift' }); }
             const posN = Number(posNotionalByMarket.get(mkt) || 0);
             const baseRawAbs = Number(posBaseRawByMarket.get(mkt) || 0);
             if (!Number.isFinite(posN) || posN <= 0) continue;
@@ -1994,7 +1995,7 @@ export class DriftLiquidator {
               const allowed = remainingNotional / posN;
               sizeFrac = Math.min(baseSizeFrac, Math.max(0, allowed));
             }
-            try { logger.info('drift.liquidator.perp_attempt', { user: target.userPk, marketIndex: mkt, posNotional: posN, baseSizeFrac, sizeFrac, remainingNotional: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
+            safeLog.info('drift.liquidator.perp_attempt', { user: target.userPk, marketIndex: mkt, posNotional: posN, baseSizeFrac, sizeFrac, remainingNotional: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' });
             if (sizeFrac <= 0) break;
             const t0 = Date.now();
             try {
@@ -2007,9 +2008,7 @@ export class DriftLiquidator {
               if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
                 remainingNotional = Math.max(0, remainingNotional - consumedUsd);
               }
-              try {
-                logger.info('drift.liquidator.perp_ok', { user: target.userPk, marketIndex: mkt, sizeFraction: sizeFrac, consumedUsd, remainingNotional: (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) ? remainingNotional : null, sig, ms: Date.now() - t0, cat: 'drift' });
-              } catch {}
+              safeLog.info('drift.liquidator.perp_ok', { user: target.userPk, marketIndex: mkt, sizeFraction: sizeFrac, consumedUsd, remainingNotional: (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) ? remainingNotional : null, sig, ms: Date.now() - t0, cat: 'drift' });
               this.recordAttempt({ type: 'perp', marketIndex: mkt, user: String(target.userPk), sig: sig || undefined, ms: Date.now() - t0, notionalUsd: consumedUsd, liqFeeRate: this.feeCache.getPerpFee(mkt), ok: true });
               try {
                 if (sig) {
@@ -2024,7 +2023,7 @@ export class DriftLiquidator {
                     sentAtMs: t0,
                   }).catch(() => {});
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.max', { error: String(e?.message || e), cat: 'drift' }); }
               // Queue non-blocking unwind of the acquired perp position
               try {
                 const userBaseSign = posBaseSignByMarket.get(mkt) || 1;
@@ -2037,14 +2036,12 @@ export class DriftLiquidator {
                   acquiredAtMs: Date.now(),
                   notionalUsd: consumedUsd,
                 });
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.tring', { error: String(e?.message || e), cat: 'drift' }); }
               anySuccess = true;
               if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity && remainingNotional <= 0) break;
             } catch (e: any) {
               this.recordAttempt({ type: 'perp', marketIndex: mkt, user: String(target.userPk), ms: Date.now() - t0, ok: false, error: String(e?.message || e) });
-              try {
-                logger.warn('drift.liquidator.perp_failed', { user: target.userPk, marketIndex: mkt, sizeFraction: sizeFrac, error: String(e?.message || e), cat: 'drift' });
-              } catch {}
+              safeLog.warn('drift.liquidator.perp_failed', { user: target.userPk, marketIndex: mkt, sizeFraction: sizeFrac, error: String(e?.message || e), cat: 'drift' });
             }
           }
         } else if (typeof drift?.liquidatePerpBatch === 'function' && userPublicKey) {
@@ -2057,14 +2054,14 @@ export class DriftLiquidator {
             if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
               const sumN = safeMarkets.reduce((s: number, idx: number) => s + (Number(posNotionalByMarket.get(Number(idx)) || 0)), 0);
               if (sumN > 0) sizeFraction = Math.min(baseSizeFrac, Math.max(0, remainingNotional / sumN));
-              try { logger.info('drift.liquidator.perp_batch_attempt', { user: target.userPk, markets: safeMarkets, sumNotional: sumN, sizeFraction, remainingNotional, cat: 'drift' }); } catch {}
+              safeLog.info('drift.liquidator.perp_batch_attempt', { user: target.userPk, markets: safeMarkets, sumNotional: sumN, sizeFraction, remainingNotional, cat: 'drift' });
             }
             const t0 = Date.now();
             if (sizeFraction > 0) {
               try {
                 const res = await drift.liquidatePerpBatch({ users: [userPublicKey], markets: safeMarkets, sizeFraction });
                 const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
-                try { logger.info('drift.liquidator.perp_batch_ok', { user: target.userPk, markets: safeMarkets, sizeFraction, sig, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+                safeLog.info('drift.liquidator.perp_batch_ok', { user: target.userPk, markets: safeMarkets, sizeFraction, sig, ms: Date.now() - t0, cat: 'drift' });
                 this.recordAttempt({ type: 'perp_batch', marketIndex: safeMarkets?.[0] ?? 0, user: String(target.userPk), sig: sig || undefined, ms: Date.now() - t0, ok: true });
                 try {
                   if (sig) {
@@ -2079,16 +2076,16 @@ export class DriftLiquidator {
                       sentAtMs: t0,
                     }).catch(() => {});
                   }
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.max', { error: String(e?.message || e), cat: 'drift' }); }
                 anySuccess = true;
               } catch (e: any) {
                 this.recordAttempt({ type: 'perp_batch', marketIndex: safeMarkets?.[0] ?? 0, user: String(target.userPk), ms: Date.now() - t0, ok: false, error: String(e?.message || e) });
-                try { logger.warn('drift.liquidator.perp_batch_failed', { user: target.userPk, markets: safeMarkets, sizeFraction, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                safeLog.warn('drift.liquidator.perp_batch_failed', { user: target.userPk, markets: safeMarkets, sizeFraction, error: String(e?.message || e), cat: 'drift' });
               }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
         } else {
-          try { logger.info('drift.liquidator.perp_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.perp_unavailable', { user: target.userPk, cat: 'drift' });
         }
       } catch (e: any) {
         this.recordError(e);
@@ -2100,9 +2097,9 @@ export class DriftLiquidator {
         const sizeFrac = withSizeFrac(Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05)))));
         let attempts = 0;
         const sdkUser = this.userCache.get(String(target.userPk));
-        if (!userAccount) { try { userAccount = (sdkUser as any)?.getUserAccount?.(); } catch {} }
+        if (!userAccount) { try { userAccount = (sdkUser as any)?.getUserAccount?.(); } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.userCache', { error: String(e?.message || e), cat: 'drift' }); } }
         if (!userAccount || !BN) {
-          try { logger.warn('drift.liquidator.pnl_skip_user_or_bn', { user: target.userPk, hasUser: !!userAccount, hasBn: !!BN, cat: 'drift' }); } catch {}
+          safeLog.warn('drift.liquidator.pnl_skip_user_or_bn', { user: target.userPk, hasUser: !!userAccount, hasBn: !!BN, cat: 'drift' });
         }
         const fnBorrowForPnlRaw = (drift as any)?.liquidateBorrowForPerpPnl;
         const fnPerpPnlForDepositRaw = (drift as any)?.liquidatePerpPnlForDeposit;
@@ -2111,7 +2108,7 @@ export class DriftLiquidator {
         // Pre-validate spot market accounts exist in DriftClient cache before calling SDK
         // methods that will crash with "Cannot read properties of undefined (reading 'toBuffer')"
         // if getSpotMarketAccount(idx) returns undefined.
-        let spotCacheOk = true;
+        spotCacheOk = true;
         try {
           const marketsToCheck: number[] = [];
           if (spotDeposit) marketsToCheck.push(Number(spotDeposit.marketIndex));
@@ -2126,10 +2123,10 @@ export class DriftLiquidator {
                 hasAccount: !!spotMkt,
                 hasMint: !!spotMkt?.mint,
                 cat: 'drift',
-              }); } catch {}
+              }); } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
             }
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
         if (Array.isArray(perpPositionsForPnl) && (spotDeposit || spotBorrow) && spotCacheOk) {
           for (const p of perpPositionsForPnl) {
             if (attempts >= maxPnl) break;
@@ -2150,7 +2147,7 @@ export class DriftLiquidator {
                 ]);
                 attempts += 1;
                 const sig = typeof res === 'string' ? res : ((res as any)?.txSig || (res as any)?.signature || null);
-                try { logger.info('drift.liquidator.perp_pnl_for_deposit_ok', { user: target.userPk, marketIndex: mkt, depositMarketIndex: Number(spotDeposit.marketIndex), sig, cat: 'drift' }); } catch {}
+                safeLog.info('drift.liquidator.perp_pnl_for_deposit_ok', { user: target.userPk, marketIndex: mkt, depositMarketIndex: Number(spotDeposit.marketIndex), sig, cat: 'drift' });
                 this.recordAttempt({ type: 'perp_pnl_deposit', marketIndex: mkt, user: String(target.userPk), sig: sig || undefined, ms: Date.now() - tSend, ok: true });
                 try {
                   if (sig) {
@@ -2165,10 +2162,10 @@ export class DriftLiquidator {
                       sentAtMs: tSend,
                     }).catch(() => {});
                   }
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.max', { error: String(e?.message || e), cat: 'drift' }); }
               } catch (e: any) {
                 this.recordAttempt({ type: 'perp_pnl_deposit', marketIndex: mkt, user: String(target.userPk), ms: Date.now() - tSend, ok: false, error: String(e?.message || e) });
-                try { logger.warn('drift.liquidator.perp_pnl_for_deposit_failed', { user: target.userPk, marketIndex: mkt, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                safeLog.warn('drift.liquidator.perp_pnl_for_deposit_failed', { user: target.userPk, marketIndex: mkt, error: String(e?.message || e), cat: 'drift' });
               }
               continue;
             }
@@ -2184,7 +2181,7 @@ export class DriftLiquidator {
                 ]);
                 attempts += 1;
                 const sig = typeof res === 'string' ? res : ((res as any)?.txSig || (res as any)?.signature || null);
-                try { logger.info('drift.liquidator.borrow_for_perp_pnl_ok', { user: target.userPk, marketIndex: mkt, borrowMarketIndex: Number(spotBorrow.marketIndex), sig, cat: 'drift' }); } catch {}
+                safeLog.info('drift.liquidator.borrow_for_perp_pnl_ok', { user: target.userPk, marketIndex: mkt, borrowMarketIndex: Number(spotBorrow.marketIndex), sig, cat: 'drift' });
                 this.recordAttempt({ type: 'perp_pnl_borrow', marketIndex: mkt, user: String(target.userPk), sig: sig || undefined, ms: Date.now() - tSend, ok: true });
                 try {
                   if (sig) {
@@ -2199,26 +2196,26 @@ export class DriftLiquidator {
                       sentAtMs: tSend,
                     }).catch(() => {});
                   }
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.max', { error: String(e?.message || e), cat: 'drift' }); }
               } catch (e: any) {
                 this.recordAttempt({ type: 'perp_pnl_borrow', marketIndex: mkt, user: String(target.userPk), ms: Date.now() - tSend, ok: false, error: String(e?.message || e) });
-                try { logger.warn('drift.liquidator.borrow_for_perp_pnl_failed', { user: target.userPk, marketIndex: mkt, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                safeLog.warn('drift.liquidator.borrow_for_perp_pnl_failed', { user: target.userPk, marketIndex: mkt, error: String(e?.message || e), cat: 'drift' });
               }
               continue;
             }
           }
         }
       } catch (e: any) {
-        try { logger.warn('drift.liquidator.perp_pnl_block_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.liquidator.perp_pnl_block_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' });
       }
       // Step 3: attempt spot liquidation (best-effort, capped)
       try {
         if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity && remainingNotional <= 0) {
           // Cap fully consumed; skip spot
-          try { logger.info('drift.liquidator.spot_skip_cap', { user: target.userPk, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.spot_skip_cap', { user: target.userPk, cat: 'drift' });
         } else if (spotDeposit && spotBorrow && userPublicKey && spotCacheOk) {
           if (!opts?.bypassOracleGuard && (this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot') || this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot'))) {
-            try { logger.info('drift.liquidator.spot_skip_oracle_guard', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), cat: 'drift' }); } catch {}
+            safeLog.info('drift.liquidator.spot_skip_oracle_guard', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), cat: 'drift' });
           } else {
             const maxSpot = Math.max(1, Math.min(50, Number((this.config.maxSpotAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) ?? 2))));
             const sizeFrac = withSizeFrac(Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05)))));
@@ -2235,7 +2232,7 @@ export class DriftLiquidator {
                 ]);
                 attempts += 1;
                 const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
-                try { logger.info('drift.liquidator.spot_ok', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), sizeFraction: sizeFrac, sig, cat: 'drift' }); } catch {}
+                safeLog.info('drift.liquidator.spot_ok', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), sizeFraction: sizeFrac, sig, cat: 'drift' });
                 { const spotConsumed = Number(spotBorrow.valueUsd || 0) * sizeFrac; this.recordAttempt({ type: 'spot', marketIndex: Number(spotBorrow.marketIndex), user: String(target.userPk), sig: sig || undefined, ms: Date.now() - tSend, notionalUsd: Number.isFinite(spotConsumed) ? spotConsumed : undefined, liqFeeRate: this.feeCache.getSpotFee(Number(spotDeposit.marketIndex)), ok: true }); }
                 try {
                   if (sig) {
@@ -2250,7 +2247,7 @@ export class DriftLiquidator {
                       sentAtMs: tSend,
                     }).catch(() => {});
                   }
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.max', { error: String(e?.message || e), cat: 'drift' }); }
                 // Queue non-blocking unwind: swap received deposit asset to USDC via Drift internal Jupiter swap
                 try {
                   this.unwindQueue.push({
@@ -2262,7 +2259,7 @@ export class DriftLiquidator {
                     userPk: String(target.userPk),
                     acquiredAtMs: Date.now(),
                   });
-                } catch {}
+                } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
                 anySuccess = true;
                 if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
                   const consumed = Number(spotBorrow.valueUsd || 0) * sizeFrac;
@@ -2271,15 +2268,15 @@ export class DriftLiquidator {
               } catch (e: any) {
                 this.recordAttempt({ type: 'spot', marketIndex: Number(spotBorrow.marketIndex), user: String(target.userPk), ms: Date.now() - tSend, ok: false, error: String(e?.message || e) });
                 if (attempts < maxSpot) {
-                  try { logger.warn('drift.liquidator.spot_failed', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), sizeFraction: sizeFrac, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                  safeLog.warn('drift.liquidator.spot_failed', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), sizeFraction: sizeFrac, error: String(e?.message || e), cat: 'drift' });
                 }
               }
             } else {
-              try { logger.info('drift.liquidator.spot_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
+              safeLog.info('drift.liquidator.spot_unavailable', { user: target.userPk, cat: 'drift' });
             }
           }
         } else {
-          try { logger.info('drift.liquidator.spot_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.spot_unavailable', { user: target.userPk, cat: 'drift' });
         }
       } catch (e: any) {
         this.recordError(e);
@@ -2289,15 +2286,15 @@ export class DriftLiquidator {
       // Open orders can prevent some liquidations if the user's margin is consumed by them.
       try {
         if (!anySuccess && !forceCancelAttempted && openOrdersCount > 0) {
-          const skipCancel = Boolean(this.config.skipForceCancelBeforeLiq ?? (CONFIG as any)?.drift?.liquidator?.skipForceCancelBeforeLiq ?? true);
+          const skipCancel = Boolean((this.config as any).skipForceCancelBeforeLiq ?? (CONFIG as any)?.drift?.liquidator?.skipForceCancelBeforeLiq ?? true);
           if (!skipCancel || openOrdersCount > 0) {
-            try { logger.info('drift.liquidator.force_cancel_fallback', { user: target.userPk, openOrders: openOrdersCount, cat: 'drift' }); } catch {}
+            safeLog.info('drift.liquidator.force_cancel_fallback', { user: target.userPk, openOrders: openOrdersCount, cat: 'drift' });
             const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
             await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels, userAccount);
             forceCancelAttempted = true;
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.dersForUser', { error: String(e?.message || e), cat: 'drift' }); }
       // Final attempt summary: before/after health and reduced USD by market
       try {
         let beforeHealth: number | null = null;
@@ -2306,16 +2303,16 @@ export class DriftLiquidator {
           let sdkUser = this.userCache.get(String(target.userPk));
           if (!sdkUser) {
             let pk: any = target.userPk;
-            try { pk = new PublicKey(String(target.userPk)); } catch {}
+            try { pk = new PublicKey(String(target.userPk)); } catch { /* parse attempt */ }
             sdkUser = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
             this.userCache.set(String(target.userPk), sdkUser);
-            try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
+            try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.subscribedUsers', { error: String(e?.message || e), cat: 'drift' }); }
           }
           try {
             const total = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
             const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
             beforeHealth = (isFinite(total) && isFinite(maint) && total > 0) ? (total - maint) / total : null;
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
           try {
             const last = this.userLastRefresh.get(String(target.userPk)) || 0;
             const refreshMs = Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000));
@@ -2323,15 +2320,15 @@ export class DriftLiquidator {
               await this.fetchAccountsLimited(sdkUser, 'fetchAccounts.postLiqRefresh');
               this.userLastRefresh.set(String(target.userPk), Date.now());
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.userLastRefresh', { error: String(e?.message || e), cat: 'drift' }); }
           try {
             const total2 = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
             const maint2 = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
             afterHealth = (isFinite(total2) && isFinite(maint2) && maint2 > 0) ? (total2 - maint2) / maint2 : null;
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
           const posAfter = (sdkUser as any)?.getPerpPositions?.() || [];
           let BASE_PREC = 1_000_000_000;
-          try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch {}
+          try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
           const notionalAfter: Map<number, number> = new Map();
           for (const p of posAfter) {
             try {
@@ -2343,7 +2340,7 @@ export class DriftLiquidator {
               let priceSample = await this.getPriceSample(Number(m), pollMs);
               const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
               if (typeof cur === 'number' && isFinite(cur)) notionalAfter.set(m, Math.abs(baseUi) * cur);
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
           }
           const deltas: Array<{ marketIndex: number; reducedUsd: number }> = [];
           if (anySuccess && notionalAfter.size > 0) {
@@ -2367,22 +2364,22 @@ export class DriftLiquidator {
                 cat: 'drift'
               });
             }
-          } catch {}
-        } catch {}
-      } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
+        } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
+      } catch (e: any) { safeLog.debug('drift.liquidator.trackDriftAttempt.caught', { error: String(e?.message || e), cat: 'drift' }); }
       this.recordAction();
-      try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.action_complete', { user: target.userPk, cat: 'drift' }); } catch {}
+      if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.action_complete', { user: target.userPk, cat: 'drift' });
     } catch (e: any) {
       this.recordError(e);
       this.applyCooldownForTarget(target.userPk);
     } finally {
-      try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.attempt_end', { user: target.userPk, name: this.config?.name, cat: 'drift' }); } catch {}
+      if (this.shouldLogAttempt()) safeLog.info('drift.liquidator.attempt_end', { user: target.userPk, name: this.config?.name, cat: 'drift' });
     }
   }
 
   async testTarget(userPk: string): Promise<{ ok: boolean }> {
     try {
-      try { logger.info('drift.liquidator.test_request', { user: String(userPk), name: this.config?.name, cat: 'drift' }); } catch {}
+      safeLog.info('drift.liquidator.test_request', { user: String(userPk), name: this.config?.name, cat: 'drift' });
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
       const testMaxAttemptNotional = Number(liqCfg.testMaxAttemptNotional ?? 5);
       const testSizeFraction = Number(liqCfg.testSizeFraction ?? 0.001);
@@ -2396,11 +2393,11 @@ export class DriftLiquidator {
         tag: 'test',
       };
       await this.handleTarget({ userPk: String(userPk), health: 0 }, opts);
-      try { this.maybeEmitQueue(); } catch {}
-      try { logger.info('drift.liquidator.test_complete', { user: String(userPk), name: this.config?.name, cat: 'drift' }); } catch {}
+      try { this.maybeEmitQueue(); } catch (e: any) { safeLog.debug('drift.liquidator.testTarget.handleTarget', { error: String(e?.message || e), cat: 'drift' }); }
+      safeLog.info('drift.liquidator.test_complete', { user: String(userPk), name: this.config?.name, cat: 'drift' });
       return { ok: true };
     } catch (e: any) {
-      try { logger.error('drift.liquidator.test_failed', { user: String(userPk), error: String(e?.message || e), cat: 'drift' }); } catch {}
+      safeLog.error('drift.liquidator.test_failed', { user: String(userPk), error: String(e?.message || e), cat: 'drift' });
       return { ok: false };
     }
   }
@@ -2425,7 +2422,7 @@ export class DriftLiquidator {
       // Prune: keep max 50 entries, drop older than 5 min
       const cutoff = Date.now() - 5 * 60_000;
       while (this.recentAttempts.length > 50 || (this.recentAttempts.length > 0 && this.recentAttempts[0].ts < cutoff)) this.recentAttempts.shift();
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.recordAttempt.recentAttempts', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private recordAction(): void {
@@ -2435,8 +2432,8 @@ export class DriftLiquidator {
       // Drop entries older than 60s
       while (this.actionsLog.length > 0 && (now - this.actionsLog[0]) > 60000) this.actionsLog.shift();
       this.state.actionsLastMin = this.actionsLog.length;
-      try { emit('drift-liquidation', { type: 'action', actionsLastMin: this.state.actionsLastMin }); } catch {}
-    } catch {}
+      try { emit('drift-liquidation', { type: 'action', actionsLastMin: this.state.actionsLastMin }); } catch (e: any) { safeLog.debug('drift.liquidator.recordAction.emit', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.liquidator.recordAction.emit', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private scaleAmount(amount: any, fraction: number): any {
@@ -2513,7 +2510,7 @@ export class DriftLiquidator {
     try {
       const ms = Math.max(1000, Number((this.config as any)?.oracleGuardCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.oracleGuardCooldownMs) ?? 5000));
       this.healthyUntil.set(String(userPk), Date.now() + ms);
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.applyOracleGuardCooldown.oracleGuard', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async getSpotLiqCandidates(sdkUser: any): Promise<{ deposit?: any; borrow?: any }> {
@@ -2539,11 +2536,11 @@ export class DriftLiquidator {
           if (typeof isVariant === 'function') isBorrow = isVariant(balanceType, 'borrow');
           else if (typeof getVariant === 'function') isBorrow = String(getVariant(balanceType)).toLowerCase().includes('borrow');
           else isBorrow = String(balanceType || '').toLowerCase().includes('borrow');
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.getSpotLiqCandidates.ant', { error: String(e?.message || e), cat: 'drift' }); }
         let amountToken: any = null;
         try {
           if (typeof getTokenAmount === 'function') amountToken = getTokenAmount(sp?.scaledBalance, market, balanceType);
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.getSpotLiqCandidates.caught', { error: String(e?.message || e), cat: 'drift' }); }
         const amountRaw = amountToken ?? sp?.scaledBalance ?? sp?.balance ?? sp?.depositBalance ?? sp?.borrowBalance ?? 0;
         const decimals = Number(market?.decimals ?? 6);
         const amountUi = Number(amountRaw?.toString?.() || amountRaw || 0) / Math.pow(10, decimals);
@@ -2561,7 +2558,7 @@ export class DriftLiquidator {
       }
       if (bestDeposit) out.deposit = bestDeposit;
       if (bestBorrow) out.borrow = bestBorrow;
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.getSpotLiqCandidates.caught', { error: String(e?.message || e), cat: 'drift' }); }
     return out;
   }
 
@@ -2611,7 +2608,7 @@ export class DriftLiquidator {
         const sdk: any = await import('@drift-labs/sdk');
         const cst: any = (sdk as any).constants || (sdk as any);
         if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION);
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.isUserBankrupt.caught', { error: String(e?.message || e), cat: 'drift' }); }
       const toNum = (v: any): number => Number(v?.toString?.() || v || 0);
       const assets = toNum((sdkUser as any)?.getAssetsValue?.()) / QUOTE_PREC;
       const liabilities = toNum((sdkUser as any)?.getLiabilitiesValue?.()) / QUOTE_PREC;
@@ -2630,8 +2627,8 @@ export class DriftLiquidator {
       while (this.errorsLog.length > 0 && (now - this.errorsLog[0]) > 60000) this.errorsLog.shift();
       this.state.errorsLastMin = this.errorsLog.length;
       logger.warn('drift.liquidator.error', { error: String(e?.message || e), cat: 'drift' });
-      try { emit('drift-liquidation', { type: 'error', error: String(e?.message || e), errorsLastMin: this.state.errorsLastMin }); } catch {}
-    } catch {}
+      try { emit('drift-liquidation', { type: 'error', error: String(e?.message || e), errorsLastMin: this.state.errorsLastMin }); } catch (e: any) { safeLog.debug('drift.liquidator.recordError.emit', { error: String(e?.message || e), cat: 'drift' }); }
+    } catch (e: any) { safeLog.debug('drift.liquidator.recordError.emit', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private applyCooldownForTarget(userPk: string): void {
@@ -2640,7 +2637,7 @@ export class DriftLiquidator {
       const jitter = Math.floor(Math.random() * Math.min(1000, Math.max(250, baseMs * 0.15)));
       const until = Date.now() + baseMs + jitter;
       this.targetCooldownUntil.set(String(userPk), until);
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.applyCooldownForTarget.targetCooldownUntil', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async forceCancelOrdersForUser(drift: any, userPublicKey: any, userPk: string, maxCancels: number, userAccount?: any): Promise<{ batches: number; errors: number }> {
@@ -2648,24 +2645,24 @@ export class DriftLiquidator {
     let errors = 0;
     try {
       const batch = Math.min(Math.max(1, maxCancels), 10);
-      try { logger.info('drift.liquidator.force_cancel_begin', { user: userPk, maxCancels, batch, cat: 'drift' }); } catch {}
+      safeLog.info('drift.liquidator.force_cancel_begin', { user: userPk, maxCancels, batch, cat: 'drift' });
       if (!userAccount) {
-        try { logger.warn('drift.liquidator.force_cancel_no_user_account', { user: userPk, cat: 'drift' }); } catch {}
+        safeLog.warn('drift.liquidator.force_cancel_no_user_account', { user: userPk, cat: 'drift' });
       } else if (typeof drift?.forceCancelOrders === 'function' && userPublicKey) {
         try {
           await drift.forceCancelOrders(userPublicKey, userAccount);
           batches += 1;
-          try { logger.info('drift.liquidator.force_cancel_batch_ok', { user: userPk, batchSize: maxCancels, batches, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.force_cancel_batch_ok', { user: userPk, batchSize: maxCancels, batches, cat: 'drift' });
         } catch (e: any) {
           errors += 1;
-          try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+          safeLog.warn('drift.liquidator.force_cancel_batch_failed', { user: userPk, error: String(e?.message || e), cat: 'drift' });
         }
       } else {
-        try { logger.info('drift.liquidator.force_cancel_unavailable', { user: userPk, cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.force_cancel_unavailable', { user: userPk, cat: 'drift' });
       }
-    } catch {}
-    try { logger.info('drift.liquidator.force_cancel_summary', { user: userPk, requested: maxCancels, batches, errors, cat: 'drift' }); } catch {}
-    try { logger.info('drift.liquidator.force_cancel_end', { user: userPk, cat: 'drift' }); } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.forceCancelOrdersForUser.info', { error: String(e?.message || e), cat: 'drift' }); }
+    safeLog.info('drift.liquidator.force_cancel_summary', { user: userPk, requested: maxCancels, batches, errors, cat: 'drift' });
+    safeLog.info('drift.liquidator.force_cancel_end', { user: userPk, cat: 'drift' });
     return { batches, errors };
   }
 
@@ -2676,7 +2673,7 @@ export class DriftLiquidator {
       this.lastQueueEmitTs = now;
       const snapshot = this.getQueueSnapshot(20);
       emit('drift-liquidation', { type: 'queue', ...snapshot }).catch(() => {});
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.emit.emit', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private computeExposureStats(): { exposureMarkets: number; exposureUsers: number } {
@@ -2708,7 +2705,7 @@ export class DriftLiquidator {
     try {
       const svc = DriftPriceService.getInstance();
       if (Number.isFinite(Number(pollMs))) {
-        try { svc.trackMarket(idx, Number(pollMs)); } catch {}
+        try { svc.trackMarket(idx, Number(pollMs)); } catch (e: any) { safeLog.debug('drift.liquidator.getPriceSample.price', { error: String(e?.message || e), cat: 'drift' }); }
       }
       return svc.getPrice(idx);
     } catch {
@@ -2726,9 +2723,9 @@ export class DriftLiquidator {
           const set = new Set<string>(this.userKeys);
           for (const pk of userPks.slice(0, max)) { this.enqueueProbe(pk); set.add(String(pk)); }
           this.userKeys = Array.from(set);
-          try { logger.info('drift.liquidator.infra_seed', { users: Math.min(userPks.length, max), cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.infra_seed', { users: Math.min(userPks.length, max), cat: 'drift' });
         } else {
-          try { logger.info('drift.liquidator.infra_seed_skipped', { reason: 'no_keys', cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.infra_seed_skipped', { reason: 'no_keys', cat: 'drift' });
         }
         return;
       }
@@ -2743,46 +2740,46 @@ export class DriftLiquidator {
             // Shared user map is present but not ready yet; retry shortly
             if (!this.userMapSeedRetryTimer) {
               this.userMapSeedRetryTimer = (globalThis as any).setTimeout(() => {
-                try { this.userMapSeedRetryTimer = null; } catch {}
-                try { this.seedFromDlobUserMap().catch(() => {}); } catch {}
+                try { this.userMapSeedRetryTimer = null; } catch (e: any) { safeLog.debug('drift.liquidator.seedFromDlobUserMap.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
+                try { this.seedFromDlobUserMap().catch(() => {}); } catch (e: any) { safeLog.warn('drift.liquidator.seedFromDlobUserMap.seed', { error: String(e?.message || e), cat: 'drift' }); }
               }, 5000);
             }
             return;
           }
-        } catch {}
+        } catch (e: any) { safeLog.warn('drift.liquidator.seedFromDlobUserMap.seed', { error: String(e?.message || e), cat: 'drift' }); }
         if (um && typeof um.entries === 'function') {
           const entries = Array.from(um.entries());
           userPks = entries.map(([k]) => String((k as any)?.toBase58?.() || k)).filter(Boolean);
-          try { logger.info('drift.liquidator.usermap_shared_keys', { keys: userPks.length, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.usermap_shared_keys', { keys: userPks.length, cat: 'drift' });
         } else if (um && typeof um.values === 'function') {
           const vals = Array.from(um.values());
           userPks = vals.map((u: any) => String(u?.getUserAccountPublicKey?.()?.toBase58?.() || '')).filter(Boolean);
-          try { logger.info('drift.liquidator.usermap_shared_values', { keys: userPks.length, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.usermap_shared_values', { keys: userPks.length, cat: 'drift' });
         }
       } catch (e: any) {
-        try { logger.warn('drift.liquidator.usermap_shared_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.liquidator.usermap_shared_failed', { error: String(e?.message || e), cat: 'drift' });
       }
       try {
         if (userPks.length === 0 && !this.sharedUserMap && typeof (drift as any)?.getUserMap === 'function') {
           const um = await (drift as any).getUserMap();
           const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
           userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
-          try { logger.info('drift.liquidator.usermap_get_keys', { keys: entries.length, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.usermap_get_keys', { keys: entries.length, cat: 'drift' });
         } else if (userPks.length === 0 && !this.sharedUserMap) {
-          try { logger.info('drift.liquidator.usermap_get_unavailable', { cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.usermap_get_unavailable', { cat: 'drift' });
         }
       } catch (e: any) {
-        try { logger.warn('drift.liquidator.usermap_get_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.liquidator.usermap_get_failed', { error: String(e?.message || e), cat: 'drift' });
       }
       try {
         if (userPks.length === 0 && !this.sharedUserMap && (drift as any)?.dlob?._userMap) {
           const um = (drift as any).dlob._userMap;
           const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
           userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
-          try { logger.info('drift.liquidator.usermap_dlob_keys', { keys: entries.length, cat: 'drift' }); } catch {}
+          safeLog.info('drift.liquidator.usermap_dlob_keys', { keys: entries.length, cat: 'drift' });
         }
       } catch (e: any) {
-        try { logger.warn('drift.liquidator.usermap_dlob_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+        safeLog.warn('drift.liquidator.usermap_dlob_failed', { error: String(e?.message || e), cat: 'drift' });
       }
       if (Array.isArray(userPks) && userPks.length > 0) {
         const max = 1000;
@@ -2790,11 +2787,11 @@ export class DriftLiquidator {
         const set = new Set<string>(this.userKeys);
         for (const pk of userPks.slice(0, max)) { this.enqueueProbe(pk); set.add(String(pk)); }
         this.userKeys = Array.from(set);
-        try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(userPks.length, max), cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.dlob_seed', { users: Math.min(userPks.length, max), cat: 'drift' });
       } else {
-        try { logger.info('drift.liquidator.dlob_seed_skipped', { reason: 'no_keys', cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.dlob_seed_skipped', { reason: 'no_keys', cat: 'drift' });
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.seedFromDlobUserMap.info', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async seedFromDlobHttp(): Promise<void> {
@@ -2802,7 +2799,7 @@ export class DriftLiquidator {
       // Determine markets to seed from (tracked or allowlist)
       let indices: number[] = Array.from(this.trackedMarkets);
       if (indices.length === 0) {
-        try { indices = getAllowlistIndices(); } catch {}
+        try { indices = getAllowlistIndices(); } catch (e: any) { safeLog.debug('drift.liquidator.seedFromDlobHttp.from', { error: String(e?.message || e), cat: 'drift' }); }
       }
       if (indices.length === 0) indices = [0, 1, 2];
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
@@ -2823,11 +2820,11 @@ export class DriftLiquidator {
               const l3Keys: string[] = await mod.fetchDlobL3Makers(Number(idx)).catch(() => []);
               for (const k of l3Keys) { if (k && !seen.has(k)) { seen.add(k); makers.push(k); } }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.seedFromDlobHttp.caught', { error: String(e?.message || e), cat: 'drift' }); }
         }));
         // Yield between batches to keep event loop responsive
         if (i + maxParallel < indices.length) {
-          try { await new Promise(r => setTimeout(r, 0)); } catch {}
+          try { await new Promise(r => setTimeout(r, 0)); } catch { /* sleep/delay safe to swallow */ }
         }
       }
       if (makers.length > 0) {
@@ -2835,12 +2832,12 @@ export class DriftLiquidator {
         const set = new Set<string>(this.userKeys);
         for (const pk of makers.slice(0, max)) { this.enqueueProbe(pk); set.add(String(pk)); }
         this.userKeys = Array.from(set);
-        try { logger.info('drift.liquidator.dlob_http_seed', { users: max, markets: indices.length, cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.dlob_http_seed', { users: max, markets: indices.length, cat: 'drift' });
       } else {
-        try { logger.info('drift.liquidator.dlob_http_seed_skipped', { reason: 'no_makers', cat: 'drift' }); } catch {}
+        safeLog.info('drift.liquidator.dlob_http_seed_skipped', { reason: 'no_makers', cat: 'drift' });
       }
     } catch (e: any) {
-      try { logger.warn('drift.liquidator.dlob_http_seed_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      safeLog.warn('drift.liquidator.dlob_http_seed_failed', { error: String(e?.message || e), cat: 'drift' });
     }
   }
 
@@ -2850,7 +2847,7 @@ export class DriftLiquidator {
       const drift: any = (DriftService.getInstance() as any).client;
       if (!drift) return;
       let sdk: any = null;
-      try { sdk = await import('@drift-labs/sdk'); } catch {}
+      try { sdk = await import('@drift-labs/sdk'); } catch { /* sdk import fallback */ }
       // Initialize UserMap using SDK pattern (ws accounts + event subscriber)
       try {
         const Ctor = (sdk as any)?.UserMap || null;
@@ -2861,31 +2858,31 @@ export class DriftLiquidator {
           try {
             if (!evSub && EventSubscriberCtor) {
               evSub = new (EventSubscriberCtor as any)(drift.connection, drift.program);
-              try { await evSub.subscribe?.(); } catch {}
+              try { await evSub.subscribe?.(); } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.caught', { error: String(e?.message || e), cat: 'drift' }); }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.caught', { error: String(e?.message || e), cat: 'drift' }); }
           try {
             (this as any)._dlobUserMap = new (Ctor as any)({ connection: drift.connection, program: drift.program, eventSubscriber: evSub });
           } catch {
-            try { (this as any)._dlobUserMap = new (Ctor as any)(drift.connection, drift.program); } catch {}
+            try { (this as any)._dlobUserMap = new (Ctor as any)(drift.connection, drift.program); } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.userMap', { error: String(e?.message || e), cat: 'drift' }); }
           }
           try {
             await ((this as any)._dlobUserMap?.subscribe?.());
-            try { logger.info('drift.liquidator.usermap_subscribed', { withEventSubscriber: !!evSub, cat: 'drift' }); } catch {}
+            safeLog.info('drift.liquidator.usermap_subscribed', { withEventSubscriber: !!evSub, cat: 'drift' });
           } catch (e: any) {
-            try { logger.warn('drift.liquidator.usermap_subscribe_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+            safeLog.warn('drift.liquidator.usermap_subscribe_failed', { error: String(e?.message || e), cat: 'drift' });
           }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.userMap', { error: String(e?.message || e), cat: 'drift' }); }
       // Initialize OrderSubscriber if constructable
       try {
         const Ctor = (sdk as any)?.OrderSubscriber || null;
         if (Ctor && !(this as any)._dlobOrderSub) {
           try { (this as any)._dlobOrderSub = new (Ctor as any)(drift.connection, drift.program); }
-          catch { try { (this as any)._dlobOrderSub = new (Ctor as any)({ connection: drift.connection, program: drift.program }); } catch {} }
-          try { await ((this as any)._dlobOrderSub?.subscribe?.()); } catch {}
+          catch { try { (this as any)._dlobOrderSub = new (Ctor as any)({ connection: drift.connection, program: drift.program }); } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.caught', { error: String(e?.message || e), cat: 'drift' }); } }
+          try { await ((this as any)._dlobOrderSub?.subscribe?.()); } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.caught', { error: String(e?.message || e), cat: 'drift' }); }
         }
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.caught', { error: String(e?.message || e), cat: 'drift' }); }
       // Immediately seed from user map keys if present
       if ( (this as any)._dlobUserMap ) {
         try {
@@ -2894,15 +2891,15 @@ export class DriftLiquidator {
           if (Array.isArray(entries) && entries.length > 0) {
             const max = Math.min(1000, entries.length);
             for (let i = 0; i < max; i += 1) {
-              const k = entries[i];
+              const k: any = entries[i];
               const pk = String(k?.toBase58?.() || k || '');
               if (pk) this.enqueueProbe(pk);
             }
-            try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(entries.length, max), cat: 'drift' }); } catch {}
+            safeLog.info('drift.liquidator.dlob_seed', { users: Math.min(entries.length, max), cat: 'drift' });
           } else {
-            try { logger.info('drift.liquidator.usermap_empty', { keys: 0, cat: 'drift' }); } catch {}
+            safeLog.info('drift.liquidator.usermap_empty', { keys: 0, cat: 'drift' });
           }
-        } catch {}
+        } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.userMap', { error: String(e?.message || e), cat: 'drift' }); }
       }
       // Periodically seed from user map keys as a refresh
       if ((this as any)._dlobUserMap && !(this as any)._dlobSeedTimer) {
@@ -2913,16 +2910,16 @@ export class DriftLiquidator {
             if (Array.isArray(entries)) {
               const max = Math.min(500, entries.length);
               for (let i = 0; i < max; i += 1) {
-                const k = entries[i];
+                const k: any = entries[i];
                 const pk = String(k?.toBase58?.() || k || '');
                 if (pk) this.enqueueProbe(pk);
               }
-              try { logger.info('drift.liquidator.usermap_refresh', { keys: entries.length, enqueued: max, cat: 'drift' }); } catch {}
+              safeLog.info('drift.liquidator.usermap_refresh', { keys: entries.length, enqueued: max, cat: 'drift' });
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.userMap', { error: String(e?.message || e), cat: 'drift' }); }
         }, 30000);
       }
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.initDlobSources.userMap', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private enqueueProbe(pkStr: string): void {
@@ -2939,7 +2936,7 @@ export class DriftLiquidator {
       if (this.inProbeQueue.has(key)) return;
       this.pendingProbeQueue.push(key);
       this.inProbeQueue.add(key);
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.enqueueProbe.inProbeQueue', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private async processProbeQueue(): Promise<void> {
@@ -2948,6 +2945,7 @@ export class DriftLiquidator {
     this.probeProcessing = true;
     try {
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
+      const recoveryBuf = Number(((this.config as any).recoveryBuffer ?? ((CONFIG as any)?.drift?.liquidator?.recoveryBuffer) ?? 0.05));
       const drift: any = (DriftService.getInstance() as any).client;
       const capCfg = Math.max(1, Math.min(200, Number((this.config.maxProbesPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxProbesPerTick) ?? 40))));
       const perTickCap = Math.max(1, Math.floor(this.getProbeRps() * Math.max(200, Number(this.currentPollMs || 1000)) / 1000));
@@ -2958,10 +2956,10 @@ export class DriftLiquidator {
           consumerId: 'liquidator',
         });
         if (hotUsers.length > 0) {
-          try { logger.debug('drift.liquidator.hotlist_users', { count: hotUsers.length, cat: 'drift' }); } catch {}
+          safeLog.debug('drift.liquidator.hotlist_users', { count: hotUsers.length, cat: 'drift' });
         }
         for (const pk of hotUsers) this.enqueueProbe(String(pk));
-      } catch {}
+      } catch (e: any) { safeLog.debug('drift.liquidator.processProbeQueue.enqueueProbe', { error: String(e?.message || e), cat: 'drift' }); }
       const slice = this.pendingProbeQueue.splice(0, cap);
       let probed = 0;
       let flagged = 0;
@@ -2971,7 +2969,7 @@ export class DriftLiquidator {
           let user = this.userCache.get(key);
           if (!user) {
             let pk: any = key;
-            try { if (typeof key === 'string') pk = new PublicKey(key); } catch {}
+            try { if (typeof key === 'string') pk = new PublicKey(key); } catch { /* parse attempt */ }
             // Use websocket subscription to avoid HTTP RPC polling that can trigger 429s
             user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
             this.userCache.set(key, user);
@@ -3002,14 +3000,14 @@ export class DriftLiquidator {
               
               this.subscribedUsers.add(key);
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.async.subscribedUsers', { error: String(e?.message || e), cat: 'drift' }); }
           // Rate-limit the HTTP RPC call
           await this.acquireProbeToken();
           let exists = true;
           try {
             const ua = (user as any)?.getUserAccount?.();
             if (!ua) exists = await (user as any).exists?.();
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
           if (!exists) { this.inProbeQueue.delete(key); continue; }
           // Ensure fresh accounts snapshot after subscribe (WS may take a moment to push first state)
           try {
@@ -3019,7 +3017,7 @@ export class DriftLiquidator {
               await this.fetchAccountsLimited(user, 'fetchAccounts.postSubscribe');
               this.userLastRefresh.set(String(key), Date.now());
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.async.userLastRefresh', { error: String(e?.message || e), cat: 'drift' }); }
           // Compute health early; if already under threshold, flag immediately
           const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
@@ -3027,14 +3025,14 @@ export class DriftLiquidator {
           const health = total > 0 ? (total - maint) / total : Infinity;
           // Positions for scoping and indexing
           let positions = (user as any)?.getPerpPositions?.() || [];
-          try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (user as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch {}
+          try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (user as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch (e: any) { safeLog.debug('drift.liquidator.async.ay', { error: String(e?.message || e), cat: 'drift' }); }
           try {
             if (this.hasOracleOutlierForUser(user)) {
               this.applyOracleGuardCooldown(key);
               this.inProbeQueue.delete(key);
               continue;
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.async.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
           let hasActive = false;
           let inScope = false;
           const allowedMarkets: Set<number> | null = Array.isArray(this.config.probeMarketIndices) && this.config.probeMarketIndices.length > 0
@@ -3052,26 +3050,26 @@ export class DriftLiquidator {
               const marketOk = allowedMarkets ? allowedMarkets.has(Number(m)) : true;
               const sizeOk = base >= minAbs && base <= maxAbs;
               if (marketOk && sizeOk) { inScope = true; break; }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
           }
           if (!hasActive) {
             const ms = Math.max(15000, Number((this.config.idleCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.idleCooldownMs) ?? 60000)));
             this.idleUntil.set(key, Date.now() + ms);
             // Unsubscribe immediately to reduce load
-            try { await this.safeUnsubscribeUser(key, user); } catch {}
+            try { await this.safeUnsubscribeUser(key, user); } catch (e: any) { safeLog.warn('drift.liquidator.async.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
             this.inProbeQueue.delete(key);
             continue;
           }
           if (!inScope) {
             const ms = Math.max(15000, Number((this.config.outOfScopeCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.outOfScopeCooldownMs) ?? 60000)));
             this.outOfScopeUntil.set(key, Date.now() + ms);
-            try { await this.safeUnsubscribeUser(key, user); } catch {}
+            try { await this.safeUnsubscribeUser(key, user); } catch (e: any) { safeLog.warn('drift.liquidator.async.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
             this.atRiskUsers.delete(key);
             this.inProbeQueue.delete(key);
             continue;
           }
           // Index in-scope users for price-triggered scans
-          try { await this.refreshIndexForUser(user, key); } catch {}
+          try { await this.refreshIndexForUser(user, key); } catch (e: any) { safeLog.debug('drift.liquidator.async.refreshIndex', { error: String(e?.message || e), cat: 'drift' }); }
           // Build lightweight positions summary for UI
           // Compute quote precision and UI-scaled collateral metrics
           let QUOTE_PREC = 1_000_000;
@@ -3079,11 +3077,11 @@ export class DriftLiquidator {
             const sdk: any = await import('@drift-labs/sdk');
             const cst: any = (sdk as any).constants || (sdk as any);
             if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION);
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
           const totalUi = Number(total) / QUOTE_PREC;
           const maintUi = Number(maint) / QUOTE_PREC;
           let freeUi = 0;
-          try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch {}
+          try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch (e: any) { safeLog.debug('drift.liquidator.async.positionCalc', { error: String(e?.message || e), cat: 'drift' }); }
           let posSummary: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }> = [];
           try {
             let BASE_PREC = 1_000_000_000; // default BASE_PRECISION
@@ -3093,7 +3091,7 @@ export class DriftLiquidator {
               const maybe = Number(cst?.BASE_PRECISION || cst?.BASE_PRECISION_EXP || cst?.BASE_PRECISION_EXPONENT);
               // Prefer BASE_PRECISION; some SDKs expose exponent or alt names; fall back to 1e9
               if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION);
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
             for (const p of positions) {
               try {
                 const raw = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
@@ -3119,7 +3117,7 @@ export class DriftLiquidator {
                             : undefined;
                           cur = (typeof mid === 'number') ? mid : (typeof l2.oracle === 'number' ? l2.oracle : cur);
                         }
-                      } catch {}
+                      } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
                     }
                     if (typeof cur === 'number' && isFinite(cur)) {
                       notional = Math.abs(baseUi) * cur;
@@ -3142,24 +3140,24 @@ export class DriftLiquidator {
                       const expectedFees = attemptNotional * (takerFeeRate + slippageRate + oracleHaircutRate);
                       profitability = attemptNotional > 0 ? (bonus - expectedFees) / attemptNotional : undefined;
                     }
-                  } catch {}
+                  } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
                   posSummary.push({ marketIndex: m, symbol, base: baseUi, notional, liqPrice, profitability });
                 }
-              } catch {}
+              } catch (e: any) { safeLog.debug('drift.liquidator.async.push', { error: String(e?.message || e), cat: 'drift' }); }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
           probed += 1;
           if (health < riskThresh) {
             // Aggregate a user-level profitability (min across positions)
             let userProfit: number | undefined = undefined;
-            try { hotlist.markUser(key, 'liquidator_risk'); } catch {}
+            try { hotlist.markUser(key, 'liquidator_risk'); } catch (e: any) { safeLog.debug('drift.liquidator.async.hotlist', { error: String(e?.message || e), cat: 'drift' }); }
             try {
               for (const ps of posSummary) {
                 if (typeof ps.profitability === 'number') {
                   userProfit = (typeof userProfit === 'number') ? Math.min(userProfit, ps.profitability) : ps.profitability;
                 }
               }
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.async.min', { error: String(e?.message || e), cat: 'drift' }); }
             const exposureUsd = posSummary.reduce((s, p) => s + (typeof p.notional === 'number' ? Math.abs(p.notional) : 0), 0);
             const cfgAssume: any = (CONFIG as any)?.drift?.liquidator?.feeAssumptions || {};
             const minProfitability = Math.max(Number((this.config as any)?.minProfitability ?? ((CONFIG as any)?.drift?.liquidator?.minProfitability) ?? -Infinity), -Infinity);
@@ -3174,7 +3172,7 @@ export class DriftLiquidator {
               if (skipReason === undefined && Number.isFinite(minProfitability) && typeof userProfit === 'number' && userProfit < minProfitability) skipReason = 'UNPROFITABLE';
               // If total collateral <= 0, likely bad debt
               if (skipReason === undefined && total <= 0) skipReason = 'NO_COLLATERAL';
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
           this.atRiskUsers.set(key, {
               health,
               updatedAt: Date.now(),
@@ -3199,10 +3197,10 @@ export class DriftLiquidator {
             try {
               const ms = Math.max(8000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 15000)));
               this.healthyUntil.set(key, Date.now() + ms);
-            } catch {}
-            try { await this.safeUnsubscribeUser(key, user); } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.async.healthyUntil', { error: String(e?.message || e), cat: 'drift' }); }
+            try { await this.safeUnsubscribeUser(key, user); } catch (e: any) { safeLog.warn('drift.liquidator.async.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
           }
-        } catch {} finally {
+        } catch (e: any) { safeLog.warn('drift.liquidator.async.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); } finally {
           this.inProbeQueue.delete(key);
         }
       }
@@ -3212,8 +3210,8 @@ export class DriftLiquidator {
       this._probeStats.atRiskCount = this.atRiskUsers.size;
       this._probeStats.subscribedCount = this.subscribedUsers.size;
       this._probeStats.liveMonitorCount = this.liveMonitors.size;
-      try { logger.debug('drift.liquidator.probe_result', { attempted: slice.length, probed, flagged, pending: this.pendingProbeQueue.length, rps: this.getProbeRps(), cat: 'drift' }); } catch {}
-    } catch {} finally {
+      safeLog.debug('drift.liquidator.probe_result', { attempted: slice.length, probed, flagged, pending: this.pendingProbeQueue.length, rps: this.getProbeRps(), cat: 'drift' });
+    } catch (e: any) { safeLog.debug('drift.liquidator.async.pendingProbeQueue', { error: String(e?.message || e), cat: 'drift' }); } finally {
       this.probeProcessing = false;
     }
   }
@@ -3267,10 +3265,10 @@ export class DriftLiquidator {
           const drift: any = (DriftService.getInstance() as any).client;
           let user = this.userCache.get(key);
           if (!user) {
-            let pk: any = key; try { pk = new PublicKey(key); } catch {}
+            let pk: any = key; try { pk = new PublicKey(key); } catch { /* parse attempt */ }
             user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
             this.userCache.set(key, user);
-            try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(key); } catch {}
+            try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(key); } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.userCache', { error: String(e?.message || e), cat: 'drift' }); }
           }
           // Refresh: critical users always fetch (every tick = slot speed); standard uses debounce
           try {
@@ -3289,7 +3287,7 @@ export class DriftLiquidator {
                 this.userLastRefresh.set(String(key), Date.now());
               }
             }
-          } catch {}
+          } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.userLastRefresh', { error: String(e?.message || e), cat: 'drift' }); }
           const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
@@ -3300,7 +3298,7 @@ export class DriftLiquidator {
           const monitorEntry = this.liveMonitors.get(key);
           if (monitorEntry && nowCritical !== !!monitorEntry.critical) {
             // Tier changed -- schedule restart outside this callback to avoid clearing own interval
-            (globalThis as any).setTimeout(() => { try { this.startLiveMonitor(key, currentHealth); } catch {} }, 0);
+            (globalThis as any).setTimeout(() => { try { this.startLiveMonitor(key, currentHealth); } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.startLiveMonitor', { error: String(e?.message || e), cat: 'drift' }); } }, 0);
             return;
           }
           // Update cached summary and emit to UI so health changes are visible in realtime
@@ -3310,23 +3308,23 @@ export class DriftLiquidator {
               const sdk: any = await import('@drift-labs/sdk');
               const cst: any = (sdk as any).constants || (sdk as any);
               if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION);
-            } catch {}
+            } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.caught', { error: String(e?.message || e), cat: 'drift' }); }
             const totalUi = total / QUOTE_PREC;
             const maintUi = maint / QUOTE_PREC;
             let freeUi = 0;
-            try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch {}
+            try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.positionCalc', { error: String(e?.message || e), cat: 'drift' }); }
             const prev = (this.atRiskUsers.get(key) as any) || {};
             const summary = { ...prev, health: currentHealth, updatedAt: Date.now(), collateralUsd: totalUi, maintenanceUsd: maintUi, freeUsd: freeUi };
             this.atRiskUsers.set(key, summary);
-            try { const { emitUserSummary } = await import('../server/realtime.js'); emitUserSummary({ userPk: key, ...summary }); } catch {}
-          } catch {}
+            try { const { emitUserSummary } = await import('../server/realtime.js'); emitUserSummary({ userPk: key, ...summary }); } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.emitSummary', { error: String(e?.message || e), cat: 'drift' }); }
+          } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.emitSummary', { error: String(e?.message || e), cat: 'drift' }); }
           this.addOrQueueCandidate({ userPk: key, health: currentHealth, updatedAt: Date.now() } as any);
           this.requestImmediateDrain();
-          try { this.maybeEmitQueue(); } catch {}
-        } catch {}
+          try { this.maybeEmitQueue(); } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.requestImmediateDrain', { error: String(e?.message || e), cat: 'drift' }); }
+        } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.requestImmediateDrain', { error: String(e?.message || e), cat: 'drift' }); }
       }, intervalMs);
       this.liveMonitors.set(key, { timer: t, critical: isCritical });
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.startLiveMonitor.liveMonitors', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
   private stopLiveMonitor(userPk: string): void {
@@ -3335,28 +3333,28 @@ export class DriftLiquidator {
       const entry = this.liveMonitors.get(key);
       if (entry) {
         const timer = entry?.timer ?? entry;
-        try { (globalThis as any).clearInterval(timer); } catch {}
+        try { (globalThis as any).clearInterval(timer); } catch { /* timer cleanup safe to swallow */ }
       }
       this.liveMonitors.delete(key);
-    } catch {}
+    } catch { /* timer cleanup safe to swallow */ }
   }
 
   private async safeUnsubscribeUser(key: string, user: any, timeoutMs: number = 2000): Promise<void> {
     try {
       if (!this.subscribedUsers.has(key) || this.unsubscribingUsers.has(key)) return;
       this.unsubscribingUsers.add(key);
-      const doUnsub = (async () => { try { await user?.unsubscribe?.(); } catch {} })();
+      const doUnsub = (async () => { try { await user?.unsubscribe?.(); } catch (e: any) { safeLog.debug('drift.liquidator.safeUnsubscribeUser.unsubscribingUsers', { error: String(e?.message || e), cat: 'drift' }); } })();
       await Promise.race([
         doUnsub,
         new Promise<void>((resolve) => { try { (globalThis as any).setTimeout(resolve, Math.max(250, Number(timeoutMs))); } catch { resolve(); } }),
       ]);
     } finally {
-      try { this.subscribedUsers.delete(key); } catch {}
-      try { this.unsubscribingUsers.delete(key); } catch {}
+      try { this.subscribedUsers.delete(key); } catch (e: any) { safeLog.debug('drift.liquidator.safeUnsubscribeUser.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
+      try { this.unsubscribingUsers.delete(key); } catch (e: any) { safeLog.debug('drift.liquidator.safeUnsubscribeUser.cleanup', { error: String(e?.message || e), cat: 'drift' }); }
     }
   }
 
-  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string; collateralUsd?: number; maintenanceUsd?: number; freeUsd?: number; exposureUsd?: number }>; marketFees: Array<{ marketIndex: number; symbol?: string; perpFee?: number; spotFee?: number }>; recentAttempts: Array<{ ts: number; type: string; marketIndex: number; user: string; sig?: string; ms: number; notionalUsd?: number; liqFeeRate?: number; ok: boolean; error?: string }> } {
+  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string; collateralUsd?: number; maintenanceUsd?: number; freeUsd?: number; exposureUsd?: number }>; marketFees: Array<{ marketIndex: number; symbol?: string; perpFee?: number; spotFee?: number }>; recentAttempts: Array<{ ts: number; type: string; marketIndex: number; user: string; sig?: string; ms: number; notionalUsd?: number; liqFeeRate?: number; ok: boolean; error?: string }>; probeStats?: Record<string, any> } {
     const top: Candidate[] = [];
     const arr = this.heap.toArray();
     const cap = Math.min(arr.length, Math.max(25, Number(limit) * 8));
@@ -3368,7 +3366,7 @@ export class DriftLiquidator {
     let exposuresWithSymbols: Array<{ marketIndex: number; users: number; symbol?: string }> = exposuresCounts;
     try {
       exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.getQueueSnapshot.map', { error: String(e?.message || e), cat: 'drift' }); }
     const usersArr = Array.from(this.atRiskUsers.entries()).map(([k, v]) => ({
       userPk: k,
       health: v.health,
@@ -3393,9 +3391,9 @@ export class DriftLiquidator {
         perpFee: this.feeCache.getPerpFee(idx),
         spotFee: this.feeCache.getSpotFee(idx),
       }));
-    } catch {}
+    } catch (e: any) { safeLog.debug('drift.liquidator.getQueueSnapshot.feeCache', { error: String(e?.message || e), cat: 'drift' }); }
     // Prune stale attempts (older than 5 min)
-    try { const cutoff = Date.now() - 5 * 60_000; while (this.recentAttempts.length > 0 && this.recentAttempts[0].ts < cutoff) this.recentAttempts.shift(); } catch {}
+    try { const cutoff = Date.now() - 5 * 60_000; while (this.recentAttempts.length > 0 && this.recentAttempts[0].ts < cutoff) this.recentAttempts.shift(); } catch (e: any) { safeLog.debug('drift.liquidator.getQueueSnapshot.recentAttempts', { error: String(e?.message || e), cat: 'drift' }); }
     // Build live probe stats snapshot
     const probeStats = {
       totalIndexed: this._probeStats.totalIndexed,
