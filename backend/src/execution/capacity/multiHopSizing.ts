@@ -15,6 +15,7 @@ import { DEFAULT_MULTIHOP_CONFIG, DEFAULT_SLIPPAGE_PARAMS, getPoolTypeFromDex } 
 import { findOptimalSize, quickOptimalEstimate, type OptimizationResult } from './profitOptimizer.js';
 import { type HopParams, hasValidHopData, getHopLiquidityUsd } from './slippageModels.js';
 import { executionCache } from '../cache.js';
+import { isValidTickSpacing } from '../constants.js';
 import { logger } from '../../utils/logger.js';
 
 // ============================================================================
@@ -303,7 +304,9 @@ function buildHopParams(
       // CLMM: Get liquidity and sqrt price from hot cache
       hop.activeLiquidity = hot?.liquidity;
       hop.sqrtPriceX64 = hot?.sqrtPriceX64;
-      hop.tickSpacing = hot?.tickSpacing ?? staticData?.tickSpacing ?? staticData?.tick_spacing ?? 1;
+      // Validate tickSpacing — reject corrupted values (e.g. 32896) and fall back to 1
+      const rawTs = hot?.tickSpacing ?? staticData?.tickSpacing ?? staticData?.tick_spacing;
+      hop.tickSpacing = isValidTickSpacing(rawTs) ? rawTs : 1;
       
       if (hop.activeLiquidity && hop.activeLiquidity > BigInt(0)) {
         hasData = true;

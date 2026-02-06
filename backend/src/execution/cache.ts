@@ -3,7 +3,7 @@ import { ensureDir, readJson, writeJson, joinPath } from '../utils/fs.js';
 import { recomputeCapacityCurve, invalidateCapacityCurve } from './capacity/index.js';
 import type { PoolType, SizingConfig } from './capacity/types.js';
 import { logger } from '../utils/logger.js';
-import { METEORA_BIN_ARRAY_SIZE } from './constants.js';
+import { METEORA_BIN_ARRAY_SIZE, isValidTickSpacing } from './constants.js';
 
 type PoolStatic = {
   programId?: string;
@@ -396,8 +396,9 @@ export class ExecutionCache {
     }
     
     // Use incoming tickSpacing if provided, otherwise fall back to existing
+    // Validate to reject corrupted values (e.g. 32896 = 0x8080)
     const tickSpacing = incoming.tickSpacing ?? existing.tickSpacing;
-    if (!tickSpacing || tickSpacing <= 0) {
+    if (!isValidTickSpacing(tickSpacing)) {
       return false;
     }
     

@@ -14,6 +14,7 @@ import { LogCode } from '../../utils/logging.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getConnection, getBalances } from '../../wallet/wallet.js';
 import { executionCache } from '../cache.js';
+import { isValidTickSpacing } from '../constants.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { buildWrapSolIxs, buildTopUpWsolIxs, buildUnwrapSolIx, isSolMint, getWsolAta } from '../accounts.js';
 import { getTokenMeta } from '../resolver/tokenMeta.js';
@@ -3254,7 +3255,7 @@ async function extractDexAccounts(
             const hot = executionCache.getHot(poolIdStr);
             const tickSpacing = (hop.tickSpacing ?? (hot as any)?.tickSpacing);
             const currentTick = (hot as any)?.currentTickIndex;
-            if (Number.isFinite(tickSpacing) && Number(tickSpacing) > 0 && Number.isFinite(currentTick)) {
+            if (isValidTickSpacing(tickSpacing) && Number.isFinite(currentTick)) {
               const derived = deriveOrcaTickArraysForSwap(poolId, Number(currentTick), Number(tickSpacing), !!isAtoBOrca);
               const derivedArray0 = derived.tickArray0.toBase58();
               const derivedArray1 = derived.tickArray1.toBase58();

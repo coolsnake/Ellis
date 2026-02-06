@@ -17,7 +17,7 @@ import { resolveManyDecimals } from '../server/pools/decimals.js';
 import { processPriceThroughPipeline } from '../server/pools/pricePipeline.js';
 import { updateEligibilityFromBatchValidation } from '../server/pools.websockets.js';
 import { CONFIG } from '../utils/config.js';
-import { METEORA_BIN_ARRAY_SIZE } from './constants.js';
+import { METEORA_BIN_ARRAY_SIZE, isValidTickSpacing } from './constants.js';
 
 // RPC context for rate limiting
 const RPC_MODULE = 'cacheValidator';
@@ -178,7 +178,7 @@ async function fetchFreshTickDataAndValidate(
       ? Math.abs((currentTick - cachedTick) / cachedTick * 100) 
       : 0;
     
-    const derivationFieldsValid = tickSpacing > 0 && tickSpacing <= 1000;
+    const derivationFieldsValid = isValidTickSpacing(tickSpacing);
     // Only consider cache "stale" if we had a cached value to compare against
     // Otherwise it's just "unpopulated", not "stale"
     const hadCachedTick = cachedTick !== undefined;

@@ -1,6 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import type { DirectHop } from '../../execution/types.js';
 import { executionCache } from '../cache.js';
+import { isValidTickSpacing } from '../constants.js';
 import { peekOrcaPools } from '../../server/pools.js';
 import { logger } from '../../utils/logger.js';
 import { logCatchError } from '../../utils/errorHandler.js';
@@ -77,7 +78,9 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
     const pools = peekOrcaPools();
     const p = (pools.clmm || []).find((x: any) => String(x?.id || '') === poolIdBase);
     if (p) {
-      hop.tickSpacing = Number((p as any)?.tick_spacing || (p as any)?.tickSpacing || hop.tickSpacing || 0);
+      // Validate tickSpacing at entry: reject corrupted values (e.g. 32896 = 0x8080 from parse artifacts)
+      const rawTs = Number((p as any)?.tick_spacing || (p as any)?.tickSpacing || 0);
+      hop.tickSpacing = isValidTickSpacing(rawTs) ? rawTs : (isValidTickSpacing(hop.tickSpacing) ? hop.tickSpacing : 0);
       // Pool cache stores tick_current_index in canonical orientation (negated when was_swapped=true).
       // For tick-array PDA derivation we need NATIVE tick index.
       const tickCanonRaw = (p as any)?.tick_current_index ?? (p as any)?.tickCurrentIndex;
@@ -91,7 +94,8 @@ export async function resolveOrca(hop: DirectHop, traceId?: string): Promise<Dir
           executionCache.setHot(poolIdBase, {
             ...existingHot,
             currentTickIndex: poolTickIndexNative,
-            tickSpacing: hop.tickSpacing,
+            // Only write tickSpacing if validated — don't propagate corruption into cache
+            ...(isValidTickSpacing(hop.tickSpacing) ? { tickSpacing: hop.tickSpacing } : {}),
           });
         }
       }

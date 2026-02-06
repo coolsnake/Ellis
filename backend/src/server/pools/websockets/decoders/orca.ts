@@ -713,7 +713,16 @@ export async function handleOrcaUpdate(
 
     const liquidityRaw = anyToBigInt(parsed.liquidity);
     const liquidity = Number(parsed.liquidity);
-    const tick_spacing = Number(parsed.tickSpacing);
+    // Validate tick_spacing: reject corrupted values (e.g. 32896 = 0x8080)
+    const rawTickSpacing = Number(parsed.tickSpacing);
+    const tick_spacing = (Number.isFinite(rawTickSpacing) && rawTickSpacing > 0 && rawTickSpacing <= 512) ? rawTickSpacing : 0;
+    if (tick_spacing === 0 && rawTickSpacing > 0) {
+      logger.warn('orca.ws.invalid_tick_spacing', {
+        pool: poolId.slice(0, 8) + '…',
+        raw: rawTickSpacing,
+        cat: 'pools',
+      });
+    }
     const fee_bps = deriveOrcaFeeBps(parsed as any);
 
     // Debug logging for fee validation issues

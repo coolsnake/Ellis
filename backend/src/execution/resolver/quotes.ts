@@ -983,23 +983,16 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
     let outRaw: bigint;
     if (nativeAtoB) {
       // Native A -> B: multiply by price
-      // out = in * (sqrtPrice^2 / Q64^2) * 10^(decOut-decIn)
-      const decimalShift = decOut - decIn;
-      if (decimalShift >= 0) {
-        outRaw = (amountInAfterFee * sqrtPrice * sqrtPrice * BigInt(10 ** decimalShift)) / (Q64 * Q64);
-      } else {
-        outRaw = (amountInAfterFee * sqrtPrice * sqrtPrice) / (Q64 * Q64 * BigInt(10 ** (-decimalShift)));
-      }
+      // sqrtPriceX64 = sqrt(atomicB_per_atomicA) * 2^64
+      // price = (sqrtPrice / 2^64)^2 = atomicB / atomicA
+      // outRaw_B = inRaw_A * price — already in atomic B units, NO decimal shift needed.
+      // The sqrtPriceX64 already encodes the atomic ratio including decimal differences.
+      outRaw = (amountInAfterFee * sqrtPrice * sqrtPrice) / (Q64 * Q64);
     } else {
       // Native B -> A: divide by price
-      // out = in * (Q64^2 / sqrtPrice^2) * 10^(decOut-decIn)
+      // outRaw_A = inRaw_B / price = inRaw_B * (Q64^2 / sqrtPrice^2)
       if (sqrtPrice === 0n) return 0n;
-      const decimalShift = decOut - decIn;
-      if (decimalShift >= 0) {
-        outRaw = (amountInAfterFee * Q64 * Q64 * BigInt(10 ** decimalShift)) / (sqrtPrice * sqrtPrice);
-      } else {
-        outRaw = (amountInAfterFee * Q64 * Q64) / (sqrtPrice * sqrtPrice * BigInt(10 ** (-decimalShift)));
-      }
+      outRaw = (amountInAfterFee * Q64 * Q64) / (sqrtPrice * sqrtPrice);
     }
     
     if (outRaw > 0n) {

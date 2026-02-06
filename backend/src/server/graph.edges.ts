@@ -104,11 +104,10 @@ function buildSlippageCurveSource(
       output = size * spotRate;
     }
     const mult = output > 0 ? output / (size * spotRate) : 0;
-    if (Number.isFinite(mult) && mult > 0) {
-      mults.push(mult);
-    } else {
-      mults.push(0);
-    }
+    // Cap at 1.0: slippage can only reduce output, never amplify it.
+    // A mult > 1.0 indicates a modelling error (e.g. asymmetric reserves).
+    const clampedMult = Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
+    mults.push(clampedMult);
   }
 
   return {
@@ -466,44 +465,23 @@ export function edgesFromPoolIncremental(
       curveSource = 'native_reserve';
     }
   } else if (kind === 'clmm') {
-    // Priority 1: bounded reserves from tick-range cache (most accurate)
-    const rangeData = getRangeData(id);
-    if (rangeData?.kind === 'clmm') {
-      try {
-        const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
-        const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
-        const bounded = computeBoundedClmmReserves(
-          s64, Lraw,
-          Number(nativeDecA || 0), Number(nativeDecB || 0),
-          rangeData.sqrtPriceLower, rangeData.sqrtPriceUpper,
-        );
-        if (bounded) {
-          // Bounded reserves are in native order; swap to canonical if needed
-          if (wasSwapped) {
-            reserveA = bounded.reserveB;
-            reserveB = bounded.reserveA;
-            curveSource = 'bounded_clmm_swapped';
-          } else {
-            reserveA = bounded.reserveA;
-            reserveB = bounded.reserveB;
-            curveSource = 'bounded_clmm';
-          }
-        }
-      } catch {}
-    }
-    // Priority 2: fallback to unbounded virtual reserves
-    if (reserveA === 0 || reserveB === 0) {
-      try {
-        const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
-        const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
-        const virt = computeVirtualReservesFromClmm(s64, Lraw, Number(decA || 0), Number(decB || 0));
-        if (virt) {
-          reserveA = virt.reserveA;
-          reserveB = virt.reserveB;
-          curveSource = 'virtual_liquidity';
-        }
-      } catch {}
-    }
+    // ALWAYS use virtual (unbounded) reserves for the slippage curve.
+    // Bounded reserves represent real token amounts in the active tick range,
+    // but the constant-product AMM approximation used in the curve builder
+    // only works with virtual reserves (which satisfy x*y = L^2).
+    // Near tick boundaries, bounded reserves become extremely asymmetric
+    // (one side near zero, the other large), causing the AMM formula to
+    // produce multipliers >> 1.0 — wildly overestimating output.
+    try {
+      const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
+      const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
+      const virt = computeVirtualReservesFromClmm(s64, Lraw, Number(decA || 0), Number(decB || 0));
+      if (virt) {
+        reserveA = virt.reserveA;
+        reserveB = virt.reserveB;
+        curveSource = 'virtual_liquidity';
+      }
+    } catch {}
   } else if (kind === 'dlmm') {
     // Priority 1: active bin reserves from range cache (most accurate)
     const rangeData = getRangeData(id);
