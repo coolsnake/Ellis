@@ -329,7 +329,40 @@ export class DriftService {
           1,
           { module: 'drift', method: 'client.fetchAccounts' }
         );
-        try { logger.info('drift.init.client_accounts_fetched', { cat: 'drift' }); } catch {}
+        // Verify market cache is populated -- especially spot markets which are needed
+        // for liquidateBorrowForPerpPnl / liquidateSpot SDK calls (.mint.toBuffer())
+        const perpAccts = (this.client as any)?.getPerpMarketAccounts?.() || [];
+        const spotAccts = (this.client as any)?.getSpotMarketAccounts?.() || [];
+        try { logger.info('drift.init.client_accounts_fetched', {
+          perpMarkets: perpAccts.length,
+          spotMarkets: spotAccts.length,
+          cat: 'drift',
+        }); } catch {}
+        // If spot markets are missing, attempt to force-load them individually.
+        // The DriftClient state account tells us how many exist.
+        if (spotAccts.length === 0) {
+          try {
+            const stateAccount = (this.client as any)?.getStateAccount?.();
+            const numSpot = Number(stateAccount?.numberOfSpotMarkets ?? 0);
+            if (numSpot > 0) {
+              try { logger.info('drift.init.force_loading_spot_markets', { expected: numSpot, cat: 'drift' }); } catch {}
+              for (let i = 0; i < numSpot; i++) {
+                try {
+                  // Some SDK versions have a fetch-and-cache method per market
+                  if (typeof (this.client as any)?.accountSubscriber?.fetch === 'function') {
+                    await (this.client as any).accountSubscriber.fetch();
+                    break; // This fetches all -- no need to loop
+                  }
+                } catch {}
+              }
+              // Re-check after force fetch
+              const spotRetry = (this.client as any)?.getSpotMarketAccounts?.() || [];
+              try { logger.info('drift.init.spot_markets_after_retry', { count: spotRetry.length, cat: 'drift' }); } catch {}
+            }
+          } catch (e: any) {
+            try { logger.warn('drift.init.spot_force_load_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+          }
+        }
       }
     } catch (e: any) {
       try { logger.warn('drift.init.client_fetch_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}

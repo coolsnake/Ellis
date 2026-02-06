@@ -1025,7 +1025,7 @@ export class DriftLiquidator {
       if (!isFinite(total) || !isFinite(maint)) return;
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       const recoveryBuf = Number(((this.config as any).recoveryBuffer ?? ((CONFIG as any)?.drift?.liquidator?.recoveryBuffer) ?? 0.05));
-      const health = maint > 0 ? (total - maint) / maint : Infinity;
+      const health = total > 0 ? (total - maint) / total : Infinity;
       try {
         if (this.hasOracleOutlierForUser(user)) {
           this.applyOracleGuardCooldown(pkStr);
@@ -1305,7 +1305,7 @@ export class DriftLiquidator {
           const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
-          const health = maint > 0 ? (total - maint) / maint : Infinity;
+          const health = total > 0 ? (total - maint) / total : Infinity;
           // Quote precision to UI
           let QUOTE_PREC = 1_000_000;
           try {
@@ -1553,13 +1553,25 @@ export class DriftLiquidator {
         try {
           const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
-          if (isFinite(total) && isFinite(maint) && maint > 0) healthNow = (total - maint) / maint;
+          // Health = (totalCollateral - maintenanceMargin) / totalCollateral
+          // This matches Drift SDK's User.getHealth() formula.
+          if (isFinite(total) && isFinite(maint) && total > 0) healthNow = (total - maint) / total;
         } catch {}
         if (opts?.bypassExecGate && typeof healthNow === 'number' && isFinite(healthNow)) {
           try { logger.info('drift.liquidator.exec_gate_bypassed', { user: target.userPk, healthNow, execGate, cat: 'drift' }); } catch {}
         }
-        if (!opts?.bypassExecGate && typeof healthNow === 'number' && isFinite(healthNow) && healthNow > execGate) {
-          try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'HEALTHY_EXEC_GATE', healthNow, execGate, cat: 'drift' }); } catch {}
+        // Drift's on-chain liquidation check adds a ~1% margin_buffer (100 bps) to the
+        // maintenance margin requirement. Users are only liquidatable when:
+        //   total_collateral < maintenance_margin + buffer
+        // This means health must be slightly NEGATIVE (~-1.3%) for on-chain success.
+        // When execGate is 0 (or very small), we apply this buffer so we don't waste
+        // simulations on users the program will reject with "Sufficient Collateral".
+        const DRIFT_MARGIN_BUFFER_BPS = 100; // 1% buffer added by Drift program
+        const effectiveGate = execGate <= 0
+          ? -(DRIFT_MARGIN_BUFFER_BPS / 10_000) // e.g. -0.01 → only attempt when health < -1%
+          : execGate;
+        if (!opts?.bypassExecGate && typeof healthNow === 'number' && isFinite(healthNow) && healthNow > effectiveGate) {
+          try { if (this.shouldLogAttempt()) logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'HEALTHY_EXEC_GATE', healthNow, execGate, effectiveGate, cat: 'drift' }); } catch {}
           return;
         }
         // Passed execution gate; mark formal start with the latest health
@@ -1826,7 +1838,8 @@ export class DriftLiquidator {
         for (const ps of posSummary) { if (typeof ps.profitability === 'number') userProfit = (typeof userProfit === 'number') ? Math.min(userProfit, ps.profitability) : ps.profitability; }
         const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
         const execGate = Number((this.config.executeHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.executeHealthThreshold) ?? 0));
-        const healthNow = (isFinite(total) && isFinite(maint) && maint > 0) ? (total - maint) / maint : null;
+        // Health = (totalCollateral - maintenanceMargin) / totalCollateral (matches Drift SDK)
+        const healthNow = (isFinite(total) && isFinite(maint) && total > 0) ? (total - maint) / total : null;
         const cfgAssume: any = (CONFIG as any)?.drift?.liquidator || {};
         const cfgLog = {
           subaccountId: (this.config as any)?.subaccountId ?? ((CONFIG as any)?.drift?.liquidator?.subaccountId) ?? ((CONFIG as any)?.drift?.defaultSubaccountId),
@@ -2053,7 +2066,29 @@ export class DriftLiquidator {
         const fnPerpPnlForDepositRaw = (drift as any)?.liquidatePerpPnlForDeposit;
         const fnBorrowForPnl = (fnBorrowForPnlRaw as any)?.bind?.(drift) ?? fnBorrowForPnlRaw;
         const fnPerpPnlForDeposit = (fnPerpPnlForDepositRaw as any)?.bind?.(drift) ?? fnPerpPnlForDepositRaw;
-        if (Array.isArray(perpPositionsForPnl) && (spotDeposit || spotBorrow)) {
+        // Pre-validate spot market accounts exist in DriftClient cache before calling SDK
+        // methods that will crash with "Cannot read properties of undefined (reading 'toBuffer')"
+        // if getSpotMarketAccount(idx) returns undefined.
+        let spotCacheOk = true;
+        try {
+          const marketsToCheck: number[] = [];
+          if (spotDeposit) marketsToCheck.push(Number(spotDeposit.marketIndex));
+          if (spotBorrow) marketsToCheck.push(Number(spotBorrow.marketIndex));
+          for (const smi of marketsToCheck) {
+            const spotMkt = (drift as any)?.getSpotMarketAccount?.(smi);
+            if (!spotMkt || !spotMkt.mint || typeof spotMkt.mint.toBuffer !== 'function') {
+              spotCacheOk = false;
+              try { logger.warn('drift.liquidator.spot_market_not_cached', {
+                user: target.userPk,
+                spotMarketIndex: smi,
+                hasAccount: !!spotMkt,
+                hasMint: !!spotMkt?.mint,
+                cat: 'drift',
+              }); } catch {}
+            }
+          }
+        } catch {}
+        if (Array.isArray(perpPositionsForPnl) && (spotDeposit || spotBorrow) && spotCacheOk) {
           for (const p of perpPositionsForPnl) {
             if (attempts >= maxPnl) break;
             const mkt = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
@@ -2139,7 +2174,7 @@ export class DriftLiquidator {
         if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity && remainingNotional <= 0) {
           // Cap fully consumed; skip spot
           try { logger.info('drift.liquidator.spot_skip_cap', { user: target.userPk, cat: 'drift' }); } catch {}
-        } else if (spotDeposit && spotBorrow && userPublicKey) {
+        } else if (spotDeposit && spotBorrow && userPublicKey && spotCacheOk) {
           if (!opts?.bypassOracleGuard && (this.isOracleOutlier(Number(spotDeposit.marketIndex), 'spot') || this.isOracleOutlier(Number(spotBorrow.marketIndex), 'spot'))) {
             try { logger.info('drift.liquidator.spot_skip_oracle_guard', { user: target.userPk, depositMarketIndex: Number(spotDeposit.marketIndex), borrowMarketIndex: Number(spotBorrow.marketIndex), cat: 'drift' }); } catch {}
           } else {
@@ -2237,7 +2272,7 @@ export class DriftLiquidator {
           try {
             const total = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
             const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
-            beforeHealth = (isFinite(total) && isFinite(maint) && maint > 0) ? (total - maint) / maint : null;
+            beforeHealth = (isFinite(total) && isFinite(maint) && total > 0) ? (total - maint) / total : null;
           } catch {}
           try {
             const last = this.userLastRefresh.get(String(target.userPk)) || 0;
@@ -2512,13 +2547,14 @@ export class DriftLiquidator {
       // Approximation: smaller (collateral - maint)/maint => closer to zero health; translate to price move needed
       const total = Number((sdkUser as any)?.getTotalCollateral?.('Maintenance') || 0);
       const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
-      if (!isFinite(total) || !isFinite(maint) || maint <= 0) return null;
-      const health = (total - maint) / maint; // 0 => liquidation threshold
+      if (!isFinite(total) || !isFinite(maint) || total <= 0) return null;
+      const health = (total - maint) / total; // 0 => liquidation threshold
       // Assume linear relation of PnL to price for small deltas: deltaPnL ≈ qty * deltaPrice
       // Solve for deltaPrice to push health to 0. This is a rough priority metric, not exact liq price.
       const qty = Math.abs(base);
       if (!qty || !isFinite(qty)) return null;
-      const estDeltaPrice = Math.abs((health * maint) / qty);
+      // Margin surplus = health * total = total - maint
+      const estDeltaPrice = Math.abs((health * total) / qty);
       const distance = estDeltaPrice / cur; // normalized distance
       return isFinite(distance) ? Math.max(0, distance) : null;
     } catch {
@@ -2946,7 +2982,7 @@ export class DriftLiquidator {
           const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (!isFinite(total) || !isFinite(maint)) { this.inProbeQueue.delete(key); continue; }
-          const health = maint > 0 ? (total - maint) / maint : Infinity;
+          const health = total > 0 ? (total - maint) / total : Infinity;
           // Positions for scoping and indexing
           let positions = (user as any)?.getPerpPositions?.() || [];
           try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (user as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch {}
@@ -3215,7 +3251,7 @@ export class DriftLiquidator {
           const total = Number((user as any)?.getTotalCollateral?.('Maintenance') || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
-          const currentHealth = maint > 0 ? (total - maint) / maint : Infinity;
+          const currentHealth = total > 0 ? (total - maint) / total : Infinity;
           if (!(currentHealth < riskThresh)) { this.stopLiveMonitor(key); this.healthyUntil.set(key, Date.now() + Math.max(8000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 15000)))); return; }
           // Check if tier changed and restart at correct speed
           const nowCritical = currentHealth < this.getCriticalThreshold();
