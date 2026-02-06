@@ -4127,14 +4127,17 @@ fn insert_bidirectional_edges(
     if !(price_a_per_b.is_finite() && price_a_per_b > 0.0) {
         return;
     }
-    let native_mint_a_rev = native_mint_a.clone();
-    let native_mint_b_rev = native_mint_b.clone();
-    let native_decimals_a_rev = native_decimals_a.clone();
-    let native_decimals_b_rev = native_decimals_b.clone();
-    let native_account_a_rev = native_account_a.clone();
-    let native_account_b_rev = native_account_b.clone();
-    let native_reserve_a_rev = native_reserve_a_raw.clone();
-    let native_reserve_b_rev = native_reserve_b_raw.clone();
+    // Swap all _a/_b fields for the reverse edge so that _a always refers to
+    // the input side of the edge direction.  compute_hop_output_simple uses
+    // is_a_to_b=true, so _a must be the input reserve and _b the output.
+    let native_mint_a_rev = native_mint_b.clone();
+    let native_mint_b_rev = native_mint_a.clone();
+    let native_decimals_a_rev = native_decimals_b;
+    let native_decimals_b_rev = native_decimals_a;
+    let native_account_a_rev = native_account_b.clone();
+    let native_account_b_rev = native_account_a.clone();
+    let native_reserve_a_rev = native_reserve_b_raw.clone();
+    let native_reserve_b_rev = native_reserve_a_raw.clone();
     let pool_kind_rev = pool_kind.clone();
     let slippage_curve_rev = match slippage_curve.as_ref().and_then(|c| c.unit.as_deref()) {
         Some("source") => None,
