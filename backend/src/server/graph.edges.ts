@@ -466,12 +466,24 @@ export function edgesFromPoolIncremental(
     target_account: (p as any)?.account_b,
     native_mint_a: (p as any)?.native_mint_a ?? a,
     native_mint_b: (p as any)?.native_mint_b ?? b,
-    native_decimals_a: (p as any)?.native_decimals_a ?? (p as any)?.decimals_a,
-    native_decimals_b: (p as any)?.native_decimals_b ?? (p as any)?.decimals_b,
+    // When was_swapped, native fields are in the pool's on-chain order which is
+    // inverted relative to the canonical edge direction (source→target).  Swap
+    // reserves and decimals so _a always corresponds to the edge source token.
+    // This is critical for arb-rs slippage simulation which assumes _a = input.
+    native_decimals_a: wasSwapped
+      ? ((p as any)?.native_decimals_b ?? (p as any)?.decimals_b)
+      : ((p as any)?.native_decimals_a ?? (p as any)?.decimals_a),
+    native_decimals_b: wasSwapped
+      ? ((p as any)?.native_decimals_a ?? (p as any)?.decimals_a)
+      : ((p as any)?.native_decimals_b ?? (p as any)?.decimals_b),
     native_account_a: (p as any)?.native_account_a ?? (p as any)?.account_a,
     native_account_b: (p as any)?.native_account_b ?? (p as any)?.account_b,
-    native_reserve_a_raw: (p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw,
-    native_reserve_b_raw: (p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw,
+    native_reserve_a_raw: wasSwapped
+      ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)
+      : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw),
+    native_reserve_b_raw: wasSwapped
+      ? ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw)
+      : ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw),
     fee_bps: fee,
     source_price_usd: getUsd(a),
     target_price_usd: getUsd(b),
