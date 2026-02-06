@@ -564,47 +564,68 @@ export function createDriftRouter(io: SocketIOServer): Router {
       await svc.init();
       const client: any = (svc as any)?.client;
       let sdkUser: any = null;
+      let shouldUnsubscribe = false; // Track if we created the user (need to clean up)
       try {
-        const { User, getUserAccountPublicKey } = await import('@drift-labs/sdk');
+        const { User, getUserAccountPublicKey, BulkAccountLoader } = await import('@drift-labs/sdk');
         const { PublicKey } = await import('@solana/web3.js');
         const inputPk = new PublicKey(pkStr);
-        // First, try treating input as a user account PDA directly
+        // Use polling subscription for one-shot reads -- data is available immediately
+        // after subscribe, unlike websocket which needs time to push state
+        const loader = new BulkAccountLoader(svc.connection, 'confirmed', 0);
+        const pollingSubscription = { type: 'polling' as const, accountLoader: loader };
+
+        // Check if user is already cached in the liquidator (avoids creating a new subscription)
         try {
-          const candidate = new User({ driftClient: client, userAccountPublicKey: inputPk, accountSubscription: { type: 'websocket' } });
-          try { await (candidate as any)?.subscribe?.(); } catch {}
-          let exists = false;
-          try { exists = await (candidate as any)?.exists?.(); } catch {}
-          if (exists) {
-            sdkUser = candidate;
-            try { logger.info('drift.route.user.debug', { mode: 'pda', userPk: String(inputPk?.toBase58?.() || inputPk), cat: 'drift' }); } catch {}
+          const { DriftLiquidatorRegistry } = await import('../../drift/liquidator.js');
+          for (const entry of DriftLiquidatorRegistry.list()) {
+            const liq = DriftLiquidatorRegistry.get(entry.key);
+            const cached = (liq as any)?.userCache?.get?.(pkStr);
+            if (cached) { sdkUser = cached; break; }
           }
         } catch {}
-        // If not, treat input as an authority and resolve PDA (optionally using subAccountId)
+
         if (!sdkUser) {
-          let targetUserPk: any = null;
-          const q = req.query as any;
-          const subId = Number(q?.subAccountId ?? q?.subaccountId ?? q?.subid ?? q?.id);
-          if (Number.isFinite(subId)) {
-            try { targetUserPk = await (client as any)?.getUserAccountPublicKey?.(Number(subId), inputPk) || await getUserAccountPublicKey((client as any)?.program?.programId, inputPk, Number(subId)); } catch {}
-            try { if (targetUserPk) logger.info('drift.route.user.debug', { mode: 'authority+subId', authority: String(inputPk?.toBase58?.() || inputPk), subId: Number(subId), resolvedPk: String(targetUserPk?.toBase58?.() || targetUserPk), cat: 'drift' }); } catch {}
-          }
-          // Probe a few subaccounts if none specified or not found
-          if (!targetUserPk) {
-            for (let i = 0; i < 4; i++) {
-              try {
-                const p = await getUserAccountPublicKey((client as any)?.program?.programId, inputPk, i);
-                const candidate = new User({ driftClient: client, userAccountPublicKey: p, accountSubscription: { type: 'websocket' } });
-                try { await (candidate as any)?.subscribe?.(); } catch {}
-                let exists = false;
-                try { exists = await (candidate as any)?.exists?.(); } catch {}
-                if (exists) { targetUserPk = p; break; }
-              } catch {}
+          // First, try treating input as a user account PDA directly
+          try {
+            const candidate = new User({ driftClient: client, userAccountPublicKey: inputPk, accountSubscription: pollingSubscription });
+            try { await (candidate as any)?.subscribe?.(); } catch {}
+            let exists = false;
+            try { exists = await (candidate as any)?.exists?.(); } catch {}
+            if (exists) {
+              sdkUser = candidate;
+              shouldUnsubscribe = true;
+              try { logger.info('drift.route.user.debug', { mode: 'pda', userPk: String(inputPk?.toBase58?.() || inputPk), cat: 'drift' }); } catch {}
             }
-            try { if (targetUserPk) logger.info('drift.route.user.debug', { mode: 'authority+probe', authority: String(inputPk?.toBase58?.() || inputPk), resolvedPk: String(targetUserPk?.toBase58?.() || targetUserPk), cat: 'drift' }); } catch {}
-          }
-          if (targetUserPk) {
-            sdkUser = new User({ driftClient: client, userAccountPublicKey: targetUserPk, accountSubscription: { type: 'websocket' } });
-            try { await (sdkUser as any)?.subscribe?.(); } catch {}
+          } catch {}
+          // If not, treat input as an authority and resolve PDA (optionally using subAccountId)
+          if (!sdkUser) {
+            let targetUserPk: any = null;
+            const q = req.query as any;
+            const subId = Number(q?.subAccountId ?? q?.subaccountId ?? q?.subid ?? q?.id);
+            if (Number.isFinite(subId)) {
+              try { targetUserPk = await (client as any)?.getUserAccountPublicKey?.(Number(subId), inputPk) || await getUserAccountPublicKey((client as any)?.program?.programId, inputPk, Number(subId)); } catch {}
+              try { if (targetUserPk) logger.info('drift.route.user.debug', { mode: 'authority+subId', authority: String(inputPk?.toBase58?.() || inputPk), subId: Number(subId), resolvedPk: String(targetUserPk?.toBase58?.() || targetUserPk), cat: 'drift' }); } catch {}
+            }
+            // Probe a few subaccounts if none specified or not found
+            if (!targetUserPk) {
+              for (let i = 0; i < 4; i++) {
+                try {
+                  const p = await getUserAccountPublicKey((client as any)?.program?.programId, inputPk, i);
+                  const candidate = new User({ driftClient: client, userAccountPublicKey: p, accountSubscription: pollingSubscription });
+                  try { await (candidate as any)?.subscribe?.(); } catch {}
+                  let exists = false;
+                  try { exists = await (candidate as any)?.exists?.(); } catch {}
+                  if (exists) { targetUserPk = p; try { await (candidate as any)?.unsubscribe?.(); } catch {} break; }
+                  try { await (candidate as any)?.unsubscribe?.(); } catch {}
+                } catch {}
+              }
+              try { if (targetUserPk) logger.info('drift.route.user.debug', { mode: 'authority+probe', authority: String(inputPk?.toBase58?.() || inputPk), resolvedPk: String(targetUserPk?.toBase58?.() || targetUserPk), cat: 'drift' }); } catch {}
+            }
+            if (targetUserPk) {
+              sdkUser = new User({ driftClient: client, userAccountPublicKey: targetUserPk, accountSubscription: pollingSubscription });
+              try { await (sdkUser as any)?.subscribe?.(); } catch {}
+              shouldUnsubscribe = true;
+            }
           }
         }
       } catch {}
@@ -770,7 +791,11 @@ export function createDriftRouter(io: SocketIOServer): Router {
 
       try { logger.info('drift.route.user.debug', { phase: 'done', spotCount: spotCollateral.length, perpCount: perpPositions.length, cat: 'drift' }); } catch {}
       res.json({ collateral, spotCollateral, perpPositions });
+      // Clean up polling subscription to avoid leaks
+      if (shouldUnsubscribe) { try { await (sdkUser as any)?.unsubscribe?.(); } catch {} }
     } catch (e: any) {
+      // Clean up on error path too
+      if (shouldUnsubscribe && sdkUser) { try { await (sdkUser as any)?.unsubscribe?.(); } catch {} }
       logger.error('drift: user snapshot failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
     }

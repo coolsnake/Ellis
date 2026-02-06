@@ -1059,6 +1059,8 @@ export const CONFIG = {
       criticalRefreshMs: Number(process.env.DRIFT_LIQ_CRITICAL_REFRESH_MS || 400),
       // Fraction of own free collateral to use as max notional cap (0-1, default 0.9 = 90%)
       ownCapacityMargin: Number(process.env.DRIFT_LIQ_OWN_CAPACITY_MARGIN || 0.9),
+      // When true (default), skip force-cancel before liquidation and only cancel as fallback
+      skipForceCancelBeforeLiq: (process.env.DRIFT_LIQ_SKIP_FORCE_CANCEL || 'true') === 'true',
       wsOnlyDiscovery: (process.env.DRIFT_LIQ_WS_ONLY_DISCOVERY || 'true') === 'true',
       limitedHttpDiscovery: (process.env.DRIFT_LIQ_LIMITED_HTTP_DISCOVERY || 'false') === 'true',
       discoveryIntervalMs: Number(process.env.DRIFT_LIQ_DISCOVERY_INTERVAL_MS || 60000),

@@ -1838,19 +1838,8 @@ export class DriftLiquidator {
       } catch {}
       if (perpMarkets.length === 0) perpMarkets = [0, 1, 2]; // last-resort fallback
       let anySuccess = false;
-      // Step 1: force-cancel orders (best-effort, capped)
-      try {
-        if (openOrdersCount > 0) {
-          const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
-          await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels, userAccount);
-          forceCancelAttempted = true;
-        } else {
-          try { logger.info('drift.liquidator.force_cancel_skip_no_orders', { user: target.userPk, cat: 'drift' }); } catch {}
-        }
-      } catch (e: any) {
-        this.recordError(e);
-      }
-      // Step 2: attempt perp liquidation (best-effort, capped and obeying maxAttemptNotional when set)
+      // Step 1: attempt perp liquidation FIRST for speed (best-effort, capped and obeying maxAttemptNotional when set)
+      // Force-cancel is deferred to a fallback step -- liquidation usually works even with open orders
       try {
         const maxPerp = Math.max(1, Math.min(50, Number((this.config.maxPerpAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) ?? 3))));
         const baseSizeFrac = withSizeFrac(Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05)))));
@@ -2166,12 +2155,17 @@ export class DriftLiquidator {
         this.recordError(e);
         this.applyCooldownForTarget(target.userPk);
       }
-      // If no liquidation succeeded and we skipped cancels, try a single cancel pass
+      // Fallback: If no liquidation succeeded, try force-cancelling open orders as a last resort.
+      // Open orders can prevent some liquidations if the user's margin is consumed by them.
       try {
-        if (!anySuccess && !forceCancelAttempted) {
-          const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
-          await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels, userAccount);
-          forceCancelAttempted = true;
+        if (!anySuccess && !forceCancelAttempted && openOrdersCount > 0) {
+          const skipCancel = Boolean(this.config.skipForceCancelBeforeLiq ?? (CONFIG as any)?.drift?.liquidator?.skipForceCancelBeforeLiq ?? true);
+          if (!skipCancel || openOrdersCount > 0) {
+            try { logger.info('drift.liquidator.force_cancel_fallback', { user: target.userPk, openOrders: openOrdersCount, cat: 'drift' }); } catch {}
+            const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
+            await this.forceCancelOrdersForUser(drift, userPublicKey, target.userPk, maxCancels, userAccount);
+            forceCancelAttempted = true;
+          }
         }
       } catch {}
       // Final attempt summary: before/after health and reduced USD by market

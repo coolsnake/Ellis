@@ -316,19 +316,34 @@ export class DriftService {
       // Log but don't fail initialization - the client can still work with polling or retry later
       try { logger.warn('drift.ws subscribe error (non-fatal)', { error: String(e?.message || e), cat: 'drift' }); } catch {}
     }
-    // Ensure default user is initialized and registered with the client
+    // Ensure default user is initialized, registered, and set as active user
     try {
       const defaultId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
       if (typeof (this.client as any)?.addUser === 'function') {
         await (this.client as any).addUser(defaultId);
       }
+      // Switch active user so client.user is populated (addUser alone only registers it)
+      if (typeof (this.client as any)?.switchActiveUser === 'function') {
+        await (this.client as any).switchActiveUser(defaultId);
+      }
+      this.activeSubaccountId = defaultId;
       if (typeof (this.client as any)?.initializeUserIfNotExists === 'function') {
         await (this.client as any).initializeUserIfNotExists(defaultId);
       } else if (typeof (this.client as any)?.initializeUser === 'function') {
         // Some SDKs initialize the active/default user without args
         try { await (this.client as any).initializeUser(defaultId); } catch { try { await (this.client as any).initializeUser(); } catch {} }
       }
-    } catch {}
+      // Hydrate user account data immediately so client.user has live state
+      try {
+        const user = (this.client as any)?.user;
+        if (user && typeof user.fetchAccounts === 'function') {
+          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: 'init.fetchAccounts' });
+        }
+      } catch {}
+    } catch (e: any) {
+      try { logger.warn('drift.init.user_setup_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    }
     logger.info('drift.sdk.ready', { pubkey: this.walletKp.publicKey?.toBase58?.(), ms: Date.now() - t0, cat: 'drift', code: 'DRIFT.SDK.READY' });
   }
 
@@ -1688,13 +1703,22 @@ export class DriftService {
       if (!user) {
         try {
           const subId = Number(this.activeSubaccountId ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
+          try { logger.debug('drift.snapshot.recovery', { subId, cat: 'drift' }); } catch {}
           if (typeof client?.addUser === 'function') await client.addUser(subId);
           if (typeof client?.switchActiveUser === 'function') await client.switchActiveUser(subId);
+          this.activeSubaccountId = subId;
           user = client?.user || null;
-        } catch {}
+          // If user is now available, hydrate accounts so values aren't stale
+          if (user && typeof user.fetchAccounts === 'function') {
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: 'snapshot.recovery.fetchAccounts' });
+          }
+        } catch (e: any) {
+          try { logger.warn('drift.snapshot.recovery_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+        }
       }
       if (!user) {
-        try { logger.debug('drift.snapshot.no_active_user', { cat: 'drift' }); } catch {}
+        try { logger.debug('drift.snapshot.no_active_user', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
         return null;
       }
       const id = Number((client?.getUserAccount?.()?.subAccountId) ?? (client?.activeUserId) ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
