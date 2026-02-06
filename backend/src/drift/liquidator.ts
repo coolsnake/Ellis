@@ -3146,6 +3146,59 @@ export class DriftLiquidator {
               } catch (e: any) { safeLog.debug('drift.liquidator.async.push', { error: String(e?.message || e), cat: 'drift' }); }
             }
           } catch (e: any) { safeLog.debug('drift.liquidator.async.caught', { error: String(e?.message || e), cat: 'drift' }); }
+          // --- Spot collateral snapshot ---
+          // Compute spot deposits/borrows so the UI and liquidation decisioning have
+          // complete data.  Mirrors the logic in handleTarget() but lightweight.
+          let spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; isBorrow?: boolean; valueUsd?: number }> = [];
+          try {
+            const sdk: any = await import('@drift-labs/sdk');
+            const getTokenAmount = (sdk as any)?.getTokenAmount;
+            const getVariant = (sdk as any)?.getVariant;
+            const isVariant = (sdk as any)?.isVariant;
+            const PRICE_PREC = Number((sdk as any)?.PRICE_PRECISION ?? 1_000_000);
+            let spots = (user as any)?.getSpotPositions?.() || [];
+            if (!Array.isArray(spots) || spots.length === 0) {
+              const ua = (user as any)?.getUserAccount?.();
+              if (ua && Array.isArray(ua.spotPositions)) spots = ua.spotPositions;
+            }
+            for (const sp of (spots || [])) {
+              try {
+                const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
+                if (!Number.isFinite(idx)) continue;
+                const mktAcc = drift?.getSpotMarketAccount?.(idx);
+                if (!mktAcc) continue;
+                const decimals = Number(mktAcc?.decimals ?? 6);
+                const mint = String(mktAcc?.mint ?? '');
+                const symbol = (mktAcc?.name || mktAcc?.symbol || '')?.toString?.()?.replace?.(/\0+$/g, '') || undefined;
+                const balanceType = sp?.balanceType;
+                let isBorrow = false;
+                try {
+                  if (typeof isVariant === 'function') isBorrow = isVariant(balanceType, 'borrow');
+                  else if (typeof getVariant === 'function') isBorrow = String(getVariant(balanceType)).toLowerCase().includes('borrow');
+                  else isBorrow = String(balanceType || '').toLowerCase().includes('borrow');
+                } catch (e: any) { safeLog.debug('drift.liquidator.probe.balanceType', { error: String(e?.message || e), cat: 'drift' }); }
+                let amountToken: any = null;
+                try {
+                  if (typeof getTokenAmount === 'function' && sp?.scaledBalance && mktAcc) {
+                    amountToken = getTokenAmount(sp.scaledBalance, mktAcc, balanceType);
+                  }
+                } catch (e: any) { safeLog.debug('drift.liquidator.probe.getTokenAmount', { error: String(e?.message || e), cat: 'drift' }); }
+                const amountRawAbs = Number(amountToken?.toString?.() || sp?.scaledBalance?.toString?.() || sp?.balance || 0);
+                if (amountRawAbs === 0) continue;
+                const sign = isBorrow ? -1 : 1;
+                const amountRaw = amountRawAbs * sign;
+                const amountUi = amountRaw / Math.pow(10, decimals);
+                let valueUsd: number | undefined = undefined;
+                try {
+                  const oracle = drift?.getOracleDataForSpotMarket?.(idx);
+                  const priceRaw = Number(oracle?.price?.toString?.() || 0);
+                  const priceUi = priceRaw > 0 ? priceRaw / PRICE_PREC : 0;
+                  if (priceUi > 0) valueUsd = Math.abs(amountUi) * priceUi;
+                } catch (e: any) { safeLog.debug('drift.liquidator.probe.oraclePrice', { error: String(e?.message || e), cat: 'drift' }); }
+                spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint, isBorrow, valueUsd });
+              } catch (e: any) { safeLog.debug('drift.liquidator.probe.spotItem', { error: String(e?.message || e), cat: 'drift' }); }
+            }
+          } catch (e: any) { safeLog.debug('drift.liquidator.probe.spotCollateral', { error: String(e?.message || e), cat: 'drift' }); }
           probed += 1;
           if (health < riskThresh) {
             // Aggregate a user-level profitability (min across positions)
@@ -3177,6 +3230,7 @@ export class DriftLiquidator {
               health,
               updatedAt: Date.now(),
               positions: posSummary,
+              spotCollateral,
               profitability: userProfit,
               skipReason,
               collateralUsd: totalUi,

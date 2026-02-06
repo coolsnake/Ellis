@@ -5,7 +5,7 @@ import { createHash } from 'crypto';
 import { CONFIG } from '../utils/config.js';
 import { ensureWallet } from '../wallet/wallet.js';
 import type { DriftStatus, SubaccountInfo, DriftMarketRef, DriftCluster } from './types.js';
-import { parseAllowlistMarkets } from './marketMapping.js';
+import { parseAllowlistMarkets, registerSdkMarkets } from './marketMapping.js';
 import { logger, maskUrl } from '../utils/logger.js';
 import { safeLog, guardExec } from './safeLogger.js';
 
@@ -2014,6 +2014,11 @@ export class DriftService {
   private async discoverMarkets(): Promise<DriftMarketRef[]> {
     await this.init();
     const t0 = Date.now();
+    // Helper: register discovered markets in the global mapping cache before returning
+    const registerAndReturn = (markets: DriftMarketRef[]): DriftMarketRef[] => {
+      try { registerSdkMarkets(markets); } catch (e: any) { safeLog.debug('drift.markets.register', { error: String(e?.message || e), cat: 'drift' }); }
+      return markets;
+    };
     const decodeMarketName = (raw: any): string | undefined => {
       try {
         if (!raw) return undefined;
@@ -2075,7 +2080,7 @@ export class DriftService {
       // If empty, fallback to allowlist
       if (markets.length > 0) {
         safeLog.info('drift.markets.discovery.sdk', { count: markets.length, ms: Date.now() - t0, cat: 'drift' });
-        return markets.sort((a, b) => a.marketIndex - b.marketIndex);
+        return registerAndReturn(markets.sort((a, b) => a.marketIndex - b.marketIndex));
       }
       // Constants-based fallback from SDK when RPC queries return empty
       try {
@@ -2101,7 +2106,7 @@ export class DriftService {
         }
         if (out.length > 0) {
           safeLog.info('drift.markets.discovery.constants', { count: out.length, ms: Date.now() - t0, cat: 'drift' });
-          return out.sort((a, b) => a.marketIndex - b.marketIndex);
+          return registerAndReturn(out.sort((a, b) => a.marketIndex - b.marketIndex));
         }
         const nameMap = constants?.MARKET_INDEX_TO_PERP_MARKET_NAME || constants?.PERP_MARKET_INDEX_TO_MARKET_NAME || null;
         if (nameMap && typeof nameMap === 'object') {
@@ -2113,7 +2118,7 @@ export class DriftService {
           }
           if (out2.length > 0) {
             safeLog.info('drift.markets.discovery.nameMap', { count: out2.length, ms: Date.now() - t0, cat: 'drift' });
-            return out2.sort((a, b) => a.marketIndex - b.marketIndex);
+            return registerAndReturn(out2.sort((a, b) => a.marketIndex - b.marketIndex));
           }
         }
       } catch (e: any) { safeLog.debug('drift.sdk.constants', { error: String(e?.message || e), cat: 'drift' }); }
@@ -2121,7 +2126,7 @@ export class DriftService {
     // Config-based fallback
     const fromCfg = this.parseAllowlistMarkets();
     safeLog.warn('drift.markets.discovery.fallback', { count: fromCfg.length, cat: 'drift' });
-    return fromCfg;
+    return registerAndReturn(fromCfg);
   }
 
   async getSubaccounts(): Promise<SubaccountInfo[]> {

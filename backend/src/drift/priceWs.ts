@@ -169,6 +169,11 @@ export class DriftDlobWs {
       if (!Array.isArray(indices) || indices.length === 0) return;
       // Drift DLOB expects market names for orderbook channel; keep numeric index for our state
       const names = indices.map(i => this.mapMarketIndexToName(i)).filter(Boolean) as string[];
+      const unmapped = indices.length - names.length;
+      if (unmapped > 0) {
+        safeLog.warn('drift.ws.flush_unmapped', { type, total: indices.length, mapped: names.length, unmapped, cat: 'drift' });
+      }
+      if (names.length === 0) return; // nothing to send
       // Chunk to avoid throttling
       const chunkSize = Math.max(10, Math.min(50, Number(getDriftConfig().wsResubChunkSize || 25)));
       for (let i = 0; i < names.length; i += chunkSize) {
@@ -176,6 +181,7 @@ export class DriftDlobWs {
         const msg = { type, channel: 'orderbook', markets };
         (this.socket as any).send(JSON.stringify(msg));
       }
+      safeLog.info('drift.ws.flush_subscription', { type, markets: names.length, chunks: Math.ceil(names.length / chunkSize), cat: 'drift' });
     } catch (e: any) { safeLog.debug('drift.ws.flush_subscription', { error: String(e?.message || e), cat: 'drift' }); }
   }
 
