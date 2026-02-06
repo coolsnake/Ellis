@@ -333,33 +333,62 @@ export class DriftService {
         // Some SDKs initialize the active/default user without args
         try { await (this.client as any).initializeUser(defaultId); } catch { try { await (this.client as any).initializeUser(); } catch {} }
       }
-      // Hydrate user account data with retry -- WebSocket subscriptions may need
-      // a moment to populate, so we poll fetchAccounts up to a few times.
+      // Hydrate user account AND oracle data with retry -- WebSocket subscriptions
+      // push data asynchronously so we need to wait for both:
+      //   1. User account struct (authority field populated)
+      //   2. Oracle prices (so getTotalCollateral/getFreeCollateral return real values)
+      // Without (2), every collateral method returns 0 even when the user has balances.
       const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-      const maxHydrationAttempts = 4;
-      const hydrationDelayMs = 500;
-      let hydrated = false;
+      const maxHydrationAttempts = 8;
+      const hydrationDelayMs = 400;
+      let userHydrated = false;
+      let oraclesReady = false;
       for (let attempt = 0; attempt < maxHydrationAttempts; attempt++) {
         try {
           const user = (this.client as any)?.user;
           if (user && typeof user.fetchAccounts === 'function') {
             await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: `init.fetchAccounts.${attempt}` });
           }
-          // Verify the user account is actually populated with real data
-          const acct = user?.getUserAccount?.();
-          if (acct && acct.authority) {
-            hydrated = true;
-            try { logger.info('drift.init.user_hydrated', { subaccountId: defaultId, attempt, hasAuthority: true, cat: 'drift' }); } catch {}
+          // Phase 1: verify user account is populated
+          if (!userHydrated) {
+            const acct = user?.getUserAccount?.();
+            if (acct && acct.authority) {
+              userHydrated = true;
+            }
+          }
+          // Phase 2: verify oracle data is loaded by checking if collateral is non-zero
+          // (only meaningful if user has spot balances, otherwise 0 is correct for empty accounts)
+          if (userHydrated && !oraclesReady) {
+            const total = Number(user?.getTotalCollateral?.('Maintenance')?.toString?.() || 0);
+            if (total !== 0) {
+              oraclesReady = true;
+            } else {
+              // Check if user actually has spot balances -- if none, 0 collateral is correct
+              let hasBalance = false;
+              try {
+                const spots = user?.getSpotPositions?.() || [];
+                for (const sp of spots) {
+                  const raw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || 0);
+                  if (raw !== 0) { hasBalance = true; break; }
+                }
+              } catch {}
+              if (!hasBalance) {
+                oraclesReady = true; // Empty account -- 0 collateral is accurate
+              }
+            }
+          }
+          if (userHydrated && oraclesReady) {
+            try { logger.info('drift.init.user_hydrated', { subaccountId: defaultId, attempt, oraclesReady, cat: 'drift' }); } catch {}
             break;
           }
         } catch {}
-        // Wait before retrying -- give WS subscription time to push data
+        // Wait before retrying -- give WS subscriptions time to push oracle data
         if (attempt < maxHydrationAttempts - 1) {
-          await new Promise(r => setTimeout(r, hydrationDelayMs * (attempt + 1)));
+          await new Promise(r => setTimeout(r, hydrationDelayMs));
         }
       }
-      if (!hydrated) {
-        try { logger.warn('drift.init.user_hydration_incomplete', { subaccountId: defaultId, attempts: maxHydrationAttempts, hasUser: !!(this.client as any)?.user, cat: 'drift' }); } catch {}
+      if (!userHydrated || !oraclesReady) {
+        try { logger.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, cat: 'drift' }); } catch {}
       }
     } catch (e: any) {
       try { logger.warn('drift.init.user_setup_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
@@ -1736,25 +1765,7 @@ export class DriftService {
         try { logger.debug('drift.snapshot.no_active_user', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
         return null;
       }
-      // Ensure user account data is hydrated -- fetchAccounts forces an RPC read
-      // which works even when WebSocket subscription hasn't pushed data yet
-      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-      try {
-        if (typeof user.fetchAccounts === 'function') {
-          await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: 'snapshot.fetchAccounts' });
-        }
-      } catch {}
-      // Verify account is populated; if not, retry once after a short wait
-      let acct = user?.getUserAccount?.();
-      if (!acct?.authority) {
-        try {
-          await new Promise(r => setTimeout(r, 300));
-          if (typeof user.fetchAccounts === 'function') {
-            await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: 'snapshot.fetchAccounts.retry' });
-          }
-          acct = user?.getUserAccount?.();
-        } catch {}
-      }
+      const acct = user?.getUserAccount?.();
       if (!acct?.authority) {
         try { logger.warn('drift.snapshot.user_not_hydrated', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
         return null;
@@ -1769,7 +1780,6 @@ export class DriftService {
       } catch {}
       const toUi = (val: any): number => {
         try {
-          // Prefer convertToNumber if available
           return Number(val?.toString?.() || val || 0) / QUOTE_PREC;
         } catch { return Number(val?.toString?.() || val || 0) / QUOTE_PREC; }
       };
@@ -1787,9 +1797,8 @@ export class DriftService {
           positions.push({ marketIndex: idx, base, entryPrice: undefined });
         }
       } catch {}
-      // Sanity check: if every dollar-denominated value is 0 but the user has spot
-      // positions, oracle data hasn't loaded yet. Return null so the caller can
-      // fall through to getSubaccounts() which creates its own polling User.
+      // If all dollar values are 0 but user has spot balances, oracles haven't loaded.
+      // Return null so caller can fall through to getSubaccounts() polling path.
       if (totalCollateral === 0 && maint === 0 && free === 0 && initReq === 0) {
         let hasSpotBalance = false;
         try {
@@ -1800,7 +1809,7 @@ export class DriftService {
           }
         } catch {}
         if (hasSpotBalance) {
-          try { logger.warn('drift.snapshot.oracle_not_loaded', { activeSubaccountId: this.activeSubaccountId, hasSpotBalance, cat: 'drift' }); } catch {}
+          try { logger.warn('drift.snapshot.oracle_not_loaded', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
           return null;
         }
       }
@@ -1950,9 +1959,16 @@ export class DriftService {
   }
 
   async getSubaccounts(): Promise<SubaccountInfo[]> {
-    // Return cached if available
+    // Return cached if available and not stale (TTL: 10s)
+    const cacheTtlMs = 10_000;
     if (this.subaccountsCache && Array.isArray(this.subaccountsCache.data) && this.subaccountsCache.data.length > 0) {
-      return this.subaccountsCache.data;
+      const age = Date.now() - (this.subaccountsCache.ts || 0);
+      // Don't serve cache that's all zeros (oracle data wasn't loaded when cached)
+      const hasNonZero = this.subaccountsCache.data.some(s => s.totalCollateral !== 0 || s.freeCollateral !== 0 || s.maintenanceRequirement !== 0);
+      if (age < cacheTtlMs && hasNonZero) {
+        return this.subaccountsCache.data;
+      }
+      // Cache is stale or all-zeros -- refetch
     }
     await this.init();
     const t0 = Date.now();

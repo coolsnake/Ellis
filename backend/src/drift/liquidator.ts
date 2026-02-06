@@ -1584,7 +1584,38 @@ export class DriftLiquidator {
       // Dynamic sizing: cap at own subaccount's available free collateral
       let ownFreeCollateral: number | null = null;
       try {
-        const snap = await DriftService.getInstance().getActiveSubaccountSnapshot();
+        let snap = await DriftService.getInstance().getActiveSubaccountSnapshot();
+        // Fallback: if the DriftClient snapshot is unavailable (e.g. child worker
+        // without oracle data), create an ephemeral polling User to read our own
+        // subaccount directly via RPC. This always works regardless of WS state.
+        if (!snap || typeof snap.freeCollateral !== 'number' || !isFinite(snap.freeCollateral) || (snap.freeCollateral === 0 && snap.totalCollateral === 0)) {
+          try {
+            const svc: any = DriftService.getInstance();
+            const client: any = svc?.client;
+            if (client) {
+              const subId = Number((this.config as any)?.subaccountId ?? ((CONFIG as any)?.drift?.liquidator?.subaccountId) ?? ((CONFIG as any)?.drift?.defaultSubaccountId) ?? 0);
+              const { User, BulkAccountLoader } = await import('@drift-labs/sdk');
+              const conn = client.connection || (svc as any)?.connection;
+              const loader = new BulkAccountLoader(conn, 'confirmed', 0);
+              const pk = await client.getUserAccountPublicKey?.(Number(subId));
+              if (pk) {
+                const ownUser = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: loader } });
+                try { await (ownUser as any).subscribe?.(); } catch {}
+                let QUOTE_PREC = 1_000_000;
+                try { const sdk: any = await import('@drift-labs/sdk'); QUOTE_PREC = Number((sdk as any)?.constants?.QUOTE_PRECISION ?? (sdk as any)?.QUOTE_PRECISION ?? 1_000_000); } catch {}
+                const toUi = (v: any) => Number(v?.toString?.() || v || 0) / QUOTE_PREC;
+                const free = toUi(ownUser?.getFreeCollateral?.());
+                const total = toUi(ownUser?.getTotalCollateral?.('Maintenance'));
+                const maint = toUi(ownUser?.getMaintenanceMarginRequirement?.());
+                try { await (ownUser as any).unsubscribe?.(); } catch {}
+                if (isFinite(free) && (free !== 0 || total !== 0)) {
+                  snap = { id: subId, freeCollateral: free, totalCollateral: total, maintenanceRequirement: maint, initialRequirement: 0, effectiveLeverage: 0, positions: [] };
+                  try { logger.info('drift.liquidator.own_capacity_polling_fallback', { user: target.userPk, free, total, maint, cat: 'drift' }); } catch {}
+                }
+              }
+            }
+          } catch {}
+        }
         if (snap && typeof snap.freeCollateral === 'number' && isFinite(snap.freeCollateral)) {
           ownFreeCollateral = snap.freeCollateral;
           const margin = Number((this.config as any)?.ownCapacityMargin ?? ((CONFIG as any)?.drift?.liquidator?.ownCapacityMargin) ?? 0.9);
