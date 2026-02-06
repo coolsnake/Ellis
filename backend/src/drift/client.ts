@@ -88,6 +88,8 @@ export class DriftService {
   private lastWarmupAtMs: number = 0;
   // Cleanup tracking to prevent race conditions between shutdown and startup
   private cleanupPromise: Promise<void> | null = null;
+  // Mutex: serialise concurrent init() callers so only one DriftClient is ever created
+  private initPromise: Promise<void> | null = null;
   // Cached total user count (Helius GPA)
   private userCountCache: { total?: number; updatedAtMs?: number; capped?: boolean; error?: string; source?: string } | null = null;
   private userCountInFlight: Promise<void> | null = null;
@@ -190,6 +192,16 @@ export class DriftService {
   }
 
   async init(): Promise<void> {
+    // Fast path: already initialised
+    if (this.client) return;
+    // Serialise concurrent callers: if another init() is in-flight, piggyback on
+    // its promise instead of creating a second DriftClient (which causes 429 storms).
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this._doInit().finally(() => { this.initPromise = null; });
+    return this.initPromise;
+  }
+
+  private async _doInit(): Promise<void> {
     // Wait for any pending cleanup to complete before reinitializing
     // This prevents "socket was not CONNECTING or OPEN" errors from race conditions
     if (this.cleanupPromise) {
@@ -198,7 +210,8 @@ export class DriftService {
       } catch (e: any) { safeLog.debug('drift.cleanupWait', { error: String(e?.message || e), cat: 'drift' }); }
       this.cleanupPromise = null;
     }
-    
+
+    // Double-check after acquiring the implicit lock
     if (this.client) return;
     this.walletKp = await ensureWallet(CONFIG.walletPath);
     // Custom fetch to tag 429s and disable internal 429 retry loop
@@ -777,8 +790,12 @@ export class DriftService {
           });
         } catch (e: any) {
           safeLog.warn('drift.orderSubscriber.create', { error: String(e?.message || e), cat: 'drift' });
-          // fallback to legacy constructor
-          this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
+          // fallback to legacy constructor (only if program is available)
+          if (connection && program) {
+            this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
+          } else {
+            safeLog.warn('drift.orderSubscriber.skip', { reason: program ? 'no_connection' : 'no_program', cat: 'drift' });
+          }
         }
         try { 
           await waitReady();

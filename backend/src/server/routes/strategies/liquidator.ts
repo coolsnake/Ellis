@@ -79,7 +79,7 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       
       // Emit immediate update to show "starting" state in UI
       try {
-        const listNow = (DriftLiquidatorRegistry as any).list?.();
+        const listNow = DriftLiquidatorRegistry?.list?.() ?? [];
         logger.info('drift.liquidator.emit_immediate', { liquidatorCount: listNow?.length ?? 0, cat: 'drift' });
         _io.emit('liquidator-update', { liquidators: listNow });
       } catch (emitErr: any) {
