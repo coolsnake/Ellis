@@ -385,68 +385,104 @@ export class DriftService {
     } catch (e: any) {
       safeLog.warn('drift.init.client_fetch_failed', { error: String(e?.message || e), cat: 'drift' });
     }
-    // Ensure default user is initialized, registered, and set as active user
+    // Ensure default user is initialized, registered, and set as active user.
+    // Strategy:
+    //   Phase A – Try the normal SDK addUser+switchActiveUser (WS-based).
+    //   Phase B – If user is still null after a few WS attempts, fall back to
+    //             creating the User directly with an RPC polling subscription so
+    //             we load the existing on-chain account data immediately.
+    //   Phase C – Once the User object exists, call user.fetchAccounts() via RPC
+    //             to hydrate account data and verify oracle readiness.
     try {
       const defaultId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-      if (typeof (this.client as any)?.addUser === 'function') {
-        await (this.client as any).addUser(defaultId);
-      }
-      // Switch active user so client.user is populated (addUser alone only registers it)
-      if (typeof (this.client as any)?.switchActiveUser === 'function') {
-        await (this.client as any).switchActiveUser(defaultId);
-      }
       this.activeSubaccountId = defaultId;
-      if (typeof (this.client as any)?.initializeUserIfNotExists === 'function') {
-        await (this.client as any).initializeUserIfNotExists(defaultId);
-      } else if (typeof (this.client as any)?.initializeUser === 'function') {
-        // Some SDKs initialize the active/default user without args
-        try { await (this.client as any).initializeUser(defaultId); } catch (e: any) { safeLog.warn('drift.initializeUser.withArgs', { error: String(e?.message || e), cat: 'drift' }); try { await (this.client as any).initializeUser(); } catch (e2: any) { safeLog.warn('drift.initializeUser', { error: String(e2?.message || e2), cat: 'drift' }); } }
-      }
-      // Hydrate user account data. Oracle/market data is already loaded by
-      // client.fetchAccounts() above, so we mainly need the user account struct.
-      // Retry with recovery -- if this.client.user is null, re-attempt switchActiveUser.
       const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-      const maxHydrationAttempts = 6;
-      const hydrationDelayMs = 500;
+      const client: any = this.client;
+
+      // --- Phase A: Standard SDK addUser + switchActiveUser (WS-based) ---
+      // Try a few times with short delays; WS subscription inside addUser may
+      // need a moment before the user is stored in the internal map.
+      const wsAttempts = 3;
+      const wsDelayMs = 800;
+      for (let a = 0; a < wsAttempts; a++) {
+        try {
+          if (typeof client?.addUser === 'function') await client.addUser(defaultId);
+          if (typeof client?.switchActiveUser === 'function') await client.switchActiveUser(defaultId);
+          if (client?.user) break;
+        } catch (e: any) { safeLog.debug('drift.init.ws_addUser', { attempt: a, error: String(e?.message || e), cat: 'drift' }); }
+        if (a < wsAttempts - 1) await new Promise(r => setTimeout(r, wsDelayMs));
+      }
+
+      // --- Phase B: RPC polling fallback ---
+      // If client.user is still null the WS-based subscribe inside addUser
+      // failed to deliver. Create the User directly with a polling (RPC)
+      // subscription which fetches the existing on-chain account immediately.
+      if (!client?.user) {
+        safeLog.info('drift.init.user_rpc_fallback', { subaccountId: defaultId, cat: 'drift' });
+        try {
+          const { User, BulkAccountLoader } = await loadSdk();
+          const userPk = typeof client?.getUserAccountPublicKey === 'function'
+            ? await client.getUserAccountPublicKey(Number(defaultId))
+            : null;
+          if (userPk && User) {
+            // Use a lightweight polling loader just for this user (1 s interval)
+            const pollingLoader = this.loader || new BulkAccountLoader(this.connection!, 'confirmed', 1000);
+            const userObj: any = new User({
+              driftClient: client,
+              userAccountPublicKey: userPk,
+              accountSubscription: { type: 'polling', accountLoader: pollingLoader },
+            });
+            await withRpcLimit(() => userObj.subscribe(), 1, { module: 'drift', method: 'user.rpcSubscribe' });
+            // Inject into the SDK's internal user map so client.user works
+            if (typeof client?.users?.set === 'function') {
+              client.users.set(defaultId, userObj);
+            }
+            if (typeof client?.switchActiveUser === 'function') {
+              await client.switchActiveUser(defaultId);
+            }
+            safeLog.info('drift.init.user_rpc_fallback_ok', { subaccountId: defaultId, userReady: !!client?.user, cat: 'drift' });
+          } else {
+            safeLog.warn('drift.init.user_rpc_fallback_skip', { reason: userPk ? 'no_User_class' : 'no_user_pk', cat: 'drift' });
+          }
+        } catch (e: any) {
+          safeLog.warn('drift.init.user_rpc_fallback_failed', { error: String(e?.message || e), cat: 'drift' });
+        }
+      }
+
+      // Ensure on-chain account exists (no-op if already initialized)
+      if (typeof client?.initializeUserIfNotExists === 'function') {
+        try { await client.initializeUserIfNotExists(defaultId); } catch (e: any) { safeLog.debug('drift.initializeUserIfNotExists', { error: String(e?.message || e), cat: 'drift' }); }
+      }
+
+      // --- Phase C: Hydrate user account data via RPC ---
+      // Oracle/market data is already loaded by client.fetchAccounts() above,
+      // so we mainly need the user account struct.  Use exponential backoff.
+      const maxHydrationAttempts = 10;
       let userHydrated = false;
       let oraclesReady = false;
       for (let attempt = 0; attempt < maxHydrationAttempts; attempt++) {
         try {
-          let user = (this.client as any)?.user;
-          // Recovery: if user is null, switchActiveUser may not have worked; retry it
+          const user = client?.user;
           if (!user) {
-            safeLog.warn('drift.init.user_null_recovery', { subaccountId: defaultId, attempt, cat: 'drift' });
-            try {
-              if (typeof (this.client as any)?.switchActiveUser === 'function') {
-                await (this.client as any).switchActiveUser(defaultId);
-              }
-              user = (this.client as any)?.user;
-            } catch (e: any) { safeLog.warn('drift.switchActiveUser', { error: String(e?.message || e), cat: 'drift' }); }
-            // Still null? Try addUser + switchActiveUser fresh
-            if (!user) {
-              try {
-                if (typeof (this.client as any)?.addUser === 'function') {
-                  await (this.client as any).addUser(defaultId);
-                }
-                if (typeof (this.client as any)?.switchActiveUser === 'function') {
-                  await (this.client as any).switchActiveUser(defaultId);
-                }
-                user = (this.client as any)?.user;
-              } catch (e: any) { safeLog.warn('drift.userRecovery', { error: String(e?.message || e), cat: 'drift' }); }
+            if (attempt < 3) {
+              // Short grace period: WS subscription may still be propagating
+              safeLog.debug('drift.init.hydration_waiting', { subaccountId: defaultId, attempt, cat: 'drift' });
+            } else {
+              safeLog.warn('drift.init.user_still_null', { subaccountId: defaultId, attempt, cat: 'drift' });
+              break; // No point continuing if we can't get the User at all
             }
           }
           if (user && typeof user.fetchAccounts === 'function') {
             await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: `init.fetchAccounts.${attempt}` });
           }
-          // Phase 1: verify user account is populated
+          // Phase C1: verify user account is populated
           if (!userHydrated) {
             const acct = user?.getUserAccount?.();
             if (acct && acct.authority) {
               userHydrated = true;
             }
           }
-          // Phase 2: verify oracle data is loaded by checking if collateral is non-zero
-          // (only meaningful if user has spot balances, otherwise 0 is correct for empty accounts)
+          // Phase C2: verify oracle data is loaded (non-zero collateral, or empty account)
           if (userHydrated && !oraclesReady) {
             const total = Number(user?.getTotalCollateral?.('Maintenance')?.toString?.() || 0);
             if (total !== 0) {
@@ -470,18 +506,19 @@ export class DriftService {
             safeLog.info('drift.init.user_hydrated', { subaccountId: defaultId, attempt, oraclesReady, cat: 'drift' });
             break;
           }
-          // Log progress each attempt
+          // Log progress on later attempts
           if (attempt > 0 && attempt < maxHydrationAttempts - 1) {
-            safeLog.debug('drift.init.hydration_progress', { subaccountId: defaultId, attempt, userHydrated, oraclesReady, userNull: !(this.client as any)?.user, cat: 'drift' });
+            safeLog.debug('drift.init.hydration_progress', { subaccountId: defaultId, attempt, userHydrated, oraclesReady, userNull: !user, cat: 'drift' });
           }
-        } catch (e: any) { safeLog.warn('drift.userRecovery', { error: String(e?.message || e), cat: 'drift' }); }
-        // Wait before retrying
+        } catch (e: any) { safeLog.warn('drift.init.hydration_error', { attempt, error: String(e?.message || e), cat: 'drift' }); }
+        // Exponential backoff: 500ms → 750ms → 1s → 1.5s → 2s (capped)
         if (attempt < maxHydrationAttempts - 1) {
-          await new Promise(r => setTimeout(r, hydrationDelayMs));
+          const delay = Math.min(2000, 500 * Math.pow(1.5, attempt));
+          await new Promise(r => setTimeout(r, delay));
         }
       }
       if (!userHydrated || !oraclesReady) {
-        safeLog.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, userNull: !(this.client as any)?.user, cat: 'drift' });
+        safeLog.warn('drift.init.hydration_incomplete', { subaccountId: defaultId, userHydrated, oraclesReady, attempts: maxHydrationAttempts, userNull: !client?.user, cat: 'drift' });
       }
     } catch (e: any) {
       safeLog.warn('drift.init.user_setup_failed', { error: String(e?.message || e), cat: 'drift' });
