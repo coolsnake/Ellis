@@ -692,6 +692,9 @@ async function handleClmmUpdate(
           currentTick: derived?.tickCurrent ?? nativeTickCurrentIndex,
           tickSpacing: decoded.tick_spacing,
           tickArrayCenter: nextStatic.tickArrayCenter,
+          tickArrayLower: nextStatic.tickArrayLower,
+          tickArrayUpper: nextStatic.tickArrayUpper,
+          liquidityRaw: decoded.liquidity_raw,
         });
       } catch (rangeFetchErr) {
         logCatchDebug('raydium.rangeFetch.schedule', rangeFetchErr);

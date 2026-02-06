@@ -889,6 +889,33 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     // Re-throw so the caller knows resolution failed
     throw e;
   }
+  // Pre-send profitability check: if local quotes predict a loss for an arb cycle, abort
+  // before wasting transaction fees.  The on-chain profit check (Custom(6007)) will catch
+  // this too, but aborting here saves ~5ms + a priority fee.
+  if (isArbCycle && initialInputRaw > 0n && hops.length > 0) {
+    const lastHop = hops[hops.length - 1];
+    const finalOutputRaw = lastHop?.quotedOutputRaw ?? 0n;
+    if (finalOutputRaw > 0n && finalOutputRaw <= initialInputRaw) {
+      const lossBps = Number((initialInputRaw - finalOutputRaw) * 10000n / initialInputRaw);
+      try {
+        logger.warn('tx.resolve.arb.pre_send_abort', {
+          cat: 'tx',
+          code: LogCode.TX_BUILD_ERR,
+          traceId,
+          ctx: {
+            reason: 'local_quotes_predict_loss',
+            initialInputRaw: initialInputRaw.toString(),
+            finalOutputRaw: finalOutputRaw.toString(),
+            lossBps,
+            hopCount: hops.length,
+            traceId,
+          },
+        });
+      } catch (e) { logCatchError('resolver.index', e); }
+      throw new Error(`Pre-send abort: local quotes predict -${lossBps}bps loss (output ${finalOutputRaw} <= input ${initialInputRaw})`);
+    }
+  }
+
   logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, traceId, ctx: { ms: Date.now() - t0, hops: hops.length, traceId } as any });
   
   // Return plan with router-level profitability data for arb cycles

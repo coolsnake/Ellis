@@ -929,13 +929,17 @@ export async function handleOrcaUpdate(
       // The data will be available for the next edge build via getRangeData().
       try {
         const { scheduleRangeFetch } = await import('../../rangeCache.js');
+        const staticData = executionCache.getStatic(poolId);
         scheduleRangeFetch({
           poolId,
           poolKind: 'clmm',
           dex: 'orca',
           currentTick: currentTick,
           tickSpacing: tick_spacing,
-          tickArrayCenter: executionCache.getStatic(poolId)?.tickArrayCenter,
+          tickArrayCenter: staticData?.tickArrayCenter,
+          tickArrayLower: staticData?.tickArrayLower,
+          tickArrayUpper: staticData?.tickArrayUpper,
+          liquidityRaw: liquidityRaw?.toString(),
         });
       } catch (rangeFetchErr) {
         logCatchDebug('orca.rangeFetch.schedule', rangeFetchErr);

@@ -3,6 +3,8 @@ import type { AmmPool, ClmmPool, CpmmPool } from './pools/types.js';
 import { logger } from '../utils/logger.js';
 import { getCapacityCurve } from '../execution/capacity/curveCache.js';
 import { getRangeData } from './pools/rangeCache.js';
+import type { ClmmRangeData, DlmmRangeData } from './pools/rangeCache.js';
+import { simulateClmmSwap, simulateDlmmSwap } from './pools/swapSimulator.js';
 
 export type EdgeAllow = {
   raydium?: { amm?: boolean; clmm?: boolean; cpmm?: boolean };
@@ -204,6 +206,201 @@ function computeHeuristicReservesFromMin(
   }
   // A is smaller, assume A is min
   return { reserveA: minReserve, reserveB: minReserve / priceAperB };
+}
+
+/**
+ * Build a high-confidence slippage curve using actual tick/bin liquidity data
+ * from rangeCache.  Falls back to undefined if tick/bin data is unavailable.
+ *
+ * For CLMM pools: uses simulateClmmSwap (tick-walk) with real liquidityNet values.
+ * For DLMM pools: uses simulateDlmmSwap (bin-walk) with real bin reserves.
+ *
+ * @param kind      Pool kind: 'clmm' | 'dlmm'
+ * @param poolId    Pool address
+ * @param feeBps    Fee in basis points
+ * @param spotRate  Canonical spot rate (output per input, after fee)
+ * @param wasSwapped  Whether canonical token order is inverted relative to native
+ * @param pool      Raw pool object (for sqrtPriceX64, liquidity, tickSpacing, binStep, etc.)
+ */
+function buildSlippageCurveFromSimulation(
+  kind: string,
+  poolId: string,
+  feeBps: number,
+  spotRate: number,
+  wasSwapped: boolean,
+  pool: any,
+): GraphEdge['slippage_curve'] | undefined {
+  if (spotRate <= 0) return undefined;
+  if (kind !== 'clmm' && kind !== 'dlmm') return undefined;
+
+  const rangeData = getRangeData(poolId);
+  if (!rangeData) return undefined;
+
+  // ── CLMM tick-walk simulation ──
+  if (kind === 'clmm' && rangeData.kind === 'clmm') {
+    const clmm = rangeData as ClmmRangeData;
+    if (clmm.ticks.length === 0 || clmm.currentLiquidity <= 0) return undefined;
+
+    // sqrtPrice as float
+    const s64 = BigInt(String(pool?.sqrt_price_x64 || pool?.sqrt_price_x64_raw || 0));
+    if (s64 <= 0n) return undefined;
+    const currentSqrtPrice = Number(s64) / Number(2n ** 64n);
+    if (!(currentSqrtPrice > 0)) return undefined;
+
+    // For the forward edge (canonical A→B), determine swap direction in native terms.
+    // If wasSwapped: canonical A = native B, so the swap is native B→A (aToB = false).
+    // If !wasSwapped: canonical A = native A, so the swap is native A→B (aToB = true).
+    const aToB = !wasSwapped;
+
+    // Compute active-range capacity to generate proportional test sizes
+    const L = clmm.currentLiquidity;
+    let activeRangeCapacity: number;
+    if (aToB) {
+      // A→B: max A consumable before hitting lower tick
+      const sqrtPLower = Math.pow(1.0001, clmm.tickLower / 2);
+      activeRangeCapacity = L * Math.abs(1 / sqrtPLower - 1 / currentSqrtPrice);
+    } else {
+      // B→A: max B consumable before hitting upper tick
+      const sqrtPUpper = Math.pow(1.0001, clmm.tickUpper / 2);
+      activeRangeCapacity = L * Math.abs(sqrtPUpper - currentSqrtPrice);
+    }
+
+    // Scale to whole tokens
+    const decIn = wasSwapped
+      ? Number(pool?.native_decimals_b ?? pool?.decimals_b ?? 9)
+      : Number(pool?.native_decimals_a ?? pool?.decimals_a ?? 9);
+    const decOut = wasSwapped
+      ? Number(pool?.native_decimals_a ?? pool?.decimals_a ?? 9)
+      : Number(pool?.native_decimals_b ?? pool?.decimals_b ?? 9);
+    activeRangeCapacity = activeRangeCapacity / Math.pow(10, Math.max(0, decIn));
+
+    if (!(activeRangeCapacity > 0)) return undefined;
+
+    const fractions = [0.01, 0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0, 3.0];
+    const sizes: number[] = [];
+    const mults: number[] = [];
+
+    for (const f of fractions) {
+      const inputWhole = activeRangeCapacity * f;
+      if (inputWhole <= 0) continue;
+
+      // Simulate in atomic units
+      const inputAtomic = inputWhole * Math.pow(10, decIn);
+      const outputAtomic = simulateClmmSwap({
+        inputAmount: inputAtomic,
+        currentSqrtPrice,
+        currentLiquidity: L,
+        ticks: clmm.ticks,
+        currentTick: clmm.currentTick,
+        feeBps,
+        aToB,
+      });
+
+      const outputWhole = outputAtomic / Math.pow(10, decOut);
+      const expectedOutput = inputWhole * spotRate;
+      const mult = expectedOutput > 0 ? outputWhole / expectedOutput : 0;
+      const clamped = Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
+
+      sizes.push(inputWhole);
+      mults.push(clamped);
+    }
+
+    if (sizes.length === 0) return undefined;
+
+    return {
+      unit: 'source',
+      sizes,
+      mults,
+      computed_at: Date.now(),
+      confidence: 'high',
+      source: 'tick_simulation',
+    };
+  }
+
+  // ── DLMM bin-walk simulation ──
+  if (kind === 'dlmm' && rangeData.kind === 'dlmm') {
+    const dlmm = rangeData as DlmmRangeData;
+    if (!dlmm.bins || dlmm.bins.length === 0) return undefined;
+
+    const binStep = Number(pool?.tick_spacing ?? pool?.tickSpacing ?? pool?.bin_step ?? 0);
+    if (binStep <= 0) return undefined;
+
+    // For forward edge (canonical A→B):
+    // If wasSwapped: canonical A = native Y, so swap is Y→X (xToY = false)
+    // If !wasSwapped: canonical A = native X, so swap is X→Y (xToY = true)
+    const xToY = !wasSwapped;
+
+    // Compute active bin capacity for test size generation
+    const activeBin = dlmm.bins.find(b => b.id === dlmm.activeBinId);
+    let activeCapacity: number;
+    if (xToY) {
+      // X→Y: output is Y, capacity limited by Y reserves in active + lower bins
+      const stepMult = 1 + binStep / 10000;
+      const price = Math.pow(stepMult, dlmm.activeBinId - 8388608);
+      activeCapacity = (activeBin?.reserveY ?? 0) / (price > 0 ? price : 1);
+    } else {
+      // Y→X: output is X, capacity limited by X reserves in active + upper bins
+      const stepMult = 1 + binStep / 10000;
+      const price = Math.pow(stepMult, dlmm.activeBinId - 8388608);
+      activeCapacity = (activeBin?.reserveX ?? 0) * (price > 0 ? price : 1);
+    }
+
+    // Fallback: sum capacities from all bins in the swap direction
+    if (activeCapacity <= 0) {
+      const stepMult = 1 + binStep / 10000;
+      if (xToY) {
+        for (const bin of dlmm.bins.filter(b => b.id <= dlmm.activeBinId)) {
+          const price = Math.pow(stepMult, bin.id - 8388608);
+          activeCapacity += bin.reserveY / (price > 0 ? price : 1);
+        }
+      } else {
+        for (const bin of dlmm.bins.filter(b => b.id >= dlmm.activeBinId)) {
+          const price = Math.pow(stepMult, bin.id - 8388608);
+          activeCapacity += bin.reserveX * (price > 0 ? price : 1);
+        }
+      }
+    }
+
+    if (!(activeCapacity > 0)) return undefined;
+
+    const fractions = [0.01, 0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0, 3.0];
+    const sizes: number[] = [];
+    const mults: number[] = [];
+
+    for (const f of fractions) {
+      const inputWhole = activeCapacity * f;
+      if (inputWhole <= 0) continue;
+
+      const outputWhole = simulateDlmmSwap({
+        inputAmount: inputWhole,
+        activeBinId: dlmm.activeBinId,
+        bins: dlmm.bins,
+        binStep,
+        feeBps,
+        xToY,
+      });
+
+      const expectedOutput = inputWhole * spotRate;
+      const mult = expectedOutput > 0 ? outputWhole / expectedOutput : 0;
+      const clamped = Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
+
+      sizes.push(inputWhole);
+      mults.push(clamped);
+    }
+
+    if (sizes.length === 0) return undefined;
+
+    return {
+      unit: 'source',
+      sizes,
+      mults,
+      computed_at: Date.now(),
+      confidence: 'high',
+      source: 'bin_simulation',
+    };
+  }
+
+  return undefined;
 }
 
 function buildSlippageCurveUsd(poolId: string): GraphEdge['slippage_curve'] | undefined {
@@ -514,7 +711,9 @@ export function edgesFromPoolIncremental(
 
   const feeMultiplier = 1 - Math.max(0, fee) / 10000;
   const spotRate = fwd && fwd > 0 ? (1 / fwd) * feeMultiplier : 0;
+  // Priority chain: tick/bin simulation (high confidence) > reserve-based (low) > USD capacity
   const slippageCurve =
+    buildSlippageCurveFromSimulation(kind, id, fee, spotRate, wasSwapped, p) ||
     buildSlippageCurveSource(kind, reserveA, reserveB, fee, spotRate, (p as any)?.updated_ms, curveSource || 'native_reserve') ||
     buildSlippageCurveUsd(id);
   
