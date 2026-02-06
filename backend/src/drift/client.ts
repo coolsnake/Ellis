@@ -1787,6 +1787,23 @@ export class DriftService {
           positions.push({ marketIndex: idx, base, entryPrice: undefined });
         }
       } catch {}
+      // Sanity check: if every dollar-denominated value is 0 but the user has spot
+      // positions, oracle data hasn't loaded yet. Return null so the caller can
+      // fall through to getSubaccounts() which creates its own polling User.
+      if (totalCollateral === 0 && maint === 0 && free === 0 && initReq === 0) {
+        let hasSpotBalance = false;
+        try {
+          const spots = user?.getSpotPositions?.() || [];
+          for (const sp of spots) {
+            const raw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || 0);
+            if (raw !== 0) { hasSpotBalance = true; break; }
+          }
+        } catch {}
+        if (hasSpotBalance) {
+          try { logger.warn('drift.snapshot.oracle_not_loaded', { activeSubaccountId: this.activeSubaccountId, hasSpotBalance, cat: 'drift' }); } catch {}
+          return null;
+        }
+      }
       return { id, freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions };
     } catch {
       return null;
@@ -1799,7 +1816,11 @@ export class DriftService {
     let subs: SubaccountInfo[] = [];
     try {
       const snap = await this.getActiveSubaccountSnapshot();
-      if (snap) subs = [snap];
+      // Only accept the snapshot if it has meaningful data (non-zero collateral);
+      // otherwise fall through to getSubaccounts() which uses its own polling User
+      if (snap && (snap.totalCollateral !== 0 || snap.freeCollateral !== 0 || snap.maintenanceRequirement !== 0)) {
+        subs = [snap];
+      }
     } catch {}
     if (subs.length === 0) {
       try { subs = await this.getSubaccounts(); } catch { subs = []; }
@@ -1995,14 +2016,17 @@ export class DriftService {
       }
 
       // Step 4: Create User objects and fetch data in parallel (using polling, not websocket)
-      const { User } = await loadSdk();
+      const { User, BulkAccountLoader: BAL } = await loadSdk();
+      // Use shared loader if available; otherwise create an ephemeral one-shot loader
+      // (this.loader is null when the DriftClient uses websocket subscriptions)
+      const accountLoader = this.loader || new BAL(this.connection, 'confirmed', 0);
       const userPromises = existingAccounts.map(async ({ id, pk }) => {
         try {
           // Use polling subscription - faster than websocket, no WS wait needed
           const user = new User({
             driftClient: client,
             userAccountPublicKey: pk,
-            accountSubscription: { type: 'polling', accountLoader: this.loader }
+            accountSubscription: { type: 'polling', accountLoader }
           });
           try {
             if (typeof user.subscribe === 'function') {
