@@ -316,6 +316,24 @@ export class DriftService {
       // Log but don't fail initialization - the client can still work with polling or retry later
       try { logger.warn('drift.ws subscribe error (non-fatal)', { error: String(e?.message || e), cat: 'drift' }); } catch {}
     }
+    // Force-load all state/market/oracle data from RPC immediately.
+    // client.subscribe() only initiates WS subscriptions -- data arrives async.
+    // client.fetchAccounts() forces the accountSubscriber to pull everything
+    // (state, perp markets, spot markets, oracles) via RPC so the DriftClient
+    // cache is populated before any User methods that depend on oracle prices.
+    try {
+      if (typeof (this.client as any)?.fetchAccounts === 'function') {
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        await withRpcLimit(
+          () => (this.client as any).fetchAccounts(),
+          1,
+          { module: 'drift', method: 'client.fetchAccounts' }
+        );
+        try { logger.info('drift.init.client_accounts_fetched', { cat: 'drift' }); } catch {}
+      }
+    } catch (e: any) {
+      try { logger.warn('drift.init.client_fetch_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    }
     // Ensure default user is initialized, registered, and set as active user
     try {
       const defaultId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
@@ -333,14 +351,12 @@ export class DriftService {
         // Some SDKs initialize the active/default user without args
         try { await (this.client as any).initializeUser(defaultId); } catch { try { await (this.client as any).initializeUser(); } catch {} }
       }
-      // Hydrate user account AND oracle data with retry -- WebSocket subscriptions
-      // push data asynchronously so we need to wait for both:
-      //   1. User account struct (authority field populated)
-      //   2. Oracle prices (so getTotalCollateral/getFreeCollateral return real values)
-      // Without (2), every collateral method returns 0 even when the user has balances.
+      // Hydrate user account data. Oracle/market data is already loaded by
+      // client.fetchAccounts() above, so we mainly need the user account struct.
+      // Retry a few times in case the user subscription takes a moment.
       const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-      const maxHydrationAttempts = 8;
-      const hydrationDelayMs = 400;
+      const maxHydrationAttempts = 3;
+      const hydrationDelayMs = 500;
       let userHydrated = false;
       let oraclesReady = false;
       for (let attempt = 0; attempt < maxHydrationAttempts; attempt++) {
