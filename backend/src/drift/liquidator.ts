@@ -1756,10 +1756,32 @@ export class DriftLiquidator {
         } catch {}
         try {
           userAccount = (sdkUser as any)?.getUserAccount?.();
-          // Validate userAccount has essential fields for SDK tx building
-          if (userAccount && !userAccount.authority) {
-            try { logger.debug('drift.liquidator.user_account_incomplete', { user: target.userPk, hasAuthority: !!userAccount.authority, cat: 'drift' }); } catch {}
-            userAccount = null;
+          // Validate userAccount has essential fields that the SDK needs for tx building.
+          // The SDK calls .toBuffer() on PublicKey fields (authority, delegate) and BN fields
+          // during instruction serialization. If these are undefined, we get
+          // "Cannot read properties of undefined (reading 'toBuffer')".
+          if (userAccount) {
+            const hasAuthority = !!(userAccount.authority && typeof userAccount.authority.toBuffer === 'function');
+            const hasDelegate = userAccount.delegate === undefined ? false : !!(userAccount.delegate && typeof userAccount.delegate.toBuffer === 'function');
+            const hasSubAccountId = userAccount.subAccountId !== undefined;
+            if (!hasAuthority || !hasSubAccountId) {
+              try { logger.debug('drift.liquidator.user_account_incomplete', {
+                user: target.userPk,
+                hasAuthority,
+                hasDelegate,
+                hasSubAccountId,
+                keys: Object.keys(userAccount || {}).slice(0, 10),
+                cat: 'drift',
+              }); } catch {}
+              // Try one more fetchAccounts to hydrate
+              try { await this.fetchAccountsLimited(sdkUser, 'fetchAccounts.rehydrate'); } catch {}
+              userAccount = (sdkUser as any)?.getUserAccount?.();
+              const retryOk = !!(userAccount?.authority && typeof userAccount.authority.toBuffer === 'function' && userAccount.subAccountId !== undefined);
+              if (!retryOk) {
+                try { logger.warn('drift.liquidator.user_account_still_incomplete', { user: target.userPk, cat: 'drift' }); } catch {}
+                userAccount = null;
+              }
+            }
           }
           openOrdersCount = Number(userAccount?.openOrders || 0);
         } catch {}

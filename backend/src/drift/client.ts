@@ -333,14 +333,34 @@ export class DriftService {
         // Some SDKs initialize the active/default user without args
         try { await (this.client as any).initializeUser(defaultId); } catch { try { await (this.client as any).initializeUser(); } catch {} }
       }
-      // Hydrate user account data immediately so client.user has live state
-      try {
-        const user = (this.client as any)?.user;
-        if (user && typeof user.fetchAccounts === 'function') {
-          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-          await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: 'init.fetchAccounts' });
+      // Hydrate user account data with retry -- WebSocket subscriptions may need
+      // a moment to populate, so we poll fetchAccounts up to a few times.
+      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+      const maxHydrationAttempts = 4;
+      const hydrationDelayMs = 500;
+      let hydrated = false;
+      for (let attempt = 0; attempt < maxHydrationAttempts; attempt++) {
+        try {
+          const user = (this.client as any)?.user;
+          if (user && typeof user.fetchAccounts === 'function') {
+            await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: `init.fetchAccounts.${attempt}` });
+          }
+          // Verify the user account is actually populated with real data
+          const acct = user?.getUserAccount?.();
+          if (acct && acct.authority) {
+            hydrated = true;
+            try { logger.info('drift.init.user_hydrated', { subaccountId: defaultId, attempt, hasAuthority: true, cat: 'drift' }); } catch {}
+            break;
+          }
+        } catch {}
+        // Wait before retrying -- give WS subscription time to push data
+        if (attempt < maxHydrationAttempts - 1) {
+          await new Promise(r => setTimeout(r, hydrationDelayMs * (attempt + 1)));
         }
-      } catch {}
+      }
+      if (!hydrated) {
+        try { logger.warn('drift.init.user_hydration_incomplete', { subaccountId: defaultId, attempts: maxHydrationAttempts, hasUser: !!(this.client as any)?.user, cat: 'drift' }); } catch {}
+      }
     } catch (e: any) {
       try { logger.warn('drift.init.user_setup_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
     }
@@ -1708,11 +1728,6 @@ export class DriftService {
           if (typeof client?.switchActiveUser === 'function') await client.switchActiveUser(subId);
           this.activeSubaccountId = subId;
           user = client?.user || null;
-          // If user is now available, hydrate accounts so values aren't stale
-          if (user && typeof user.fetchAccounts === 'function') {
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-            await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: 'snapshot.recovery.fetchAccounts' });
-          }
         } catch (e: any) {
           try { logger.warn('drift.snapshot.recovery_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
         }
@@ -1721,7 +1736,30 @@ export class DriftService {
         try { logger.debug('drift.snapshot.no_active_user', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
         return null;
       }
-      const id = Number((client?.getUserAccount?.()?.subAccountId) ?? (client?.activeUserId) ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
+      // Ensure user account data is hydrated -- fetchAccounts forces an RPC read
+      // which works even when WebSocket subscription hasn't pushed data yet
+      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+      try {
+        if (typeof user.fetchAccounts === 'function') {
+          await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: 'snapshot.fetchAccounts' });
+        }
+      } catch {}
+      // Verify account is populated; if not, retry once after a short wait
+      let acct = user?.getUserAccount?.();
+      if (!acct?.authority) {
+        try {
+          await new Promise(r => setTimeout(r, 300));
+          if (typeof user.fetchAccounts === 'function') {
+            await withRpcLimit(() => user.fetchAccounts(), 1, { module: 'drift', method: 'snapshot.fetchAccounts.retry' });
+          }
+          acct = user?.getUserAccount?.();
+        } catch {}
+      }
+      if (!acct?.authority) {
+        try { logger.warn('drift.snapshot.user_not_hydrated', { activeSubaccountId: this.activeSubaccountId, cat: 'drift' }); } catch {}
+        return null;
+      }
+      const id = Number((acct?.subAccountId) ?? (client?.activeUserId) ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
       // Convert quote-precision values to UI units using SDK constants when available
       let QUOTE_PREC = 1_000_000;
       try {
