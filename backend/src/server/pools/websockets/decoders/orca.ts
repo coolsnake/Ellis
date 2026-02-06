@@ -916,6 +916,22 @@ export async function handleOrcaUpdate(
       
       executionCache.setHot(poolId, hotUpdate);
 
+      // Schedule range fetch for tick-bounded reserve estimation (non-blocking).
+      // The data will be available for the next edge build via getRangeData().
+      try {
+        const { scheduleRangeFetch } = await import('../../rangeCache.js');
+        scheduleRangeFetch({
+          poolId,
+          poolKind: 'clmm',
+          dex: 'orca',
+          currentTick: currentTick,
+          tickSpacing: tick_spacing,
+          tickArrayCenter: executionCache.getStatic(poolId)?.tickArrayCenter,
+        });
+      } catch (rangeFetchErr) {
+        logCatchDebug('orca.rangeFetch.schedule', rangeFetchErr);
+      }
+
       logger.debug('orca.ws.cache_updated', {
         pool: poolId.slice(0, 8) + '…',
         hasRawData: !!data,

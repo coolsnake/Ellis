@@ -2,6 +2,7 @@ import type { GraphEdge } from './graph.types.js';
 import type { AmmPool, ClmmPool, CpmmPool } from './pools/types.js';
 import { logger } from '../utils/logger.js';
 import { getCapacityCurve } from '../execution/capacity/curveCache.js';
+import { getRangeData } from './pools/rangeCache.js';
 
 export type EdgeAllow = {
   raydium?: { amm?: boolean; clmm?: boolean; cpmm?: boolean };
@@ -136,6 +137,57 @@ function computeVirtualReservesFromClmm(
     const reserveBAtomic = L * sqrtP;
     const reserveA = reserveAAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsA)));
     const reserveB = reserveBAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsB)));
+    if (reserveA > 0 && reserveB > 0) return { reserveA, reserveB };
+  } catch {}
+  return undefined;
+}
+
+/**
+ * Compute bounded reserves for a CLMM pool using tick-range boundaries.
+ *
+ * Unlike computeVirtualReservesFromClmm (which assumes infinite range),
+ * this uses the sqrtPrice at the nearest initialized tick boundaries
+ * to compute the *actual* reserves in the current tick range.
+ *
+ * Formula (from Uniswap V3 / concentrated liquidity math):
+ *   reserveA_atomic = L × (1/sqrtP - 1/sqrtP_upper)
+ *   reserveB_atomic = L × (sqrtP - sqrtP_lower)
+ *
+ * where sqrtP = sqrt(price_B_atomic / price_A_atomic) in float (NOT Q64).
+ *
+ * Returns reserves in NATIVE token order (A = native mint_a, B = native mint_b).
+ */
+function computeBoundedClmmReserves(
+  sqrtPriceX64Raw: bigint,
+  liquidityRaw: bigint,
+  decimalsA: number,
+  decimalsB: number,
+  sqrtPriceLower: number,
+  sqrtPriceUpper: number,
+): { reserveA: number; reserveB: number } | undefined {
+  try {
+    if (sqrtPriceX64Raw <= 0n || liquidityRaw <= 0n) return undefined;
+    if (!(sqrtPriceLower > 0) || !(sqrtPriceUpper > sqrtPriceLower)) return undefined;
+
+    const sqrtP = Number(sqrtPriceX64Raw) / Number(2n ** 64n);
+    if (!(sqrtP > 0)) return undefined;
+
+    const L = Number(liquidityRaw);
+    if (!(L > 0)) return undefined;
+
+    // Clamp sqrtP to the range in case of minor timing mismatches
+    const sp = Math.max(sqrtPriceLower, Math.min(sqrtPriceUpper, sqrtP));
+
+    // Token A reserves: how much A can be swapped before hitting upper boundary
+    const reserveAAtomic = L * (1 / sp - 1 / sqrtPriceUpper);
+    // Token B reserves: how much B can be swapped before hitting lower boundary
+    const reserveBAtomic = L * (sp - sqrtPriceLower);
+
+    const reserveA =
+      reserveAAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsA)));
+    const reserveB =
+      reserveBAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsB)));
+
     if (reserveA > 0 && reserveB > 0) return { reserveA, reserveB };
   } catch {}
   return undefined;
@@ -414,24 +466,70 @@ export function edgesFromPoolIncremental(
       curveSource = 'native_reserve';
     }
   } else if (kind === 'clmm') {
-    try {
-      const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
-      const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
-      const virt = computeVirtualReservesFromClmm(s64, Lraw, Number(decA || 0), Number(decB || 0));
-      if (virt) {
-        reserveA = virt.reserveA;
-        reserveB = virt.reserveB;
-        curveSource = 'virtual_liquidity';
-      }
-    } catch {}
+    // Priority 1: bounded reserves from tick-range cache (most accurate)
+    const rangeData = getRangeData(id);
+    if (rangeData?.kind === 'clmm') {
+      try {
+        const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
+        const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
+        const bounded = computeBoundedClmmReserves(
+          s64, Lraw,
+          Number(nativeDecA || 0), Number(nativeDecB || 0),
+          rangeData.sqrtPriceLower, rangeData.sqrtPriceUpper,
+        );
+        if (bounded) {
+          // Bounded reserves are in native order; swap to canonical if needed
+          if (wasSwapped) {
+            reserveA = bounded.reserveB;
+            reserveB = bounded.reserveA;
+            curveSource = 'bounded_clmm_swapped';
+          } else {
+            reserveA = bounded.reserveA;
+            reserveB = bounded.reserveB;
+            curveSource = 'bounded_clmm';
+          }
+        }
+      } catch {}
+    }
+    // Priority 2: fallback to unbounded virtual reserves
+    if (reserveA === 0 || reserveB === 0) {
+      try {
+        const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
+        const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
+        const virt = computeVirtualReservesFromClmm(s64, Lraw, Number(decA || 0), Number(decB || 0));
+        if (virt) {
+          reserveA = virt.reserveA;
+          reserveB = virt.reserveB;
+          curveSource = 'virtual_liquidity';
+        }
+      } catch {}
+    }
   } else if (kind === 'dlmm') {
-    const minLiquidity = Number((p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_display ?? 0);
-    if (minLiquidity > 0 && fwd && fwd > 0) {
-      const heur = computeHeuristicReservesFromMin(minLiquidity, fwd);
-      if (heur) {
-        reserveA = heur.reserveA;
-        reserveB = heur.reserveB;
-        curveSource = 'liquidity_min_heuristic';
+    // Priority 1: active bin reserves from range cache (most accurate)
+    const rangeData = getRangeData(id);
+    if (rangeData?.kind === 'dlmm' && rangeData.reserveX > 0 && rangeData.reserveY > 0) {
+      // Reserves are in native Meteora order (X = tokenX, Y = tokenY).
+      // Swap to canonical order if the pool's token order was inverted.
+      if (wasSwapped) {
+        reserveA = rangeData.reserveY;
+        reserveB = rangeData.reserveX;
+        curveSource = 'active_bin_swapped';
+      } else {
+        reserveA = rangeData.reserveX;
+        reserveB = rangeData.reserveY;
+        curveSource = 'active_bin';
+      }
+    }
+    // Priority 2: fallback to heuristic reserves
+    if (reserveA === 0 || reserveB === 0) {
+      const minLiquidity = Number((p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_display ?? 0);
+      if (minLiquidity > 0 && fwd && fwd > 0) {
+        const heur = computeHeuristicReservesFromMin(minLiquidity, fwd);
+        if (heur) {
+          reserveA = heur.reserveA;
+          reserveB = heur.reserveB;
+          curveSource = 'liquidity_min_heuristic';
+        }
       }
     }
   }

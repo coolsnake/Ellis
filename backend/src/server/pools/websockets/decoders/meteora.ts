@@ -757,6 +757,23 @@ export async function handleMeteoraUpdate(
           cat: 'pools'
         });
         
+        // Schedule range fetch for active bin reserve estimation (non-blocking).
+        // The data will be available for the next edge build via getRangeData().
+        try {
+          const { scheduleRangeFetch } = await import('../../rangeCache.js');
+          scheduleRangeFetch({
+            poolId,
+            poolKind: 'dlmm',
+            dex: 'meteora',
+            activeId: Number.isFinite(activeId) ? Number(activeId) : undefined,
+            decimalsX: decA,
+            decimalsY: decB,
+            binArrayActive: binArrayAddresses.active,
+          });
+        } catch (rangeFetchErr) {
+          logCatchDebug('meteora.rangeFetch.schedule', rangeFetchErr);
+        }
+
         // Check bitmap eligibility on activeId update
         // This enables reactive pool filtering when price moves in/out of safe range
         if (Number.isFinite(activeId)) {

@@ -680,7 +680,23 @@ async function handleClmmUpdate(
       }
       
       executionCache.setHot(poolId, hotUpdate);
-      
+
+      // Schedule range fetch for tick-bounded reserve estimation (non-blocking).
+      // The data will be available for the next edge build via getRangeData().
+      try {
+        const { scheduleRangeFetch } = await import('../../rangeCache.js');
+        scheduleRangeFetch({
+          poolId,
+          poolKind: 'clmm',
+          dex: 'raydium',
+          currentTick: derived?.tickCurrent ?? nativeTickCurrentIndex,
+          tickSpacing: decoded.tick_spacing,
+          tickArrayCenter: nextStatic.tickArrayCenter,
+        });
+      } catch (rangeFetchErr) {
+        logCatchDebug('raydium.rangeFetch.schedule', rangeFetchErr);
+      }
+
       // Check pool eligibility on tick update
       // This enables reactive pool filtering when tick moves in/out of safe range
       if (derived?.tickCurrent !== undefined) {
