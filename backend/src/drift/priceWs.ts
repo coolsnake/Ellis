@@ -146,15 +146,47 @@ export class DriftDlobWs {
     s.onerror = (e: any) => {
       logger.warn('drift.ws.error', { error: String(e?.message || e), cat: 'drift', code: LogCode.DRIFT_WS_ERROR, cid: this.wsCid || undefined });
     };
+    // Diagnostic counters for periodic summary (avoid per-message spam)
+    let msgCount = 0;
+    let parsedCount = 0;
+    let unmappedCount = 0;
+    let normFailCount = 0;
+    let lastDiagAt = Date.now();
+    const diagIntervalMs = 30_000;
+
     s.onmessage = (ev: any) => {
       try {
+        msgCount++;
         const data = typeof ev?.data === 'string' ? JSON.parse(ev.data) : (ev?.data || {});
+
+        // Log first few raw messages and periodic diagnostics for debugging
+        if (msgCount <= 3) {
+          safeLog.info('drift.ws.raw_msg', { msgCount, type: data?.type, channel: data?.channel, market: data?.market, keys: Object.keys(data || {}).slice(0, 10), cat: 'drift' });
+        }
+        const now = Date.now();
+        if ((now - lastDiagAt) >= diagIntervalMs) {
+          safeLog.info('drift.ws.msg_diag', { msgCount, parsed: parsedCount, unmapped: unmappedCount, normFail: normFailCount, lastUpdateCount: this.lastUpdateByMarket.size, cat: 'drift' });
+          lastDiagAt = now;
+        }
+
+        // Skip control/ack messages (type: 'subscribed', 'pong', etc.)
+        const msgType = String(data?.type || '').toLowerCase();
+        if (msgType === 'pong' || msgType === 'subscribed' || msgType === 'unsubscribed' || msgType === 'error') {
+          if (msgType === 'error') safeLog.warn('drift.ws.server_error', { data: JSON.stringify(data).slice(0, 500), cat: 'drift' });
+          return;
+        }
+
         // DLOB WS messages structure: { channel: 'orderbook', market: 'SOL-PERP', bids: [], asks: [], oracle, ... }
         const marketName: string | undefined = String(data?.market || data?.symbol || '').trim() || undefined;
         const mktIdx = this.resolveMarketIndex(marketName, data);
-        if (!Number.isFinite(mktIdx)) return;
+        if (!Number.isFinite(mktIdx)) {
+          unmappedCount++;
+          if (unmappedCount <= 5) safeLog.debug('drift.ws.unmapped_msg', { market: marketName, type: msgType, channel: data?.channel, cat: 'drift' });
+          return;
+        }
         const norm = this.normalizeL2(Number(mktIdx), data as any);
-        if (!norm) return;
+        if (!norm) { normFailCount++; return; }
+        parsedCount++;
         this.lastUpdateByMarket.set(Number(mktIdx), norm.updatedAt);
         this.emit('l2', norm);
       } catch (e: any) {

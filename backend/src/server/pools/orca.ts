@@ -678,8 +678,9 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               }
             }
             
-            // Include tickSpacing for boundary crossing detection in cache
+            // Include tickSpacing and dex for boundary crossing detection in cache
             executionCache.setHot(pool.id, {
+              dex: 'orca',
               sqrtPriceX64,
               currentTickIndex: tickIndex,
               tickSpacing,

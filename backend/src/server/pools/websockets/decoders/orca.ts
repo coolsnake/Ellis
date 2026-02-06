@@ -895,6 +895,7 @@ export async function handleOrcaUpdate(
       // setHot handles boundary crossing detection and will clear stale arrays
       // IMPORTANT: Include needsTickArrayValidation flag for background validator
       const hotUpdate: any = {
+        dex: 'orca',
         sqrtPriceX64: sqrtRaw,
         currentTickIndex: currentTick,
         tickSpacing: tick_spacing,

@@ -112,6 +112,9 @@ type PoolHot = {
   // This enables intelligent cache invalidation when tick/bin crosses array boundaries
   tickSpacing?: number;
   binStep?: number;
+  // DEX identifier for correct tick array size in boundary crossing detection
+  // Orca uses TICK_ARRAY_SIZE=88, Raydium uses TICK_ARRAY_SIZE=60
+  dex?: string;
   // Tick array validation flags - used to exclude pools with stale/unvalidated tick arrays
   // When tick crosses array boundary, arrays are cleared and this flag is set
   // Background validator will validate arrays on-chain and clear the flag
@@ -244,7 +247,7 @@ export class ExecutionCache {
     
     // Detect if tick/bin crossed array boundaries - if so, INVALIDATE arrays
     // This prevents stale array addresses from persisting when price moves significantly
-    const tickArrayBoundaryCrossed = this.didTickArrayBoundaryCross(existing, val);
+    const tickArrayBoundaryCrossed = this.didTickArrayBoundaryCross(existing, val, poolId);
     const binArrayBoundaryCrossed = this.didBinArrayBoundaryCross(existing, val);
     
     const now = Date.now();
@@ -381,11 +384,12 @@ export class ExecutionCache {
   }
 
   /**
-   * Check if the current tick has crossed a tick array boundary
-   * Each tick array covers 60 * tickSpacing ticks, so we check if the
-   * floor division changed (meaning we moved to a different array)
+   * Check if the current tick has crossed a tick array boundary.
+   * Orca Whirlpools use TICK_ARRAY_SIZE=88, Raydium CLMM uses TICK_ARRAY_SIZE=60.
+   * Each tick array covers TICK_ARRAY_SIZE * tickSpacing ticks, so we check if the
+   * floor division changed (meaning we moved to a different array).
    */
-  private didTickArrayBoundaryCross(existing: PoolHot, incoming: PoolHot): boolean {
+  private didTickArrayBoundaryCross(existing: PoolHot, incoming: PoolHot, poolId?: string): boolean {
     // Need both old and new tick index to compare
     if (existing.currentTickIndex === undefined || incoming.currentTickIndex === undefined) {
       return false;
@@ -397,8 +401,12 @@ export class ExecutionCache {
       return false;
     }
     
-    // Tick array size is 60 * tickSpacing
-    const arraySize = 60 * tickSpacing;
+    // Determine DEX to use correct tick array size:
+    // Orca Whirlpool TICK_ARRAY_SIZE = 88, Raydium CLMM TICK_ARRAY_SIZE = 60
+    // Check hot cache dex field first, then fall back to static cache
+    const dex = incoming.dex ?? existing.dex ?? (poolId ? this.getStatic(poolId)?.dex : undefined);
+    const tickArraySize = dex === 'raydium' ? 60 : 88; // Default to 88 (Orca) for safety — larger size is more conservative
+    const arraySize = tickArraySize * tickSpacing;
     
     // Calculate which tick array index each tick falls into
     const oldArrayIndex = Math.floor(existing.currentTickIndex / arraySize);
@@ -515,7 +523,7 @@ export class ExecutionCache {
       });
       
       // Populate hot cache if we have price data
-      // Include tickSpacing/binStep for boundary crossing detection
+      // Include tickSpacing/binStep/dex for boundary crossing detection
       if (pool.sqrt_price_x64_raw) {
         this.setHot(poolId, {
           sqrtPriceX64: BigInt(pool.sqrt_price_x64_raw),
@@ -524,6 +532,7 @@ export class ExecutionCache {
           activeId: pool.active_id,
           tickSpacing: pool.tick_spacing,
           binStep: pool.bin_step,
+          dex: source === 'orca' ? 'orca' : source === 'raydium' ? 'raydium' : source === 'meteora' ? 'meteora' : undefined,
           liquidity: pool.liquidity_raw ? BigInt(pool.liquidity_raw) : undefined,
         });
       }

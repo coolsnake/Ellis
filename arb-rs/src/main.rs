@@ -1361,17 +1361,53 @@ async fn main() -> anyhow::Result<()> {
                         if s.config.slippage_simulation_enable {
                             if let Some(list) = &s.config.size_sweep_tokens {
                                 size_candidates_tokens = list.clone();
-                            } else if let Some(curve) = selection.edges.first().and_then(|e| e.slippage_curve.as_ref()) {
-                                if curve.unit.as_deref() == Some("source") {
-                                    if let Some(sizes) = curve.sizes.as_ref() {
-                                        size_candidates_tokens = sizes.clone();
+                            } else {
+                                // Collect size candidates from ALL edges in the cycle,
+                                // converting each edge's curve sizes back to start-token
+                                // units using the cumulative spot rate of preceding hops.
+                                // This ensures we test sizes appropriate for the bottleneck
+                                // pool, not just the first (potentially most liquid) pool.
+                                let mut cumulative_rate = 1.0f64;
+                                for edge in selection.edges.iter() {
+                                    if let Some(curve) = edge.slippage_curve.as_ref() {
+                                        if curve.unit.as_deref() == Some("source") {
+                                            if let Some(sizes) = curve.sizes.as_ref() {
+                                                for &sz in sizes {
+                                                    if cumulative_rate > 0.0 {
+                                                        let start_equiv = sz / cumulative_rate;
+                                                        if start_equiv.is_finite() && start_equiv > 0.0 {
+                                                            size_candidates_tokens.push(start_equiv);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } else if curve.unit.as_deref() == Some("usd") {
+                                            if let Some(sizes) = curve.sizes.as_ref() {
+                                                if let Some(sp) = start_price_usd {
+                                                    if sp > 0.0 {
+                                                        for &sz_usd in sizes {
+                                                            let start_equiv = sz_usd / sp;
+                                                            if start_equiv.is_finite() && start_equiv > 0.0 {
+                                                                size_candidates_tokens.push(start_equiv);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
+                                    cumulative_rate *= edge.rate_effective;
                                 }
-                            } else if let Some(list) = &s.config.size_sweep_usd {
-                                if let Some(sp) = start_price_usd {
-                                    size_candidates_tokens = list.iter().map(|usd| usd / sp).collect();
-                                } else if start_is_usdc {
-                                    size_candidates_tokens = list.clone();
+
+                                // Fallback to size_sweep_usd if no curve sizes were collected
+                                if size_candidates_tokens.is_empty() {
+                                    if let Some(list) = &s.config.size_sweep_usd {
+                                        if let Some(sp) = start_price_usd {
+                                            size_candidates_tokens = list.iter().map(|usd| usd / sp).collect();
+                                        } else if start_is_usdc {
+                                            size_candidates_tokens = list.clone();
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1382,6 +1418,9 @@ async fn main() -> anyhow::Result<()> {
                                 size_candidates_tokens.retain(|v| *v * sp >= s.config.min_notional_usd);
                             }
                         }
+                        // Deduplicate and sort for sweep + binary search
+                        size_candidates_tokens.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        size_candidates_tokens.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON * (*a).max(*b).max(1.0));
                         if size_candidates_tokens.is_empty() {
                             let default_size = if start_is_usdc {
                                 s.config.quote_size_usd.max(0.0)
@@ -1393,14 +1432,11 @@ async fn main() -> anyhow::Result<()> {
                             size_candidates_tokens.push(default_size);
                         }
 
-                        let mut best_profit: f64 = f64::NEG_INFINITY;
-                        for size_tokens in size_candidates_tokens {
-                            let start_input = size_tokens;
-
-                            let mut temp_out = start_input;
-                            let mut temp_hop_outs: Vec<f64> = Vec::with_capacity(nlen);
-
-                            for edge in selection.edges.iter() {
+                        // Helper closure: simulate a single size through all hops and return (profit_bps, final_output, hop_outputs)
+                        let simulate_size = |size_tokens: f64, edges: &[crate::edge_selection::SelectedEdge]| -> (f64, f64, Vec<f64>) {
+                            let mut temp_out = size_tokens;
+                            let mut temp_hop_outs: Vec<f64> = Vec::with_capacity(edges.len());
+                            for edge in edges.iter() {
                                 let next_out = if temp_out.is_finite() {
                                     if s.config.slippage_simulation_enable {
                                         slippage::compute_hop_output_simple(
@@ -1425,19 +1461,70 @@ async fn main() -> anyhow::Result<()> {
                                 temp_hop_outs.push(next_out);
                                 temp_out = next_out;
                             }
-
-                            let sim_profit_bps = if size_tokens > 0.0 {
+                            let profit_bps = if size_tokens > 0.0 {
                                 ((temp_out / size_tokens) - 1.0) * 10000.0
                             } else {
                                 f64::NEG_INFINITY
                             };
+                            (profit_bps, temp_out, temp_hop_outs)
+                        };
+
+                        // Phase 1: coarse sweep over all candidates
+                        let mut best_profit: f64 = f64::NEG_INFINITY;
+                        let mut best_idx: usize = 0;
+                        for (idx, &size_tokens) in size_candidates_tokens.iter().enumerate() {
+                            let (sim_profit_bps, final_out, temp_hop_outs) = simulate_size(size_tokens, &selection.edges);
 
                             if sim_profit_bps > best_profit {
                                 best_profit = sim_profit_bps;
+                                best_idx = idx;
                                 chosen_size_tokens = size_tokens;
                                 hop_outs = temp_hop_outs;
-                                cur_out = temp_out;
+                                cur_out = final_out;
                                 simulated_profit_bps = Some(sim_profit_bps);
+                            }
+                        }
+
+                        // Phase 2: binary search refinement around the best candidate
+                        // The profit-vs-size curve is concave (rises then falls), so we
+                        // bracket the optimum between the neighbors and bisect.
+                        if s.config.slippage_simulation_enable && size_candidates_tokens.len() >= 2 {
+                            let lo = if best_idx > 0 {
+                                size_candidates_tokens[best_idx - 1]
+                            } else {
+                                size_candidates_tokens[0] * 0.5
+                            };
+                            let hi = if best_idx + 1 < size_candidates_tokens.len() {
+                                size_candidates_tokens[best_idx + 1]
+                            } else {
+                                size_candidates_tokens[best_idx] * 1.5
+                            };
+                            // Golden-section search (8 iterations ≈ 0.3% precision)
+                            let phi = (5.0f64.sqrt() - 1.0) / 2.0; // ≈ 0.618
+                            let mut a = lo;
+                            let mut b = hi;
+                            for _ in 0..8 {
+                                if (b - a).abs() < a * 1e-6 {
+                                    break;
+                                }
+                                let x1 = b - phi * (b - a);
+                                let x2 = a + phi * (b - a);
+                                let (p1, _, _) = simulate_size(x1, &selection.edges);
+                                let (p2, _, _) = simulate_size(x2, &selection.edges);
+                                if p1 > p2 {
+                                    b = x2;
+                                } else {
+                                    a = x1;
+                                }
+                            }
+                            let refined_size = (a + b) / 2.0;
+                            let (refined_profit, refined_out, refined_hops) = simulate_size(refined_size, &selection.edges);
+                            if refined_profit > best_profit {
+                                best_profit = refined_profit;
+                                chosen_size_tokens = refined_size;
+                                hop_outs = refined_hops;
+                                cur_out = refined_out;
+                                simulated_profit_bps = Some(refined_profit);
                             }
                         }
 

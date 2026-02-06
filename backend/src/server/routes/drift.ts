@@ -575,44 +575,12 @@ export function createDriftRouter(io: SocketIOServer): Router {
         const loader = new BulkAccountLoader(conn, 'confirmed', 0);
         const pollingSubscription = { type: 'polling' as const, accountLoader: loader };
 
-        // Check if user is already cached in the liquidator
-        // BUT: cached WS-subscribed users often have incomplete data (missing spot
-        // positions). We still try to reuse them for speed, but force a fresh
-        // fetchAccounts() and verify spot data before committing.
-        let cachedUser: any = null;
-        try {
-          const { DriftLiquidatorRegistry } = await import('../../drift/liquidator.js');
-          for (const entry of DriftLiquidatorRegistry.list()) {
-            const liq = DriftLiquidatorRegistry.get(entry.key);
-            const cached = (liq as any)?.userCache?.get?.(pkStr);
-            if (cached) { cachedUser = cached; break; }
-          }
-        } catch {}
-
-        if (cachedUser) {
-          // Force fresh account data on the cached user
-          try { await (cachedUser as any)?.fetchAccounts?.(); } catch (e: any) {
-            try { logger.warn('drift.route.user.cachedFetchFailed', { userPk: pkStr, error: String(e?.message || e), cat: 'drift' }); } catch {}
-          }
-          // Verify the cached user has been hydrated (getUserAccount returns data).
-          // If the account struct is populated, we trust it -- even if spot is empty
-          // (some users legitimately have only perp positions).
-          let cacheUsable = false;
-          try {
-            const ua = (cachedUser as any)?.getUserAccount?.();
-            // A hydrated user account always has an authority field
-            cacheUsable = !!(ua && ua.authority);
-          } catch {}
-          if (cacheUsable) {
-            sdkUser = cachedUser;
-            try { logger.info('drift.route.user.debug', { mode: 'cached', userPk: pkStr, cat: 'drift' }); } catch {}
-          } else {
-            try { logger.info('drift.route.user.debug', { mode: 'cached_skip', userPk: pkStr, reason: 'account_not_hydrated', cat: 'drift' }); } catch {}
-            // cachedUser had incomplete data; fall through to create fresh polling user
-          }
-        }
-
-        if (!sdkUser) {
+        // Always create a fresh polling-subscription User for this route.
+        // The liquidator's WS-cached users have incomplete position data (spot
+        // positions and raw perp positions are often empty because the WebSocket
+        // subscription doesn't reliably deliver the full account struct).
+        // A polling User fetches everything via RPC immediately.
+        {
           // First, try treating input as a user account PDA directly
           try {
             const candidate = new User({ driftClient: client, userAccountPublicKey: inputPk, accountSubscription: pollingSubscription });

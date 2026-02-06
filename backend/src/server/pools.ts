@@ -2520,7 +2520,7 @@ export async function getRaydiumPoolsGraphQL(force = false, opts?: { mints?: str
         executionCache.setStatic(pool.id, staticData);
         
         // Also populate hot cache with price/tick data if available
-        const hotData: any = {};
+        const hotData: any = { dex: 'raydium' };
         let hasHotData = false;
         
         if (pool.sqrt_price_x64 !== undefined) {
@@ -3077,7 +3077,7 @@ export async function getOrcaPoolsGraphQL(force = false, opts?: { mints?: string
         executionCache.setStatic(pool.id, staticData);
         
         // Also populate hot cache with price/tick data if available
-        const hotData: any = {};
+        const hotData: any = { dex: 'orca' };
         let hasHotData = false;
         
         if (pool.sqrt_price_x64 !== undefined) {
@@ -3252,6 +3252,7 @@ export async function getOrcaPoolsGraphQL(force = false, opts?: { mints?: string
             const existing = executionCache.getHot(pool.id) || {};
             executionCache.setHot(pool.id, {
               ...existing,
+              dex: 'orca',
               ...(sqrtPriceX64 ? { sqrtPriceX64 } : {}),
               ...(tickIndexNative !== undefined ? { currentTickIndex: tickIndexNative } : {}),
               ...(tickSpacing ? { tickSpacing } : {}),
@@ -3551,7 +3552,7 @@ export async function getMeteoraPoolsGraphQL(force = false, opts?: { mints?: str
         executionCache.setStatic(pool.id, staticData);
         
         // Also populate hot cache with price/activeId data if available
-        const hotData: any = {};
+        const hotData: any = { dex: 'meteora' };
         let hasHotData = false;
         
         if (pool.sqrt_price_x64 !== undefined) {

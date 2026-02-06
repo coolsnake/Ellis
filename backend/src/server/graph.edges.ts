@@ -38,7 +38,7 @@ function weightFrom(liq?: number, fee_bps?: number): number {
   return Math.max(1, liqv) / Math.max(1, fee);
 }
 
-const NATIVE_SIZE_FRACTIONS = [0.001, 0.003, 0.01, 0.03, 0.1];
+const NATIVE_SIZE_FRACTIONS = [0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 0.5];
 
 function parseReserveRaw(raw: any, decimals?: number): number {
   try {

@@ -121,7 +121,11 @@ fn interpolate_curve(curve: &SlippageCurve, input: f64) -> Option<f64> {
     }
     let last = sizes.len() - 1;
     if input >= sizes[last] {
-        return Some(mults[last]);
+        // Beyond the curve range — return None so the caller falls through to
+        // the reserve-based AMM formula which handles arbitrary sizes correctly.
+        // Previously this returned the last multiplier (flat extrapolation),
+        // which severely underestimated slippage for large trades.
+        return None;
     }
 
     for i in 0..last {
@@ -492,5 +496,71 @@ mod tests {
         // Large trade - significant slippage
         let mult_large = compute_amm_slippage_multiplier(500.0, 1000.0, 1000.0, 0);
         assert!(mult_large < 0.7); // > 30% slippage
+    }
+
+    #[test]
+    fn test_interpolate_curve_within_range() {
+        let curve = SlippageCurve {
+            unit: Some("source".to_string()),
+            sizes: Some(vec![1.0, 3.0, 10.0, 30.0, 100.0]),
+            mults: Some(vec![0.999, 0.997, 0.99, 0.97, 0.91]),
+            computed_at: None,
+            confidence: None,
+            source: None,
+        };
+        // Within range - should interpolate
+        let mult = interpolate_curve(&curve, 5.0);
+        assert!(mult.is_some());
+        let m = mult.unwrap();
+        assert!(m > 0.99 && m < 0.997, "Expected interpolated value, got {}", m);
+    }
+
+    #[test]
+    fn test_interpolate_curve_beyond_range_returns_none() {
+        let curve = SlippageCurve {
+            unit: Some("source".to_string()),
+            sizes: Some(vec![1.0, 3.0, 10.0, 30.0, 100.0]),
+            mults: Some(vec![0.999, 0.997, 0.99, 0.97, 0.91]),
+            computed_at: None,
+            confidence: None,
+            source: None,
+        };
+        // Beyond range - should return None so reserve-based calc is used
+        let mult = interpolate_curve(&curve, 200.0);
+        assert!(mult.is_none(), "Expected None for input beyond curve range");
+    }
+
+    #[test]
+    fn test_curve_fallthrough_to_reserves() {
+        // When curve returns None (input beyond range), compute_hop_output
+        // should fall through to the reserve-based AMM formula
+        let curve = SlippageCurve {
+            unit: Some("source".to_string()),
+            sizes: Some(vec![1.0, 10.0]),
+            mults: Some(vec![0.999, 0.99]),
+            computed_at: None,
+            confidence: None,
+            source: None,
+        };
+        // Input of 500 is well beyond curve range (max 10)
+        // With reserves of 1000/1000, AMM output for 500 ≈ 333.33
+        let output = compute_hop_output(
+            500.0,
+            &Some("amm".to_string()),
+            &Some("1000000000000".to_string()), // 1000 tokens (9 decimals)
+            &Some("1000000000000".to_string()),
+            Some(9),
+            Some(9),
+            0,
+            1.0,
+            true,
+            &Some(curve),
+            None,
+            None,
+        );
+        // Should use AMM formula: 1000 * 500 / (1000 + 500) ≈ 333.33
+        // NOT the flat-extrapolated curve which would give 500 * 1.0 * 0.99 = 495
+        assert!((output - 333.333).abs() < 1.0,
+            "Expected AMM-based output ~333, got {} (curve should not flat-extrapolate)", output);
     }
 }

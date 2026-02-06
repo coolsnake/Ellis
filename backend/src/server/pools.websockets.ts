@@ -2566,6 +2566,7 @@ function runWebsocketRefreshLoop(): void {
                             const hotExisting = executionCache.getHot(pk58) || {};
                             executionCache.setHot(pk58, {
                               ...hotExisting,
+                              dex: 'raydium',
                               currentTickIndex: derived?.tickCurrent ?? hotExisting.currentTickIndex,
                               // Include tickSpacing for boundary crossing detection in cache
                               tickSpacing: derived?.tickSpacing ?? hotExisting.tickSpacing,
@@ -3149,6 +3150,7 @@ function runWebsocketRefreshLoop(): void {
                     // Store hot pool data (frequently changing price/liquidity)
                     // setHot handles boundary crossing detection and will clear stale arrays
                     executionCache.setHot(id, {
+                      dex: 'orca',
                       sqrtPriceX64: sqrtRaw,
                       currentTickIndex: Number(parsed.tickCurrentIndex),
                       tickSpacing: tick_spacing,

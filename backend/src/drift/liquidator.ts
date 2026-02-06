@@ -772,7 +772,20 @@ export class DriftLiquidator {
         for (const u of activeUsers) allUsers.add(String(u));
       } catch (e: any) { safeLog.debug('drift.liquidator.sweepIndexForAtRisk.eventIndex', { error: String(e?.message || e), cat: 'drift' }); }
       this.userKeys = Array.from(allUsers);
-      // Enqueue all for probing in controlled batches
+      // Enqueue for probing in controlled batches.
+      // Cap total enqueue per sweep so we don't flood the probe queue with 20K+
+      // users and block the event loop for minutes.  Users already being live-
+      // monitored or sitting in the queue are skipped.
+      const maxEnqueuePerSweep = Math.max(100, Number(
+        (this.config as any)?.maxEnqueuePerSweep
+        ?? liqCfg.maxEnqueuePerSweep
+        ?? 2000
+      ));
+      const maxQueueSize = Math.max(500, Number(
+        (this.config as any)?.maxProbeQueueSize
+        ?? liqCfg.maxProbeQueueSize
+        ?? 5000
+      ));
       const chunk = Math.max(100, Number(
         (this.config as any)?.indexSweepChunk
         ?? liqCfg.indexSweepChunk
@@ -781,12 +794,18 @@ export class DriftLiquidator {
       const delayMs = Math.max(0, Number(
         (this.config as any)?.indexSweepDelayMs
         ?? liqCfg.indexSweepDelayMs
-        ?? 100
+        ?? 50
       ));
       let enqueued = 0;
       for (const pk of allUsers) {
+        // Stop if we've hit the per-sweep or queue-size cap
+        if (enqueued >= maxEnqueuePerSweep) break;
+        if (this.pendingProbeQueue.length >= maxQueueSize) break;
+        // Skip users already being live-monitored (they're probed continuously)
+        if (this.liveMonitors.has(pk)) continue;
         this.enqueueProbe(pk);
         enqueued++;
+        // Yield to the event loop periodically so WS messages, timers, etc. can process
         if (enqueued % chunk === 0 && delayMs > 0) {
           await new Promise(r => setTimeout(r, delayMs));
         }
@@ -2963,8 +2982,13 @@ export class DriftLiquidator {
       const slice = this.pendingProbeQueue.splice(0, cap);
       let probed = 0;
       let flagged = 0;
+      // Yield helper: release the event loop so WS messages, timers, and other
+      // I/O can be processed between heavy probe iterations.
+      const yieldLoop = (): Promise<void> => new Promise(r => setImmediate(r));
       for (const key of slice) {
         if (this.abort) break;
+        // Yield every iteration to keep the event loop responsive
+        try { await yieldLoop(); } catch {}
         try {
           let user = this.userCache.get(key);
           if (!user) {

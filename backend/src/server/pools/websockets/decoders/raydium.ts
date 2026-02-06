@@ -660,6 +660,7 @@ async function handleClmmUpdate(
       // IMPORTANT: If derivation flagged needsTickArrayValidation, propagate it
       // This happens when only center array was derived (safe mode)
       const hotUpdate: any = {
+        dex: 'raydium',
         currentTickIndex: derived?.tickCurrent ?? hotExisting.currentTickIndex,
         // Include tickSpacing for boundary crossing detection in cache
         tickSpacing: derived?.tickSpacing ?? hotExisting.tickSpacing,
