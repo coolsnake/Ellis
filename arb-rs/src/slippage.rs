@@ -10,6 +10,7 @@
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct SlippageCurve {
     pub unit: Option<String>, // expected "usd" or "source"
     pub sizes: Option<Vec<f64>>,
@@ -134,7 +135,7 @@ fn interpolate_curve(curve: &SlippageCurve, input: f64) -> Option<f64> {
         if input <= s1 {
             let m0 = mults[i];
             let m1 = mults[i + 1];
-            let denom = (s1 - s0);
+            let denom = s1 - s0;
             if denom.abs() < f64::EPSILON {
                 return Some(m0);
             }

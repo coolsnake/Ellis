@@ -1520,7 +1520,7 @@ async fn main() -> anyhow::Result<()> {
                             let refined_size = (a + b) / 2.0;
                             let (refined_profit, refined_out, refined_hops) = simulate_size(refined_size, &selection.edges);
                             if refined_profit > best_profit {
-                                best_profit = refined_profit;
+                                // best_profit not read after this point; update chosen outputs
                                 chosen_size_tokens = refined_size;
                                 hop_outs = refined_hops;
                                 cur_out = refined_out;
