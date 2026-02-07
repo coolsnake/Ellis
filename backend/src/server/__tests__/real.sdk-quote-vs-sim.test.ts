@@ -207,11 +207,9 @@ function getSimWallet(): { publicKey: PublicKey } {
       }
 
       // Simulate the transaction on-chain
+      // assembleAndSimulate(instructions[], opts?) — not a single options object
       const { assembleAndSimulate } = await import('../../execution/sender.js');
-      const simResult = await assembleAndSimulate({
-        instructions: txResult.instructions,
-        payer: wallet.publicKey,
-        connection: conn,
+      const simResult = await assembleAndSimulate(txResult.instructions, {
         computeUnitLimit: execCfg.computeUnitLimit,
         computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
       });
@@ -233,14 +231,17 @@ function getSimWallet(): { publicKey: PublicKey } {
         return;
       }
       const p = pools[0];
+      console.log(`[Orca] Testing pool ${p.poolId} (${p.mintA.slice(0,8)}→${p.mintB.slice(0,8)})`);
       const result = await quoteAndSimulate(p.dex, 'clmm', p.poolId, p.mintA, p.mintB, 1);
 
-      expect(result.resolved).toBe(true);
+      // Log error before asserting so it's visible in test output
       if (result.error) {
-        console.warn(`[Orca] ${result.error}`);
+        console.warn(`[Orca] Error: ${result.error}`);
       }
+      expect(result.resolved).toBe(true);
 
       if (result.quotedOut) {
+        console.log(`[Orca] quotedOut = ${result.quotedOut}`);
         expect(result.quotedOut).toBeGreaterThan(0n);
       }
 
@@ -267,11 +268,15 @@ function getSimWallet(): { publicKey: PublicKey } {
         return;
       }
       const p = pools[0];
+      console.log(`[RayClmm] Testing pool ${p.poolId} (${p.mintA.slice(0,8)}→${p.mintB.slice(0,8)})`);
       const result = await quoteAndSimulate(p.dex, 'clmm', p.poolId, p.mintA, p.mintB, 1);
 
+      if (result.error) console.warn(`[RayClmm] Error: ${result.error}`);
       expect(result.resolved).toBe(true);
-      if (result.quotedOut) expect(result.quotedOut).toBeGreaterThan(0n);
-      if (result.error) console.warn(`[RayClmm] ${result.error}`);
+      if (result.quotedOut) {
+        console.log(`[RayClmm] quotedOut = ${result.quotedOut}`);
+        expect(result.quotedOut).toBeGreaterThan(0n);
+      }
     }, 60_000);
   });
 
@@ -286,11 +291,15 @@ function getSimWallet(): { publicKey: PublicKey } {
         return;
       }
       const p = pools[0];
+      console.log(`[RayAMM] Testing pool ${p.poolId} (${p.mintA.slice(0,8)}→${p.mintB.slice(0,8)})`);
       const result = await quoteAndSimulate(p.dex, 'amm', p.poolId, p.mintA, p.mintB, 1);
 
+      if (result.error) console.warn(`[RayAMM] Error: ${result.error}`);
       expect(result.resolved).toBe(true);
-      if (result.quotedOut) expect(result.quotedOut).toBeGreaterThan(0n);
-      if (result.error) console.warn(`[RayAMM] ${result.error}`);
+      if (result.quotedOut) {
+        console.log(`[RayAMM] quotedOut = ${result.quotedOut}`);
+        expect(result.quotedOut).toBeGreaterThan(0n);
+      }
     }, 60_000);
   });
 
@@ -305,11 +314,15 @@ function getSimWallet(): { publicKey: PublicKey } {
         return;
       }
       const p = pools[0];
+      console.log(`[RayCpmm] Testing pool ${p.poolId} (${p.mintA.slice(0,8)}→${p.mintB.slice(0,8)})`);
       const result = await quoteAndSimulate(p.dex, 'cpmm', p.poolId, p.mintA, p.mintB, 1);
 
+      if (result.error) console.warn(`[RayCpmm] Error: ${result.error}`);
       expect(result.resolved).toBe(true);
-      if (result.quotedOut) expect(result.quotedOut).toBeGreaterThan(0n);
-      if (result.error) console.warn(`[RayCpmm] ${result.error}`);
+      if (result.quotedOut) {
+        console.log(`[RayCpmm] quotedOut = ${result.quotedOut}`);
+        expect(result.quotedOut).toBeGreaterThan(0n);
+      }
     }, 60_000);
   });
 
@@ -324,11 +337,15 @@ function getSimWallet(): { publicKey: PublicKey } {
         return;
       }
       const p = pools[0];
+      console.log(`[MetDLMM] Testing pool ${p.poolId} (${p.mintA.slice(0,8)}→${p.mintB.slice(0,8)})`);
       const result = await quoteAndSimulate(p.dex, 'dlmm', p.poolId, p.mintA, p.mintB, 1);
 
+      if (result.error) console.warn(`[MetDLMM] Error: ${result.error}`);
       expect(result.resolved).toBe(true);
-      if (result.quotedOut) expect(result.quotedOut).toBeGreaterThan(0n);
-      if (result.error) console.warn(`[MetDLMM] ${result.error}`);
+      if (result.quotedOut) {
+        console.log(`[MetDLMM] quotedOut = ${result.quotedOut}`);
+        expect(result.quotedOut).toBeGreaterThan(0n);
+      }
     }, 60_000);
   });
 
@@ -343,11 +360,15 @@ function getSimWallet(): { publicKey: PublicKey } {
         return;
       }
       const p = pools[0];
+      console.log(`[PumpSwap] Testing pool ${p.poolId} (${p.mintA.slice(0,8)}→${p.mintB.slice(0,8)})`);
       const result = await quoteAndSimulate(p.dex, 'amm', p.poolId, p.mintA, p.mintB, 1);
 
+      if (result.error) console.warn(`[PumpSwap] Error: ${result.error}`);
       expect(result.resolved).toBe(true);
-      if (result.quotedOut) expect(result.quotedOut).toBeGreaterThan(0n);
-      if (result.error) console.warn(`[PumpSwap] ${result.error}`);
+      if (result.quotedOut) {
+        console.log(`[PumpSwap] quotedOut = ${result.quotedOut}`);
+        expect(result.quotedOut).toBeGreaterThan(0n);
+      }
     }, 60_000);
   });
 
