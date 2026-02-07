@@ -142,20 +142,24 @@ function getSimWallet(): { publicKey: PublicKey } {
     const edges = snap?.edges || [];
     console.log(`[Step 0] Graph: ${snap?.nodes?.length || 0} nodes, ${edges.length} edges`);
 
-    // Collect one SOL↔USDC pool per DEX+variant from graph edges
+    // Collect SOL↔USDC pools per DEX+variant from graph edges.
+    // Edge shape: { source, target, dex, pool_id, pool_kind, ... }
+    // Note: edge.dex is capitalized ("Raydium", "Orca") — lowercase for lookup keys.
     for (const edge of edges) {
-      const dex = edge.dex || '';
-      const variant = edge.pool_kind || edge.variant || '';
+      const dex = (edge.dex || '').toLowerCase();
+      const variant = (edge.pool_kind || edge.variant || '').toLowerCase();
       const key = `${dex}:${variant}`;
       if (!poolsByDex[key]) poolsByDex[key] = [];
-      const mints = [edge.source_mint || edge.from, edge.target_mint || edge.to];
-      if ((mints.includes(SOL_MINT) || mints.includes(USDC_MINT)) && edge.poolId) {
+      const mintA = edge.source || '';
+      const mintB = edge.target || '';
+      const pid = edge.pool_id || edge.id || '';
+      if ((mintA === SOL_MINT || mintA === USDC_MINT || mintB === SOL_MINT || mintB === USDC_MINT) && pid) {
         poolsByDex[key].push({
-          poolId: edge.poolId,
+          poolId: pid,
           dex,
           variant,
-          mintA: mints[0],
-          mintB: mints[1],
+          mintA,
+          mintB,
         });
       }
     }
