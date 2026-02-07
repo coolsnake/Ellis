@@ -15,9 +15,9 @@
 import { logger } from '../utils/logger.js';
 import { parseSimulationLogs } from './simLogParser.js';
 import { validatedPoolsCache } from './validatedPoolsCache.js';
-import { recordPoolFeedback, type FeedbackOutcome } from './capacity/feedbackCollector.js';
 import { recordPoolFailure } from './poolFailureTracker.js';
 import { getPoolTypeFromDex } from './capacity/types.js';
+// Note: recordPoolFeedback removed - arb-rs handles sizing, no capacity curve learning needed
 import type { TxRecord } from '../server/txHistory.js';
 
 // ============================================================================
@@ -172,16 +172,7 @@ function handleSuccess(
   // Record POSITIVE capacity feedback for each pool (unless calibration is disabled)
   // Success on skip-sim is a strong signal - the trade worked without simulation
   // This helps recover from overly conservative calibrations
-  if (!calibrationDisabled) {
-    const perHopSize = sizeUsd / Math.max(1, hops.length);
-    
-    for (const hop of hops) {
-      const poolType = getPoolTypeFromDex(hop.dex, hop.variant);
-      // Record positive delta to signal "we could potentially trade larger"
-      // This is key for recovering from the minimum-size trap
-      recordPoolFeedback(hop.poolId, poolType, SKIP_SIM_SUCCESS_DELTA_BPS, perHopSize, 'success');
-    }
-  }
+  // Note: Capacity feedback recording removed - arb-rs handles sizing
   
   // Update stats
   stats.successCount++;
@@ -223,20 +214,8 @@ function handleProfitCheckFailure(
   
   // Calculate estimated slippage delta for logging
   const estimatedDeltaBps = -expectedProfitBps;
-  
-  // Record capacity feedback (unless calibration is disabled)
-  // Profit check failed means actual profit was below expected
-  // We use expectedProfitBps as a conservative estimate of the error
-  // (actual slippage was at least expectedProfitBps worse than quoted)
-  if (!calibrationDisabled) {
-    const perHopSize = sizeUsd / Math.max(1, hops.length);
-    const perHopDelta = estimatedDeltaBps / Math.max(1, hops.length);
-    
-    for (const hop of hops) {
-      const poolType = getPoolTypeFromDex(hop.dex, hop.variant);
-      recordPoolFeedback(hop.poolId, poolType, perHopDelta, perHopSize, '6007');
-    }
-  }
+
+  // Note: Capacity feedback recording removed - arb-rs handles sizing
   
   // Update stats
   stats.profitCheckFailedCount++;

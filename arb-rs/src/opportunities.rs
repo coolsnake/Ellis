@@ -9,6 +9,12 @@ pub struct Opportunity {
     pub est_profit_usd: f64,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sizeUsd")]
     pub size_usd: Option<f64>,
+    /// Optimal trade size in source token units (raw, before decimal scaling)
+    #[serde(skip_serializing_if = "Option::is_none", rename = "sizeTokens")]
+    pub size_tokens: Option<f64>,
+    /// Decimals for the start token (for proper conversion)
+    #[serde(skip_serializing_if = "Option::is_none", rename = "startDecimals")]
+    pub start_decimals: Option<i64>,
     pub dexes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hop_dexes: Option<Vec<String>>,

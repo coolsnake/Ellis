@@ -1,6 +1,5 @@
 import { CONFIG } from '../utils/config.js';
 import { ensureDir, readJson, writeJson, joinPath } from '../utils/fs.js';
-import { recomputeCapacityCurve, invalidateCapacityCurve } from './capacity/index.js';
 import type { PoolType, SizingConfig } from './capacity/types.js';
 import { logger } from '../utils/logger.js';
 import { METEORA_BIN_ARRAY_SIZE, isValidTickSpacing } from './constants.js';
@@ -322,23 +321,7 @@ export class ExecutionCache {
     
     this.hotByPool.set(poolId, merged);
     
-    // On boundary crossings, invalidate the capacity curve but DON'T recompute immediately.
-    // Recomputation will happen AFTER tick/bin arrays are validated by the background validator.
-    // This prevents using stale array data for capacity estimates.
-    if (tickArrayBoundaryCrossed || binArrayBoundaryCrossed) {
-      // Just invalidate - recomputation will happen in setValidatedTickArrays/setValidatedBinArrays
-      invalidateCapacityCurve(poolId);
-      
-      try {
-        logger.debug('cache.capacity.invalidated_on_boundary', {
-          cat: 'cache',
-          poolId: poolId.slice(0, 8) + '…',
-          tickCrossed: tickArrayBoundaryCrossed,
-          binCrossed: binArrayBoundaryCrossed,
-          hint: 'Will recompute after array validation',
-        });
-      } catch {}
-    }
+    // Note: Capacity curve recomputation removed - arb-rs handles sizing via slippage simulation
   }
   
   /**
@@ -634,18 +617,11 @@ export class ExecutionCache {
       tickArraysValidatedAt: Date.now(),
     };
     this.hotByPool.set(poolId, merged);
-    
-    // Now that arrays are validated, trigger capacity curve recomputation
-    // (this was deferred from the boundary crossing to ensure we have valid data)
-    const poolType = this.inferPoolType(poolId, existing, merged);
-    if (poolType && this.sizingConfig) {
-      recomputeCapacityCurve(poolId, poolType, merged, this.sizingConfig);
-    }
+    // Note: Capacity curve recomputation removed - arb-rs handles sizing
   }
 
   /**
    * Mark bin arrays as validated (called by background validator)
-   * Also triggers capacity curve recomputation now that we have validated data.
    */
   setValidatedBinArrays(
     poolId: string,
@@ -659,13 +635,7 @@ export class ExecutionCache {
       binArraysValidatedAt: Date.now(),
     };
     this.hotByPool.set(poolId, merged);
-    
-    // Now that arrays are validated, trigger capacity curve recomputation
-    // (this was deferred from the boundary crossing to ensure we have valid data)
-    const poolType = this.inferPoolType(poolId, existing, merged);
-    if (poolType && this.sizingConfig) {
-      recomputeCapacityCurve(poolId, poolType, merged, this.sizingConfig);
-    }
+    // Note: Capacity curve recomputation removed - arb-rs handles sizing
   }
 
   /**

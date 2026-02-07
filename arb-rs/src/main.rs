@@ -1321,6 +1321,12 @@ async fn main() -> anyhow::Result<()> {
                             .and_then(|e| e.source_price_usd)
                             .or_else(|| if start_is_usdc { Some(1.0) } else { None });
 
+                        // Get start token decimals from first edge (for token-based sizing)
+                        let start_decimals: Option<i64> = selection
+                            .edges
+                            .first()
+                            .and_then(|e| e.native_decimals_a);
+
                         // Build static hop metadata
                         for (w, edge) in selection.edges.iter().enumerate() {
                             let u_idx = c.nodes[w];
@@ -1881,6 +1887,8 @@ async fn main() -> anyhow::Result<()> {
                                     net_bps: Some(net_bps),
                                     est_profit_usd: est_profit_usd_val,
                                     size_usd: size_usd_opt,
+                                    size_tokens: if chosen_size_tokens > 0.0 { Some(chosen_size_tokens) } else { None },
+                                    start_decimals,
                                     dexes: dexes.clone(),
                                     hop_dexes: Some(hop_dexes.clone()),
                                     hop_rates: Some(hop_rates.clone()),
@@ -1975,6 +1983,8 @@ async fn main() -> anyhow::Result<()> {
                             net_bps: Some(net_bps),
                             est_profit_usd: est_profit_usd_val,
                             size_usd: size_usd_opt,
+                            size_tokens: if chosen_size_tokens > 0.0 { Some(chosen_size_tokens) } else { None },
+                            start_decimals,
                             dexes,
                             hop_dexes: Some(hop_dexes),
                             hop_rates: Some(hop_rates),
@@ -2326,6 +2336,8 @@ async fn main() -> anyhow::Result<()> {
                                 net_bps: Some(net_bps),
                                 est_profit_usd: 1.0,
                                 size_usd: None,
+                                size_tokens: None,
+                                start_decimals: None,
                                 dexes,
                                 hop_dexes: Some(hop_dexes),
                                 hop_rates: Some(hop_rates),
@@ -2702,6 +2714,8 @@ async fn main() -> anyhow::Result<()> {
                                     net_bps: Some(net_bps),
                                     est_profit_usd: 1.0,
                                     size_usd: None,
+                                    size_tokens: None,
+                                    start_decimals: None,
                                     dexes,
                                     hop_dexes: Some(hop_dexes),
                                     hop_rates: Some(hop_rates),
@@ -3012,6 +3026,8 @@ async fn main() -> anyhow::Result<()> {
                                             net_bps: Some(net_bps),
                                             est_profit_usd: 1.0,
                                             size_usd: None,
+                                            size_tokens: None,
+                                            start_decimals: None,
                                             dexes,
                                             hop_dexes: Some(hop_dexes),
                                             hop_rates: Some(hop_rates),
@@ -3065,6 +3081,8 @@ async fn main() -> anyhow::Result<()> {
                                         net_bps: Some(net_bps),
                                         est_profit_usd: 1.0,
                                         size_usd: None,
+                                        size_tokens: None,
+                                        start_decimals: None,
                                         dexes,
                                         hop_dexes: Some(hop_dexes),
                                         hop_rates: Some(hop_rates),
@@ -5291,11 +5309,11 @@ fn default_config() -> ArbConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(25), // 25ms default for minimal latency
-        // Slippage simulation - disabled by default for backward compatibility
+        // Slippage simulation - enabled by default for accurate sizing
         slippage_simulation_enable: std::env::var("ARB_SLIPPAGE_SIM_ENABLE")
             .ok()
-            .map(|v| v == "true")
-            .unwrap_or(false),
+            .map(|v| v != "false")
+            .unwrap_or(true),
         min_simulated_profit_bps: std::env::var("ARB_MIN_SIM_PROFIT_BPS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -5425,6 +5443,8 @@ mod tests {
             net_bps: net,
             est_profit_usd: 0.0,
             size_usd: None,
+            size_tokens: None,
+            start_decimals: None,
             dexes: vec!["X".into(), "Y".into(), "Z".into()],
             hop_dexes: None,
             hop_rates: None,

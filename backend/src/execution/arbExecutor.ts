@@ -32,14 +32,10 @@ import { loadJitoConfig } from '../server/jitoConfigStore.js';
 import { getPriceByMint } from '../server/priceStore.js';
 import { loadRouterConfig } from '../server/routerConfigStore.js';
 import {
-  lookupCapacity,
-  getOptimalSizeFromCurve,
   getPoolTypeFromDex,
   DEFAULT_SIZING_CONFIG,
-  calculateMultiHopOptimalSize,
 } from './capacity/index.js';
 import type { SizingConfig, PoolType } from './capacity/types.js';
-import { recordSlippageFeedback } from './capacity/feedbackCollector.js';
 import { executionCache } from './cache.js';
 import {
   exploreAlternativePools,
@@ -1485,20 +1481,14 @@ export class ArbExecutor {
         try {
           if (simAnalysis.profitCheckFailed) {
             // 6007/NoProfitFromRoute - slippage was worse than expected
-            if (!shouldSkipCalibrationFeedback) {
-              recordSlippageFeedback(simReport, '6007', effectiveSizeUsd);
-            }
+            // Note: Capacity feedback recording removed - arb-rs handles sizing
             // OPTIMIZATION: Mark pools as validated - 6007 means all swaps executed successfully
             validatedPoolsCache.markAllValidated(plan.hops, '6007');
           } else if (!simResult.err) {
-            // Successful simulation - validates current calibration
-            if (!shouldSkipCalibrationFeedback) {
-              recordSlippageFeedback(simReport, 'success', effectiveSizeUsd);
-            }
+            // Successful simulation
             // OPTIMIZATION: Mark pools as validated for skip-simulation optimization
             validatedPoolsCache.markAllValidated(plan.hops, 'success');
           }
-          // Note: other errors (non-6007) are not used for calibration
         } catch (feedbackErr) {
           // Don't let feedback recording failures impact execution
           logger.debug('capacity.feedback.error', {
@@ -1912,22 +1902,9 @@ export class ArbExecutor {
             }
             
             // Record success feedback for capacity learning
-            // Skip feedback when multi-hop mode has disableCalibration enabled
-            const skipCalibrationFeedbackHere = this.config.sizingConfig?.multiHopOptimization?.enabled &&
-                                                 this.config.sizingConfig?.multiHopOptimization?.disableCalibration !== false;
-            try {
-              if (!skipCalibrationFeedbackHere) {
-                const successSimReport = buildSimulationReport(opp, currentPlan, lastSimAnalysis!);
-                recordSlippageFeedback(successSimReport, 'success', currentSizeUsd);
-              }
-              // OPTIMIZATION: Mark pools as validated for skip-simulation optimization
-              validatedPoolsCache.markAllValidated(currentPlan.hops, 'success');
-            } catch (feedbackErr) {
-              logger.debug('capacity.feedback.error', {
-                cat: 'sizing',
-                error: String(feedbackErr),
-              });
-            }
+            // Note: Capacity feedback recording removed - arb-rs handles sizing
+            // OPTIMIZATION: Mark pools as validated for skip-simulation optimization
+            validatedPoolsCache.markAllValidated(currentPlan.hops, 'success');
             
             // Update plan and built to use the successful versions
             plan = currentPlan;
@@ -2181,21 +2158,7 @@ export class ArbExecutor {
           const condensedReport = formatSimReportForLog(simReport);
           const lastSimErrStr = serializeSimError(lastSimResult.err);
           
-          // Record calibration feedback for capacity learning
-          // Skip feedback when multi-hop mode has disableCalibration enabled
-          const skipCalibrationFeedbackHere2 = this.config.sizingConfig?.multiHopOptimization?.enabled &&
-                                                this.config.sizingConfig?.multiHopOptimization?.disableCalibration !== false;
-          try {
-            if (lastSimAnalysis!.profitCheckFailed && !skipCalibrationFeedbackHere2) {
-              recordSlippageFeedback(simReport, '6007', currentSizeUsd);
-            }
-            // Note: non-6007 errors are not used for calibration
-          } catch (feedbackErr) {
-            logger.debug('capacity.feedback.error', {
-              cat: 'sizing',
-              error: String(feedbackErr),
-            });
-          }
+          // Note: Capacity feedback recording removed - arb-rs handles sizing
           
           // Write execution log and capture filename for linking
           let logFile: string | undefined;
@@ -2993,390 +2956,165 @@ export class ArbExecutor {
    * 
    * When sizing is disabled, falls back to configured sizeUsd with wallet balance capping.
    */
+  /**
+   * Calculate trade size using arb-rs provided sizing.
+   *
+   * Priority:
+   * 1. sizeTokens from arb-rs (raw token amount, converted to USD)
+   * 2. sizeUsd from arb-rs (USD amount)
+   * 3. Bottleneck heuristic fallback
+   *
+   * All paths apply wallet balance capping and optional randomness.
+   */
   private async calculateDynamicSize(opp: Opportunity): Promise<number> {
     const SOL_MINT = 'So11111111111111111111111111111111111111112';
     const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const startToken = opp.path[0];
     const isFlashloanable = startToken === SOL_MINT || startToken === USDC_MINT;
     const flashloanEnabled = this.config.flashloanSettings?.enabled ?? false;
-
-    // If arb-rs already provided a size, prefer it (subject to wallet/flashloan caps later)
-    const directSizeUsd = Number((opp as any)?.sizeUsd);
-    if (Number.isFinite(directSizeUsd) && directSizeUsd > 0) {
-      const randomnessFactor = this.config.sizeRandomnessFactor ?? 0.1;
-      let finalSize = directSizeUsd;
-      let randomMultiplier = 1.0;
-
-      if (randomnessFactor > 0) {
-        randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
-        finalSize = finalSize * randomMultiplier;
-      }
-
-      (opp as any)._sizingInfo = {
-        method: 'arb_rs',
-        rawSizeUsd: directSizeUsd,
-        finalSizeUsd: finalSize,
-        randomMultiplier: randomnessFactor > 0 ? randomMultiplier : undefined,
-      };
-
-      logger.debug('arb.executor.sizing.arb_rs', {
-        cat: 'arb',
-        path: opp.path.join('->'),
-        rawSizeUsd: directSizeUsd,
-        finalSizeUsd: finalSize,
-        randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
-      });
-
-      return finalSize;
-    }
-    
-    // Use capacity-based sizing system
-    const sizingCfg = this.config.sizingConfig;
-    if (sizingCfg?.enabled) {
-      return this.calculateCapacityBasedSize(opp, sizingCfg, startToken, isFlashloanable, flashloanEnabled);
-    }
-    
-    // Fallback: use fixed sizeUsd with wallet balance capping
-    const fixedSize = this.config.sizeUsd || DEFAULT_SIZING_CONFIG.minSizeUsd;
-    
-    // For non-flashloanable tokens or when flashloan disabled, cap to wallet balance
-    if (!isFlashloanable || !flashloanEnabled) {
-      try {
-        if (this.walletPublicKey) {
-          const balances = await this.getCachedBalances();
-          if (balances) {
-            // Reserve some SOL for fees
-            const SOL_RESERVE_FOR_FEES = 0.007;
-            const rawBalance = startToken === SOL_MINT 
-              ? balances.sol 
-              : (balances.tokens[startToken] || 0);
-            const balance = startToken === SOL_MINT
-              ? Math.max(0, rawBalance - SOL_RESERVE_FOR_FEES)
-              : rawBalance;
-            
-            if (balance <= 0) {
-              logger.warn('arb.executor.sizing.no_balance', {
-                cat: 'arb',
-                path: opp.path.join('->'),
-                startToken: startToken.slice(0, 8) + '...',
-              });
-              return 0;
-            }
-            
-            const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
-            if (price > 0) {
-              const walletBalanceUsd = balance * price;
-              const cappedSize = Math.min(fixedSize, walletBalanceUsd);
-              
-              logger.debug('arb.executor.sizing.fixed', {
-                cat: 'arb',
-                path: opp.path.join('->'),
-                fixedSize,
-                walletBalanceUsd,
-                finalSize: cappedSize,
-              });
-              
-              return cappedSize;
-            }
-          }
-        }
-        // Balance check failed - use minimum safe size
-        return Math.min(fixedSize, DEFAULT_SIZING_CONFIG.minSizeUsd);
-      } catch (e) {
-        logger.warn('arb.executor.sizing.balance_check_failed', {
-          cat: 'arb',
-          path: opp.path.join('->'),
-          error: String((e as any)?.message || e),
-        });
-        return Math.min(fixedSize, DEFAULT_SIZING_CONFIG.minSizeUsd);
-      }
-    }
-    
-    return fixedSize;
-  }
-
-  /**
-   * NEW: Capacity-based sizing using pre-computed capacity curves.
-   * 
-   * This method:
-   * 1. Looks up capacity curves for each pool in the path
-   * 2. Finds the bottleneck pool (lowest capacity)
-   * 3. Calculates optimal size using the capacity curve
-   * 4. Applies user configuration (aggressiveness, max slippage)
-   * 5. Respects wallet balance constraints
-   */
-  private async calculateCapacityBasedSize(
-    opp: Opportunity,
-    config: SizingConfig,
-    startToken: string,
-    isFlashloanable: boolean,
-    flashloanEnabled: boolean
-  ): Promise<number> {
-    const profitBps = opp.net_bps ?? opp.profit_bps ?? 0;
-    
-    // Get wallet balance constraint
-    let walletBalanceUsd = Infinity;
-    if (config.respectWalletBalance && (!isFlashloanable || !flashloanEnabled)) {
-      try {
-        if (this.walletPublicKey) {
-          const balances = await this.getCachedBalances();
-          if (balances) {
-            const SOL_MINT = 'So11111111111111111111111111111111111111112';
-            const balance = startToken === SOL_MINT 
-              ? balances.sol 
-              : (balances.tokens[startToken] || 0);
-            
-            if (balance <= 0) {
-              logger.warn('arb.executor.capacity_sizing.no_balance', {
-                cat: 'arb',
-                path: opp.path.join('->'),
-                startToken: startToken.slice(0, 8) + '...',
-              });
-              return 0;
-            }
-            
-            const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
-            if (price > 0) {
-              walletBalanceUsd = balance * price;
-            }
-          }
-        }
-      } catch (e) {
-        logger.warn('arb.executor.capacity_sizing.balance_error', {
-          cat: 'arb',
-          error: String((e as any)?.message || e),
-        });
-        walletBalanceUsd = config.minSizeUsd;
-      }
-    }
-    
-    // NEW: Try multi-hop profit optimization first if enabled
-    if (config.multiHopOptimization?.enabled) {
-      const multiHopResult = calculateMultiHopOptimalSize(opp, config, walletBalanceUsd);
-      
-      if (multiHopResult) {
-        // Apply randomness for MEV protection
-        const randomnessFactor = this.config.sizeRandomnessFactor ?? 0.1;
-        let finalSize = multiHopResult.sizeUsd;
-        let randomMultiplier = 1.0;
-        
-        if (randomnessFactor > 0) {
-          randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
-          finalSize = finalSize * randomMultiplier;
-          finalSize = Math.max(config.minSizeUsd, Math.min(config.maxSizeUsd, finalSize));
-          finalSize = Math.min(finalSize, walletBalanceUsd);
-        }
-        
-        // Store sizing info on opportunity for tx dumps
-        (opp as any)._sizingInfo = {
-          method: 'multi_hop',
-          multiHopResult: {
-            method: multiHopResult.method,
-            rawSizeUsd: multiHopResult.sizeUsd,
-            finalSizeUsd: finalSize,
-            expectedProfitUsd: multiHopResult.expectedProfitUsd,
-            expectedSlippageBps: multiHopResult.expectedSlippageBps,
-            confidence: multiHopResult.confidence,
-            iterations: multiHopResult.details?.iterations,
-            hopsAnalyzed: multiHopResult.details?.hopsAnalyzed,
-            missingDataHops: multiHopResult.details?.missingDataHops,
-            searchBoundsLower: multiHopResult.details?.searchBoundsLower,
-            searchBoundsUpper: multiHopResult.details?.searchBoundsUpper,
-            rawOptimalSize: multiHopResult.details?.rawOptimalSize,
-          },
-          randomMultiplier,
-          walletBalanceUsd,
-          configMinSizeUsd: config.minSizeUsd,
-          configMaxSizeUsd: config.maxSizeUsd,
-        };
-        
-        logger.debug('arb.executor.sizing.multi_hop', {
-          cat: 'arb',
-          path: opp.path.join('->'),
-          method: multiHopResult.method,
-          optimizedSize: multiHopResult.sizeUsd.toFixed(2),
-          finalSize: finalSize.toFixed(2),
-          expectedProfitUsd: multiHopResult.expectedProfitUsd.toFixed(4),
-          expectedSlippageBps: multiHopResult.expectedSlippageBps,
-          confidence: multiHopResult.confidence,
-          randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
-          iterations: multiHopResult.details?.iterations,
-          hopsAnalyzed: multiHopResult.details?.hopsAnalyzed,
-          missingDataHops: multiHopResult.details?.missingDataHops,
-        });
-        
-        return finalSize;
-      }
-      // Fall through to bottleneck method if multi-hop returned null
-      // Store fallback info for tx dumps
-      (opp as any)._sizingInfo = {
-        method: 'multi_hop_fallback',
-        multiHopResult: null,
-        fallbackReason: 'multi_hop_returned_null',
-        walletBalanceUsd,
-        configMinSizeUsd: config.minSizeUsd,
-        configMaxSizeUsd: config.maxSizeUsd,
-      };
-      
-      logger.debug('arb.executor.sizing.multi_hop_fallback', {
-        cat: 'arb',
-        path: opp.path.join('->'),
-        reason: 'multi_hop_returned_null',
-      });
-    }
-    
-    // EXISTING: Find the bottleneck pool's capacity curve
-    const hopPoolIds = opp.hop_pool_ids || [];
-    const hopDexes = opp.hop_dexes || opp.dexes || [];
-    
-    // Check if we should skip calibration (when multi-hop mode has disableCalibration enabled)
-    const skipCalibration = config.multiHopOptimization?.enabled && 
-                            config.multiHopOptimization?.disableCalibration !== false;
-    
-    let minCapacity = Infinity;
-    let bottleneckCurve: ReturnType<typeof lookupCapacity> | null = null;
-    let bottleneckHopIdx = -1;
-    
-    for (let i = 0; i < hopPoolIds.length; i++) {
-      const poolId = hopPoolIds[i].replace(/[#-]rev$/, '');
-      const dex = hopDexes[i] || '';
-      const poolType = getPoolTypeFromDex(dex);
-      
-      // Get hot data from execution cache
-      const hot = executionCache.getHot(poolId) || {};
-      
-      // Look up capacity curve (instant if cached, or generates Tier 1 fallback)
-      // Skip calibration if multi-hop mode has disableCalibration enabled
-      const curve = lookupCapacity(poolId, poolType, hot, config, true, skipCalibration);
-      
-      // Track the bottleneck (lowest break-even capacity)
-      if (curve.breakEvenSizeUsd < minCapacity) {
-        minCapacity = curve.breakEvenSizeUsd;
-        bottleneckCurve = curve;
-        bottleneckHopIdx = i;
-      }
-    }
-    
-    // If we have no curve, fall back to simple heuristic
-    if (!bottleneckCurve) {
-      const bottleneckUsd = opp.est_capacity ?? opp.min_edge_liquidity ?? 1000;
-      let sizeUsd = Math.max(
-        config.minSizeUsd,
-        Math.min(config.maxSizeUsd, bottleneckUsd * 0.02 * config.aggressiveness)
-      );
-      sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
-      
-      // Apply randomness
-      const randomnessFactor = this.config.sizeRandomnessFactor ?? 0.1;
-      let randomMultiplier = 1.0;
-      if (randomnessFactor > 0) {
-        randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
-        sizeUsd = sizeUsd * randomMultiplier;
-        sizeUsd = Math.max(config.minSizeUsd, Math.min(config.maxSizeUsd, sizeUsd));
-        sizeUsd = Math.min(sizeUsd, walletBalanceUsd);
-      }
-      
-      // Store sizing info for tx dumps
-      (opp as any)._sizingInfo = {
-        method: 'bottleneck_heuristic',
-        multiHopResult: null,
-        bottleneckUsd,
-        rawSizeUsd: sizeUsd / randomMultiplier,
-        finalSizeUsd: sizeUsd,
-        randomMultiplier,
-        walletBalanceUsd,
-        configMinSizeUsd: config.minSizeUsd,
-        configMaxSizeUsd: config.maxSizeUsd,
-        aggressiveness: config.aggressiveness,
-        reason: 'no_capacity_curve',
-      };
-      
-      logger.debug('arb.executor.capacity_sizing.fallback', {
-        cat: 'arb',
-        path: opp.path.join('->'),
-        bottleneckUsd,
-        sizeUsd,
-        randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
-      });
-      
-      return sizeUsd;
-    }
-    
-    // Calculate optimal size from the bottleneck curve
-    const result = getOptimalSizeFromCurve(
-      bottleneckCurve,
-      profitBps,
-      config,
-      walletBalanceUsd
-    );
-    
-    // Extract calibration info if present
-    const calibrationInfo = bottleneckCurve.metadata?.calibration;
-    
-    // Apply randomness to avoid predictable patterns (MEV protection)
     const randomnessFactor = this.config.sizeRandomnessFactor ?? 0.1;
-    let finalSize = result.sizeUsd;
+    const sizingCfg = this.config.sizingConfig ?? DEFAULT_SIZING_CONFIG;
+
+    // Get wallet balance for capping (if needed)
+    let walletBalanceUsd = Infinity;
+    if (sizingCfg.respectWalletBalance && (!isFlashloanable || !flashloanEnabled)) {
+      walletBalanceUsd = await this.getWalletBalanceUsd(startToken);
+      if (walletBalanceUsd <= 0) {
+        logger.warn('arb.executor.sizing.no_balance', {
+          cat: 'arb',
+          path: opp.path.join('->'),
+          startToken: startToken.slice(0, 8) + '...',
+        });
+        return 0;
+      }
+    }
+
+    let rawSizeUsd = 0;
+    let method = 'unknown';
+
+    // Priority 1: Use sizeTokens from arb-rs (token-based sizing)
+    const sizeTokens = Number((opp as any)?.sizeTokens);
+    const startDecimals = Number((opp as any)?.startDecimals);
+    if (Number.isFinite(sizeTokens) && sizeTokens > 0) {
+      // Convert token amount to USD using start token price
+      const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
+      if (price > 0) {
+        // sizeTokens is in raw units (already decimal-adjusted by arb-rs)
+        // If startDecimals is provided, we may need to scale
+        const scaledTokens = Number.isFinite(startDecimals) && startDecimals > 0
+          ? sizeTokens / Math.pow(10, startDecimals)
+          : sizeTokens;
+        rawSizeUsd = scaledTokens * price;
+        method = 'arb_rs_tokens';
+
+        logger.debug('arb.executor.sizing.arb_rs_tokens', {
+          cat: 'arb',
+          path: opp.path.join('->'),
+          sizeTokens,
+          startDecimals,
+          scaledTokens,
+          price,
+          rawSizeUsd,
+        });
+      }
+    }
+
+    // Priority 2: Use sizeUsd from arb-rs (USD-based sizing)
+    if (rawSizeUsd === 0) {
+      const directSizeUsd = Number((opp as any)?.sizeUsd);
+      if (Number.isFinite(directSizeUsd) && directSizeUsd > 0) {
+        rawSizeUsd = directSizeUsd;
+        method = 'arb_rs_usd';
+      }
+    }
+
+    // Priority 3: Bottleneck heuristic fallback
+    if (rawSizeUsd === 0) {
+      const bottleneckUsd = opp.est_capacity ?? opp.min_edge_liquidity ?? 1000;
+      const aggressiveness = sizingCfg.aggressiveness ?? 0.7;
+      rawSizeUsd = bottleneckUsd * 0.02 * aggressiveness;
+      method = 'bottleneck_heuristic';
+
+      logger.debug('arb.executor.sizing.bottleneck', {
+        cat: 'arb',
+        path: opp.path.join('->'),
+        bottleneckUsd,
+        aggressiveness,
+        rawSizeUsd,
+      });
+    }
+
+    // Apply bounds
+    let finalSize = Math.max(sizingCfg.minSizeUsd, Math.min(sizingCfg.maxSizeUsd, rawSizeUsd));
+    finalSize = Math.min(finalSize, walletBalanceUsd);
+
+    // Apply randomness for MEV protection
     let randomMultiplier = 1.0;
     if (randomnessFactor > 0) {
       randomMultiplier = 1.0 + (Math.random() - 0.5) * 2 * randomnessFactor;
-      finalSize = result.sizeUsd * randomMultiplier;
-      
-      // Re-enforce bounds
-      finalSize = Math.max(config.minSizeUsd, finalSize);
-      finalSize = Math.min(config.maxSizeUsd, finalSize);
+      finalSize = finalSize * randomMultiplier;
+      // Re-enforce bounds after randomness
+      finalSize = Math.max(sizingCfg.minSizeUsd, Math.min(sizingCfg.maxSizeUsd, finalSize));
       finalSize = Math.min(finalSize, walletBalanceUsd);
     }
-    
-    // Store sizing info for tx dumps
+
+    // Store sizing info for debugging
     (opp as any)._sizingInfo = {
-      method: 'bottleneck_curve',
-      multiHopResult: null,
-      bottleneckCurve: {
-        hopIndex: bottleneckHopIdx,
-        poolType: bottleneckCurve.poolType,
-        breakEvenSizeUsd: bottleneckCurve.breakEvenSizeUsd,
-        confidence: bottleneckCurve.confidence,
-        activeLiquidityUsd: bottleneckCurve.activeLiquidityUsd,
-      },
-      rawSizeUsd: result.sizeUsd,
+      method,
+      rawSizeUsd,
       finalSizeUsd: finalSize,
-      expectedSlippageBps: result.expectedSlippageBps,
-      constrainedBy: result.constrainedBy,
-      randomMultiplier,
-      walletBalanceUsd,
-      configMinSizeUsd: config.minSizeUsd,
-      configMaxSizeUsd: config.maxSizeUsd,
-      profitBps,
-      aggressiveness: config.aggressiveness,
-      calibration: calibrationInfo ? {
-        applied: true,
-        scaleFactor: calibrationInfo.scaleFactor,
-        confidence: calibrationInfo.confidence,
-      } : null,
+      randomMultiplier: randomnessFactor > 0 ? randomMultiplier : undefined,
+      walletBalanceUsd: walletBalanceUsd === Infinity ? undefined : walletBalanceUsd,
+      sizeTokens: Number.isFinite(sizeTokens) ? sizeTokens : undefined,
+      startDecimals: Number.isFinite(startDecimals) ? startDecimals : undefined,
     };
-    
-    logger.debug('arb.executor.capacity_sizing.computed', {
+
+    logger.debug('arb.executor.sizing.final', {
       cat: 'arb',
       path: opp.path.join('->'),
-      bottleneckHop: bottleneckHopIdx,
-      bottleneckPoolType: bottleneckCurve.poolType,
-      breakEvenSizeUsd: bottleneckCurve.breakEvenSizeUsd.toFixed(2),
-      confidence: bottleneckCurve.confidence,
-      computedSizeUsd: result.sizeUsd.toFixed(2),
+      method,
+      rawSizeUsd: rawSizeUsd.toFixed(2),
       finalSizeUsd: finalSize.toFixed(2),
       randomMultiplier: randomnessFactor > 0 ? randomMultiplier.toFixed(3) : 'disabled',
-      expectedSlippageBps: result.expectedSlippageBps,
-      constrainedBy: result.constrainedBy ?? 'none',
-      profitBps,
-      aggressiveness: config.aggressiveness,
-      // Calibration info (if learning system has data for this pool)
-      calibrationApplied: !!calibrationInfo,
-      calibrationScaleFactor: calibrationInfo?.scaleFactor?.toFixed(3),
-      calibrationConfidence: calibrationInfo?.confidence?.toFixed(2),
     });
-    
+
     return finalSize;
   }
+
+  /**
+   * Get wallet balance in USD for a token
+   */
+  private async getWalletBalanceUsd(token: string): Promise<number> {
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const SOL_RESERVE_FOR_FEES = 0.007;
+
+    try {
+      if (!this.walletPublicKey) return 0;
+
+      const balances = await this.getCachedBalances();
+      if (!balances) return 0;
+
+      const rawBalance = token === SOL_MINT
+        ? balances.sol
+        : (balances.tokens[token] || 0);
+      const balance = token === SOL_MINT
+        ? Math.max(0, rawBalance - SOL_RESERVE_FOR_FEES)
+        : rawBalance;
+
+      if (balance <= 0) return 0;
+
+      const price = Number(getPriceByMint(token)?.usdc ?? 0);
+      return price > 0 ? balance * price : 0;
+    } catch (e) {
+      logger.warn('arb.executor.sizing.balance_error', {
+        cat: 'arb',
+        error: String((e as any)?.message || e),
+      });
+      return 0;
+    }
+  }
+
+  // Note: calculateCapacityBasedSize removed - arb-rs handles sizing via slippage simulation
 
   /**
    * Check if flashloan should be used for this opportunity.
@@ -3790,35 +3528,18 @@ export class ArbExecutor {
       });
       
       const simAnalysis = parseSimulationLogs(simResult.logs, simResult.err);
-      
-      // Check if calibration feedback should be skipped (multi-hop mode with disableCalibration)
-      const skipCalibrationFeedback = this.config.sizingConfig?.multiHopOptimization?.enabled &&
-                                       this.config.sizingConfig?.multiHopOptimization?.disableCalibration !== false;
-      
+
+      // Note: Capacity feedback recording removed - arb-rs handles sizing
       if (!simResult.err) {
-        // Success! Larger size works - record feedback to update capacity curves
-        try {
-          if (!skipCalibrationFeedback) {
-            const simReport = buildSimulationReport(opp, testPlan, simAnalysis);
-            recordSlippageFeedback(simReport, 'success', testSizeUsd);
-          }
-          
-          logger.info('arb.executor.upward_retry.success', {
-            cat: 'arb',
-            traceId,
-            path: opp.path.join('->'),
-            testSizeUsd,
-            previousSizeUsd: successfulSizeUsd,
-            improvement: `+${((testSizeUsd / successfulSizeUsd - 1) * 100).toFixed(0)}%`,
-          });
-        } catch (feedbackErr) {
-          logger.debug('arb.executor.upward_retry.feedback_error', {
-            cat: 'arb',
-            error: String(feedbackErr),
-          });
-        }
+        logger.info('arb.executor.upward_retry.success', {
+          cat: 'arb',
+          traceId,
+          path: opp.path.join('->'),
+          testSizeUsd,
+          previousSizeUsd: successfulSizeUsd,
+          improvement: `+${((testSizeUsd / successfulSizeUsd - 1) * 100).toFixed(0)}%`,
+        });
       } else {
-        // Simulation failed - current calibration is correct
         logger.debug('arb.executor.upward_retry.failed', {
           cat: 'arb',
           traceId,
@@ -3827,14 +3548,6 @@ export class ArbExecutor {
           errorCode: simAnalysis.errorCode,
           profitCheckFailed: simAnalysis.profitCheckFailed,
         });
-        
-        // If it was a 6007 (profit check failed), still record as useful feedback
-        if (simAnalysis.profitCheckFailed && !skipCalibrationFeedback) {
-          try {
-            const simReport = buildSimulationReport(opp, testPlan, simAnalysis);
-            recordSlippageFeedback(simReport, '6007', testSizeUsd);
-          } catch {}
-        }
       }
     } catch (e: any) {
       logger.debug('arb.executor.upward_retry.error', {

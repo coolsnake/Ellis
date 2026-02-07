@@ -1,7 +1,6 @@
 import type { GraphEdge } from './graph.types.js';
 import type { AmmPool, ClmmPool, CpmmPool } from './pools/types.js';
 import { logger } from '../utils/logger.js';
-import { getCapacityCurve } from '../execution/capacity/curveCache.js';
 import { getRangeData } from './pools/rangeCache.js';
 import type { ClmmRangeData, DlmmRangeData } from './pools/rangeCache.js';
 import { simulateClmmSwap, simulateDlmmSwap } from './pools/swapSimulator.js';
@@ -403,28 +402,7 @@ function buildSlippageCurveFromSimulation(
   return undefined;
 }
 
-function buildSlippageCurveUsd(poolId: string): GraphEdge['slippage_curve'] | undefined {
-  try {
-    const curve = getCapacityCurve(poolId);
-    if (!curve || !curve.curve) return undefined;
-    const entries = Array.from(curve.curve.entries())
-      .filter(([size, mult]) => Number.isFinite(size) && size > 0 && Number.isFinite(mult))
-      .sort((a, b) => a[0] - b[0]);
-    if (entries.length === 0) return undefined;
-    const sizes = entries.map(([size]) => size);
-    const mults = entries.map(([, mult]) => mult);
-    return {
-      unit: 'usd',
-      sizes,
-      mults,
-      computed_at: curve.computedAt,
-      confidence: curve.confidence,
-      source: 'capacity_curve',
-    };
-  } catch {
-    return undefined;
-  }
-}
+// Note: buildSlippageCurveUsd removed - arb-rs handles sizing via slippage simulation
 
 export interface PoolValidationConfig {
   feeMin?: number;
@@ -711,11 +689,10 @@ export function edgesFromPoolIncremental(
 
   const feeMultiplier = 1 - Math.max(0, fee) / 10000;
   const spotRate = fwd && fwd > 0 ? (1 / fwd) * feeMultiplier : 0;
-  // Priority chain: tick/bin simulation (high confidence) > reserve-based (low) > USD capacity
+  // Priority chain: tick/bin simulation (high confidence) > reserve-based (low)
   const slippageCurve =
     buildSlippageCurveFromSimulation(kind, id, fee, spotRate, wasSwapped, p) ||
-    buildSlippageCurveSource(kind, reserveA, reserveB, fee, spotRate, (p as any)?.updated_ms, curveSource || 'native_reserve') ||
-    buildSlippageCurveUsd(id);
+    buildSlippageCurveSource(kind, reserveA, reserveB, fee, spotRate, (p as any)?.updated_ms, curveSource || 'native_reserve');
   
   // Validate pool went through pipeline
   const pipelineProcessed = (p as any)?._pipelineProcessed === true;
