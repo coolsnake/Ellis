@@ -708,6 +708,34 @@ export function edgesFromPoolIncremental(
     } catch {}
   }
 
+  // Capacity in source (edge input) token raw atoms for arb-rs sizing (no USD). Fraction of source reserve.
+  // Edge source = canonical A; when wasSwapped, canonical A = native B so use native_reserve_b_raw.
+  const CAPACITY_FRACTION = 0.35;
+  let capacity_input_raw: string | undefined;
+  try {
+    const sourceReserveRaw = wasSwapped
+      ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)
+      : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw);
+    const decSource = wasSwapped
+      ? Number((p as any)?.native_decimals_b ?? (p as any)?.decimals_b ?? 9)
+      : Number((p as any)?.native_decimals_a ?? (p as any)?.decimals_a ?? 9);
+    if (sourceReserveRaw != null && String(sourceReserveRaw).trim() !== '') {
+      const big = BigInt(String(sourceReserveRaw));
+      if (big > 0n) {
+        const cap = (big * BigInt(Math.round(CAPACITY_FRACTION * 100)) / 100n);
+        if (cap > 0n) capacity_input_raw = cap.toString();
+      }
+    }
+    if (!capacity_input_raw && reserveA > 0 && Number.isFinite(decSource) && decSource >= 0 && decSource <= 18) {
+      const scale = 10 ** Math.max(0, decSource);
+      const capHuman = reserveA * CAPACITY_FRACTION;
+      const capRaw = Math.floor(capHuman * scale);
+      if (capRaw > 0) capacity_input_raw = String(capRaw);
+    }
+  } catch {
+    // ignore
+  }
+
   const forward: GraphEdge = {
     id: id || `${a}->${b}-${dex}`,
     source: a,
@@ -747,6 +775,7 @@ export function edgesFromPoolIncremental(
     pool_kind: kind as any,
     direction: 'canonical',
     pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
+    capacity_input_raw,
     was_swapped: (p as any)?.was_swapped, // Preserve swap state
     slippage_curve: slippageCurve,
   };

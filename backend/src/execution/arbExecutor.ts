@@ -20,7 +20,14 @@ import {
   hasQuarantinedPool,
 } from './poolFailureTracker.js';
 import { analyzeTransactionFailure } from './poolFailureAnalyzer.js';
-import { parseSimulationLogs, buildSimulationReport, formatSimReportForLog } from './simLogParser.js';
+import {
+  parseSimulationLogs,
+  buildSimulationReport,
+  formatSimReportForLog,
+  extractErrorCodeFromSimError,
+  RAYDIUM_ERROR_INVALID_FIRST_TICK_ARRAY,
+  RAYDIUM_ERROR_NOT_ENOUGH_TICK_ARRAYS,
+} from './simLogParser.js';
 // PERF: Static imports to avoid dynamic import overhead in hot paths
 import { buildTransactionSummary } from '../server/arb.build.worker.compute.js';
 import { writeTxFullDump } from '../utils/txTrace.js';
@@ -1105,8 +1112,20 @@ export class ArbExecutor {
         
         // Resolve execution plan - pass traceId for complete log correlation
         // Pass minProfitBps to enforce profitability at the final hop for arb cycles
-        
-        // Check if we need to use raw size instead of USD size (when price data unavailable)
+
+        // Prefer raw size from arb-rs when present (no USD conversion; sizing in token units)
+        const sizeTokensRaw = (opp as any)?.sizeTokensRaw;
+        const rawFromArb = typeof sizeTokensRaw === 'string' && sizeTokensRaw.trim() !== ''
+          ? (() => {
+              try {
+                const n = BigInt(sizeTokensRaw.trim());
+                return n > 0n ? n : null;
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+
         let resolverInput: any = {
           path: executionPath,
           hopPoolIds: executionPoolIds,  // Use substituted pools if any
@@ -1117,9 +1136,20 @@ export class ArbExecutor {
           minProfitBps: this.config.minProfitBps || 0,  // Enforce profitability for arb cycles
           hopRates: opp.hop_rates,  // Pass rates for quote sanity checking
         };
-        
+
+        if (rawFromArb !== null) {
+          resolverInput.size = rawFromArb;
+          delete resolverInput.sizeUsd;
+          logger.debug('arb.executor.using_size_tokens_raw', {
+            cat: 'arb',
+            traceId,
+            path: executionPath.join('->'),
+            sizeTokensRaw: rawFromArb.toString(),
+          });
+        }
+
         // If we have raw balance fallback (no price data), convert to raw atoms and pass as `size`
-        if ((opp as any)._useRawSize && (opp as any)._rawBalanceFallback) {
+        if (rawFromArb === null && (opp as any)._useRawSize && (opp as any)._rawBalanceFallback) {
           const rawBalance = (opp as any)._rawBalanceFallback as number;
           const startMint = executionPath[0];
           
@@ -1498,6 +1528,25 @@ export class ArbExecutor {
         }
         
         if (simResult.err) {
+          // Invalidate tick arrays for the failed pool so next execution will requote (6028/6027)
+          const simErrCode = simAnalysis?.errorCode ?? extractErrorCodeFromSimError(simResult.err);
+          if (simErrCode === RAYDIUM_ERROR_INVALID_FIRST_TICK_ARRAY || simErrCode === RAYDIUM_ERROR_NOT_ENOUGH_TICK_ARRAYS) {
+            const failedHopIndex = (simAnalysis?.lastSuccessfulStep ?? -1) + 1;
+            if (failedHopIndex >= 0 && failedHopIndex < plan.hops.length) {
+              const poolId = (plan.hops[failedHopIndex] as any).poolId?.replace?.(/[#-]rev$/, '') ?? '';
+              if (poolId) {
+                executionCache.invalidateTickArrays(poolId);
+                logger.debug('arb.executor.tick_arrays_invalidated', {
+                  cat: 'arb',
+                  traceId,
+                  poolId: poolId.slice(0, 8),
+                  errorCode: simErrCode,
+                  failedHopIndex,
+                });
+              }
+            }
+          }
+
           // Simulation failed - log detailed error analysis
           const simErrStr = serializeSimError(simResult.err);
           logger.error('arb.executor.simulate.failed', {
@@ -2276,6 +2325,25 @@ export class ArbExecutor {
           
           // Mark that we already emitted enriched data (prevent catch block from overwriting)
           enrichedFailureEmitted = true;
+
+          // Invalidate tick arrays for the failed pool so retry will requote (6028/6027)
+          const errCode = lastSimAnalysis?.errorCode ?? extractErrorCodeFromSimError(lastSimResult?.err);
+          if (errCode === RAYDIUM_ERROR_INVALID_FIRST_TICK_ARRAY || errCode === RAYDIUM_ERROR_NOT_ENOUGH_TICK_ARRAYS) {
+            const failedHopIndex = (lastSimAnalysis?.lastSuccessfulStep ?? -1) + 1;
+            if (failedHopIndex >= 0 && failedHopIndex < currentPlan.hops.length) {
+              const poolId = (currentPlan.hops[failedHopIndex] as any).poolId?.replace?.(/[#-]rev$/, '') ?? '';
+              if (poolId) {
+                executionCache.invalidateTickArrays(poolId);
+                logger.debug('arb.executor.tick_arrays_invalidated', {
+                  cat: 'arb',
+                  traceId,
+                  poolId: poolId.slice(0, 8),
+                  errorCode: errCode,
+                  failedHopIndex,
+                });
+              }
+            }
+          }
 
           throw new Error(`Simulation failed after ${attempt} attempt(s): ${lastSimErrStr}`);
         }

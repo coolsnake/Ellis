@@ -31,6 +31,8 @@ export type GraphEdge = {
   pool_kind?: 'amm' | 'clmm' | 'dlmm' | 'cpmm'; // explicit pool kind
   direction?: 'canonical'; // edges are stored in canonical orientation only
   pool_liquidity_raw?: number; // raw pool liquidity metric when provided by the source (e.g., CLMM liquidity)
+  /** Max reasonable input in source (edge input) token raw atoms; used for sizing/cap in arb-rs (no USD). */
+  capacity_input_raw?: string;
   was_swapped?: boolean; // Track if pool was swapped during canonicalization
   slippage_curve?: {
     unit: 'usd' | 'source';

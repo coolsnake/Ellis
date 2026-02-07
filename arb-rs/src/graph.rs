@@ -31,6 +31,9 @@ pub struct EdgeData {
     pub native_reserve_a_raw: Option<String>,
     #[allow(dead_code)]
     pub native_reserve_b_raw: Option<String>,
+    /// Max input in source (edge input) token raw atoms; for sizing cap (no USD).
+    #[allow(dead_code)]
+    pub capacity_input_raw: Option<String>,
     /// Pool type: "amm", "cpmm", "clmm", or "dlmm" - used for slippage simulation
     #[allow(dead_code)]
     pub pool_kind: Option<String>,

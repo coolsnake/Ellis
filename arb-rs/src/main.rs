@@ -578,6 +578,7 @@ async fn main() -> anyhow::Result<()> {
                             Option<String>,
                             Option<String>,
                             Option<String>,
+                            Option<String>, // capacity_input_raw
                             Option<String>, // pool_kind
                             Option<slippage::SlippageCurve>,
                             Option<f64>, // source_price_usd
@@ -771,6 +772,7 @@ async fn main() -> anyhow::Result<()> {
                                 e.native_account_b.clone(),
                                 e.native_reserve_a_raw.clone(),
                                 e.native_reserve_b_raw.clone(),
+                                e.capacity_input_raw.clone(),
                                 e.pool_kind.clone(),
                                 e.slippage_curve.clone(),
                                 e.source_price_usd,
@@ -798,6 +800,7 @@ async fn main() -> anyhow::Result<()> {
                                 native_account_b,
                                 native_reserve_a_raw,
                                 native_reserve_b_raw,
+                                capacity_input_raw,
                                 pool_kind,
                                 slippage_curve,
                                 source_price_usd,
@@ -822,6 +825,7 @@ async fn main() -> anyhow::Result<()> {
                                     native_account_b,
                                     native_reserve_a_raw,
                                     native_reserve_b_raw,
+                                    capacity_input_raw,
                                     pool_kind,
                                     slippage_curve,
                                     source_price_usd,
@@ -1363,6 +1367,44 @@ async fn main() -> anyhow::Result<()> {
                             hop_liq_disp.push(edge.liquidity_display);
                         }
 
+                        // Min capacity in start-token raw (no USD) for sizing cap
+                        let start_dec = start_decimals.unwrap_or(9) as u32;
+                        let mut min_capacity_start_raw: Option<u128> = None;
+                        let mut cum_rate = 1.0f64;
+                        for edge in selection.edges.iter() {
+                            if let Some(ref s) = edge.capacity_input_raw {
+                                if let Ok(cap_raw) = s.parse::<u128>() {
+                                    if cap_raw > 0 {
+                                        let cap_start_raw = if cum_rate <= 0.0 || !cum_rate.is_finite() {
+                                            None
+                                        } else if (cum_rate - 1.0).abs() < 1e-12 {
+                                            // First edge: input = start token
+                                            Some(cap_raw)
+                                        } else {
+                                            let dec_in = edge.native_decimals_a.unwrap_or(9);
+                                            let cap_human =
+                                                (cap_raw as f64) / 10f64.powi(dec_in.max(0) as i32);
+                                            let start_equiv_human = cap_human / cum_rate;
+                                            let scale = 10u128.pow(start_dec);
+                                            let start_equiv_raw =
+                                                (start_equiv_human * (scale as f64)) as u128;
+                                            if start_equiv_raw > 0 {
+                                                Some(start_equiv_raw)
+                                            } else {
+                                                None
+                                            }
+                                        };
+                                        if let Some(cap) = cap_start_raw {
+                                            min_capacity_start_raw = Some(min_capacity_start_raw
+                                                .map(|m| m.min(cap))
+                                                .unwrap_or(cap));
+                                        }
+                                    }
+                                }
+                            }
+                            cum_rate *= edge.rate_effective;
+                        }
+
                         let mut size_candidates_tokens: Vec<f64> = Vec::new();
                         if s.config.slippage_simulation_enable {
                             if let Some(list) = &s.config.size_sweep_tokens {
@@ -1534,17 +1576,31 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
 
-                        // Safety cap: never trade more than est_capacity (min edge liquidity in USD)
-                        if min_edge_liquidity.is_finite() && min_edge_liquidity > 0.0 {
+                        // Safety cap: prefer raw capacity (no USD); fallback to USD cap when no raw
+                        if let Some(cap_raw) = min_capacity_start_raw {
+                            if cap_raw > 0 {
+                                let scale = 10f64.powi(start_decimals.unwrap_or(9) as i32);
+                                let chosen_raw_f = (chosen_size_tokens * scale).round();
+                                let chosen_raw = chosen_raw_f as u128;
+                                if chosen_raw > cap_raw {
+                                    chosen_size_tokens = (cap_raw as f64) / scale;
+                                    let (capped_profit, capped_out, capped_hops) =
+                                        simulate_size(chosen_size_tokens, &selection.edges);
+                                    simulated_profit_bps = Some(capped_profit);
+                                    cur_out = capped_out;
+                                    hop_outs = capped_hops;
+                                }
+                            }
+                        } else if min_edge_liquidity.is_finite() && min_edge_liquidity > 0.0 {
                             let cap_tokens = if let Some(sp) = start_price_usd {
                                 if sp > 0.0 { min_edge_liquidity / sp } else { f64::INFINITY }
                             } else {
-                                // min_edge_liquidity is USD; we cannot convert to tokens without price — skip cap
                                 f64::INFINITY
                             };
                             if chosen_size_tokens > cap_tokens && cap_tokens > 0.0 {
                                 chosen_size_tokens = cap_tokens;
-                                let (capped_profit, capped_out, capped_hops) = simulate_size(cap_tokens, &selection.edges);
+                                let (capped_profit, capped_out, capped_hops) =
+                                    simulate_size(cap_tokens, &selection.edges);
                                 simulated_profit_bps = Some(capped_profit);
                                 cur_out = capped_out;
                                 hop_outs = capped_hops;
@@ -1554,6 +1610,19 @@ async fn main() -> anyhow::Result<()> {
                         if chosen_size_tokens > 0.0 {
                             chosen_size_usd = start_price_usd.map(|sp| chosen_size_tokens * sp);
                         }
+
+                        // Raw size in start token atoms (for backend execution without USD)
+                        let chosen_size_raw: Option<String> = if chosen_size_tokens > 0.0 {
+                            let scale = 10f64.powi(start_decimals.unwrap_or(9) as i32);
+                            let raw = (chosen_size_tokens * scale).round() as u128;
+                            if raw > 0 {
+                                Some(raw.to_string())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
 
                         if hop_outs.is_empty() {
                             // Fallback: compute outputs at default size
@@ -1887,6 +1956,7 @@ async fn main() -> anyhow::Result<()> {
                                     est_profit_usd: est_profit_usd_val,
                                     size_usd: size_usd_opt,
                                     size_tokens: if chosen_size_tokens > 0.0 { Some(chosen_size_tokens) } else { None },
+                                    size_tokens_raw: chosen_size_raw.clone(),
                                     start_decimals,
                                     dexes: dexes.clone(),
                                     hop_dexes: Some(hop_dexes.clone()),
@@ -1983,6 +2053,7 @@ async fn main() -> anyhow::Result<()> {
                             est_profit_usd: est_profit_usd_val,
                             size_usd: size_usd_opt,
                             size_tokens: if chosen_size_tokens > 0.0 { Some(chosen_size_tokens) } else { None },
+                            size_tokens_raw: chosen_size_raw,
                             start_decimals,
                             dexes,
                             hop_dexes: Some(hop_dexes),
@@ -2336,6 +2407,7 @@ async fn main() -> anyhow::Result<()> {
                                 est_profit_usd: 1.0,
                                 size_usd: None,
                                 size_tokens: None,
+                                size_tokens_raw: None,
                                 start_decimals: None,
                                 dexes,
                                 hop_dexes: Some(hop_dexes),
@@ -2714,6 +2786,7 @@ async fn main() -> anyhow::Result<()> {
                                     est_profit_usd: 1.0,
                                     size_usd: None,
                                     size_tokens: None,
+                                    size_tokens_raw: None,
                                     start_decimals: None,
                                     dexes,
                                     hop_dexes: Some(hop_dexes),
@@ -3026,6 +3099,7 @@ async fn main() -> anyhow::Result<()> {
                                             est_profit_usd: 1.0,
                                             size_usd: None,
                                             size_tokens: None,
+                                            size_tokens_raw: None,
                                             start_decimals: None,
                                             dexes,
                                             hop_dexes: Some(hop_dexes),
@@ -3081,6 +3155,7 @@ async fn main() -> anyhow::Result<()> {
                                         est_profit_usd: 1.0,
                                         size_usd: None,
                                         size_tokens: None,
+                                        size_tokens_raw: None,
                                         start_decimals: None,
                                         dexes,
                                         hop_dexes: Some(hop_dexes),
@@ -4042,6 +4117,7 @@ struct StartReqEdge {
     native_account_b: Option<String>,
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
+    capacity_input_raw: Option<String>,
     pool_kind: Option<String>,
     slippage_curve: Option<slippage::SlippageCurve>,
     source_price_usd: Option<f64>,
@@ -4084,6 +4160,7 @@ struct GraphDiffEdge {
     native_account_b: Option<String>,
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
+    capacity_input_raw: Option<String>,
     pool_kind: Option<String>,
     slippage_curve: Option<slippage::SlippageCurve>,
     source_price_usd: Option<f64>,
@@ -4154,6 +4231,7 @@ fn insert_bidirectional_edges(
     native_account_b: Option<String>,
     native_reserve_a_raw: Option<String>,
     native_reserve_b_raw: Option<String>,
+    capacity_input_raw: Option<String>,
     pool_kind: Option<String>,
     slippage_curve: Option<slippage::SlippageCurve>,
     source_price_usd: Option<f64>,
@@ -4200,6 +4278,7 @@ fn insert_bidirectional_edges(
             native_account_b,
             native_reserve_a_raw,
             native_reserve_b_raw,
+            capacity_input_raw: capacity_input_raw.clone(),
             pool_kind,
             slippage_curve,
             source_price_usd,
@@ -4236,6 +4315,7 @@ fn insert_bidirectional_edges(
             native_account_b: native_account_b_rev,
             native_reserve_a_raw: native_reserve_a_rev,
             native_reserve_b_raw: native_reserve_b_rev,
+            capacity_input_raw: None, // reverse edge: input is other token, no capacity from backend
             pool_kind: pool_kind_rev,
             slippage_curve: slippage_curve_rev,
             source_price_usd: source_price_usd_rev,
@@ -4385,6 +4465,7 @@ async fn handle_graph_snapshot(
             e.native_account_b.clone(),
             e.native_reserve_a_raw.clone(),
             e.native_reserve_b_raw.clone(),
+            e.capacity_input_raw.clone(),
             e.pool_kind.clone(),
             e.slippage_curve.clone(),
             e.source_price_usd,
@@ -4505,6 +4586,7 @@ async fn arb_graph_update(
                 e.native_account_b.clone(),
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
+                e.capacity_input_raw.clone(),
                 e.pool_kind.clone(),
                 e.slippage_curve.clone(),
                 e.source_price_usd,
@@ -4546,6 +4628,7 @@ async fn arb_graph_update(
                 e.native_account_b.clone(),
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
+                e.capacity_input_raw.clone(),
                 e.pool_kind.clone(),
                 e.slippage_curve.clone(),
                 e.source_price_usd,
@@ -4639,6 +4722,7 @@ async fn arb_start(
                 e.native_account_b.clone(),
                 e.native_reserve_a_raw.clone(),
                 e.native_reserve_b_raw.clone(),
+                e.capacity_input_raw.clone(),
                 e.pool_kind.clone(),
                 e.slippage_curve.clone(),
                 e.source_price_usd,
@@ -5443,6 +5527,7 @@ mod tests {
             est_profit_usd: 0.0,
             size_usd: None,
             size_tokens: None,
+            size_tokens_raw: None,
             start_decimals: None,
             dexes: vec!["X".into(), "Y".into(), "Z".into()],
             hop_dexes: None,
@@ -6037,6 +6122,7 @@ mod e2e_tests {
                     e.native_account_b.clone(),
                     e.native_reserve_a_raw.clone(),
                     e.native_reserve_b_raw.clone(),
+                    e.capacity_input_raw.clone(),
                     e.pool_kind.clone(),
                     e.slippage_curve.clone(),
                     e.source_price_usd,
@@ -6200,6 +6286,7 @@ mod e2e_tests {
                     e.native_account_b.clone(),
                     e.native_reserve_a_raw.clone(),
                     e.native_reserve_b_raw.clone(),
+                    e.capacity_input_raw.clone(),
                     e.pool_kind.clone(),
                     e.slippage_curve.clone(),
                     e.source_price_usd,

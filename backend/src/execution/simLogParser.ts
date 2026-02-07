@@ -37,6 +37,11 @@ export interface SimulationAnalysis {
   finalBalance?: bigint;
 }
 
+/** Raydium CLMM: first tick array does not contain current tick (tick drifted) */
+export const RAYDIUM_ERROR_INVALID_FIRST_TICK_ARRAY = 6028;
+/** Raydium CLMM: not enough tick array accounts passed (swap crosses more arrays) */
+export const RAYDIUM_ERROR_NOT_ENOUGH_TICK_ARRAYS = 6027;
+
 /**
  * Extract error code from simResult.err (handles InstructionError format)
  */

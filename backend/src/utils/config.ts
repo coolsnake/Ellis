@@ -193,6 +193,8 @@ export const CONFIG = {
     // Array cache TTLs (0 = disable TTL invalidation)
     tickArrayTtlMs: Number(process.env.TICK_ARRAY_TTL_MS || 5 * 60 * 1000),
     binArrayTtlMs: Number(process.env.BIN_ARRAY_TTL_MS || 5 * 60 * 1000),
+    // If true, re-fetch pool tick at tx-build time for Raydium CLMM cache hits to detect tick drift (avoids 6028). Default false to avoid hot-path RPC latency.
+    tickArrayStaleCheckRpc: process.env.TICK_ARRAY_STALE_CHECK_RPC === 'true',
     
     // Graph diff filter knobs
     graphDiffFilterEnable: (process.env.GRAPH_DIFF_FILTER_ENABLE || 'true') !== 'false',

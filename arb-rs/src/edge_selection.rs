@@ -89,6 +89,8 @@ pub struct SelectedEdge {
     pub slippage_curve: Option<crate::slippage::SlippageCurve>,
     pub source_price_usd: Option<f64>,
     pub target_price_usd: Option<f64>,
+    /// Max input in source (edge input) token raw atoms; for sizing cap (no USD).
+    pub capacity_input_raw: Option<String>,
 }
 
 impl From<&EdgeData> for SelectedEdge {
@@ -108,6 +110,7 @@ impl From<&EdgeData> for SelectedEdge {
             slippage_curve: data.slippage_curve.clone(),
             source_price_usd: data.source_price_usd,
             target_price_usd: data.target_price_usd,
+            capacity_input_raw: data.capacity_input_raw.clone(),
         }
     }
 }

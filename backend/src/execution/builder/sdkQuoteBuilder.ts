@@ -300,6 +300,29 @@ function tryGetCachedRaydiumClmmAccounts(poolId: string): SdkProvidedAccounts | 
 }
 
 /**
+ * Fetch current tick and tick spacing from a Raydium CLMM pool account (lightweight RPC).
+ * Used to detect tick drift so we can invalidate cached tick arrays before building the tx.
+ * Raydium CLMM layout: tickSpacing at offset 235 (uint16 LE), tickCurrent at 269 (int32 LE).
+ */
+async function fetchRaydiumPoolTickAndSpacing(
+  connection: Connection,
+  poolId: string
+): Promise<{ tickCurrent: number; tickSpacing: number } | null> {
+  try {
+    const poolPk = new PublicKey(poolId.replace(/[#-]rev$/, ''));
+    const info = await connection.getAccountInfo(poolPk);
+    if (!info?.data || info.data.length < 273) return null;
+    const view = new DataView(info.data.buffer, info.data.byteOffset, info.data.byteLength);
+    const tickSpacing = view.getUint16(235, true);
+    const tickCurrent = view.getInt32(269, true);
+    if (tickSpacing <= 0 || tickSpacing > 1000) return null;
+    return { tickCurrent, tickSpacing };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Store Raydium CLMM SDK accounts to cache
  */
 function cacheRaydiumClmmAccounts(poolId: string, accounts: SdkProvidedAccounts): void {
@@ -3356,6 +3379,47 @@ export async function getSdkQuoteAccountsForPlan(
   // FAST PATH: Try cache-only first for ALL hops
   // If all hops have full cache, we skip SDK calls entirely
   const cacheOnlyResults: (SdkQuoteResult | null)[] = hops.map(hop => getCacheOnlyAccounts(hop));
+  
+  // Optional read-time stale check for Raydium CLMM (off by default to avoid hot-path RPC latency).
+  // When enabled: if current tick has moved to a different tick array, invalidate cache so we requote (avoids 6028).
+  const staleCheckRpc = (CONFIG.system as any)?.tickArrayStaleCheckRpc === true;
+  if (staleCheckRpc) {
+    const connection = getConnection();
+    await Promise.all(
+      hops.map(async (hop, i) => {
+        const dex = hop.dex?.toLowerCase();
+        const variant = (hop.variant ?? '').toLowerCase();
+        if (dex !== 'raydium' || (variant !== 'clmm' && variant !== 'clmm_legacy')) return;
+        if (cacheOnlyResults[i] === null) return;
+        const cleanPoolId = hop.poolId.replace(/[#-]rev$/, '');
+        const hot = executionCache.getHot(cleanPoolId);
+        const cachedTick = hot?.currentTickIndex;
+        const tickSpacing = hot?.tickSpacing ?? executionCache.getStatic(cleanPoolId)?.tick_spacing;
+        if (cachedTick === undefined || !tickSpacing || tickSpacing <= 0) return;
+        const fresh = await fetchRaydiumPoolTickAndSpacing(connection, cleanPoolId);
+        if (!fresh) return;
+        const ticksInArray = RAYDIUM_TICK_ARRAY_SIZE * tickSpacing;
+        const cachedArrayIndex = Math.floor(cachedTick / ticksInArray);
+        const freshArrayIndex = Math.floor(fresh.tickCurrent / ticksInArray);
+        if (cachedArrayIndex !== freshArrayIndex) {
+          executionCache.invalidateTickArrays(cleanPoolId);
+          (cacheOnlyResults as (SdkQuoteResult | null)[])[i] = null;
+          logger.debug('sdkQuoteBuilder.raydium.tick_array_stale', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              poolId: cleanPoolId.slice(0, 8),
+              cachedTick,
+              freshTick: fresh.tickCurrent,
+              cachedArrayIndex,
+              freshArrayIndex,
+            },
+          });
+        }
+      })
+    );
+  }
+
   const allCached = cacheOnlyResults.every(r => r !== null);
   
   if (allCached) {

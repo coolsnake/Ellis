@@ -12,6 +12,9 @@ pub struct Opportunity {
     /// Optimal trade size in human (display) source token units, e.g. 111.51 SOL
     #[serde(skip_serializing_if = "Option::is_none", rename = "sizeTokens")]
     pub size_tokens: Option<f64>,
+    /// Optimal trade size in start token raw (atomic) units; use for execution (no USD).
+    #[serde(skip_serializing_if = "Option::is_none", rename = "sizeTokensRaw")]
+    pub size_tokens_raw: Option<String>,
     /// Decimals for the start token (for proper conversion)
     #[serde(skip_serializing_if = "Option::is_none", rename = "startDecimals")]
     pub start_decimals: Option<i64>,
