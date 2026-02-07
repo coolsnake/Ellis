@@ -104,11 +104,11 @@ function getSimWallet(): { publicKey: PublicKey } {
 
   // ── Step 0: Populate pool caches ────────────────────────────────────────
   it('Step 0: populates pool + execution caches from GraphQL', async () => {
-    // Limit fetch size
+    // Limit fetch size and reduce inter-DEX delays
     if (cfg.orca)         { cfg.orca.graphqlPageSize = 10; cfg.orca.graphqlMaxPages = 1; }
     if (cfg.raydium)      { cfg.raydium.graphqlPageSize = 10; cfg.raydium.graphqlMaxPages = 1; }
-    if (cfg.raydiumClmm)  { cfg.raydiumClmm.graphqlPageSize = 10; cfg.raydiumClmm.graphqlMaxPages = 1; }
-    if (cfg.raydiumCpmm)  { cfg.raydiumCpmm.graphqlPageSize = 10; cfg.raydiumCpmm.graphqlMaxPages = 1; }
+    if (cfg.raydiumClmm)  { cfg.raydiumClmm.graphqlPageSize = 10; cfg.raydiumClmm.graphqlMaxPages = 1; cfg.raydiumClmm.initialDelayMultiplier = 3; }
+    if (cfg.raydiumCpmm)  { cfg.raydiumCpmm.graphqlPageSize = 10; cfg.raydiumCpmm.graphqlMaxPages = 1; cfg.raydiumCpmm.initialDelayMultiplier = 3; }
     if (cfg.meteora)      { cfg.meteora.graphqlPageSize = 10; cfg.meteora.graphqlMaxPages = 1; }
     if (cfg.pumpswap)     { cfg.pumpswap.graphqlPageSize = 10; cfg.pumpswap.graphqlMaxPages = 1; }
 
@@ -141,7 +141,7 @@ function getSimWallet(): { publicKey: PublicKey } {
       }
     }
     console.log('[Step 0] Pools by dex:variant:', Object.keys(poolsByDex).map(k => `${k}(${poolsByDex[k].length})`).join(', '));
-  }, 120_000);
+  }, 180_000);
 
   // ── Helper: run quote + simulate for a single pool ──────────────────────
   async function quoteAndSimulate(
