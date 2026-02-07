@@ -9,7 +9,7 @@ pub struct Opportunity {
     pub est_profit_usd: f64,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sizeUsd")]
     pub size_usd: Option<f64>,
-    /// Optimal trade size in source token units (raw, before decimal scaling)
+    /// Optimal trade size in human (display) source token units, e.g. 111.51 SOL
     #[serde(skip_serializing_if = "Option::is_none", rename = "sizeTokens")]
     pub size_tokens: Option<f64>,
     /// Decimals for the start token (for proper conversion)

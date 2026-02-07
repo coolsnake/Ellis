@@ -119,6 +119,15 @@ export function createSystemRouter(_io: SocketIOServer): Router {
           }
         } catch {}
         CONFIG.system = nextSystem;
+        // Persist Jupiter API key to runtime-config.json so it survives restarts
+        if (system?.jupiterTopTokens && Object.prototype.hasOwnProperty.call(system.jupiterTopTokens, 'apiKey')) {
+          try {
+            const { saveRuntimeConfig } = await import('../runtimeConfigStore.js');
+            await saveRuntimeConfig({ jupiterApiKey: String(system.jupiterTopTokens.apiKey || '') });
+          } catch (e: any) {
+            logger.warn('server: failed to persist runtime config', { error: String(e?.message || e), cat: 'server' });
+          }
+        }
       }
       if (fees) CONFIG.fees = { ...CONFIG.fees, ...fees };
       if (raydium) CONFIG.raydium = { ...CONFIG.raydium, ...raydium } as any;

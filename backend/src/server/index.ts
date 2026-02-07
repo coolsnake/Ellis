@@ -620,6 +620,13 @@ server.listen(CONFIG.port, () => {
         } catch (err: any) {
           logger.warn('server: failed to initialize RPC limiter from config', { error: String(err?.message || err), cat: 'server' });
         }
+        // Load persisted runtime config (Jupiter API key, etc.) into CONFIG
+        try {
+          const { applyRuntimeConfigToConfig } = await import('./runtimeConfigStore.js');
+          await applyRuntimeConfigToConfig();
+        } catch (err: any) {
+          logger.warn('server: failed to apply runtime config', { error: String(err?.message || err), cat: 'server' });
+        }
         
         const { initializeFromSnapshot, isPersistenceEnabled } = await import('./pools.persistence.js');
         if (isPersistenceEnabled()) {

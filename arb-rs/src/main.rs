@@ -1534,14 +1534,13 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
 
-                        // Safety cap: never trade more than est_capacity (min edge liquidity)
+                        // Safety cap: never trade more than est_capacity (min edge liquidity in USD)
                         if min_edge_liquidity.is_finite() && min_edge_liquidity > 0.0 {
                             let cap_tokens = if let Some(sp) = start_price_usd {
                                 if sp > 0.0 { min_edge_liquidity / sp } else { f64::INFINITY }
                             } else {
-                                // If we don't know the USD price, use min_edge_liquidity directly
-                                // (it may already be in source-token terms for some paths)
-                                min_edge_liquidity
+                                // min_edge_liquidity is USD; we cannot convert to tokens without price — skip cap
+                                f64::INFINITY
                             };
                             if chosen_size_tokens > cap_tokens && cap_tokens > 0.0 {
                                 chosen_size_tokens = cap_tokens;

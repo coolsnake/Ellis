@@ -2960,8 +2960,8 @@ export class ArbExecutor {
    * Calculate trade size using arb-rs provided sizing.
    *
    * Priority:
-   * 1. sizeTokens from arb-rs (raw token amount, converted to USD)
-   * 2. sizeUsd from arb-rs (USD amount)
+   * 1. sizeUsd from arb-rs (USD amount, when present)
+   * 2. sizeTokens from arb-rs (human token amount, converted to USD with price)
    * 3. Bottleneck heuristic fallback
    *
    * All paths apply wallet balance capping and optional randomness.
@@ -2992,19 +2992,22 @@ export class ArbExecutor {
     let rawSizeUsd = 0;
     let method = 'unknown';
 
-    // Priority 1: Use sizeTokens from arb-rs (token-based sizing)
     const sizeTokens = Number((opp as any)?.sizeTokens);
     const startDecimals = Number((opp as any)?.startDecimals);
-    if (Number.isFinite(sizeTokens) && sizeTokens > 0) {
-      // Convert token amount to USD using start token price
+
+    // Priority 1: Use sizeUsd from arb-rs when present (single source of truth, no price needed)
+    const directSizeUsd = Number((opp as any)?.sizeUsd);
+    if (Number.isFinite(directSizeUsd) && directSizeUsd > 0) {
+      rawSizeUsd = directSizeUsd;
+      method = 'arb_rs_usd';
+    }
+
+    // Priority 2: Use sizeTokens from arb-rs (human token amount; convert to USD with price)
+    if (rawSizeUsd === 0 && Number.isFinite(sizeTokens) && sizeTokens > 0) {
       const price = Number(getPriceByMint(startToken)?.usdc ?? 0);
       if (price > 0) {
-        // sizeTokens is in raw units (already decimal-adjusted by arb-rs)
-        // If startDecimals is provided, we may need to scale
-        const scaledTokens = Number.isFinite(startDecimals) && startDecimals > 0
-          ? sizeTokens / Math.pow(10, startDecimals)
-          : sizeTokens;
-        rawSizeUsd = scaledTokens * price;
+        // arb-rs emits sizeTokens in human (display) units, e.g. 111.51 SOL
+        rawSizeUsd = sizeTokens * price;
         method = 'arb_rs_tokens';
 
         logger.debug('arb.executor.sizing.arb_rs_tokens', {
@@ -3012,19 +3015,9 @@ export class ArbExecutor {
           path: opp.path.join('->'),
           sizeTokens,
           startDecimals,
-          scaledTokens,
           price,
           rawSizeUsd,
         });
-      }
-    }
-
-    // Priority 2: Use sizeUsd from arb-rs (USD-based sizing)
-    if (rawSizeUsd === 0) {
-      const directSizeUsd = Number((opp as any)?.sizeUsd);
-      if (Number.isFinite(directSizeUsd) && directSizeUsd > 0) {
-        rawSizeUsd = directSizeUsd;
-        method = 'arb_rs_usd';
       }
     }
 

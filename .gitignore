@@ -53,6 +53,9 @@ backend/config/firebase-admin.json
 backend/config/device-tokens.json
 backend/config/notification-config.json
 
+# Runtime config (Jupiter API key etc. - set via fetcher UI)
+backend/config/runtime-config.json
+
 backend/backendlog.txt
 backend/arbrs.txt
 frontend/package-lock.json
