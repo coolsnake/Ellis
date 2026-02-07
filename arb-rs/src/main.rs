@@ -1460,6 +1460,30 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
 
+                        // Always add reserve-derived candidates for every edge so the
+                        // bottleneck hop contributes small sizes even without a curve.
+                        // With bounded reserves (CLMM) these fractions are of the
+                        // active-range depth, not the full vault.
+                        {
+                            const RESERVE_FRACS: [f64; 9] = [0.01, 0.03, 0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.0];
+                            let mut cum_rate_res = 1.0f64;
+                            for edge in selection.edges.iter() {
+                                let res_a = slippage::parse_reserve(
+                                    &edge.native_reserve_a_raw,
+                                    edge.native_decimals_a.unwrap_or(9),
+                                );
+                                if res_a > 0.0 && cum_rate_res > 0.0 {
+                                    for &frac in &RESERVE_FRACS {
+                                        let sz = (res_a * frac) / cum_rate_res;
+                                        if sz.is_finite() && sz > 0.0 {
+                                            size_candidates_tokens.push(sz);
+                                        }
+                                    }
+                                }
+                                cum_rate_res *= edge.rate_effective;
+                            }
+                        }
+
                         size_candidates_tokens.retain(|v| v.is_finite() && *v > 0.0);
                         if let Some(sp) = start_price_usd {
                             if s.config.min_notional_usd > 0.0 {

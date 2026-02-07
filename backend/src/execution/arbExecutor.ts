@@ -241,6 +241,8 @@ interface BalanceCache {
   fetchedAt: number;
 }
 const BALANCE_CACHE_TTL_MS = 2000; // 2 seconds - keep cache fresh, but avoid RPC spam
+// Cap execution size to this fraction of wallet balance (avoids over-spend from rounding or stale quotes)
+const WALLET_CAP_FRACTION = 0.95;
 
 export class ArbExecutor {
   private config: ExecutorConfig;
@@ -979,7 +981,9 @@ export class ArbExecutor {
       
       // Track effective size for adaptive retries (scoped outside try block)
       let effectiveSizeUsd = 0;
-      
+      // Max spendable in start-token raw atoms (when not using flashloan); used to cap size
+      let maxSpendableRaw: bigint | null = null;
+
       try {
         // Calculate dynamic size based on opportunity characteristics
         const sizeUsd = await this.calculateDynamicSize(opp);
@@ -1028,7 +1032,18 @@ export class ArbExecutor {
             const balance = startToken === SOL_MINT
               ? Math.max(0, rawBalance - SOL_RESERVE_FOR_FEES)
               : rawBalance;
-            
+
+            // Compute max spendable in raw atoms (cap to slightly under balance for all size paths)
+            try {
+              const decimals = await resolveDecimals(startToken);
+              if (decimals !== undefined && decimals >= 0 && decimals <= 18 && balance > 0) {
+                maxSpendableRaw = BigInt(Math.floor(balance * WALLET_CAP_FRACTION * Math.pow(10, decimals)));
+                if (maxSpendableRaw <= 0n) maxSpendableRaw = null;
+              }
+            } catch (e) {
+              logger.debug('arb.executor.max_spendable_raw_skip', { cat: 'arb', traceId, startToken: startToken.slice(0, 8) + '...', error: String((e as any)?.message || e) });
+            }
+
             // First check: do we have any usable balance at all?
             if (balance <= 0) {
               const reason = startToken === SOL_MINT && rawBalance > 0 
@@ -1138,13 +1153,25 @@ export class ArbExecutor {
         };
 
         if (rawFromArb !== null) {
-          resolverInput.size = rawFromArb;
+          let sizeRaw = rawFromArb;
+          if (maxSpendableRaw !== null && sizeRaw > maxSpendableRaw) {
+            sizeRaw = maxSpendableRaw;
+            logger.debug('arb.executor.sizing.capped_to_wallet_raw', {
+              cat: 'arb',
+              traceId,
+              path: executionPath.join('->'),
+              requestedRaw: rawFromArb.toString(),
+              cappedRaw: sizeRaw.toString(),
+              reason: 'wallet_balance',
+            });
+          }
+          resolverInput.size = sizeRaw;
           delete resolverInput.sizeUsd;
           logger.debug('arb.executor.using_size_tokens_raw', {
             cat: 'arb',
             traceId,
             path: executionPath.join('->'),
-            sizeTokensRaw: rawFromArb.toString(),
+            sizeTokensRaw: sizeRaw.toString(),
           });
         }
 
@@ -1164,6 +1191,18 @@ export class ArbExecutor {
               
               // Sanity check: ensure rawAtoms is positive and reasonable
               if (rawAtoms > 0n) {
+                let sizeRaw = rawAtoms;
+                if (maxSpendableRaw !== null && sizeRaw > maxSpendableRaw) {
+                  sizeRaw = maxSpendableRaw;
+                  logger.debug('arb.executor.sizing.capped_to_wallet_raw', {
+                    cat: 'arb',
+                    traceId,
+                    path: executionPath.join('->'),
+                    requestedRaw: rawAtoms.toString(),
+                    cappedRaw: sizeRaw.toString(),
+                    reason: 'wallet_balance',
+                  });
+                }
                 logger.debug('arb.executor.using_raw_size', {
                   cat: 'arb',
                   traceId,
@@ -1171,12 +1210,12 @@ export class ArbExecutor {
                   startMint: startMint.slice(0, 8) + '...',
                   rawBalance,
                   decimals,
-                  rawAtoms: rawAtoms.toString(),
+                  rawAtoms: sizeRaw.toString(),
                   useFraction,
                 });
-                
+
                 // Pass raw size instead of USD size
-                resolverInput.size = rawAtoms;
+                resolverInput.size = sizeRaw;
                 // Remove sizeUsd to ensure resolver uses raw size
                 delete resolverInput.sizeUsd;
               } else {

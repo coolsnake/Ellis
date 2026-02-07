@@ -188,7 +188,11 @@ function computeBoundedClmmReserves(
     const reserveB =
       reserveBAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsB)));
 
-    if (reserveA > 0 && reserveB > 0) return { reserveA, reserveB };
+    // Also expose raw-atom strings so callers can set edge reserves without re-computing
+    const reserveARaw = Math.floor(Math.max(0, reserveAAtomic));
+    const reserveBRaw = Math.floor(Math.max(0, reserveBAtomic));
+
+    if (reserveA > 0 && reserveB > 0) return { reserveA, reserveB, reserveARaw, reserveBRaw };
   } catch {}
   return undefined;
 }
@@ -205,6 +209,89 @@ function computeHeuristicReservesFromMin(
   }
   // A is smaller, assume A is min
   return { reserveA: minReserve, reserveB: minReserve / priceAperB };
+}
+
+/**
+ * Compute the max input in raw atoms for the active tick/bin range (capacity).
+ * For CLMM: max tokens of the edge's source that can be swapped before exhausting
+ * the current tick range.  For DLMM: same, using active + adjacent bins.
+ * Returns the raw-atom string or undefined if unavailable.
+ */
+function computeActiveRangeCapacityRaw(
+  kind: string,
+  poolId: string,
+  pool: any,
+  wasSwapped: boolean,
+): string | undefined {
+  try {
+    const rangeData = getRangeData(poolId);
+    if (!rangeData) return undefined;
+
+    if (kind === 'clmm' && rangeData.kind === 'clmm') {
+      const clmm = rangeData as ClmmRangeData;
+      if (clmm.currentLiquidity <= 0) return undefined;
+      const s64 = BigInt(String(pool?.sqrt_price_x64 || pool?.sqrt_price_x64_raw || 0));
+      if (s64 <= 0n) return undefined;
+      const currentSqrtPrice = Number(s64) / Number(2n ** 64n);
+      if (!(currentSqrtPrice > 0)) return undefined;
+
+      const aToB = !wasSwapped; // canonical A→B direction in native terms
+      const L = clmm.currentLiquidity;
+      let activeCapacityAtomic: number;
+      if (aToB) {
+        const sqrtPLower = Math.pow(1.0001, clmm.tickLower / 2);
+        activeCapacityAtomic = L * Math.abs(1 / sqrtPLower - 1 / currentSqrtPrice);
+      } else {
+        const sqrtPUpper = Math.pow(1.0001, clmm.tickUpper / 2);
+        activeCapacityAtomic = L * Math.abs(sqrtPUpper - currentSqrtPrice);
+      }
+      if (!(activeCapacityAtomic > 0)) return undefined;
+      const cap = Math.floor(activeCapacityAtomic);
+      return cap > 0 ? String(cap) : undefined;
+    }
+
+    if (kind === 'dlmm' && rangeData.kind === 'dlmm') {
+      const dlmm = rangeData as DlmmRangeData;
+      if (!dlmm.bins || dlmm.bins.length === 0) return undefined;
+      const binStep = Number(pool?.tick_spacing ?? pool?.tickSpacing ?? pool?.bin_step ?? 0);
+      if (binStep <= 0) return undefined;
+
+      const xToY = !wasSwapped;
+      const activeBin = dlmm.bins.find(b => b.id === dlmm.activeBinId);
+      const stepMult = 1 + binStep / 10000;
+      let activeCapacity = 0;
+
+      if (xToY) {
+        const price = Math.pow(stepMult, dlmm.activeBinId - 8388608);
+        activeCapacity = (activeBin?.reserveY ?? 0) / (price > 0 ? price : 1);
+        if (activeCapacity <= 0) {
+          for (const bin of dlmm.bins.filter(b => b.id <= dlmm.activeBinId)) {
+            const p = Math.pow(stepMult, bin.id - 8388608);
+            activeCapacity += bin.reserveY / (p > 0 ? p : 1);
+          }
+        }
+      } else {
+        const price = Math.pow(stepMult, dlmm.activeBinId - 8388608);
+        activeCapacity = (activeBin?.reserveX ?? 0) * (price > 0 ? price : 1);
+        if (activeCapacity <= 0) {
+          for (const bin of dlmm.bins.filter(b => b.id >= dlmm.activeBinId)) {
+            const p = Math.pow(stepMult, bin.id - 8388608);
+            activeCapacity += bin.reserveX * (p > 0 ? p : 1);
+          }
+        }
+      }
+
+      if (!(activeCapacity > 0)) return undefined;
+      // activeCapacity is in whole (human) tokens; convert to raw atoms
+      const decIn = wasSwapped
+        ? Number(pool?.native_decimals_b ?? pool?.decimals_b ?? 9)
+        : Number(pool?.native_decimals_a ?? pool?.decimals_a ?? 9);
+      const scale = Math.pow(10, Math.max(0, Math.min(18, decIn)));
+      const cap = Math.floor(activeCapacity * scale);
+      return cap > 0 ? String(cap) : undefined;
+    }
+  } catch {}
+  return undefined;
 }
 
 /**
@@ -693,7 +780,39 @@ export function edgesFromPoolIncremental(
   const slippageCurve =
     buildSlippageCurveFromSimulation(kind, id, fee, spotRate, wasSwapped, p) ||
     buildSlippageCurveSource(kind, reserveA, reserveB, fee, spotRate, (p as any)?.updated_ms, curveSource || 'native_reserve');
-  
+
+  // ── For CLMM: compute bounded (active-range) reserves to replace vault reserves ──
+  // Vault balances include liquidity across ALL tick ranges and vastly overstate the
+  // tradeable depth. Using bounded reserves ensures arb-rs sees realistic slippage
+  // when it falls back from curve to the AMM-blend formula.
+  let boundedReserveARaw: string | undefined;
+  let boundedReserveBRaw: string | undefined;
+  if (kind === 'clmm') {
+    try {
+      const rangeData = getRangeData(id);
+      if (rangeData?.kind === 'clmm' && rangeData.currentLiquidity > 0 && rangeData.sqrtPriceLower > 0 && rangeData.sqrtPriceUpper > rangeData.sqrtPriceLower) {
+        const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
+        const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
+        const bounded = computeBoundedClmmReserves(
+          s64, Lraw,
+          Number(nativeDecA || 0), Number(nativeDecB || 0),
+          rangeData.sqrtPriceLower, rangeData.sqrtPriceUpper,
+        );
+        if (bounded) {
+          // bounded reserves are in NATIVE order (A = native_mint_a, B = native_mint_b).
+          // Edge reserves are in CANONICAL order (_a = edge source, _b = edge target).
+          if (wasSwapped) {
+            boundedReserveARaw = String(bounded.reserveBRaw);
+            boundedReserveBRaw = String(bounded.reserveARaw);
+          } else {
+            boundedReserveARaw = String(bounded.reserveARaw);
+            boundedReserveBRaw = String(bounded.reserveBRaw);
+          }
+        }
+      }
+    } catch {}
+  }
+
   // Validate pool went through pipeline
   const pipelineProcessed = (p as any)?._pipelineProcessed === true;
   if (!pipelineProcessed) {
@@ -708,29 +827,35 @@ export function edgesFromPoolIncremental(
     } catch {}
   }
 
-  // Capacity in source (edge input) token raw atoms for arb-rs sizing (no USD). Fraction of source reserve.
-  // Edge source = canonical A; when wasSwapped, canonical A = native B so use native_reserve_b_raw.
-  const CAPACITY_FRACTION = 0.35;
+  // Capacity in source (edge input) token raw atoms for arb-rs sizing.
+  // This is a physical constraint: the max the pool can accept, not a profitability limit.
+  // The optimizer (slippage simulation + golden-section search) determines the profitable size.
+  //   CLMM/DLMM: active-range capacity (max input before exhausting tick/bin range).
+  //   AMM/CPMM:  full source reserve (the pool's actual on-chain balance).
   let capacity_input_raw: string | undefined;
   try {
-    const sourceReserveRaw = wasSwapped
-      ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)
-      : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw);
-    const decSource = wasSwapped
-      ? Number((p as any)?.native_decimals_b ?? (p as any)?.decimals_b ?? 9)
-      : Number((p as any)?.native_decimals_a ?? (p as any)?.decimals_a ?? 9);
-    if (sourceReserveRaw != null && String(sourceReserveRaw).trim() !== '') {
-      const big = BigInt(String(sourceReserveRaw));
-      if (big > 0n) {
-        const cap = (big * BigInt(Math.round(CAPACITY_FRACTION * 100)) / 100n);
-        if (cap > 0n) capacity_input_raw = cap.toString();
-      }
+    if (kind === 'clmm' || kind === 'dlmm') {
+      capacity_input_raw = computeActiveRangeCapacityRaw(kind, id, p, wasSwapped);
     }
-    if (!capacity_input_raw && reserveA > 0 && Number.isFinite(decSource) && decSource >= 0 && decSource <= 18) {
-      const scale = 10 ** Math.max(0, decSource);
-      const capHuman = reserveA * CAPACITY_FRACTION;
-      const capRaw = Math.floor(capHuman * scale);
-      if (capRaw > 0) capacity_input_raw = String(capRaw);
+    // AMM/CPMM (or CLMM/DLMM without range data) → full source reserve as physical cap
+    if (!capacity_input_raw) {
+      const sourceReserveRaw = wasSwapped
+        ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)
+        : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw);
+      if (sourceReserveRaw != null && String(sourceReserveRaw).trim() !== '') {
+        const big = BigInt(String(sourceReserveRaw));
+        if (big > 0n) capacity_input_raw = big.toString();
+      }
+      if (!capacity_input_raw && reserveA > 0) {
+        const decSource = wasSwapped
+          ? Number((p as any)?.native_decimals_b ?? (p as any)?.decimals_b ?? 9)
+          : Number((p as any)?.native_decimals_a ?? (p as any)?.decimals_a ?? 9);
+        if (Number.isFinite(decSource) && decSource >= 0 && decSource <= 18) {
+          const scale = 10 ** Math.max(0, decSource);
+          const capRaw = Math.floor(reserveA * scale);
+          if (capRaw > 0) capacity_input_raw = String(capRaw);
+        }
+      }
     }
   } catch {
     // ignore
@@ -758,12 +883,12 @@ export function edgesFromPoolIncremental(
       : ((p as any)?.native_decimals_b ?? (p as any)?.decimals_b),
     native_account_a: (p as any)?.native_account_a ?? (p as any)?.account_a,
     native_account_b: (p as any)?.native_account_b ?? (p as any)?.account_b,
-    native_reserve_a_raw: wasSwapped
+    native_reserve_a_raw: boundedReserveARaw ?? (wasSwapped
       ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)
-      : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw),
-    native_reserve_b_raw: wasSwapped
+      : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw)),
+    native_reserve_b_raw: boundedReserveBRaw ?? (wasSwapped
       ? ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw)
-      : ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw),
+      : ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)),
     fee_bps: fee,
     source_price_usd: getUsd(a),
     target_price_usd: getUsd(b),
