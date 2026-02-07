@@ -102,78 +102,40 @@ function getSimWallet(): { publicKey: PublicKey } {
     };
   });
 
-  // ── Step 0: Populate pool caches ────────────────────────────────────────
+  // ── Step 0: Populate pool caches via refreshAllSources ────────────────
   it('Step 0: populates pool + execution caches from GraphQL', async () => {
-    // Lower the global Shyft rate-limiter gap for faster sequential DEX fetches
+    // Ensure all config objects exist so page limits are applied
     if (!(cfg as any).shyft) (cfg as any).shyft = {};
-    (cfg as any).shyft.minRequestGapMs = 200;
+    if (!cfg.orca) cfg.orca = {};
+    if (!cfg.raydium) cfg.raydium = {};
+    if (!cfg.raydiumClmm) cfg.raydiumClmm = {};
+    if (!(cfg as any).raydiumCpmm) (cfg as any).raydiumCpmm = {};
+    if (!(cfg as any).meteora) (cfg as any).meteora = {};
+    if (!(cfg as any).pumpswap) (cfg as any).pumpswap = {};
 
-    // Fetch each DEX individually to avoid cascading rate-limit timeouts
-    // that occur with refreshAllSources (which fetches all DEXes in series)
-    const fetchConfigs: Array<{ name: string; cfgKey: string; fetchFn: () => Promise<any[]>; normFn: (r: any[]) => Promise<any> }> = [];
+    // Respect 1 req/sec Shyft rate limit
+    (cfg as any).shyft.minRequestGapMs = 1100;
 
-    // Orca
-    if (!cfg.orca) cfg.orca = {}; cfg.orca.graphqlPageSize = 10; cfg.orca.graphqlMaxPages = 1;
-    fetchConfigs.push({
-      name: 'orca', cfgKey: 'orca',
-      fetchFn: async () => { const m = await import('../../server/pools/orcaGraphQL.js'); return m.fetchOrcaGraphQL([SOL_MINT, USDC_MINT]); },
-      normFn: async (r) => { const m = await import('../../server/pools/orcaGraphQL.js'); return m.normalizeOrcaGraphQL(r); },
-    });
+    // Small page sizes to keep fetches fast
+    cfg.orca.graphqlPageSize = 10; cfg.orca.graphqlMaxPages = 1;
+    cfg.raydium.graphqlPageSize = 10; cfg.raydium.graphqlMaxPages = 1;
+    cfg.raydiumClmm.graphqlPageSize = 10; cfg.raydiumClmm.graphqlMaxPages = 1;
+    cfg.raydiumClmm.initialDelayMultiplier = 1;
+    (cfg as any).raydiumCpmm.graphqlPageSize = 10; (cfg as any).raydiumCpmm.graphqlMaxPages = 1;
+    (cfg as any).raydiumCpmm.initialDelayMultiplier = 1;
+    (cfg as any).meteora.graphqlPageSize = 10; (cfg as any).meteora.graphqlMaxPages = 1;
+    (cfg as any).pumpswap.graphqlPageSize = 10; (cfg as any).pumpswap.graphqlMaxPages = 1;
 
-    // Raydium AMM + CLMM (same normalizer)
-    if (!cfg.raydium) cfg.raydium = {}; cfg.raydium.graphqlPageSize = 10; cfg.raydium.graphqlMaxPages = 1;
-    if (!cfg.raydiumClmm) cfg.raydiumClmm = {}; cfg.raydiumClmm.graphqlPageSize = 10; cfg.raydiumClmm.graphqlMaxPages = 1; cfg.raydiumClmm.initialDelayMultiplier = 1;
-    fetchConfigs.push({
-      name: 'raydium-amm', cfgKey: 'raydium',
-      fetchFn: async () => { const m = await import('../../server/pools/raydiumGraphQL.js'); return m.fetchRaydiumGraphQL([SOL_MINT, USDC_MINT]); },
-      normFn: async (r) => { const m = await import('../../server/pools/raydiumGraphQL.js'); return m.normalizeRaydiumGraphQL(r); },
-    });
-    fetchConfigs.push({
-      name: 'raydium-clmm', cfgKey: 'raydiumClmm',
-      fetchFn: async () => { const m = await import('../../server/pools/raydiumGraphQL.js'); return m.fetchRaydiumClmmGraphQL([SOL_MINT, USDC_MINT]); },
-      normFn: async (r) => { const m = await import('../../server/pools/raydiumGraphQL.js'); return m.normalizeRaydiumGraphQL(r); },
-    });
+    // refreshAllSources populates the internal pool cache that getGraphSnapshot reads
+    const poolsMod: any = await import('../../server/pools.js');
+    const res = await poolsMod.refreshAllSources(true, false);
+    expect(res).toBeTruthy();
 
-    // Meteora DLMM
-    if (!cfg.meteora) cfg.meteora = {}; cfg.meteora.graphqlPageSize = 10; cfg.meteora.graphqlMaxPages = 1;
-    fetchConfigs.push({
-      name: 'meteora', cfgKey: 'meteora',
-      fetchFn: async () => { const m = await import('../../server/pools/meteoraGraphQL.js'); return m.fetchMeteoraGraphQL([SOL_MINT, USDC_MINT]); },
-      normFn: async (r) => { const m = await import('../../server/pools/meteoraGraphQL.js'); return m.normalizeMeteoraGraphQL(r); },
-    });
-
-    // PumpSwap
-    if (!cfg.pumpswap) cfg.pumpswap = {}; cfg.pumpswap.graphqlPageSize = 10; cfg.pumpswap.graphqlMaxPages = 1;
-    fetchConfigs.push({
-      name: 'pumpswap', cfgKey: 'pumpswap',
-      fetchFn: async () => { const m = await import('../../server/pools/pumpswap.js'); return m.fetchPumpswapGraphQL([SOL_MINT]); },
-      normFn: async (r) => { const m = await import('../../server/pools/pumpswap.js'); return m.normalizePumpswapPools(r); },
-    });
-
-    // Fetch + normalize each DEX sequentially, build graph from each
+    // Build graph to identify usable pools per DEX
     const graphMod: any = await import('../../server/graph.js');
-    let totalPools = 0;
-
-    for (const fc of fetchConfigs) {
-      try {
-        const raw = await fc.fetchFn();
-        if (!raw || raw.length === 0) { console.warn(`[Step 0] ${fc.name}: no raw data`); continue; }
-        const norm = await fc.normFn(raw);
-        const amm  = norm?.amm?.length || 0;
-        const clmm = norm?.clmm?.length || 0;
-        const cpmm = norm?.cpmm?.length || 0;
-        totalPools += amm + clmm + cpmm;
-        console.log(`[Step 0] ${fc.name}: ${raw.length} raw → ${amm} amm, ${clmm} clmm, ${cpmm} cpmm`);
-      } catch (e: any) {
-        console.warn(`[Step 0] ${fc.name} failed: ${e.message}`);
-      }
-    }
-
-    expect(totalPools).toBeGreaterThan(0);
-
-    // Build graph from all cached pools
     const snap = await graphMod.getGraphSnapshot(true);
     const edges = snap?.edges || [];
+    console.log(`[Step 0] Graph: ${snap?.nodes?.length || 0} nodes, ${edges.length} edges`);
 
     // Collect one SOL↔USDC pool per DEX+variant from graph edges
     for (const edge of edges) {

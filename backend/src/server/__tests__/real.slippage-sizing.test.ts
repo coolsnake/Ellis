@@ -437,23 +437,30 @@ function allInRange(values: number[], min: number, max: number): boolean {
 
       const activeId = getDlmmActiveId();
       const binStep = getDlmmBinStep();
+
+      // Use small reserves per bin so the large trade must cross multiple bins,
+      // producing measurable price impact from the bin-step price gradient.
       const bins = [];
       for (let i = -10; i <= 10; i++) {
-        bins.push({ id: activeId + i, reserveX: 10_000_000, reserveY: 10_000_000 });
+        bins.push({ id: activeId + i, reserveX: 100_000, reserveY: 100_000 });
       }
 
       const small = simulateDlmmSwap({
         inputAmount: 1000, activeBinId: activeId, bins,
         binStep, feeBps: 10, xToY: true,
       });
+      // Large trade must exhaust multiple bins to see price impact
       const large = simulateDlmmSwap({
-        inputAmount: 5_000_000, activeBinId: activeId, bins,
+        inputAmount: 500_000, activeBinId: activeId, bins,
         binStep, feeBps: 10, xToY: true,
       });
 
-      console.log(`[C3] small=${small.toFixed(2)}, large=${large.toFixed(2)}`);
+      console.log(`[C3] small=${small.toFixed(4)} (rate=${(small/1000).toFixed(6)}), large=${large.toFixed(4)} (rate=${(large/500_000).toFixed(6)})`);
       const rateSmall = small / 1000;
-      const rateLarge = large / 5_000_000;
+      const rateLarge = large / 500_000;
+      // When large trade crosses bins, it gets progressively worse prices.
+      // With 100k reserves per bin, 1000 input fits in one bin but 500k needs ~13 bins,
+      // so the average effective rate must be strictly lower for the large trade.
       expect(rateSmall).toBeGreaterThan(rateLarge);
     });
   });
