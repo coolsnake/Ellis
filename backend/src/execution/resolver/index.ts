@@ -912,7 +912,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           },
         });
       } catch (e) { logCatchError('resolver.index', e); }
-      throw new Error(`Pre-send abort: local quotes predict -${lossBps}bps loss (output ${finalOutputRaw} <= input ${initialInputRaw})`);
+      // Do not throw: allow send; on-chain profit check (e.g. Custom 6007) will enforce if needed.
     }
   }
 
