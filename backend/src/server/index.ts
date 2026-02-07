@@ -412,15 +412,6 @@ export async function shutdown() {
       try { logger.warn('pools.shutdown.snapshot_failed', { error: err.message, cat: 'pools' }); } catch {}
     }
 
-    // Save capacity calibration data
-    try {
-      const { saveOnShutdown } = await import('../execution/capacity/calibrationStore.js');
-      await saveOnShutdown();
-      logger.info('capacity.calibrations.shutdown_saved', { cat: 'sizing' });
-    } catch (err: any) {
-      try { logger.warn('capacity.calibrations.save_failed', { error: err.message, cat: 'sizing' }); } catch {}
-    }
-
     // Stop timers and clear in-memory caches
     try { 
       const pools = await import('./pools.js'); 
@@ -609,40 +600,6 @@ server.listen(CONFIG.port, () => {
       // Load precomputed CLMM cache from disk
       try { await loadClmmCacheFromDisk(); logger.info('clmm.cache.loaded'); } catch {}
       
-      // Load capacity calibration data (or reset if disableCalibration is enabled)
-      try {
-        const { loadCalibrations, resetCalibrations } = await import('../execution/capacity/calibrationStore.js');
-        const { readJson } = await import('../utils/fs.js');
-        
-        // Check if disableCalibration is enabled in the executor config
-        let shouldResetCalibration = false;
-        try {
-          const executorConfig = await readJson('backend/config/arbExecutorConfig.json', {} as any);
-          const multiHopConfig = executorConfig?.sizingConfig?.multiHopOptimization;
-          // Reset calibration on startup if multi-hop is enabled AND disableCalibration is true (or not explicitly false)
-          shouldResetCalibration = multiHopConfig?.enabled && 
-                                   multiHopConfig?.disableCalibration !== false;
-        } catch {
-          // Config not found or invalid - don't reset
-        }
-        
-        if (shouldResetCalibration) {
-          const result = await resetCalibrations();
-          logger.info('capacity.calibrations.auto_reset', { 
-            cat: 'sizing', 
-            reason: 'disableCalibration enabled',
-            clearedPools: result.clearedPools,
-            fileDeleted: result.fileDeleted 
-          });
-        } else {
-          const calibrationCount = await loadCalibrations();
-          if (calibrationCount > 0) {
-            logger.info('capacity.calibrations.loaded', { cat: 'sizing', poolCount: calibrationCount });
-          }
-        }
-      } catch (err: any) {
-        logger.warn('capacity.calibrations.load_failed', { cat: 'sizing', error: err.message });
-      }
       
       // Load MarginFi flashloan cache from disk
       try {

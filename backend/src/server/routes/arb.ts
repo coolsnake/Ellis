@@ -215,28 +215,14 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
-  // Calibration endpoints
+  // Calibration endpoints (removed - now handled by arb-rs)
   api.get('/arb/calibration/stats', async (_req, res) => {
-    try {
-      const { getCalibrationStats, getCalibratedPoolCount } = await import('../../execution/capacity/index.js');
-      const stats = getCalibrationStats();
-      res.status(200).json({ ok: true, ...stats });
-    } catch (e: any) {
-      logger.warn('arb.calibration.stats.error', { cat: 'arb', error: toErrString(e) });
-      res.status(500).json({ ok: false, error: toErrString(e) });
-    }
+    res.status(410).json({ ok: false, error: 'Calibration removed - sizing now handled by arb-rs' });
   });
 
   api.post('/arb/calibration/reset', async (_req, res) => {
     try {
-      const { resetCalibrations } = await import('../../execution/capacity/index.js');
-      const result = await resetCalibrations();
-      logger.info('arb.calibration.reset.success', { 
-        cat: 'arb', 
-        clearedPools: result.clearedPools,
-        fileDeleted: result.fileDeleted 
-      });
-      res.status(200).json({ ok: true, ...result });
+      res.status(200).json({ ok: true, message: 'Calibration removed - sizing now handled by arb-rs' });
     } catch (e: any) {
       logger.warn('arb.calibration.reset.error', { cat: 'arb', error: toErrString(e) });
       res.status(500).json({ ok: false, error: toErrString(e) });
@@ -2517,10 +2503,6 @@ export function createArbRouter(io: SocketIOServer): Router {
         } catch {}
       }
       
-      // Ensure sizingConfig exists (migrates old dynamicSizing if present)
-      const { migrateExecutorConfig } = await import('../../execution/capacity/configMigration.js');
-      config = migrateExecutorConfig(config);
-      
       const executor = getArbExecutor(config);
       await executor.start();
       
@@ -2560,17 +2542,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const configPath = 'backend/config/arbExecutor.json';
       const config = await readJson(configPath, {});
       
-      // Ensure sizingConfig exists (auto-migrate from old config if needed)
-      const { migrateExecutorConfig, needsMigration } = await import('../../execution/capacity/configMigration.js');
-      const migratedConfig = migrateExecutorConfig(config);
-      
-      // If migration was needed, save the migrated config back to file
-      if (needsMigration(config)) {
-        await writeJson(configPath, migratedConfig);
-        logger.info('arb.executor.config_migrated', { cat: 'arb', message: 'Migrated legacy config to sizingConfig' });
-      }
-      
-      res.json(migratedConfig);
+      res.json(config);
     } catch (e: any) {
       logger.error('arb.executor.api.config_read_failed', { cat: 'arb', error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
@@ -2598,10 +2570,6 @@ export function createArbRouter(io: SocketIOServer): Router {
         // Reload the complete config from file (not just the updates)
         // This ensures the runtime instance always matches what's saved in the file
         let fullConfig = await readJson(configPath, {});
-        
-        // Ensure sizingConfig is populated
-        const { migrateExecutorConfig } = await import('../../execution/capacity/configMigration.js');
-        fullConfig = migrateExecutorConfig(fullConfig);
         
         executor.updateConfig(fullConfig); // This will replace the entire config
         
