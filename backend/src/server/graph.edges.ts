@@ -164,7 +164,7 @@ function computeBoundedClmmReserves(
   decimalsB: number,
   sqrtPriceLower: number,
   sqrtPriceUpper: number,
-): { reserveA: number; reserveB: number } | undefined {
+): { reserveA: number; reserveB: number; reserveARaw: number; reserveBRaw: number } | undefined {
   try {
     if (sqrtPriceX64Raw <= 0n || liquidityRaw <= 0n) return undefined;
     if (!(sqrtPriceLower > 0) || !(sqrtPriceUpper > sqrtPriceLower)) return undefined;
