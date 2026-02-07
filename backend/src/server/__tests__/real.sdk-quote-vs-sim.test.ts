@@ -126,9 +126,14 @@ function getSimWallet(): { publicKey: PublicKey } {
     (cfg as any).meteora.graphqlPageSize = 10; (cfg as any).meteora.graphqlMaxPages = 1;
     (cfg as any).pumpswap.graphqlPageSize = 10; (cfg as any).pumpswap.graphqlMaxPages = 1;
 
-    // refreshAllSources populates the internal pool cache that getGraphSnapshot reads
+    // refreshAllSources populates the internal pool cache that getGraphSnapshot reads.
+    // Disable meteora_balanced: it uses a slow HTTP/anchor path (not GraphQL) that
+    // fetches thousands of pools across hundreds of mints and would blow the timeout.
+    // The Meteora DLMM test uses the regular 'meteora' source (GraphQL), not balanced.
     const poolsMod: any = await import('../../server/pools.js');
-    const res = await poolsMod.refreshAllSources(true, false);
+    const res = await poolsMod.refreshAllSources(true, false, {
+      sources: { meteora_balanced: false },
+    });
     expect(res).toBeTruthy();
 
     // Build graph to identify usable pools per DEX
