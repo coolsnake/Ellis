@@ -97,7 +97,7 @@ function allInRange(values: number[], min: number, max: number): boolean {
     try {
       // Orca CLMM
       const { fetchOrcaGraphQL, normalizeOrcaGraphQL } = await import('../../server/pools/orcaGraphQL.js');
-      if (cfg.orca) { cfg.orca.graphqlPageSize = 10; cfg.orca.graphqlMaxPages = 1; }
+      if (!cfg.orca) cfg.orca = {}; cfg.orca.graphqlPageSize = 10; cfg.orca.graphqlMaxPages = 1;
       const orcaRaw = await fetchOrcaGraphQL([SOL_MINT, USDC_MINT]);
       const orcaNorm = await normalizeOrcaGraphQL(orcaRaw);
       clmmPools = orcaNorm?.clmm || [];
@@ -106,7 +106,7 @@ function allInRange(values: number[], min: number, max: number): boolean {
     try {
       // Meteora DLMM
       const { fetchMeteoraGraphQL, normalizeMeteoraGraphQL } = await import('../../server/pools/meteoraGraphQL.js');
-      if ((cfg as any).meteora) { (cfg as any).meteora.graphqlPageSize = 10; (cfg as any).meteora.graphqlMaxPages = 1; }
+      if (!(cfg as any).meteora) (cfg as any).meteora = {}; (cfg as any).meteora.graphqlPageSize = 10; (cfg as any).meteora.graphqlMaxPages = 1;
       const metRaw = await fetchMeteoraGraphQL([SOL_MINT, USDC_MINT]);
       const metNorm = await normalizeMeteoraGraphQL(metRaw);
       dlmmPools = metNorm?.clmm || [];
@@ -115,7 +115,7 @@ function allInRange(values: number[], min: number, max: number): boolean {
     try {
       // Raydium AMM
       const { fetchRaydiumGraphQL, normalizeRaydiumGraphQL } = await import('../../server/pools/raydiumGraphQL.js');
-      if (cfg.raydium) { cfg.raydium.graphqlPageSize = 10; cfg.raydium.graphqlMaxPages = 1; }
+      if (!cfg.raydium) cfg.raydium = {}; cfg.raydium.graphqlPageSize = 10; cfg.raydium.graphqlMaxPages = 1;
       const rayRaw = await fetchRaydiumGraphQL([SOL_MINT, USDC_MINT]);
       const rayNorm = await normalizeRaydiumGraphQL(rayRaw);
       ammPools = rayNorm?.amm || [];

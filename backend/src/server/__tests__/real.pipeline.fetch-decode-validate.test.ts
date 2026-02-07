@@ -165,10 +165,9 @@ function auditFields(record: Record<string, any> | undefined, required: string[]
     it('P1: fetches + normalises Orca pools', async () => {
       const { fetchOrcaGraphQL }    = await import('../../server/pools/orcaGraphQL.js');
       const { normalizeOrcaGraphQL } = await import('../../server/pools/orcaGraphQL.js');
-      if (cfg.orca) {
-        cfg.orca.graphqlPageSize = 20;
-        cfg.orca.graphqlMaxPages = 1;
-      }
+      if (!cfg.orca) cfg.orca = {};
+      cfg.orca.graphqlPageSize = 20;
+      cfg.orca.graphqlMaxPages = 1;
       const raw = await fetchOrcaGraphQL([SOL_MINT, USDC_MINT]);
       expect(raw.length).toBeGreaterThan(0);
       normalizedPools = await normalizeOrcaGraphQL(raw);
@@ -326,10 +325,9 @@ function auditFields(record: Record<string, any> | undefined, required: string[]
 
     it('P1: fetches + normalises Raydium CLMM pools', async () => {
       const { fetchRaydiumClmmGraphQL, normalizeRaydiumGraphQL } = await import('../../server/pools/raydiumGraphQL.js');
-      if (cfg.raydiumClmm) {
-        cfg.raydiumClmm.graphqlPageSize = 20;
-        cfg.raydiumClmm.graphqlMaxPages = 1;
-      }
+      if (!cfg.raydiumClmm) cfg.raydiumClmm = {};
+      cfg.raydiumClmm.graphqlPageSize = 20;
+      cfg.raydiumClmm.graphqlMaxPages = 1;
       const raw = await fetchRaydiumClmmGraphQL([SOL_MINT, USDC_MINT]);
       expect(raw.length).toBeGreaterThan(0);
       // normalizeRaydiumGraphQL handles both AMM and CLMM raw rows
@@ -394,10 +392,9 @@ function auditFields(record: Record<string, any> | undefined, required: string[]
 
     it('P0-P1: fetches + normalises Raydium AMM V4 pools', async () => {
       const { fetchRaydiumGraphQL, normalizeRaydiumGraphQL } = await import('../../server/pools/raydiumGraphQL.js');
-      if (cfg.raydium) {
-        cfg.raydium.graphqlPageSize = 20;
-        cfg.raydium.graphqlMaxPages = 1;
-      }
+      if (!cfg.raydium) cfg.raydium = {};
+      cfg.raydium.graphqlPageSize = 20;
+      cfg.raydium.graphqlMaxPages = 1;
       const raw = await fetchRaydiumGraphQL([SOL_MINT, USDC_MINT]);
       expect(raw.length).toBeGreaterThan(0);
       normalizedPools = await normalizeRaydiumGraphQL(raw);
@@ -484,20 +481,18 @@ function auditFields(record: Record<string, any> | undefined, required: string[]
     it('P0-P1: fetches + normalises Raydium CPMM pools', async () => {
       const { fetchRaydiumCpmmGraphQL, normalizeRaydiumCpmmGraphQL } = await import('../../server/pools/raydiumCpmmGraphQL.js');
 
-      // Lower the global Shyft rate-limiter gap for test speed
-      // (prior DEX fetches may have used up the cooldown window)
-      if ((cfg as any).shyft) {
-        (cfg as any).shyft.minRequestGapMs = 200;
-      } else {
-        (cfg as any).shyft = { minRequestGapMs: 200 };
-      }
+      // Ensure the config objects exist before setting overrides
+      // (cfg.raydiumCpmm may not exist, causing all limits to use defaults → 52K pools)
+      if (!(cfg as any).raydiumCpmm) (cfg as any).raydiumCpmm = {};
+      if (!(cfg as any).shyft) (cfg as any).shyft = {};
 
-      if ((cfg as any).raydiumCpmm) {
-        (cfg as any).raydiumCpmm.graphqlPageSize = 10;
-        (cfg as any).raydiumCpmm.graphqlMaxPages = 1;
-        (cfg as any).raydiumCpmm.initialDelayMultiplier = 1;
-        (cfg as any).raydiumCpmm.pageDelayMs = 100;
-      }
+      // Respect the 1 req/sec Shyft rate limit
+      (cfg as any).shyft.minRequestGapMs = 1100;
+      (cfg as any).raydiumCpmm.graphqlPageSize = 10;
+      (cfg as any).raydiumCpmm.graphqlMaxPages = 1;
+      (cfg as any).raydiumCpmm.initialDelayMultiplier = 1;
+      (cfg as any).raydiumCpmm.pageDelayMs = 1100;
+
       const raw = await fetchRaydiumCpmmGraphQL([SOL_MINT, USDC_MINT]);
       expect(raw.length).toBeGreaterThan(0);
       normalizedPools = await normalizeRaydiumCpmmGraphQL(raw);
@@ -575,10 +570,9 @@ function auditFields(record: Record<string, any> | undefined, required: string[]
 
     it('P0-P1: fetches + normalises Meteora DLMM pools', async () => {
       const { fetchMeteoraGraphQL, normalizeMeteoraGraphQL } = await import('../../server/pools/meteoraGraphQL.js');
-      if ((cfg as any).meteora) {
-        (cfg as any).meteora.graphqlPageSize = 20;
-        (cfg as any).meteora.graphqlMaxPages = 1;
-      }
+      if (!(cfg as any).meteora) (cfg as any).meteora = {};
+      (cfg as any).meteora.graphqlPageSize = 20;
+      (cfg as any).meteora.graphqlMaxPages = 1;
       const raw = await fetchMeteoraGraphQL([SOL_MINT, USDC_MINT]);
       expect(raw.length).toBeGreaterThan(0);
       normalizedPools = await normalizeMeteoraGraphQL(raw);
@@ -676,10 +670,9 @@ function auditFields(record: Record<string, any> | undefined, required: string[]
 
     it('P0-P1: fetches + normalises PumpSwap pools', async () => {
       const { fetchPumpswapGraphQL, normalizePumpswapPools } = await import('../../server/pools/pumpswap.js');
-      if ((cfg as any).pumpswap) {
-        (cfg as any).pumpswap.graphqlPageSize = 20;
-        (cfg as any).pumpswap.graphqlMaxPages = 1;
-      }
+      if (!(cfg as any).pumpswap) (cfg as any).pumpswap = {};
+      (cfg as any).pumpswap.graphqlPageSize = 20;
+      (cfg as any).pumpswap.graphqlMaxPages = 1;
       const raw = await fetchPumpswapGraphQL([SOL_MINT]);
       expect(Array.isArray(raw)).toBe(true);
       if (raw.length === 0) {
@@ -779,10 +772,9 @@ function auditFields(record: Record<string, any> | undefined, required: string[]
     it('P1: fetches + normalises V1 pools via dedicated path', async () => {
       const { fetchMeteoraBalancedV1Http, normalizeMeteoraBalancedV1 }
         = await import('../../server/pools/meteoraBalanced.js');
-      if ((cfg as any).meteoraBalanced) {
-        (cfg as any).meteoraBalanced.pageSize = 20;
-        (cfg as any).meteoraBalanced.maxPages = 1;
-      }
+      if (!(cfg as any).meteoraBalanced) (cfg as any).meteoraBalanced = {};
+      (cfg as any).meteoraBalanced.pageSize = 20;
+      (cfg as any).meteoraBalanced.maxPages = 1;
       const v1Raw = await fetchMeteoraBalancedV1Http(
         'https://damm-api.meteora.ag/pools',
       );

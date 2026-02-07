@@ -113,7 +113,7 @@ function getSimWallet(): { publicKey: PublicKey } {
     const fetchConfigs: Array<{ name: string; cfgKey: string; fetchFn: () => Promise<any[]>; normFn: (r: any[]) => Promise<any> }> = [];
 
     // Orca
-    if (cfg.orca) { cfg.orca.graphqlPageSize = 10; cfg.orca.graphqlMaxPages = 1; }
+    if (!cfg.orca) cfg.orca = {}; cfg.orca.graphqlPageSize = 10; cfg.orca.graphqlMaxPages = 1;
     fetchConfigs.push({
       name: 'orca', cfgKey: 'orca',
       fetchFn: async () => { const m = await import('../../server/pools/orcaGraphQL.js'); return m.fetchOrcaGraphQL([SOL_MINT, USDC_MINT]); },
@@ -121,8 +121,8 @@ function getSimWallet(): { publicKey: PublicKey } {
     });
 
     // Raydium AMM + CLMM (same normalizer)
-    if (cfg.raydium) { cfg.raydium.graphqlPageSize = 10; cfg.raydium.graphqlMaxPages = 1; }
-    if (cfg.raydiumClmm) { cfg.raydiumClmm.graphqlPageSize = 10; cfg.raydiumClmm.graphqlMaxPages = 1; cfg.raydiumClmm.initialDelayMultiplier = 1; }
+    if (!cfg.raydium) cfg.raydium = {}; cfg.raydium.graphqlPageSize = 10; cfg.raydium.graphqlMaxPages = 1;
+    if (!cfg.raydiumClmm) cfg.raydiumClmm = {}; cfg.raydiumClmm.graphqlPageSize = 10; cfg.raydiumClmm.graphqlMaxPages = 1; cfg.raydiumClmm.initialDelayMultiplier = 1;
     fetchConfigs.push({
       name: 'raydium-amm', cfgKey: 'raydium',
       fetchFn: async () => { const m = await import('../../server/pools/raydiumGraphQL.js'); return m.fetchRaydiumGraphQL([SOL_MINT, USDC_MINT]); },
@@ -135,7 +135,7 @@ function getSimWallet(): { publicKey: PublicKey } {
     });
 
     // Meteora DLMM
-    if (cfg.meteora) { cfg.meteora.graphqlPageSize = 10; cfg.meteora.graphqlMaxPages = 1; }
+    if (!cfg.meteora) cfg.meteora = {}; cfg.meteora.graphqlPageSize = 10; cfg.meteora.graphqlMaxPages = 1;
     fetchConfigs.push({
       name: 'meteora', cfgKey: 'meteora',
       fetchFn: async () => { const m = await import('../../server/pools/meteoraGraphQL.js'); return m.fetchMeteoraGraphQL([SOL_MINT, USDC_MINT]); },
@@ -143,7 +143,7 @@ function getSimWallet(): { publicKey: PublicKey } {
     });
 
     // PumpSwap
-    if (cfg.pumpswap) { cfg.pumpswap.graphqlPageSize = 10; cfg.pumpswap.graphqlMaxPages = 1; }
+    if (!cfg.pumpswap) cfg.pumpswap = {}; cfg.pumpswap.graphqlPageSize = 10; cfg.pumpswap.graphqlMaxPages = 1;
     fetchConfigs.push({
       name: 'pumpswap', cfgKey: 'pumpswap',
       fetchFn: async () => { const m = await import('../../server/pools/pumpswap.js'); return m.fetchPumpswapGraphQL([SOL_MINT]); },
