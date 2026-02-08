@@ -79,6 +79,9 @@ function getSimWallet(): { publicKey: PublicKey } {
     cfg.system.minPoolsPerPair = 1;
     cfg.system.minAmmLiqBase = 0;
     cfg.system.minClmmLiquidity = 0;
+    // Disable activity filter: test pools may have no recent trades, and the
+    // 12h inactivity check removes most small-page GraphQL results.
+    cfg.system.enableActivityFilter = false;
     cfg.sanity = cfg.sanity || {};
     cfg.sanity.enabled = true;
 
@@ -116,15 +119,16 @@ function getSimWallet(): { publicKey: PublicKey } {
     // Respect 1 req/sec Shyft rate limit
     (cfg as any).shyft.minRequestGapMs = 1100;
 
-    // Small page sizes to keep fetches fast
-    cfg.orca.graphqlPageSize = 10; cfg.orca.graphqlMaxPages = 1;
-    cfg.raydium.graphqlPageSize = 10; cfg.raydium.graphqlMaxPages = 1;
-    cfg.raydiumClmm.graphqlPageSize = 10; cfg.raydiumClmm.graphqlMaxPages = 1;
+    // Page sizes: large enough to capture at least 1 SOL/USDC pool per DEX type.
+    // Meteora DLMM needs more because SOL/USDC pairs may not appear in the first few results.
+    cfg.orca.graphqlPageSize = 20; cfg.orca.graphqlMaxPages = 1;
+    cfg.raydium.graphqlPageSize = 20; cfg.raydium.graphqlMaxPages = 1;
+    cfg.raydiumClmm.graphqlPageSize = 20; cfg.raydiumClmm.graphqlMaxPages = 1;
     cfg.raydiumClmm.initialDelayMultiplier = 1;
-    (cfg as any).raydiumCpmm.graphqlPageSize = 10; (cfg as any).raydiumCpmm.graphqlMaxPages = 1;
+    (cfg as any).raydiumCpmm.graphqlPageSize = 20; (cfg as any).raydiumCpmm.graphqlMaxPages = 1;
     (cfg as any).raydiumCpmm.initialDelayMultiplier = 1;
-    (cfg as any).meteora.graphqlPageSize = 10; (cfg as any).meteora.graphqlMaxPages = 1;
-    (cfg as any).pumpswap.graphqlPageSize = 10; (cfg as any).pumpswap.graphqlMaxPages = 1;
+    (cfg as any).meteora.graphqlPageSize = 50; (cfg as any).meteora.graphqlMaxPages = 2;
+    (cfg as any).pumpswap.graphqlPageSize = 20; (cfg as any).pumpswap.graphqlMaxPages = 1;
 
     // refreshAllSources populates the internal pool cache that getGraphSnapshot reads.
     // Disable meteora_balanced: it uses a slow HTTP/anchor path (not GraphQL) that

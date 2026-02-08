@@ -1268,6 +1268,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       
       collectPools(r.amm, 'raydium', 'amm');
       collectPools(r.clmm, 'raydium', 'clmm');
+      collectPools(r.cpmm || [], 'raydium', 'amm');  // CPMM pools need activity checking too
       collectPools(o.amm, 'orca', 'amm');
       collectPools(o.clmm, 'orca', 'clmm');
       collectPools(m.amm, 'meteora', 'amm');
