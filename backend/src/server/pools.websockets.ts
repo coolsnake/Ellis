@@ -943,6 +943,7 @@ async function preloadPumpswapVaultCache(): Promise<void> {
     
     const web3 = await import('@solana/web3.js');
     const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    const conn = wsConn || (await import('../wallet/wallet.js')).getConnection();
     const batchSize = 100;
     let cached = 0;
     let failed = 0;
@@ -955,7 +956,7 @@ async function preloadPumpswapVaultCache(): Promise<void> {
         // Use RPC limiter for rate limiting (replaces simple delay)
         const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
         const accounts = await withRpcLimit(
-          () => wsConn.getMultipleAccountsInfo(pubkeys),
+          () => conn.getMultipleAccountsInfo(pubkeys),
           weight,
           { module: 'pools', method: 'getMultipleAccountsInfo' }
         ) as Array<{ data: Buffer; executable: boolean; lamports: number; owner: any; rentEpoch?: number } | null>;
@@ -1031,6 +1032,7 @@ async function preloadMeteoraBalancedVaultCache(): Promise<void> {
     
     const web3 = await import('@solana/web3.js');
     const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    const conn = wsConn || (await import('../wallet/wallet.js')).getConnection();
     const batchSize = 100;
     let cached = 0;
     let failed = 0;
@@ -1043,7 +1045,7 @@ async function preloadMeteoraBalancedVaultCache(): Promise<void> {
         // Use RPC limiter for rate limiting (replaces simple delay)
         const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
         const accounts = await withRpcLimit(
-          () => wsConn.getMultipleAccountsInfo(pubkeys),
+          () => conn.getMultipleAccountsInfo(pubkeys),
           weight,
           { module: 'pools', method: 'getMultipleAccountsInfo' }
         ) as Array<{ data: Buffer; executable: boolean; lamports: number; owner: any; rentEpoch?: number } | null>;
@@ -1116,6 +1118,7 @@ async function preloadRaydiumCpmmVaultCache(): Promise<void> {
     
     const web3 = await import('@solana/web3.js');
     const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    const conn = wsConn || (await import('../wallet/wallet.js')).getConnection();
     const batchSize = 100;
     let cached = 0;
     let failed = 0;
@@ -1128,7 +1131,7 @@ async function preloadRaydiumCpmmVaultCache(): Promise<void> {
         // Use RPC limiter for rate limiting
         const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
         const accounts = await withRpcLimit(
-          () => wsConn.getMultipleAccountsInfo(pubkeys),
+          () => conn.getMultipleAccountsInfo(pubkeys),
           weight,
           { module: 'pools', method: 'getMultipleAccountsInfo' }
         ) as Array<{ data: Buffer; executable: boolean; lamports: number; owner: any; rentEpoch?: number } | null>;
@@ -1170,6 +1173,190 @@ async function preloadRaydiumCpmmVaultCache(): Promise<void> {
       error: String(e?.message || e), 
       cat: 'pools' 
     });
+  }
+}
+
+// Hybrid activation: prefetch on-chain pool state before subscribing
+// This uses RPC account fetches + decoder pipeline to populate caches with fresh data
+async function prefetchHybridPools(): Promise<void> {
+  try {
+    const mode = (CONFIG.system as any)?.poolActivationMode || 'immediate';
+    if (mode !== 'hybrid') return;
+
+    const normalizeId = (id: string): string => String(id || '').replace(/[#-]rev$/, '');
+    const addPoolIds = (set: Set<string>, pools?: Array<{ id?: string }>) => {
+      for (const p of pools || []) {
+        const id = normalizeId(String((p as any)?.id || ''));
+        if (id && isValidPublicKey(id)) set.add(id);
+      }
+    };
+
+    const raydiumIds = new Set<string>();
+    const raydiumClmmIds = new Set<string>();
+    const raydiumCpmmIds = new Set<string>();
+    const orcaIds = new Set<string>();
+    const meteoraIds = new Set<string>();
+    const meteoraBalancedIds = new Set<string>();
+    const pumpswapIds = new Set<string>();
+
+    addPoolIds(raydiumIds, raydiumCache.data?.amm);
+    addPoolIds(raydiumIds, raydiumCache.data?.clmm);
+    addPoolIds(raydiumClmmIds, raydiumCache.data?.clmm);
+    addPoolIds(raydiumCpmmIds, cpmmCache.data?.cpmm);
+    addPoolIds(orcaIds, orcaCache.data?.clmm);
+    addPoolIds(meteoraIds, meteoraCache.data?.clmm);
+    addPoolIds(meteoraBalancedIds, metbalCache.data?.amm);
+    addPoolIds(pumpswapIds, pumpswapCache.data?.amm);
+
+    const totalTargets = raydiumIds.size + raydiumCpmmIds.size + orcaIds.size + meteoraIds.size + meteoraBalancedIds.size + pumpswapIds.size;
+    if (totalTargets === 0) {
+      try { logger.info('pools.hybrid.prefetch.skip', { reason: 'no_targets', cat: 'pools' }); } catch {}
+      return;
+    }
+
+    try {
+      logger.info('pools.hybrid.prefetch.start', {
+        total: totalTargets,
+        raydium: raydiumIds.size,
+        raydium_cpmm: raydiumCpmmIds.size,
+        orca: orcaIds.size,
+        meteora: meteoraIds.size,
+        meteora_balanced: meteoraBalancedIds.size,
+        pumpswap: pumpswapIds.size,
+        cat: 'pools',
+      });
+      emit('log', {
+        level: 'info',
+        message: `pools:hybrid prefetch starting (${totalTargets} pools)`,
+        timestamp: new Date().toISOString(),
+        context: { cat: 'pools' },
+      });
+    } catch {}
+
+    // Preload vault balances for pool types that need reserves to price
+    await preloadRaydiumCpmmVaultCache();
+    await preloadPumpswapVaultCache();
+    await preloadMeteoraBalancedVaultCache();
+
+    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    const { getConnection } = await import('../wallet/wallet.js');
+    const conn = getConnection();
+    const commitment = CONFIG.system.txCommitment as any;
+    const batchSize = Math.max(10, Number((CONFIG.system as any)?.hybridPrefetchBatchSize || 100));
+
+    // SDK prefetch for CLMM/DLMM pools to populate executable tick/bin data
+    try {
+      const sdkTargets = [
+        ...Array.from(orcaIds).map(poolId => ({ poolId, dex: 'orca' })),
+        ...Array.from(raydiumClmmIds).map(poolId => ({ poolId, dex: 'raydium' })),
+        ...Array.from(meteoraIds).map(poolId => ({ poolId, dex: 'meteora' })),
+      ];
+      if (sdkTargets.length > 0) {
+        const { refreshInvalidPools } = await import('../execution/cacheValidator.js');
+        const sdkRes = await refreshInvalidPools(conn, sdkTargets as any, {
+          concurrency: Number((CONFIG.system as any)?.hybridPrefetchSdkConcurrency || 5),
+          force: true,
+        });
+        logger.info('pools.hybrid.prefetch.sdk.complete', {
+          total: sdkTargets.length,
+          ...sdkRes,
+          cat: 'pools',
+        });
+      }
+    } catch (e: any) {
+      logger.warn('pools.hybrid.prefetch.sdk.failed', { error: String(e?.message || e), cat: 'pools' });
+    }
+
+    const fetchAccountInfos = async (ids: string[], label: string): Promise<Map<string, any>> => {
+      const result = new Map<string, any>();
+      if (ids.length === 0) return result;
+      const unique = Array.from(new Set(ids));
+      for (let i = 0; i < unique.length; i += batchSize) {
+        const batch = unique.slice(i, i + batchSize);
+        const pubkeys = batch.map((id) => new PublicKey(id));
+        try {
+          const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
+          const infos = await withRpcLimit(
+            () => conn.getMultipleAccountsInfo(pubkeys, commitment),
+            weight,
+            { module: 'pools', method: `getMultipleAccountsInfo:${label}` },
+          );
+          for (let j = 0; j < batch.length; j++) {
+            result.set(batch[j], infos[j]);
+          }
+        } catch (e: any) {
+          logger.warn('pools.hybrid.prefetch.batch_failed', {
+            label,
+            batchStart: i,
+            batchSize: batch.length,
+            error: String(e?.message || e),
+            cat: 'pools',
+          });
+        }
+      }
+      return result;
+    };
+
+    const processPoolAccounts = async (
+      ids: Set<string>,
+      label: string,
+      handler: (info: DecoderAccountInfo, poolId: string) => Promise<any>,
+    ): Promise<{ total: number; processed: number; succeeded: number }> => {
+      const list = Array.from(ids);
+      if (list.length === 0) return { total: 0, processed: 0, succeeded: 0 };
+      const infos = await fetchAccountInfos(list, label);
+      let processed = 0;
+      let succeeded = 0;
+      for (const id of list) {
+        const info = infos.get(id);
+        if (!info?.data) continue;
+        processed += 1;
+        try {
+          const res = await handler(info as DecoderAccountInfo, id);
+          if (res?.success) succeeded += 1;
+        } catch (e) {
+          logger.debug('pools.hybrid.prefetch.handle_failed', {
+            label,
+            poolId: id.slice(0, 8) + '…',
+            error: String((e as Error)?.message || e),
+            cat: 'pools',
+          });
+        }
+      }
+      return { total: list.length, processed, succeeded };
+    };
+
+    const started = Date.now();
+    const [rayRes, cpmmRes, orcaRes, meteoraRes, metBalRes, pumpRes] = await Promise.all([
+      processPoolAccounts(raydiumIds, 'raydium', (info, id) => handleRaydiumUpdate(info, id, new Map())),
+      processPoolAccounts(raydiumCpmmIds, 'raydium_cpmm', (info, id) => handleRaydiumCpmmUpdate(info, id, new Map())),
+      processPoolAccounts(orcaIds, 'orca', (info, id) => handleOrcaUpdate(info, id, new Map())),
+      processPoolAccounts(meteoraIds, 'meteora', (info, id) => handleMeteoraUpdate(info, id, new Map())),
+      processPoolAccounts(meteoraBalancedIds, 'meteora_balanced', (info, id) => handleMeteoraBalancedUpdate(info, id, new Map())),
+      processPoolAccounts(pumpswapIds, 'pumpswap', (info, id) => handlePumpswapUpdate(info, id, new Map())),
+    ]);
+
+    const durationMs = Date.now() - started;
+    try {
+      logger.info('pools.hybrid.prefetch.complete', {
+        durationMs,
+        raydium: rayRes,
+        raydium_cpmm: cpmmRes,
+        orca: orcaRes,
+        meteora: meteoraRes,
+        meteora_balanced: metBalRes,
+        pumpswap: pumpRes,
+        cat: 'pools',
+      });
+      emit('log', {
+        level: 'info',
+        message: `pools:hybrid prefetch complete (${durationMs}ms)`,
+        timestamp: new Date().toISOString(),
+        context: { cat: 'pools' },
+      });
+    } catch {}
+  } catch (e: any) {
+    logger.warn('pools.hybrid.prefetch.failed', { error: String(e?.message || e), cat: 'pools' });
   }
 }
 
@@ -1494,6 +1681,11 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
       } catch {}
     }
   }
+  
+  // Step 3.7: Hybrid activation prefetch (RPC) before subscriptions
+  try {
+    await prefetchHybridPools();
+  } catch {}
   
   // Step 4: Start resubscription in SEQUENTIAL mode (flag tells setup to stagger DEX sources)
   try { 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 // Multi-hop consistency across mixed DEX/pool types
 // Construct a 3-cycle USDC -> SOL -> BTC -> USDC such that the product of forward edge prices equals ~1
-// Forward edge price semantics: price_a_per_b is A per 1 B for edge source=A -> target=B
+// Forward edge price semantics: price_a_per_b is B per 1 A for edge source=A -> target=B
 
 describe('graph multi-hop pricing consistency across mixed DEXes', () => {
   it('USDC->SOL->BTC->USDC cycle product ~ 1 and pair reciprocals hold', async () => {
@@ -18,19 +18,19 @@ describe('graph multi-hop pricing consistency across mixed DEXes', () => {
     const SOL  = 'So11111111111111111111111111111111111111112';
     const BTC  = '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh';
 
-    // Choose consistent prices:
-    // p(USDC/SOL) = 100 USDC per 1 SOL  [Raydium AMM]
-    // p(SOL/BTC) = 20000 SOL per 1 BTC  [Orca CLMM]
-    // p(BTC/USDC) = 1 / (100 * 20000) = 5e-7 BTC per 1 USDC  [Meteora CLMM]
-    const pUSDCperSOL = 100;
-    const pSOLperBTC = 20000;
-    const pBTCperUSDC = 1 / (pUSDCperSOL * pSOLperBTC);
+    // Choose consistent prices (B per 1 A):
+    // p(SOL per USDC) = 1/100  [Raydium AMM]
+    // p(BTC per SOL) = 1/20000 [Orca CLMM]
+    // p(USDC per BTC) = 100 * 20000 = 2,000,000 [Meteora CLMM]
+    const pSOLperUSDC = 1 / 100;
+    const pBTCperSOL = 1 / 20000;
+    const pUSDCperBTC = 100 * 20000;
 
     const rayAmm = [{
       id: 'RAY_AMM_USDC_SOL', dex: 'Raydium', pool_kind: 'amm',
       mint_a: USDC, mint_b: SOL,
       fee_bps: 25,
-      price_a_per_b: pUSDCperSOL,
+      price_a_per_b: pSOLperUSDC,
       liquidity_base: 1_000_000,
       decimals_a: 6,
       decimals_b: 9,
@@ -39,7 +39,7 @@ describe('graph multi-hop pricing consistency across mixed DEXes', () => {
       id: 'ORC_CLMM_SOL_BTC', dex: 'Orca', pool_kind: 'clmm',
       mint_a: SOL, mint_b: BTC,
       fee_bps: 30,
-      price_a_per_b: pSOLperBTC,
+      price_a_per_b: pBTCperSOL,
       sqrt_price_x64: 0,
       liquidity: 1_000_000,
       tick_spacing: 64,
@@ -50,7 +50,7 @@ describe('graph multi-hop pricing consistency across mixed DEXes', () => {
       id: 'MET_CLMM_BTC_USDC', dex: 'Meteora', pool_kind: 'dlmm',
       mint_a: BTC, mint_b: USDC,
       fee_bps: 10,
-      price_a_per_b: pBTCperUSDC,
+      price_a_per_b: pUSDCperBTC,
       sqrt_price_x64: 0,
       liquidity: 500_000,
       tick_spacing: 16,

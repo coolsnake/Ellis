@@ -6,7 +6,7 @@ describe('meteora canonicalization - quoteHierarchy keeps stable on B', () => {
     vi.restoreAllMocks();
   });
 
-  it('orients SOL/USDC to A=SOL, B=USDC and price is A per 1 B', async () => {
+  it('orients SOL/USDC to A=SOL, B=USDC and price is B per 1 A', async () => {
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const SOL  = 'So11111111111111111111111111111111111111112';
     const cfgMod: any = await import('../src/utils/config');
@@ -35,8 +35,8 @@ describe('meteora canonicalization - quoteHierarchy keeps stable on B', () => {
     expect(p.mint_b).toBe(USDC);
     expect(typeof p.price_a_per_b).toBe('number');
     expect(p.price_a_per_b).toBeGreaterThan(0);
-    // With A=SOL, B=USDC: A per 1 B should be < 1
-    expect(p.price_a_per_b).toBeLessThan(1);
+    // With A=SOL, B=USDC: B per 1 A should be > 1
+    expect(p.price_a_per_b).toBeGreaterThan(1);
   });
 });
 

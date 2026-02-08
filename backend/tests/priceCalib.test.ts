@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { calibrateMagnitude } from '../src/server/priceCalib';
 
 describe('priceCalib.calibrateMagnitude', () => {
-  it('scales magnitude by powers of ten to match USD(B)/USD(A) without inverting', () => {
+  it('scales magnitude by powers of ten to match USD(A)/USD(B) without inverting', () => {
     const A = 'MintA';
     const B = 'MintB';
-    // USD prices: A = 2, B = 8 => reference A per 1 B = USD(B)/USD(A) = 4
+    // USD prices: A = 2, B = 8 => reference B per 1 A = USD(A)/USD(B) = 0.25
     const getUsd = (m: string): number | undefined => (m === A ? 2 : (m === B ? 8 : undefined));
     const raw = 0.004; // off by 10^3
     const calibrated = calibrateMagnitude(A, B, raw, getUsd);
-    expect(calibrated).toBeCloseTo(4, 1e-9 as any);
+    expect(calibrated).toBeCloseTo(0.25, 1e-9 as any);
   });
 
   it('returns raw price when USD refs are missing', () => {
@@ -51,16 +51,16 @@ describe('calibrateMagnitude', () => {
     const raw = 1; // off by 100x
     const cal = calibrateMagnitude('A','B', raw, getUsd)!;
     expect(cal).toBeGreaterThan(0);
-    expect(Math.abs(Math.log10(cal / 0.01))).toBeLessThan(0.05);
+    expect(Math.abs(Math.log10(cal / 100))).toBeLessThan(0.05);
   });
 
   it('does not invert orientation (no 1/price candidate)', () => {
     const getUsd = (m: string) => (m === 'A' ? 60000 : 1);
     const raw = 1;
     const cal = calibrateMagnitude('A','B', raw, getUsd)!;
-    expect(cal).toBeLessThan(1);
-    // With powers-of-ten only, nearest step from 1 to 1/60000 is 1e-5 (~0.6x off)
-    expect(Math.abs(Math.log10(cal / (1/60000)))).toBeLessThan(0.25);
+    expect(cal).toBeGreaterThan(1);
+    // With powers-of-ten only, nearest step from 1 to 60000 is 1e5 (~1.67x off)
+    expect(Math.abs(Math.log10(cal / 60000))).toBeLessThan(0.25);
   });
 });
 

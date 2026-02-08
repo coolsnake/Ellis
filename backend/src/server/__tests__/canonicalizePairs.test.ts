@@ -9,7 +9,7 @@ describe('canonicalizePairs swaps all A/B fields and inverts price once', () => 
     id: 'pool1',
     mint_a: B,
     mint_b: A,
-    price_a_per_b: 0.0025, // A per 1 B (tiny)
+    price_a_per_b: 0.0025, // B per 1 A (tiny)
     amount_a: 1_000_000,
     amount_b: 2_000_000,
     amount_a_whole: 10,
@@ -75,7 +75,7 @@ describe('canonicalizePairs quoteHierarchy places preferred quote on B and inver
       id: 'P1',
       mint_a: USDC,
       mint_b: SOL,
-      price_a_per_b: 0.02, // USDC per SOL but USDC should be on B
+      price_a_per_b: 0.02, // SOL per USDC but USDC should be on B
       amount_a: 1_000_000,
       amount_b: 1_000_000_000,
       amount_a_whole: 1_000_000 / 1e6,

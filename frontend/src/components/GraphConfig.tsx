@@ -25,7 +25,7 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     logMinLevel: 'info',
     logAllowCats: '',
     // Pool activation mode
-    poolActivationMode: 'immediate' as 'immediate' | 'lazy',
+    poolActivationMode: 'immediate' as 'immediate' | 'lazy' | 'hybrid',
     poolActivationStats: null as null | { enabled: boolean; activatedCount: number; pendingBatchCount: number },
   });
   const [saving, setSaving] = useState(false);
@@ -181,9 +181,11 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                 >
                   <option value="immediate">Immediate (all pools in graph)</option>
                   <option value="lazy">Lazy (require first WS update)</option>
+                  <option value="hybrid">Hybrid (RPC prefetch + subscribe)</option>
                 </select>
                 <div className="text-xs text-gray-300 mt-1">
                   Lazy mode only adds pools to graph after receiving their first WebSocket update with valid pricing.
+                  Hybrid mode prefetches on-chain pool state via RPC before subscribing, then activates pools with valid prices.
                 </div>
               </div>
               {cfg.poolActivationStats && (

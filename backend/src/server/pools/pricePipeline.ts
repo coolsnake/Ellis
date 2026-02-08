@@ -27,7 +27,7 @@ import { logCatchError } from '../../utils/errorHandler.js';
 export interface RawPriceInput {
   mintA: string;           // Mint A (in DEX's native order, pre-canonical)
   mintB: string;           // Mint B (in DEX's native order, pre-canonical)
-  rawPrice?: number;       // Optional: Price A-per-B in whole token units, DEX's native orientation
+  rawPrice?: number;       // Optional: Price B-per-A in whole units, DEX's native orientation
   decimalsA: number;       // Decimals for mint A
   decimalsB: number;       // Decimals for mint B
   poolId?: string;         // Pool ID for diagnostics
@@ -50,8 +50,8 @@ export interface RawPriceInput {
 export interface ProcessedPrice {
   mintA: string;           // Mint A (canonical order)
   mintB: string;           // Mint B (canonical order)
-  priceForward: number;    // Canonical A-per-B
-  priceReverse: number;    // Canonical B-per-A (inverted)
+  priceForward: number;    // Canonical B-per-A (how many B for 1 A)
+  priceReverse: number;    // Canonical A-per-B (inverted)
   wasSwapped: boolean;     // True if orientation was changed
   decimalsA: number;       // Decimals for canonical mint A
   decimalsB: number;       // Decimals for canonical mint B
@@ -131,7 +131,7 @@ export function processPriceThroughPipeline(
     } else if (input.poolType === 'clmm' && input.sqrtPriceX64) {
       input.rawPrice = calculateClmmPrice(input.sqrtPriceX64, input.decimalsA, input.decimalsB, input.mintA, input.mintB);
     } else if ((input.poolType === 'amm' || input.poolType === 'cpmm') && input.reserveA != null && input.reserveB != null) {
-      // AMM and CPMM both use constant product formula: Price A-per-B = reserveB / reserveA
+      // AMM and CPMM both use constant product formula: Price B-per-A = reserveB / reserveA
       // This is the correct marginal price: how many B you get for 1 A
       input.rawPrice = calculateAmmPrice(input.reserveA, input.reserveB, input.decimalsA, input.decimalsB);
     }

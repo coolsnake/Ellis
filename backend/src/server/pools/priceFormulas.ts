@@ -24,7 +24,7 @@ import { logger } from '../../utils/logger.js';
  * @param decimalsA Decimals for token A
  * @param decimalsB Decimals for token B
  * @param isAtomic If true, reserves are in atomic units and need conversion
- * @returns Price A-per-B in whole token units (how many B you get for 1 A)
+ * @returns Price B-per-A in whole token units (how many B you get for 1 A)
  */
 export function calculateAmmPrice(
   reserveA: number | bigint,
@@ -84,7 +84,7 @@ export function calculateAmmPrice(
  * @param decimalsB Decimals for token B
  * @param mintA Optional mint A (unused in simplified version)
  * @param mintB Optional mint B (unused in simplified version)
- * @returns Price A-per-B in whole token units
+ * @returns Price B-per-A in whole token units
  */
 export function calculateClmmPrice(
   sqrtPriceX64: bigint | number,
@@ -146,7 +146,7 @@ export function calculateClmmPrice(
  *
  * IMPORTANT: price_a_per_b means "how many B tokens for 1 A token" = B/A
  *
- * @param activeId Active bin ID (can be negative)
+ * @param activeId Active bin ID (signed; 0 = price 1.0)
  * @param binStep Bin step in basis points
  * @param tokenXMint Meteora's token X mint address
  * @param tokenYMint Meteora's token Y mint address
@@ -154,7 +154,7 @@ export function calculateClmmPrice(
  * @param mintB Our token B (the quote token)
  * @param decimalsA Decimals for token A
  * @param decimalsB Decimals for token B
- * @returns Price A-per-B in whole token units (how many B for 1 A)
+ * @returns Price B-per-A in whole token units (how many B for 1 A)
  */
 export function calculateMeteoraPrice(
   activeId: number,

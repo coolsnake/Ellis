@@ -356,21 +356,18 @@ function allInRange(values: number[], min: number, max: number): boolean {
   // ════════════════════════════════════════════════════════════════════════
 
   describe('C: DLMM Bin-Walk Simulator (simulateDlmmSwap)', () => {
-    // The simulator uses price = stepMult^(binId - 8388608) where 8388608 is the
-    // Meteora DLMM reference offset. Real pool active_id values are ~8.3M-8.5M.
-    // If the active_id from GraphQL is 0/undefined (fee_bps issue), use the
-    // reference offset as a known-good fallback for deterministic testing.
-    const DLMM_REF_OFFSET = 8388608;
+    // The simulator uses price = stepMult^(binId) with signed bin IDs.
+    // If the active_id from GraphQL is 0/undefined (fee_bps issue), use 0 as
+    // a deterministic fallback so bins still have a price gradient.
 
     function getDlmmActiveId(): number {
       if (dlmmPools.length) {
         const p = dlmmPools[0];
         const id = p.active_id;
-        if (id && Number.isFinite(id) && id > DLMM_REF_OFFSET - 100000) return id;
+        if (id && Number.isFinite(id)) return id;
       }
-      // Fallback: use offset + 100 so bins have a non-trivial price gradient
-      // (at exactly DLMM_REF_OFFSET, price = 1.0 for all bins → no price impact)
-      return DLMM_REF_OFFSET + 100;
+      // Fallback: centered bins still provide a price gradient across bin IDs
+      return 0;
     }
 
     function getDlmmBinStep(): number {

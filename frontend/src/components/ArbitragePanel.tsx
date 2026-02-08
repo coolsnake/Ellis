@@ -85,7 +85,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [sendAmount, setSendAmount] = useState<number>(50);
   const isFetchingRef = useRef(false);
   const [firstLoad, setFirstLoad] = useState(true);
-  const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null; logFile?: string }>>([]);
+  const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null; logFile?: string; sizeUsd?: number; expectedProfitBps?: number; actualProfitUsd?: number }>>([]);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [nmSimLogs, setNmSimLogs] = useState<string[] | null>(null);
   const [nmSimErr, setNmSimErr] = useState<string | null>(null);
@@ -98,6 +98,10 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     const v = Number(n);
     if (!isFinite(v)) return '—';
     return v.toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  };
+  const fmtUsd = (n: number | undefined | null, digits = 2) => {
+    const v = fmt(n, digits);
+    return v === '—' ? '—' : `$${v}`;
   };
   const fmtPctFromBps = (bps?: number) => bps === undefined || bps === null ? '—' : `${(bps/100).toFixed(2)}%`;
   const age = (ms?: number) => {
@@ -789,17 +793,23 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           </Button>
         </div>
         <DataTable 
-          headers={['Time', 'Path', 'Hops', 'Ix', 'Bytes', 'Status', 'Sig', 'Log']} 
+          headers={['Time', 'Path', 'Hops', 'Size $', 'Exp %', 'Act $', 'Ix', 'Bytes', 'Status', 'Sig', 'Log']} 
           compact
         >
           {txRows.length > 0 ? txRows.map((r) => {
             const rowKey = `${r.id}:${r.status}:${r.timeMs}`;
+            const expectedProfitUsd = (typeof r.sizeUsd === 'number' && typeof r.expectedProfitBps === 'number')
+              ? (r.sizeUsd * r.expectedProfitBps / 10000)
+              : undefined;
             return (
               <React.Fragment key={rowKey}>
                 <DataTableRow onClick={() => setExpandedKey(expandedKey === rowKey ? null : rowKey)}>
                   <DataTableCell compact>{new Date(r.timeMs).toLocaleTimeString()}</DataTableCell>
                   <DataTableCell compact mono className="text-xs max-w-[200px] truncate">{(r.path||[]).map(sym).join(' → ')}</DataTableCell>
                   <DataTableCell compact className="text-xs max-w-[200px] truncate">{r.hops.map((h, i) => `${h.dex}`).join(', ')}</DataTableCell>
+                  <DataTableCell compact mono>{fmtUsd(r.sizeUsd, 2)}</DataTableCell>
+                  <DataTableCell compact mono>{fmtPctFromBps(r.expectedProfitBps)}</DataTableCell>
+                  <DataTableCell compact mono>{fmtUsd(r.actualProfitUsd, 2)}</DataTableCell>
                   <DataTableCell compact mono>{r.ixCount}</DataTableCell>
                   <DataTableCell compact mono>{r.txSizeBytes}</DataTableCell>
                   <DataTableCell compact className={r.status === 'failed' ? 'text-red-400' : ''}>{r.status}</DataTableCell>
@@ -820,7 +830,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                 </DataTableRow>
                 {expandedKey === rowKey && (
                   <tr className="bg-gray-900/80">
-                    <td colSpan={8} className="p-4">
+                    <td colSpan={11} className="p-4">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                         <div>
                           <div className="font-semibold text-gray-300 mb-2">Hops</div>
@@ -835,7 +845,10 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                         <div>
                           <div className="font-semibold text-gray-300 mb-2">Details</div>
                           <div className="text-gray-400">
-                            Ix Count: {r.ixCount} · Size: {r.txSizeBytes} bytes · Status: {r.status}
+                            Size: {fmtUsd(r.sizeUsd, 2)} · Expected: {fmtPctFromBps(r.expectedProfitBps)}{expectedProfitUsd !== undefined ? ` (${fmtUsd(expectedProfitUsd, 2)})` : ''} · Actual: {fmtUsd(r.actualProfitUsd, 2)}
+                          </div>
+                          <div className="text-gray-400 mt-1">
+                            Ix Count: {r.ixCount} · Tx Size: {r.txSizeBytes} bytes · Status: {r.status}
                           </div>
                         </div>
                       </div>
@@ -845,7 +858,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
               </React.Fragment>
             );
           }) : (
-            <tr><td colSpan={8}><EmptyState message="No transactions" /></td></tr>
+            <tr><td colSpan={11}><EmptyState message="No transactions" /></td></tr>
           )}
         </DataTable>
       </div>

@@ -92,7 +92,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         meteoraBalanced?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number };
         pumpswap?: { shyftApiKey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; defaultFeeBps?: number; minLiqBase?: number; pageSize?: number; maxPages?: number; pageDelayMs?: number; enableRpcEnrichment?: boolean; rpcBatchSize?: number; validatePrices?: boolean; validationSamples?: number; graphqlPageSize?: number; graphqlMaxPages?: number; mintBatchSize?: number };
         sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number; sanity_applyRaydiumAmm?: boolean; sanity_applyOrcaClmm?: boolean };
-        pools?: { activationMode?: 'immediate' | 'lazy' };
+        pools?: { activationMode?: 'immediate' | 'lazy' | 'hybrid' };
         validation?: { poolDataValidationEnabled?: boolean };
       };
       if (rpcUrl) CONFIG.rpcUrl = rpcUrl;
@@ -143,7 +143,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
       if (pools?.activationMode) {
         try {
           const { setLazyActivationEnabled } = await import('../pools.activation.js');
-          const enabled = pools.activationMode === 'lazy';
+          const enabled = pools.activationMode !== 'immediate';
           setLazyActivationEnabled(enabled);
           (CONFIG.system as any).poolActivationMode = pools.activationMode;
           logger.info('server: pool activation mode changed', { mode: pools.activationMode, enabled, cat: 'server' });

@@ -760,8 +760,8 @@ server.listen(CONFIG.port, () => {
                 let computed = Number((p as any)?.price_a_per_b || 0);
                 try {
                   if (s64 > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-                    // A per 1 B
-                    computed = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
+                    // B per 1 A
+                    computed = (ratio * ratio) * Math.pow(10, (decA as number) - (decB as number));
                   }
                 } catch {}
                 try {

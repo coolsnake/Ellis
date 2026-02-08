@@ -1,17 +1,17 @@
 import { describe, it, expect } from 'vitest';
 
-// Orca CLMM decode sanity: A-per-1-B = 10^(decB - decA) / (ratio^2), ratio = sqrt / 2^64
+// Orca CLMM decode sanity: B-per-1-A = (ratio^2) * 10^(decA - decB), ratio = sqrt / 2^64
 describe('orca clmm sqrt decode', () => {
-  it('decodes A-per-1-B from sqrtPriceX64 and decimals', async () => {
+  it('decodes B-per-1-A from sqrtPriceX64 and decimals', async () => {
     const decA = 9; // e.g., SOL
     const decB = 6; // e.g., USDC
-    const target = 200; // A per 1 B (example magnitude)
-    // For Orca decode formula: target = 10^(decB-decA) / ratio^2 => ratio = sqrt(10^(decB-decA)/target)
-    const ratio = Math.sqrt(Math.pow(10, decB - decA) / target);
+    const target = 200; // B per 1 A (example magnitude)
+    // For Orca decode formula: target = ratio^2 * 10^(decA-decB) => ratio = sqrt(target / 10^(decA-decB))
+    const ratio = Math.sqrt(target / Math.pow(10, decA - decB));
     const sqrt = Math.floor(ratio * Math.pow(2, 64));
     const two64 = Math.pow(2, 64);
     const ratio2 = sqrt / two64;
-    const decoded = Math.pow(10, decB - decA) / (ratio2 * ratio2);
+    const decoded = (ratio2 * ratio2) * Math.pow(10, decA - decB);
     expect(decoded).toBeGreaterThan(0);
     expect(Math.abs(Math.log(decoded / target))).toBeLessThan(1e-6);
   });

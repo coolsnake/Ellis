@@ -176,8 +176,8 @@ export interface DlmmSwapParams {
 /**
  * Simulate a DLMM swap by walking through bins.
  *
- * Each bin has a fixed price: price = (1 + binStep/10000)^(binId - 2^23)
- * (using a reference bin offset of 2^23 = 8388608).
+ * Each bin has a fixed price: price = (1 + binStep/10000)^(binId)
+ * where binId is the signed bin index (0 = price 1.0).
  *
  * For X→Y (selling X):
  *   The bin's Y reserve is available as output. Input capacity at this bin:
@@ -208,7 +208,7 @@ export function simulateDlmmSwap(params: DlmmSwapParams): number {
       if (bin.reserveY <= 0) continue;
 
       // Price at this bin: price_Y_per_X = stepMult^(binId - REF_OFFSET)
-      const price = Math.pow(stepMult, bin.id - 8388608);
+      const price = Math.pow(stepMult, bin.id);
       if (price <= 0 || !Number.isFinite(price)) continue;
 
       // How much X can we sell to drain this bin's Y?
@@ -227,7 +227,7 @@ export function simulateDlmmSwap(params: DlmmSwapParams): number {
       if (remainingInput <= 1e-15) break;
       if (bin.reserveX <= 0) continue;
 
-      const price = Math.pow(stepMult, bin.id - 8388608);
+      const price = Math.pow(stepMult, bin.id);
       if (price <= 0 || !Number.isFinite(price)) continue;
 
       // How much Y can we sell to drain this bin's X?

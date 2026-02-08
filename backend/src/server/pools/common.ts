@@ -21,7 +21,7 @@ export function swapABFields<T extends Record<string, any>>(obj: T): T {
   // Swap mints
   const aMint = out.mint_a; const bMint = out.mint_b;
   out.mint_a = bMint; out.mint_b = aMint;
-  // Invert price once on swap (keep orientation as A per 1 B)
+  // Invert price once on swap (keep orientation as B per 1 A)
   if (typeof out.price_a_per_b === 'number' && out.price_a_per_b > 0) {
     out.price_a_per_b = 1 / out.price_a_per_b;
   }

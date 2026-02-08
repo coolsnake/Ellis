@@ -42,7 +42,7 @@ describe('meteora clmm orientation normalization', () => {
           address: 'MET_CLMM_1',
           tokenA: { mint: 'So11111111111111111111111111111111111111112', decimals: 9 }, // SOL
           tokenB: { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 }, // USDC
-          current_price: 0.0002, // SOL per 1 USDC (inverted for A/B expected)
+          current_price: 0.0002, // SOL per 1 USDC (B per A when A=USDC, B=SOL)
           bin_step: 16,
           active_id: -1007, // Derived from price 0.0002 with binStep 16 (1.0016^-1007 ~= 0.2)
           liquidity: 10000,
@@ -54,7 +54,7 @@ describe('meteora clmm orientation normalization', () => {
     const norm = await mod.normalizeMeteoraHttp(raw);
     const p = norm.clmm.find(p => p.id === 'MET_CLMM_1') as any;
     expect(p).toBeTruthy();
-    // With quoteHierarchy default, stable (USDC) prefers B; normalized A-per-B should be USDC per 1 SOL
+    // With quoteHierarchy default, stable (USDC) prefers B; normalized B-per-A should be USDC per 1 SOL
     expect(p.mint_b).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
     expect(p.mint_a).toBe('So11111111111111111111111111111111111111112');
     expect(typeof p.price_a_per_b).toBe('number');
@@ -73,7 +73,7 @@ describe('meteora normalize http', () => {
         address: 'DLMM_POOL_1',
         tokenA: { mint: 'USDC_MINT', symbol: 'USDC', decimals: 6 },
         tokenB: { mint: 'SOL_MINT', symbol: 'SOL', decimals: 9 },
-        price: 100, // A per 1 B (USDC per 1 SOL)
+        price: 0.01, // B per 1 A (SOL per 1 USDC)
         tokenAAmount: '1000000000', // 1,000 USDC in base units
         tokenBAmount: '1000000000', // 1 SOL in base units
         feeRate: 0.003,
@@ -117,7 +117,6 @@ describe('meteora normalize http - active bin price precedence', () => {
     const activeId = 100;
     const f = 1 + (binStep / 10_000);
     const priceBperA = Math.pow(f, activeId) * Math.pow(10, decA - decB);
-    const expectedAperB = 1 / priceBperA;
 
     const rawPairs = [
       {
@@ -141,8 +140,8 @@ describe('meteora normalize http - active bin price precedence', () => {
     const p = norm.clmm.find((x: any) => x.id === 'DLMM_POOL_X') as any;
     expect(p).toBeTruthy();
     expect(p.price_a_per_b).toBeGreaterThan(0);
-    // Orientation after canonicalization: USDC should be on B; if A=SOL then expected is 1/expectedAperB
-    const orientedExpected = (p.mint_a === SOL2) ? (1 / expectedAperB) : expectedAperB;
+    // Orientation after canonicalization: USDC should be on B; if A=SOL then invert
+    const orientedExpected = (p.mint_a === SOL2) ? (1 / priceBperA) : priceBperA;
     expect(Math.abs((p.price_a_per_b as number) - orientedExpected) / orientedExpected).toBeLessThan(1e-3);
   });
 });

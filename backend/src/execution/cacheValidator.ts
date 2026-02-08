@@ -2315,10 +2315,10 @@ export async function getCacheHealthSummary(
 export async function refreshInvalidPools(
   connection: Connection,
   invalidPools: PoolValidationResult[],
-  options?: { concurrency?: number }
+  options?: { concurrency?: number; force?: boolean }
 ): Promise<{ refreshed: number; failed: number; errors: string[]; pricesUpdated: number }> {
   // Early return if validation is disabled
-  if (!poolDataValidationEnabled) {
+  if (!poolDataValidationEnabled && !options?.force) {
     return { refreshed: 0, failed: 0, errors: [], pricesUpdated: 0 };
   }
   

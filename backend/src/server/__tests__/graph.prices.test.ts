@@ -3,7 +3,7 @@ import { getGraphSnapshot } from '../graph.js';
 import { CONFIG } from '../../utils/config.js';
 
 // We will mock peekRaydiumPools to inject a single AMM SOL/USDC edge
-// A per 1 B orientation: price_a_per_b should be USDC per 1 SOL when A=USDC, B=SOL
+// B per 1 A orientation: price_a_per_b should be SOL per 1 USDC when A=USDC, B=SOL
 
 describe('graph prices orientation - Raydium AMM forward uses normalized', () => {
   it('forward and reverse are reciprocal and near reference', async () => {
@@ -16,7 +16,7 @@ describe('graph prices orientation - Raydium AMM forward uses normalized', () =>
         id: 'ray-amm-sol-usdc', dex: 'Raydium', pool_kind: 'amm',
         mint_a: USDC, mint_b: SOL,
         fee_bps: 25,
-        price_a_per_b: 150, // 150 USDC per 1 SOL (normalized)
+        price_a_per_b: 1 / 150, // 1 SOL per 150 USDC (normalized)
         liquidity_base: 1_000_000,
         amount_a_whole: 500_000,
         amount_b_whole: 4_000,
@@ -44,10 +44,10 @@ describe('graph prices orientation - Raydium AMM forward uses normalized', () =>
       const edgeRev = (snap.edges || []).find((e: any) => e.dex === 'Raydium' && e.source === SOL && e.target === USDC);
       // Graph edges store price_a_per_b for display and we add both forward and reverse with reciprocal.
       expect(edge).toBeTruthy();
-      // Forward should be A per 1 B, which for USDC->SOL is USDC per 1 SOL ~ 150
-      expect(edge?.price_a_per_b).toBeCloseTo(150, 8);
-      // Reverse should be ~ 1/150
-      expect(edgeRev?.price_a_per_b).toBeCloseTo(1 / 150, 8);
+      // Forward should be B per 1 A, which for USDC->SOL is SOL per 1 USDC ~ 1/150
+      expect(edge?.price_a_per_b).toBeCloseTo(1 / 150, 8);
+      // Reverse should be ~ 150
+      expect(edgeRev?.price_a_per_b).toBeCloseTo(150, 8);
       // Product ~ 1
       if (edge && edgeRev) {
         const prod = Number(edge.price_a_per_b) * Number(edgeRev.price_a_per_b);

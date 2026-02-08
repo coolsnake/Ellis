@@ -202,13 +202,13 @@ function computeHeuristicReservesFromMin(
   priceAperB: number,
 ): { reserveA: number; reserveB: number } | undefined {
   if (!(minReserve > 0) || !(priceAperB > 0)) return undefined;
-  // price_a_per_b = A per 1 B
+  // price_a_per_b = B per 1 A
   if (priceAperB >= 1) {
-    // A is larger, assume B is min
-    return { reserveA: minReserve * priceAperB, reserveB: minReserve };
+    // B is larger in units, assume A is the minimum side
+    return { reserveA: minReserve, reserveB: minReserve * priceAperB };
   }
-  // A is smaller, assume A is min
-  return { reserveA: minReserve, reserveB: minReserve / priceAperB };
+  // B is smaller in units, assume B is the minimum side
+  return { reserveA: minReserve / priceAperB, reserveB: minReserve };
 }
 
 /**
@@ -262,20 +262,20 @@ function computeActiveRangeCapacityRaw(
       let activeCapacity = 0;
 
       if (xToY) {
-        const price = Math.pow(stepMult, dlmm.activeBinId - 8388608);
+        const price = Math.pow(stepMult, dlmm.activeBinId);
         activeCapacity = (activeBin?.reserveY ?? 0) / (price > 0 ? price : 1);
         if (activeCapacity <= 0) {
           for (const bin of dlmm.bins.filter(b => b.id <= dlmm.activeBinId)) {
-            const p = Math.pow(stepMult, bin.id - 8388608);
+            const p = Math.pow(stepMult, bin.id);
             activeCapacity += bin.reserveY / (p > 0 ? p : 1);
           }
         }
       } else {
-        const price = Math.pow(stepMult, dlmm.activeBinId - 8388608);
+        const price = Math.pow(stepMult, dlmm.activeBinId);
         activeCapacity = (activeBin?.reserveX ?? 0) * (price > 0 ? price : 1);
         if (activeCapacity <= 0) {
           for (const bin of dlmm.bins.filter(b => b.id >= dlmm.activeBinId)) {
-            const p = Math.pow(stepMult, bin.id - 8388608);
+            const p = Math.pow(stepMult, bin.id);
             activeCapacity += bin.reserveX * (p > 0 ? p : 1);
           }
         }
@@ -422,12 +422,12 @@ function buildSlippageCurveFromSimulation(
     if (xToY) {
       // X→Y: output is Y, capacity limited by Y reserves in active + lower bins
       const stepMult = 1 + binStep / 10000;
-      const price = Math.pow(stepMult, dlmm.activeBinId - 8388608);
+      const price = Math.pow(stepMult, dlmm.activeBinId);
       activeCapacity = (activeBin?.reserveY ?? 0) / (price > 0 ? price : 1);
     } else {
       // Y→X: output is X, capacity limited by X reserves in active + upper bins
       const stepMult = 1 + binStep / 10000;
-      const price = Math.pow(stepMult, dlmm.activeBinId - 8388608);
+      const price = Math.pow(stepMult, dlmm.activeBinId);
       activeCapacity = (activeBin?.reserveX ?? 0) * (price > 0 ? price : 1);
     }
 
@@ -436,12 +436,12 @@ function buildSlippageCurveFromSimulation(
       const stepMult = 1 + binStep / 10000;
       if (xToY) {
         for (const bin of dlmm.bins.filter(b => b.id <= dlmm.activeBinId)) {
-          const price = Math.pow(stepMult, bin.id - 8388608);
+          const price = Math.pow(stepMult, bin.id);
           activeCapacity += bin.reserveY / (price > 0 ? price : 1);
         }
       } else {
         for (const bin of dlmm.bins.filter(b => b.id >= dlmm.activeBinId)) {
-          const price = Math.pow(stepMult, bin.id - 8388608);
+          const price = Math.pow(stepMult, bin.id);
           activeCapacity += bin.reserveX * (price > 0 ? price : 1);
         }
       }
@@ -604,9 +604,9 @@ export function isPoolValidForGraph(
   );
   
   if (!sourceSanitized && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
-    // price is A per 1 B, USD ref should be USD(B)/USD(A)
+    // price is B per 1 A, USD ref should be USD(A)/USD(B)
     if (Number.isFinite(price) && price > 0) {
-      const ref = (bUsd as number) / (aUsd as number);
+      const ref = (aUsd as number) / (bUsd as number);
       const dev = Math.max(price / ref, ref / price);
       if (dev > maxPriceDeviation) {
         try {
@@ -659,7 +659,7 @@ export function edgesFromPoolIncremental(
   // If price_a_per_b is missing, try to derive from reserves (CPMM) or sqrt_price (CLMM)
   if (!Number.isFinite(fwdRaw) || fwdRaw <= 0) {
     if (kind === 'cpmm') {
-      // CPMM: Price A-per-B = reserveB / reserveA (adjusted for decimals)
+      // CPMM: Price B-per-A = reserveB / reserveA (adjusted for decimals)
       // For constant product AMM: to get 1 unit of A, you pay (reserveB/reserveA) units of B
       // This is the same formula as Raydium AMM v4
       try {
@@ -668,7 +668,7 @@ export function edgesFromPoolIncremental(
         const decA = Number((p as any)?.decimals_a || (p as any)?.native_decimals_a || 9);
         const decB = Number((p as any)?.decimals_b || (p as any)?.native_decimals_b || 9);
         if (reserveA > 0n && reserveB > 0n) {
-          // Price A-per-B = reserveB / reserveA * 10^(decA - decB)
+          // Price B-per-A = reserveB / reserveA * 10^(decA - decB)
           // atomic_ratio = reserveB / reserveA
           // decimal_adjustment = 10^(decA - decB) to convert atomic to whole units
           const atomicRatio = Number(reserveB) / Number(reserveA);
@@ -775,7 +775,7 @@ export function edgesFromPoolIncremental(
   }
 
   const feeMultiplier = 1 - Math.max(0, fee) / 10000;
-  const spotRate = fwd && fwd > 0 ? (1 / fwd) * feeMultiplier : 0;
+  const spotRate = fwd && fwd > 0 ? fwd * feeMultiplier : 0;
   // Priority chain: tick/bin simulation (high confidence) > reserve-based (low)
   const slippageCurve =
     buildSlippageCurveFromSimulation(kind, id, fee, spotRate, wasSwapped, p) ||
