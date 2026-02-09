@@ -1890,7 +1890,16 @@ function runWebsocketRefreshLoop(): void {
         const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
         // Record connection so we can actively close its underlying WS on unsubscribe
         wsConn = conn;
-        
+
+        // Create WebSocket connection pool for distributing subscriptions across
+        // multiple connections (RPC nodes limit 100 subscriptions per connection)
+        const { WsConnectionPool } = await import('./pools/websockets/connectionPool.js');
+        const wsConnPool = new WsConnectionPool({
+          rpcUrl: CONFIG.rpcUrl,
+          commitment: CONFIG.system.txCommitment as any,
+          web3: web3,
+        });
+
         // Protect the RPC WebSocket from being called on closed sockets
         // This prevents web3.js's internal _updateSubscriptions from crashing
         try {
@@ -4043,9 +4052,9 @@ function runWebsocketRefreshLoop(): void {
                   // onAccountChange returns synchronously, so we need to acquire the slot before calling it
                   await acquireRpcSlots(1);
                   
-                  // Call onAccountChange synchronously after acquiring slot
+                  // Call onAccountChange via connection pool (distributes across multiple WS connections)
                   // Capture subscriptionId in closure for callback logging
-                  const subscriptionId = conn.onAccountChange(accountPk, (info: any) => { 
+                  const subscriptionId = await wsConnPool.onAccountChange(accountPk, (info: any) => {
                       try { 
                         // Log every WebSocket event for diagnostics
                         try {
@@ -4122,9 +4131,9 @@ function runWebsocketRefreshLoop(): void {
                   // onProgramAccountChange returns synchronously, so we need to acquire the slot before calling it
                   await acquireRpcSlots(1);
                   
-                  // Call onProgramAccountChange synchronously after acquiring slot
-                  const subscriptionId = conn.onProgramAccountChange(programPk, (ch: any) => { 
-                    try { cb(ch); } catch {} 
+                  // Call onProgramAccountChange via connection pool (distributes across multiple WS connections)
+                  const subscriptionId = await wsConnPool.onProgramAccountChange(programPk, (ch: any) => {
+                    try { cb(ch); } catch {}
                   });
                   
                   return subscriptionId;
@@ -6061,58 +6070,14 @@ function runWebsocketRefreshLoop(): void {
             // Begin async teardown and websocket close; future setups will await wsClosePromise
             wsClosePromise = (async () => {
               try {
-                // Collect all bin subscriptions from trackers before clearing
-                // These might not be in the subs array if setup() was called multiple times
-                const binSubIds: number[] = [];
+                // Close all pooled subscription connections (handles unsubscribe + close for each)
                 try {
-                  for (const tracker of meteoraBinTrackers.values()) {
-                    for (const accountInfo of tracker.accounts.values()) {
-                      if (typeof accountInfo.id === 'number') {
-                        binSubIds.push(accountInfo.id);
-                      }
-                    }
-                  }
-                } catch {}
+                  await wsConnPool.closeAll();
+                } catch (poolErr) {
+                  try { logger.warn('ws.pool.closeAll.error', { error: String(poolErr), cat: 'pools' }); } catch {}
+                }
 
-                // Best-effort await listener removals, but avoid calling into RPC when WS is CLOSING/CLOSED
-                const removals: Array<Promise<any>> = [];
-                const wsAny = (wsConn as any)?._rpcWebSocket?._ws;
-                const ready: number = Number(wsAny?.readyState);
-                // Only allow RPC calls if socket is OPEN (1), not CONNECTING (0) as CONNECTING may fail
-                const canRpc = (ready === 1); // Only OPEN, not CONNECTING
-                
-                // Unsubscribe from main subs array BEFORE closing WebSocket
-                // This ensures subscription maps are still intact during unsubscribe
-                for (const s of subs) {
-                  try {
-                    if (!canRpc) continue;
-                    if (s.kind === 'account') {
-                      removals.push((conn as any).removeAccountChangeListener(s.id).catch(() => {}));
-                    } else {
-                      removals.push((conn as any).removeProgramAccountChangeListener(s.id).catch(() => {}));
-                    }
-                  } catch {}
-                }
-                
-                // Also unsubscribe from bin subscriptions that might not be in subs array
-                for (const binId of binSubIds) {
-                  try {
-                    if (!canRpc) continue;
-                    // Check if this ID is already in subs to avoid double-unsubscribe
-                    const alreadyInSubs = subs.some(s => s.id === binId);
-                    if (!alreadyInSubs) {
-                      removals.push((conn as any).removeAccountChangeListener(binId).catch(() => {}));
-                    }
-                  } catch {}
-                }
-                
-                // Wait for all unsubscribe operations to complete before closing WebSocket
-                if (canRpc && removals.length) {
-                  try { await Promise.allSettled(removals); } catch {}
-                }
-                
-                // NOW close WebSocket and clear subscription maps AFTER unsubscribing
-                // This prevents "Ignored unsubscribe request" warnings from web3.js
+                // Close the primary RPC connection (used for getAccountInfo, etc.)
                 const { safeCloseWebSocket } = await import('../drift/wsHelper.js');
                 await safeCloseWebSocket(conn, 'pools.unsubscribe');
                 

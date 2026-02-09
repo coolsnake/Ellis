@@ -178,6 +178,7 @@ export const CONFIG = {
     wsPoolStaleMonitorEnabled: process.env.WS_POOL_STALE_MONITOR !== 'false', // Enabled by default
     wsPoolStaleThresholdMs: Number(process.env.WS_POOL_STALE_THRESHOLD_MS || 120000), // 2 min = stale
     wsPoolStaleCheckMs: Number(process.env.WS_POOL_STALE_CHECK_MS || 60000), // Check every 1 min
+    wsMaxSubsPerConn: Number(process.env.WS_MAX_SUBS_PER_CONN || 90), // Max subscriptions per WS connection (RPC limit is 100)
     
     // RPC rate limiting configuration
     // These values are also configurable via RPC_MAX_RPS, RPC_BURST, RPC_MIN_GAP_MS env vars in rpcLimiter.ts
