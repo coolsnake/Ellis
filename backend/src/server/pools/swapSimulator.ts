@@ -6,13 +6,19 @@
  * input→output mappings that account for concentrated liquidity
  * boundaries, replacing the heuristic constant-product approximation.
  *
- * Used by graph.edges.ts to build high-confidence slippage curves.
+ * IMPORTANT unit conventions:
+ *   - simulateClmmSwap: input/output in ATOMIC units (raw lamports)
+ *   - simulateDlmmSwap: input/output in WHOLE tokens (human-readable)
+ *
+ * Used by graph.edges.ts to build high-confidence slippage curves,
+ * and by execution/resolver/simulatedQuote.ts to provide accurate
+ * quotes in the execution path.
  */
 
 // ────────────────────── CLMM tick-walk ──────────────────────
 
 export interface ClmmSwapParams {
-  /** Input amount in whole (human-readable) input tokens */
+  /** Input amount in ATOMIC units (raw lamports / smallest unit). NOT whole tokens. */
   inputAmount: number;
   /** Current sqrt price as a float: 1.0001^(tick/2) */
   currentSqrtPrice: number;
@@ -42,7 +48,7 @@ export interface ClmmSwapParams {
  *
  *   At each initialized tick boundary, L += liquidityNet * direction.
  *
- * @returns total output in whole output tokens, or 0 if simulation fails.
+ * @returns total output in ATOMIC units (same scale as input), or 0 if simulation fails.
  */
 export function simulateClmmSwap(params: ClmmSwapParams): number {
   const { inputAmount, currentSqrtPrice, currentLiquidity, ticks, currentTick, feeBps, aToB } = params;

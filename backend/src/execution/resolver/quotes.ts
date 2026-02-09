@@ -3,6 +3,7 @@ import { CONFIG } from '../../utils/config.js';
 import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getDecimalsFromCache } from '../../server/pools/decimals.js';
+import { quoteClmmViaSimulator, quoteDlmmViaSimulator } from './simulatedQuote.js';
 
 // Track fallback decimal usage for monitoring
 let fallbackDecimalCount = 0;
@@ -278,6 +279,27 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
+            // BigInt-precision constant product (eliminates floating-point rounding for large reserves)
+            const reserveInRawStr = String(isRev
+              ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? '')
+              : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? ''));
+            const reserveOutRawStr = String(isRev
+              ? ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? '')
+              : ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? ''));
+            if (reserveInRawStr && reserveOutRawStr) {
+              try {
+                const reserveInRaw = BigInt(reserveInRawStr);
+                const reserveOutRaw = BigInt(reserveOutRawStr);
+                if (reserveInRaw > 0n && reserveOutRaw > 0n) {
+                  const feeBpsBig = BigInt(Math.max(0, Math.min(9900, Math.round(feeBps))));
+                  const amtInAfterFee = amountInRaw * (10000n - feeBpsBig) / 10000n;
+                  const outRaw = (amtInAfterFee * reserveOutRaw) / (reserveInRaw + amtInAfterFee);
+                  if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+                }
+              } catch { /* parse error, fall through to Number path */ }
+            }
+
+            // Number-precision fallback (when raw reserves unavailable)
             const reserveInWhole = Number(
               isRev
                 ? (p as any)?.amount_b_whole ?? (p as any)?.reserveB ?? 0
@@ -332,6 +354,27 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
             const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
             
             if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
+              // BigInt-precision constant product (eliminates floating-point rounding)
+              const cpmmReserveInRawStr = String(isRev
+                ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? '')
+                : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? ''));
+              const cpmmReserveOutRawStr = String(isRev
+                ? ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? '')
+                : ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? ''));
+              if (cpmmReserveInRawStr && cpmmReserveOutRawStr) {
+                try {
+                  const cpmmResInRaw = BigInt(cpmmReserveInRawStr);
+                  const cpmmResOutRaw = BigInt(cpmmReserveOutRawStr);
+                  if (cpmmResInRaw > 0n && cpmmResOutRaw > 0n) {
+                    const cpmmFeeBps = BigInt(Math.max(0, Math.min(9900, Math.round(feeBps))));
+                    const cpmmAmtAfterFee = amountInRaw * (10000n - cpmmFeeBps) / 10000n;
+                    const cpmmOutRaw = (cpmmAmtAfterFee * cpmmResOutRaw) / (cpmmResInRaw + cpmmAmtAfterFee);
+                    if (cpmmOutRaw > 0n) return sanityCheckAndCorrectQuote(cpmmOutRaw, hop, amountInRaw);
+                  }
+                } catch { /* parse error, fall through */ }
+              }
+
+              // Number-precision fallback
               const reserveInWhole = Number(
                 isRev
                   ? (p as any)?.amount_b_whole ?? 0
@@ -343,7 +386,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                   : (p as any)?.amount_b_whole ?? 0,
               );
               const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
-              
+
               if (reserveInWhole > 0 && reserveOutWhole > 0 && Number.isFinite(amtIn)) {
                 // Constant product formula: out = (in * fee * reserveOut) / (reserveIn + in * fee)
                 const amtInAfterFee = amtIn * fee;
@@ -351,7 +394,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
                 if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
               }
-              
+
               // Fallback to price-based calculation
               const px = Number((p as any)?.price_a_per_b || 0);
               if (px > 0 && Number.isFinite(amtIn)) {
@@ -395,6 +438,27 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
+            // BigInt-precision constant product (eliminates floating-point rounding)
+            const pumpResInRawStr = String(isRev
+              ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? '')
+              : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? ''));
+            const pumpResOutRawStr = String(isRev
+              ? ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? '')
+              : ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? ''));
+            if (pumpResInRawStr && pumpResOutRawStr) {
+              try {
+                const pumpResInRaw = BigInt(pumpResInRawStr);
+                const pumpResOutRaw = BigInt(pumpResOutRawStr);
+                if (pumpResInRaw > 0n && pumpResOutRaw > 0n) {
+                  const pumpFeeBps = BigInt(Math.max(0, Math.min(9900, Math.round(feeBps))));
+                  const pumpAmtAfterFee = amountInRaw * (10000n - pumpFeeBps) / 10000n;
+                  const pumpOutRaw = (pumpAmtAfterFee * pumpResOutRaw) / (pumpResInRaw + pumpAmtAfterFee);
+                  if (pumpOutRaw > 0n) return sanityCheckAndCorrectQuote(pumpOutRaw, hop, amountInRaw);
+                }
+              } catch { /* parse error, fall through */ }
+            }
+
+            // Number-precision fallback
             const reserveInWhole = Number(
               isRev
                 ? (p as any)?.amount_b_whole ?? 0
@@ -406,7 +470,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 : (p as any)?.amount_b_whole ?? 0,
             );
             const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
-            
+
             if (reserveInWhole > 0 && reserveOutWhole > 0 && Number.isFinite(amtIn)) {
               // Constant product formula: out = (in * fee * reserveOut) / (reserveIn + in * fee)
               const amtInAfterFee = amtIn * fee;
@@ -499,6 +563,44 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
             }
             
             // V1 pools (or V2 fallback): Use constant product formula
+            // BigInt-precision path first
+            const dammResInRawStr = String(isRev
+              ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? '')
+              : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? ''));
+            const dammResOutRawStr = String(isRev
+              ? ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? '')
+              : ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? ''));
+            if (dammResInRawStr && dammResOutRawStr) {
+              try {
+                const dammResInRaw = BigInt(dammResInRawStr);
+                const dammResOutRaw = BigInt(dammResOutRawStr);
+                if (dammResInRaw > 0n && dammResOutRaw > 0n) {
+                  const dammFeeBig = BigInt(Math.max(0, Math.min(9900, Math.round(feeBps))));
+                  const dammAmtAfterFee = amountInRaw * (10000n - dammFeeBig) / 10000n;
+                  const dammOutRaw = (dammAmtAfterFee * dammResOutRaw) / (dammResInRaw + dammAmtAfterFee);
+
+                  // Log warning if V2 pool is using reserve fallback (likely incorrect)
+                  if (isV2Pool) {
+                    try {
+                      const { logger } = await import('../../utils/logger.js');
+                      logger.warn('meteora_balanced.v2.quote.reserve_fallback', {
+                        cat: 'tx',
+                        ctx: {
+                          poolId: id.slice(0, 8),
+                          warning: 'V2 pool using reserve-based quote (sqrtPrice unavailable)',
+                          hasSqrtPrice: !!(p as any)?._sqrtPrice,
+                          priceAperB: (p as any)?.price_a_per_b,
+                        }
+                      });
+                    } catch {}
+                  }
+
+                  if (dammOutRaw > 0n) return sanityCheckAndCorrectQuote(dammOutRaw, hop, amountInRaw);
+                }
+              } catch { /* parse error, fall through */ }
+            }
+
+            // Number-precision fallback
             const reserveInWhole = Number(
               isRev
                 ? (p as any)?.amount_b_whole ?? 0
@@ -509,7 +611,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 ? (p as any)?.amount_a_whole ?? 0
                 : (p as any)?.amount_b_whole ?? 0,
             );
-            
+
             if (reserveInWhole > 0 && reserveOutWhole > 0 && Number.isFinite(amtIn)) {
               // Constant product formula: out = (in * fee * reserveOut) / (reserveIn + in * fee)
               const amtInAfterFee = amtIn * fee;
@@ -626,9 +728,44 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           const poolDecOut = Number(actualIsRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
           const decIn = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
           const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
+
+          // TRY BIN-WALK SIMULATOR FIRST (accurate for swaps crossing bin boundaries)
+          {
+            const dlmmBinStep = Number((p as any)?.bin_step ?? (p as any)?.binStep ?? (p as any)?.tick_spacing ?? 0);
+            if (dlmmBinStep > 0) {
+              // xToY is in NATIVE direction: native X = nativeMintA, native Y = nativeMintB
+              const simOut = quoteDlmmViaSimulator(
+                id,
+                amountInRaw,
+                decIn,
+                decOut,
+                feeBps,
+                dlmmBinStep,
+                nativeXtoY,
+              );
+              if (simOut !== null && simOut > 0n) {
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.debug('meteora.dlmm.quote.simulator_hit', {
+                    cat: 'tx',
+                    ctx: {
+                      poolId: hop.poolId,
+                      amountIn: amountInRaw.toString(),
+                      amountOut: simOut.toString(),
+                      direction: nativeXtoY ? 'X→Y' : 'Y→X',
+                      source: 'bin_walk_simulator',
+                    }
+                  });
+                } catch (e) { logCatchError('resolver.quotes', e); }
+                return sanityCheckAndCorrectQuote(simOut, hop, amountInRaw);
+              }
+            }
+          }
+
+          // FALLBACK: Spot-price math (no bin data in rangeCache)
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           let px = Number((p as any)?.price_a_per_b || 0);
-          
+
           // FALLBACK: Calculate price from reserves if missing
           if (!(px > 0)) {
             const amtA = Number((p as any)?.amount_a || 0);
@@ -969,10 +1106,44 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
     const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
     
     if (!Number.isFinite(decIn) || !Number.isFinite(decOut)) return 0n;
-    
+
+    // TRY TICK-WALK SIMULATOR FIRST (accurate for swaps crossing tick boundaries)
+    {
+      const currentTick = cached?.currentTickIndex;
+      const simOut = quoteClmmViaSimulator(
+        poolId,
+        amountInRaw,
+        sqrtPriceX64,
+        decIn,
+        decOut,
+        feeBps,
+        nativeAtoB,
+        Number.isFinite(currentTick) ? currentTick : undefined,
+        undefined, // use rangeData liquidity
+      );
+      if (simOut !== null && simOut > 0n) {
+        try {
+          const { logger } = await import('../../utils/logger.js');
+          logger.debug('orca.quote.local.simulator_hit', {
+            cat: 'tx',
+            ctx: {
+              pool: poolId,
+              amountIn: amountInRaw.toString(),
+              amountOut: simOut.toString(),
+              feeBps,
+              direction: nativeAtoB ? 'NativeAtoB' : 'NativeBtoA',
+              source: 'tick_walk_simulator',
+            }
+          });
+        } catch (e) { logCatchError('resolver.quotes', e); }
+        return simOut;
+      }
+    }
+
+    // FALLBACK: Spot-price math (no tick data available in rangeCache)
     // Apply fee
     const amountInAfterFee = (amountInRaw * BigInt(10000 - feeBps)) / 10000n;
-    
+
     // CLMM price formula: price = (sqrtPriceX64 / 2^64)^2
     // sqrtPriceX64 is in NATIVE orientation, so we use nativeAtoB for direction
     // For native A->B: outB = inA * price
@@ -1187,6 +1358,58 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
   // swappingBtoA means we're going from B to A, which is the "reverse" direction
   const isRev = swappingBtoA;
 
+  // TRY TICK-WALK SIMULATOR FIRST (accurate for swaps crossing tick boundaries)
+  {
+    const rayCurrentTick = Number((pool as any)?.tick_current ?? (pool as any)?.tickCurrent);
+    const raySqrtPriceRaw = (pool as any)?.sqrt_price_x64_raw ?? (pool as any)?.sqrt_price_x64;
+    const raySqrtPriceX64 = raySqrtPriceRaw != null ? (() => { try { return BigInt(raySqrtPriceRaw); } catch { return null; } })() : null;
+
+    // Get decimals for simulator
+    const simCacheDecIn = getDecimalsFromCache(hop.inputMint);
+    const simCacheDecOut = getDecimalsFromCache(hop.outputMint);
+    const simPoolDecIn = isRev
+      ? Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB)
+      : Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA);
+    const simPoolDecOut = isRev
+      ? Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA)
+      : Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB);
+    const simDecIn = simCacheDecIn ?? (Number.isFinite(simPoolDecIn) ? simPoolDecIn : (hop.inputDecimals ?? 9));
+    const simDecOut = simCacheDecOut ?? (Number.isFinite(simPoolDecOut) ? simPoolDecOut : (hop.outputDecimals ?? 9));
+    const simFeeBps = clampFeeBps((pool as any)?.fee_bps ?? (hop as any)?.fee_bps);
+
+    if (raySqrtPriceX64 && raySqrtPriceX64 > 0n) {
+      const simOut = quoteClmmViaSimulator(
+        baseId,
+        amountInRaw,
+        raySqrtPriceX64,
+        simDecIn,
+        simDecOut,
+        simFeeBps,
+        swappingAtoB,
+        Number.isFinite(rayCurrentTick) ? rayCurrentTick : undefined,
+        undefined,
+      );
+      if (simOut !== null && simOut > 0n) {
+        try {
+          import('../../utils/logger.js').then(({ logger }) => {
+            logger.debug('raydium.clmm.quote.simulator_hit', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                amountIn: amountInRaw.toString(),
+                amountOut: simOut.toString(),
+                direction: isRev ? 'B→A' : 'A→B',
+                source: 'tick_walk_simulator',
+              }
+            });
+          });
+        } catch (e) { logCatchError('resolver.quotes', e); }
+        return simOut;
+      }
+    }
+  }
+
+  // FALLBACK: Price-ratio spot math (no tick data in rangeCache)
   let ratio = extractClmmPriceRatio(pool, isRev);
   
   // FALLBACK: Calculate price ratio from amount_a_whole and amount_b_whole if missing
