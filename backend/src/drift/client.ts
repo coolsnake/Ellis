@@ -88,6 +88,11 @@ export class DriftService {
   private lastWarmupAtMs: number = 0;
   // Cleanup tracking to prevent race conditions between shutdown and startup
   private cleanupPromise: Promise<void> | null = null;
+  // Connection pool for distributing subscriptions (avoids 100-sub-per-WS limit)
+  private wsPoolConns: Connection[] = [];
+  private wsPoolSubCounts: number[] = [];
+  private wsPoolSubMap: Map<number, { conn: Connection; realId: number }> = new Map();
+  private wsPoolNextId: number = 1_000_000;
   // Mutex: serialise concurrent init() callers so only one DriftClient is ever created
   private initPromise: Promise<void> | null = null;
   // Cached total user count (Helius GPA)
@@ -261,11 +266,74 @@ export class DriftService {
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
     
     // Protect the RPC WebSocket from being called on closed sockets
+    let protectRpcWebSocket: any;
     try {
-      const { protectRpcWebSocket } = await import('./wsHelper.js');
+      const wsHelper = await import('./wsHelper.js');
+      protectRpcWebSocket = wsHelper.protectRpcWebSocket;
       protectRpcWebSocket(this.connection, 'drift.init');
     } catch (e: any) { safeLog.debug('drift.protectRpcWebSocket', { error: String(e?.message || e), cat: 'drift' }); }
-    
+
+    // Distribute subscriptions across multiple WS connections to avoid 100-sub limit.
+    // Monkey-patch onAccountChange / onProgramAccountChange on the connection so the
+    // Drift SDK transparently uses pooled connections for subscriptions.
+    if (subType === 'websocket') {
+      const maxSubsPerConn = Number((CONFIG as any).system?.wsMaxSubsPerConn || 90);
+      const self = this;
+
+      const allocatePoolConn = (): { conn: Connection; idx: number } => {
+        for (let i = 0; i < self.wsPoolConns.length; i++) {
+          if (self.wsPoolSubCounts[i] < maxSubsPerConn) return { conn: self.wsPoolConns[i], idx: i };
+        }
+        // All full or none yet — create new connection
+        const c = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
+        try { if (protectRpcWebSocket) protectRpcWebSocket(c, `drift.pool[${self.wsPoolConns.length}]`); } catch {}
+        self.wsPoolConns.push(c);
+        self.wsPoolSubCounts.push(0);
+        logger.info('drift.pool.connection.created', {
+          index: self.wsPoolConns.length - 1, maxSubsPerConn, cat: 'drift'
+        });
+        return { conn: c, idx: self.wsPoolConns.length - 1 };
+      };
+
+      // Patch onAccountChange → route to pool
+      (this.connection as any).onAccountChange = function(account: any, callback: any, commitment?: any) {
+        const { conn, idx } = allocatePoolConn();
+        const realId = conn.onAccountChange(account, callback, commitment);
+        self.wsPoolSubCounts[idx]++;
+        const virtualId = self.wsPoolNextId++;
+        self.wsPoolSubMap.set(virtualId, { conn, realId });
+        return virtualId;
+      };
+
+      // Patch removeAccountChangeListener → route to correct pool connection
+      (this.connection as any).removeAccountChangeListener = async function(id: number) {
+        const entry = self.wsPoolSubMap.get(id);
+        if (entry) {
+          self.wsPoolSubMap.delete(id);
+          return entry.conn.removeAccountChangeListener(entry.realId);
+        }
+      };
+
+      // Patch onProgramAccountChange → route to pool
+      (this.connection as any).onProgramAccountChange = function(programId: any, callback: any, ...rest: any[]) {
+        const { conn, idx } = allocatePoolConn();
+        const realId = conn.onProgramAccountChange(programId, callback, ...rest);
+        self.wsPoolSubCounts[idx]++;
+        const virtualId = self.wsPoolNextId++;
+        self.wsPoolSubMap.set(virtualId, { conn, realId });
+        return virtualId;
+      };
+
+      // Patch removeProgramAccountChangeListener → route to correct pool connection
+      (this.connection as any).removeProgramAccountChangeListener = async function(id: number) {
+        const entry = self.wsPoolSubMap.get(id);
+        if (entry) {
+          self.wsPoolSubMap.delete(id);
+          return entry.conn.removeProgramAccountChangeListener(entry.realId);
+        }
+      };
+    }
+
     // Use shared utility to wait for WebSocket to be ready before subscribing
     // Import once at the top for use throughout the subscribe logic
     const { waitUntilWsReady } = await import('./wsHelper.js');
@@ -1319,7 +1387,27 @@ export class DriftService {
           }
         } catch (e: any) { safeLog.debug('drift.user.unsubscribe', { error: String(e?.message || e), cat: 'drift' }); }
 
-        // Clear the Connection's internal subscription maps to prevent _updateSubscriptions
+        // Close all pooled subscription connections
+        for (const pc of this.wsPoolConns) {
+          try {
+            const rpcWs: any = (pc as any)?._rpcWebSocket;
+            if (rpcWs) {
+              try { rpcWs._subscriptionsByAccountChangeSubscriptionId?.clear?.(); } catch {}
+              try { rpcWs._subscriptionsByProgramAccountChangeSubscriptionId?.clear?.(); } catch {}
+              if (rpcWs._subscriptionUpdateTimer) {
+                try { clearTimeout(rpcWs._subscriptionUpdateTimer); rpcWs._subscriptionUpdateTimer = null; } catch {}
+              }
+              const ws = rpcWs.underlyingSocket || rpcWs._ws || rpcWs.socket || rpcWs._socket;
+              if (ws && typeof ws.close === 'function') { try { ws.close(); } catch {} }
+            }
+          } catch {}
+        }
+        this.wsPoolConns = [];
+        this.wsPoolSubCounts = [];
+        this.wsPoolSubMap.clear();
+        this.wsPoolNextId = 1_000_000;
+
+        // Clear the primary Connection's internal subscription maps to prevent _updateSubscriptions
         // from trying to resubscribe after shutdown
         try {
           if (this.connection) {
@@ -1336,7 +1424,7 @@ export class DriftService {
               if (rpcWs._subscriptionUpdateTimer) {
                 try { clearTimeout(rpcWs._subscriptionUpdateTimer); rpcWs._subscriptionUpdateTimer = null; } catch { /* timer cleanup safe to swallow */ }
               }
-              
+
               // Close the WebSocket connection to prevent lingering subscriptions
               try {
                 const ws = rpcWs.underlyingSocket || rpcWs._ws || rpcWs.socket || rpcWs._socket;
