@@ -4,6 +4,7 @@ import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 import { logCatchError } from '../../utils/errorHandler.js';
 import { getDecimalsFromCache } from '../../server/pools/decimals.js';
 import { quoteClmmViaSimulator, quoteDlmmViaSimulator } from './simulatedQuote.js';
+import { computePumpswapPoolFees } from '../../server/pools/pumpswapFees.js';
 
 // Track fallback decimal usage for monitoring
 let fallbackDecimalCount = 0;
@@ -85,7 +86,7 @@ export function resetQuoteFallbackDecimalCount(): void {
  * @param amountInRaw - The raw input amount
  * @returns Corrected output if a deviation detected, otherwise original
  */
-function sanityCheckAndCorrectQuote(quotedOut: bigint, hop: DirectHop, amountInRaw: bigint): bigint {
+function sanityCheckAndCorrectQuote(quotedOut: bigint, hop: DirectHop, amountInRaw: bigint, traceId?: string): bigint {
   if (quotedOut <= 0n) return quotedOut;
   
   // Get the rate from the hop (this is the price in whole units)
@@ -131,14 +132,14 @@ function sanityCheckAndCorrectQuote(quotedOut: bigint, hop: DirectHop, amountInR
     // Check if quote is too LOW (need to multiply to fix)
     if (ratio >= lowMin && ratio <= lowMax) {
       const corrected = quotedOut * BigInt(factor);
-      logDecimalCorrection(hop, 'low', factor, quotedOut, corrected, expectedOutRaw);
+      logDecimalCorrection(hop, 'low', factor, quotedOut, corrected, expectedOutRaw, traceId);
       return corrected;
     }
-    
+
     // Check if quote is too HIGH (need to divide to fix)
     if (ratio >= highMin && ratio <= highMax) {
       const corrected = quotedOut / BigInt(factor);
-      logDecimalCorrection(hop, 'high', factor, quotedOut, corrected, expectedOutRaw);
+      logDecimalCorrection(hop, 'high', factor, quotedOut, corrected, expectedOutRaw, traceId);
       return corrected;
     }
   }
@@ -147,18 +148,21 @@ function sanityCheckAndCorrectQuote(quotedOut: bigint, hop: DirectHop, amountInR
 }
 
 function logDecimalCorrection(
-  hop: DirectHop, 
-  direction: 'high' | 'low', 
-  factor: number, 
-  original: bigint, 
-  corrected: bigint, 
-  expected: number
+  hop: DirectHop,
+  direction: 'high' | 'low',
+  factor: number,
+  original: bigint,
+  corrected: bigint,
+  expected: number,
+  traceId?: string,
 ): void {
   try {
     import('../../utils/logger.js').then(({ logger }) => {
       logger.warn('quote.decimal_correction_applied', {
         cat: 'tx',
+        traceId,
         ctx: {
+          traceId,
           dex: hop.dex,
           poolId: hop.poolId?.slice(0, 12),
           inputMint: hop.inputMint?.slice(0, 8),
@@ -188,7 +192,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
       // Pool cache fallback is built into quoteOrcaClmmLocal, so if this fails,
       // the opportunity is stale and should be skipped
       const localQuote = await quoteOrcaClmmLocal(hop, amountInRaw, effectiveTraceId);
-      if (localQuote > 0n) return sanityCheckAndCorrectQuote(localQuote, hop, amountInRaw);
+      if (localQuote > 0n) return sanityCheckAndCorrectQuote(localQuote, hop, amountInRaw, effectiveTraceId);
       
       // Log cache miss - this means pool data is not available anywhere
       try {
@@ -245,7 +249,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           });
         } catch (e) { logCatchError('resolver.quotes', e); }
         
-        const clmmOut = quoteRaydiumClmmFromSnapshot(hop, amountInRaw, ray);
+        const clmmOut = quoteRaydiumClmmFromSnapshot(hop, amountInRaw, ray, effectiveTraceId);
         
         try {
           const { logger } = await import('../../utils/logger.js');
@@ -260,7 +264,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           });
         } catch (e) { logCatchError('resolver.quotes', e); }
         
-        if (clmmOut > 0n) return sanityCheckAndCorrectQuote(clmmOut, hop, amountInRaw);
+        if (clmmOut > 0n) return sanityCheckAndCorrectQuote(clmmOut, hop, amountInRaw, effectiveTraceId);
       }
 
       if (minimalMathAllowed && ray) {
@@ -292,9 +296,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 const reserveOutRaw = BigInt(reserveOutRawStr);
                 if (reserveInRaw > 0n && reserveOutRaw > 0n) {
                   const feeBpsBig = BigInt(Math.max(0, Math.min(9900, Math.round(feeBps))));
-                  const amtInAfterFee = amountInRaw * (10000n - feeBpsBig) / 10000n;
+                  // Ceiling division for fee (matches on-chain): fee = ceil(amount * feeRate)
+                  const feeAmt = (amountInRaw * feeBpsBig + 9999n) / 10000n;
+                  const amtInAfterFee = amountInRaw - feeAmt;
                   const outRaw = (amtInAfterFee * reserveOutRaw) / (reserveInRaw + amtInAfterFee);
-                  if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+                  if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
                 }
               } catch { /* parse error, fall through to Number path */ }
             }
@@ -315,7 +321,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
               const amtInAfterFee = amtIn * fee;
               const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
               const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
             }
             const px = Number((p as any)?.price_a_per_b || 0);
             if (px > 0 && Number.isFinite(amtIn)) {
@@ -326,7 +332,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
               if (rate > 0) {
                 const outWhole = amtIn * rate * fee;
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
               }
             }
           }
@@ -367,9 +373,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                   const cpmmResOutRaw = BigInt(cpmmReserveOutRawStr);
                   if (cpmmResInRaw > 0n && cpmmResOutRaw > 0n) {
                     const cpmmFeeBps = BigInt(Math.max(0, Math.min(9900, Math.round(feeBps))));
-                    const cpmmAmtAfterFee = amountInRaw * (10000n - cpmmFeeBps) / 10000n;
+                    // Ceiling division for fee (matches on-chain): fee = ceil(amount * feeRate)
+                    const cpmmFeeAmt = (amountInRaw * cpmmFeeBps + 9999n) / 10000n;
+                    const cpmmAmtAfterFee = amountInRaw - cpmmFeeAmt;
                     const cpmmOutRaw = (cpmmAmtAfterFee * cpmmResOutRaw) / (cpmmResInRaw + cpmmAmtAfterFee);
-                    if (cpmmOutRaw > 0n) return sanityCheckAndCorrectQuote(cpmmOutRaw, hop, amountInRaw);
+                    if (cpmmOutRaw > 0n) return sanityCheckAndCorrectQuote(cpmmOutRaw, hop, amountInRaw, effectiveTraceId);
                   }
                 } catch { /* parse error, fall through */ }
               }
@@ -392,7 +400,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 const amtInAfterFee = amtIn * fee;
                 const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
               }
 
               // Fallback to price-based calculation
@@ -405,7 +413,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 if (rate > 0) {
                   const outWhole = amtIn * rate * fee;
                   const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-                  if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+                  if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
                 }
               }
             }
@@ -426,8 +434,12 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
         const p = (pumpswapPools.amm || []).find((x: any) => String(x?.id || '') === id);
         
         if (p) {
-          // PumpSwap uses 25 bps total fee (20 bps LP + 5 bps protocol)
-          const feeBps = Number((p as any)?.fee_bps || 25);
+          // Compute per-pool fees from cached GlobalConfig/FeeConfig (market-cap-based tiers)
+          const poolFees = computePumpswapPoolFees(p);
+          const lpBps = BigInt(poolFees.lpFeeBps);
+          const protocolBps = BigInt(poolFees.protocolFeeBps);
+          const creatorBps = BigInt(poolFees.creatorFeeBps);
+
           // FIX: Use centralized decimals cache as primary source (by mint address)
           const cacheDecIn = getDecimalsFromCache(hop.inputMint);
           const cacheDecOut = getDecimalsFromCache(hop.outputMint);
@@ -435,10 +447,16 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           const poolDecOut = Number(isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b);
           const decIn = cacheDecIn ?? (Number.isFinite(poolDecIn) ? poolDecIn : (hop.inputDecimals ?? 9));
           const decOut = cacheDecOut ?? (Number.isFinite(poolDecOut) ? poolDecOut : (hop.outputDecimals ?? 9));
-          const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
-          
+
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
             // BigInt-precision constant product (eliminates floating-point rounding)
+            // CRITICAL: PumpSwap applies fees to OUTPUT, not input.
+            // SDK sell.ts: rawOut = amtIn * reserveOut / (reserveIn + amtIn)
+            //   lpFee = ceil(rawOut * lpFeeBps / 10000)
+            //   protocolFee = ceil(rawOut * protocolFeeBps / 10000)
+            //   creatorFee = ceil(rawOut * creatorFeeBps / 10000)   (if coinCreator active)
+            //   finalOut = rawOut - lpFee - protocolFee - creatorFee
+            // Per-component ceiling matters: ceil(a*x/n) + ceil(a*y/n) >= ceil(a*(x+y)/n)
             const pumpResInRawStr = String(isRev
               ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw ?? '')
               : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw ?? ''));
@@ -450,15 +468,19 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 const pumpResInRaw = BigInt(pumpResInRawStr);
                 const pumpResOutRaw = BigInt(pumpResOutRawStr);
                 if (pumpResInRaw > 0n && pumpResOutRaw > 0n) {
-                  const pumpFeeBps = BigInt(Math.max(0, Math.min(9900, Math.round(feeBps))));
-                  const pumpAmtAfterFee = amountInRaw * (10000n - pumpFeeBps) / 10000n;
-                  const pumpOutRaw = (pumpAmtAfterFee * pumpResOutRaw) / (pumpResInRaw + pumpAmtAfterFee);
-                  if (pumpOutRaw > 0n) return sanityCheckAndCorrectQuote(pumpOutRaw, hop, amountInRaw);
+                  // 1. Constant product with NO fee on input
+                  const rawOutRaw = (amountInRaw * pumpResOutRaw) / (pumpResInRaw + amountInRaw);
+                  // 2. Per-component ceiling-division fees (matches SDK exactly)
+                  const lpFee = lpBps > 0n ? (rawOutRaw * lpBps + 9999n) / 10000n : 0n;
+                  const protocolFee = protocolBps > 0n ? (rawOutRaw * protocolBps + 9999n) / 10000n : 0n;
+                  const creatorFee = creatorBps > 0n ? (rawOutRaw * creatorBps + 9999n) / 10000n : 0n;
+                  const pumpOutRaw = rawOutRaw - lpFee - protocolFee - creatorFee;
+                  if (pumpOutRaw > 0n) return sanityCheckAndCorrectQuote(pumpOutRaw, hop, amountInRaw, effectiveTraceId);
                 }
               } catch { /* parse error, fall through */ }
             }
 
-            // Number-precision fallback
+            // Number-precision fallback (output fee model)
             const reserveInWhole = Number(
               isRev
                 ? (p as any)?.amount_b_whole ?? 0
@@ -472,11 +494,12 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
             const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
 
             if (reserveInWhole > 0 && reserveOutWhole > 0 && Number.isFinite(amtIn)) {
-              // Constant product formula: out = (in * fee * reserveOut) / (reserveIn + in * fee)
-              const amtInAfterFee = amtIn * fee;
-              const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
+              // PumpSwap output fee: rawOut = in * reserveOut / (reserveIn + in), then subtract fees
+              const rawOutWhole = (amtIn * reserveOutWhole) / (reserveInWhole + amtIn);
+              const totalFeeRate = poolFees.totalFeeBps / 10_000;
+              const outWhole = rawOutWhole * (1 - totalFeeRate);
               const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
             }
           }
         }
@@ -519,46 +542,94 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
             const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
             
-            // For V2 pools with sqrtPrice: use the pool's price_a_per_b directly
-            // This price was calculated from sqrtPrice in the price pipeline
-            if (isV2Pool && (p as any)?.price_a_per_b > 0) {
-              const priceAperB = Number((p as any).price_a_per_b);
-              
+            // For V2 pools: use sqrtPrice/liquidity concentrated-LP swap math
+            // Matches @meteora-ag/cp-amm-sdk's getSwapResultFromExactInput
+            if (isV2Pool && (p as any)?._sqrtPrice) {
               // Determine swap direction based on hop mints vs pool canonical mints
               const poolMintA = String((p as any)?.mint_a || '');
               const poolMintB = String((p as any)?.mint_b || '');
               const swappingAtoB = hop.inputMint === poolMintA && hop.outputMint === poolMintB;
               const swappingBtoA = hop.inputMint === poolMintB && hop.outputMint === poolMintA;
-              
+
               if (swappingAtoB || swappingBtoA) {
-                // price_a_per_b = how many B for 1 A
-                // If swapping A→B: outWhole = inWhole * priceAperB * fee
-                // If swapping B→A: outWhole = inWhole / priceAperB * fee
-                const outWhole = swappingAtoB 
-                  ? amtIn * priceAperB * fee
-                  : amtIn / priceAperB * fee;
-                
-                const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
-                
-                try {
-                  const { logger } = await import('../../utils/logger.js');
-                  logger.debug('meteora_balanced.v2.quote.sqrtPrice_based', {
-                    cat: 'tx',
-                    ctx: {
-                      poolId: id.slice(0, 8),
-                      isV2Pool,
-                      hasSqrtPrice: !!(p as any)?._sqrtPrice,
-                      priceAperB,
-                      swappingAtoB,
-                      amtIn,
-                      outWhole,
-                      outRaw: outRaw.toString(),
-                      feeBps,
+                const sqrtPriceStr = String((p as any)._sqrtPrice);
+                const liquidityStr = (p as any)?._liquidity ? String((p as any)._liquidity) : null;
+
+                let outWhole = 0;
+                let quoteSource = 'spot_price';
+
+                if (liquidityStr) {
+                  // Full sqrtPrice/liquidity formula (accounts for price impact)
+                  // sqrtPrice and liquidity are stored as Q64.64 (u128 / 2^64 = actual float)
+                  const TWO_POW_64 = 2 ** 64;
+                  const sqrtP = Number(BigInt(sqrtPriceStr)) / TWO_POW_64;
+                  const L = Number(BigInt(liquidityStr)) / TWO_POW_64;
+
+                  if (sqrtP > 0 && L > 0 && Number.isFinite(sqrtP) && Number.isFinite(L)) {
+                    let rawOut = 0;
+                    if (swappingAtoB) {
+                      // A→B: newSqrtP = (L * sqrtP) / (L + amtIn * sqrtP)
+                      //       outputB = L * (sqrtP - newSqrtP)
+                      const denom = L + amtIn * sqrtP;
+                      if (denom > 0) {
+                        const newSqrtP = (L * sqrtP) / denom;
+                        rawOut = L * (sqrtP - newSqrtP);
+                      }
+                    } else {
+                      // B→A: newSqrtP = sqrtP + amtIn / L
+                      //       outputA = L * (newSqrtP - sqrtP) / (sqrtP * newSqrtP)
+                      const newSqrtP = sqrtP + amtIn / L;
+                      const denom = sqrtP * newSqrtP;
+                      if (denom > 0) {
+                        rawOut = L * (newSqrtP - sqrtP) / denom;
+                      }
                     }
-                  });
-                } catch {}
-                
-                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+
+                    if (rawOut > 0 && Number.isFinite(rawOut)) {
+                      // Fee applied to OUTPUT (matches SDK collectFeeMode=0 default)
+                      const feeDeduction = rawOut * feeBps / 10000;
+                      outWhole = rawOut - feeDeduction;
+                      quoteSource = 'sqrtPrice_liquidity';
+                    }
+                  }
+                }
+
+                // Fallback: spot-price approximation (no price impact, but output-side fee)
+                if (outWhole <= 0) {
+                  const priceAperB = Number((p as any)?.price_a_per_b || 0);
+                  if (priceAperB > 0) {
+                    const spotOut = swappingAtoB ? amtIn * priceAperB : amtIn / priceAperB;
+                    // Fee on OUTPUT (not input) for V2
+                    const feeDeduction = spotOut * feeBps / 10000;
+                    outWhole = spotOut - feeDeduction;
+                    quoteSource = 'spot_price_output_fee';
+                  }
+                }
+
+                if (outWhole > 0) {
+                  const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
+
+                  try {
+                    const { logger } = await import('../../utils/logger.js');
+                    logger.debug('meteora_balanced.v2.quote.sqrtPrice_based', {
+                      cat: 'tx',
+                      ctx: {
+                        poolId: id.slice(0, 8),
+                        isV2Pool,
+                        hasSqrtPrice: !!(p as any)?._sqrtPrice,
+                        hasLiquidity: !!(p as any)?._liquidity,
+                        swappingAtoB,
+                        amtIn,
+                        outWhole,
+                        outRaw: outRaw.toString(),
+                        feeBps,
+                        quoteSource,
+                      }
+                    });
+                  } catch {}
+
+                  if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
+                }
               }
             }
             
@@ -576,7 +647,9 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 const dammResOutRaw = BigInt(dammResOutRawStr);
                 if (dammResInRaw > 0n && dammResOutRaw > 0n) {
                   const dammFeeBig = BigInt(Math.max(0, Math.min(9900, Math.round(feeBps))));
-                  const dammAmtAfterFee = amountInRaw * (10000n - dammFeeBig) / 10000n;
+                  // Ceiling division for fee (matches on-chain): fee = ceil(amount * feeRate)
+                  const dammFeeAmt = (amountInRaw * dammFeeBig + 9999n) / 10000n;
+                  const dammAmtAfterFee = amountInRaw - dammFeeAmt;
                   const dammOutRaw = (dammAmtAfterFee * dammResOutRaw) / (dammResInRaw + dammAmtAfterFee);
 
                   // Log warning if V2 pool is using reserve fallback (likely incorrect)
@@ -595,7 +668,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                     } catch {}
                   }
 
-                  if (dammOutRaw > 0n) return sanityCheckAndCorrectQuote(dammOutRaw, hop, amountInRaw);
+                  if (dammOutRaw > 0n) return sanityCheckAndCorrectQuote(dammOutRaw, hop, amountInRaw, effectiveTraceId);
                 }
               } catch { /* parse error, fall through */ }
             }
@@ -634,7 +707,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                 } catch {}
               }
               
-              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+              if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
             }
           }
         }
@@ -748,7 +821,9 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                   const { logger } = await import('../../utils/logger.js');
                   logger.debug('meteora.dlmm.quote.simulator_hit', {
                     cat: 'tx',
+                    traceId: effectiveTraceId,
                     ctx: {
+                      traceId: effectiveTraceId,
                       poolId: hop.poolId,
                       amountIn: amountInRaw.toString(),
                       amountOut: simOut.toString(),
@@ -757,7 +832,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                     }
                   });
                 } catch (e) { logCatchError('resolver.quotes', e); }
-                return sanityCheckAndCorrectQuote(simOut, hop, amountInRaw);
+                return sanityCheckAndCorrectQuote(simOut, hop, amountInRaw, effectiveTraceId);
               }
             }
           }
@@ -842,13 +917,16 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                   const { logger } = await import('../../utils/logger.js');
                   logger.debug('meteora.dlmm.quote.calculation', {
                     cat: 'tx',
+                    traceId: effectiveTraceId,
                     ctx: {
+                      traceId: effectiveTraceId,
                       poolId: hop.poolId,
                       amountInRaw: amountInRaw.toString(),
                       amtIn,
                       outWhole,
                       outRaw: outRaw.toString(),
                       success: outRaw > 0n,
+                      source: 'spot_price_fallback',
                       formula: actualIsRev ? '(amtIn / px) * fee' : 'amtIn * px * fee',
                       // Canonical direction (matches price_a_per_b ordering)
                       swappingAtoB,
@@ -862,7 +940,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint, traceId?:
                   });
                 } catch (e) { logCatchError('resolver.quotes', e); }
                 
-                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw);
+                if (outRaw > 0n) return sanityCheckAndCorrectQuote(outRaw, hop, amountInRaw, effectiveTraceId);
               } else {
                 try {
                   const { logger } = await import('../../utils/logger.js');
@@ -1124,9 +1202,11 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
       if (simOut !== null && simOut > 0n) {
         try {
           const { logger } = await import('../../utils/logger.js');
-          logger.debug('orca.quote.local.simulator_hit', {
+          logger.debug('orca.clmm.quote.simulator_hit', {
             cat: 'tx',
+            traceId,
             ctx: {
+              traceId,
               pool: poolId,
               amountIn: amountInRaw.toString(),
               amountOut: simOut.toString(),
@@ -1169,15 +1249,18 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
     if (outRaw > 0n) {
       try {
         const { logger } = await import('../../utils/logger.js');
-        logger.debug('orca.quote.local.success', {
+        logger.debug('orca.clmm.quote.spot_price', {
           cat: 'tx',
+          traceId,
           ctx: {
+            traceId,
             pool: poolId,
             amountIn: amountInRaw.toString(),
             amountOut: outRaw.toString(),
             feeBps,
             direction: nativeAtoB ? 'NativeAtoB' : 'NativeBtoA',
-            sqrtPriceX64: sqrtPriceX64.toString()
+            sqrtPriceX64: sqrtPriceX64.toString(),
+            source: 'spot_price_fallback',
           }
         });
       } catch (e) { logCatchError('resolver.quotes', e); }
@@ -1272,7 +1355,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint, traceId?:
   }
 }
 
-function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools: any): bigint {
+function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools: any, traceId?: string): bigint {
   if (!(amountInRaw > 0n)) {
     try {
       import('../../utils/logger.js').then(({ logger }) => {
@@ -1394,7 +1477,9 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
           import('../../utils/logger.js').then(({ logger }) => {
             logger.debug('raydium.clmm.quote.simulator_hit', {
               cat: 'tx',
+              traceId,
               ctx: {
+                traceId,
                 poolId: hop.poolId,
                 amountIn: amountInRaw.toString(),
                 amountOut: simOut.toString(),
@@ -1650,13 +1735,16 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
     import('../../utils/logger.js').then(({ logger }) => {
       logger.debug('raydium.clmm.quote.calculated', {
         cat: 'tx',
+        traceId,
         ctx: {
+          traceId,
           poolId: hop.poolId,
           amountInRaw: amountInRaw.toString(),
           out: out.toString(),
           success: out > 0n,
           direction: isRev ? 'B→A (reverse)' : 'A→B (forward)',
           isRevFromSuffix,
+          source: 'spot_price_fallback',
           calculation: {
             priceNumerator: priceNumerator.toString(),
             priceDenominator: priceDenominator.toString(),

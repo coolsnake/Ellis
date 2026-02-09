@@ -410,6 +410,7 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
       // The constant-product formula (reserveB / reserveA) is WRONG for V2 pools!
       // Check if we have sqrtPrice from RPC enrichment (stored in _sqrtPrice)
       const sqrtPriceStr = (it as any)?._sqrtPrice;
+      const liquidityStr = (it as any)?._liquidity;
       const isV2Pool = poolVersion === 2 || dex === 'MeteoraBalanced_v2';
       
       if (isV2Pool && sqrtPriceStr) {
@@ -586,9 +587,10 @@ export async function normalizeMeteoraBalancedHttp(raw: MeteoraBalancedPoolApiRe
         native_account_b: account_b,
         native_reserve_a_raw: reserve_a_raw,
         native_reserve_b_raw: reserve_b_raw,
-        // CRITICAL: Store sqrtPrice for V2 pools - required for correct WS update pricing
+        // CRITICAL: Store sqrtPrice + liquidity for V2 pools - required for correct quote math
         // V2 (CP-AMM) pools use concentrated liquidity, NOT constant-product formula
         ...(sqrtPriceStr ? { _sqrtPrice: sqrtPriceStr } : {}),
+        ...(liquidityStr ? { _liquidity: liquidityStr } : {}),
       });
     } catch (err: any) {
       try {
@@ -1377,7 +1379,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   const poolVersionMap: Map<string, number> = new Map();
   // Map to store vault addresses and sqrtPrice decoded from on-chain pool account data
   // CRITICAL: V2 (CP-AMM) pools use sqrtPrice for pricing, NOT constant-product formula
-  const poolVaultMap: Map<string, { aVault: string; bVault: string; sqrtPrice?: string }> = new Map();
+  const poolVaultMap: Map<string, { aVault: string; bVault: string; sqrtPrice?: string; liquidity?: string }> = new Map();
   
   try {
     logger.info('meteora.balanced.rpc.owner_check.start', { poolCount: poolAddresses.length, cat: 'meteora' });
@@ -1419,31 +1421,42 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
               if (isV2) {
                 // V2 (CP-AMM) uses bytemuck/zero-copy serialization - manual offset parsing required
                 // BorshCoder cannot decode bytemuck accounts!
-                // Pool struct offsets (after 8-byte discriminator):
-                // - tokenAVault: offset 232 (32 bytes)
-                // - tokenBVault: offset 264 (32 bytes)
-                // - sqrtPrice: offset 456 (16 bytes, u128 little-endian)
+                // Pool struct offsets (after 8-byte discriminator, Pod/zero-copy = packed):
+                // - tokenAVault:    offset 232 (32 bytes, pubkey)
+                // - tokenBVault:    offset 264 (32 bytes, pubkey)
+                // - collectFeeMode: offset 439 (1 byte, u8)
+                // - liquidity:      offset 440 (16 bytes, u128 LE)
+                // - sqrtPrice:      offset 456 (16 bytes, u128 LE)
                 const V2_OFFSET_TOKEN_A_VAULT = 232;
                 const V2_OFFSET_TOKEN_B_VAULT = 264;
+                const V2_OFFSET_COLLECT_FEE_MODE = 439;
+                const V2_OFFSET_LIQUIDITY = 440;
                 const V2_OFFSET_SQRT_PRICE = 456;
                 const MIN_V2_BUFFER = 480;
-                
+
                 if (data.length >= MIN_V2_BUFFER) {
                   try {
                     const tokenAVault = new PublicKey(data.subarray(V2_OFFSET_TOKEN_A_VAULT, V2_OFFSET_TOKEN_A_VAULT + 32)).toBase58();
                     const tokenBVault = new PublicKey(data.subarray(V2_OFFSET_TOKEN_B_VAULT, V2_OFFSET_TOKEN_B_VAULT + 32)).toBase58();
-                    
+
                     // sqrtPrice is u128 (16 bytes) stored as little-endian
                     const sqrtPriceLow = data.readBigUInt64LE(V2_OFFSET_SQRT_PRICE);
                     const sqrtPriceHigh = data.readBigUInt64LE(V2_OFFSET_SQRT_PRICE + 8);
                     const sqrtPrice = sqrtPriceLow + (sqrtPriceHigh << BigInt(64));
                     const sqrtPriceStr = sqrtPrice.toString();
-                    
+
+                    // liquidity is u128 (16 bytes) stored as little-endian
+                    const liquidityLow = data.readBigUInt64LE(V2_OFFSET_LIQUIDITY);
+                    const liquidityHigh = data.readBigUInt64LE(V2_OFFSET_LIQUIDITY + 8);
+                    const liquidity = liquidityLow + (liquidityHigh << BigInt(64));
+                    const liquidityStr = liquidity.toString();
+
                     if (tokenAVault && tokenBVault) {
-                      poolVaultMap.set(poolId, { 
-                        aVault: tokenAVault, 
+                      poolVaultMap.set(poolId, {
+                        aVault: tokenAVault,
                         bVault: tokenBVault,
                         sqrtPrice: sqrtPriceStr,
+                        liquidity: liquidityStr,
                       });
                     }
                   } catch (parseErr) {
@@ -1490,10 +1503,13 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       if (!pool.token_b_vault && decodedVaults.bVault) {
         pool.token_b_vault = decodedVaults.bVault;
       }
-      // CRITICAL: Store sqrtPrice for V2 pools - required for correct pricing
+      // CRITICAL: Store sqrtPrice + liquidity for V2 pools - required for correct pricing
       // V2 (CP-AMM) pools use concentrated liquidity with sqrtPrice, NOT reserve ratios
       if (decodedVaults.sqrtPrice) {
         pool._sqrtPrice = decodedVaults.sqrtPrice;
+      }
+      if (decodedVaults.liquidity) {
+        pool._liquidity = decodedVaults.liquidity;
       }
     }
   }

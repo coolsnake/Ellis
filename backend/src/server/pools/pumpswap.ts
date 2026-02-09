@@ -14,6 +14,7 @@ import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import type { PumpswapPoolApiResponse, PumpswapGraphQLResponse } from './api-types.js';
 import { isValidPumpswapPool } from './api-types.js';
 import { logCatchError } from '../../utils/errorHandler.js';
+import { ensurePumpswapFeeConfig, computePumpswapPoolFees } from './pumpswapFees.js';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -1204,10 +1205,17 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
   const rawArr: unknown[] = Array.isArray(raw) ? raw : [];
   const pools = rawArr.filter(isValidPumpswapPool);
   
-  // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
   const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
   const minLiqBase = Number((CONFIG as any)?.pumpswap?.minLiqBase || 0);
-  
+
+  // Warm fee config cache (GlobalConfig + FeeConfig PDAs) for per-pool fee computation
+  try {
+    const connection = getConnection();
+    await ensurePumpswapFeeConfig(connection);
+  } catch (e) {
+    logCatchError('pumpswap.normalize.ensureFeeConfig', e);
+  }
+
   // Extract all unique mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const pool of pools) {
@@ -1242,24 +1250,18 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
         continue; // Skip this pool
       }
       
-      // Use extracted fee if available, otherwise fall back to default
-      // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
-      const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
-      const feeBps = pool.fee_bps !== undefined && Number.isFinite(pool.fee_bps) 
-        ? Number(pool.fee_bps) 
-        : defaultFeeBps;
-      
-      // Log when using default fee vs extracted fee for debugging
-      if (feeBps === defaultFeeBps && pool.fee_bps === undefined) {
-        try {
-          logger.debug('pumpswap.normalize.using_default_fee', {
-            pool: id,
-            defaultFeeBps,
-            reason: 'fee_not_extracted_from_rpc',
-            cat: 'pumpswap'
-          });
-        } catch (e) { logCatchError('pools.pumpswap', e); }
-      }
+      // Compute per-pool fees using cached GlobalConfig/FeeConfig (market-cap-based tiers)
+      const computedFees = computePumpswapPoolFees({
+        onchain_base_mint: mint_a,
+        native_mint_a: mint_a,
+        creator: pool.onchain_creator || pool.creator,
+        coinCreator: pool.onchain_creator || pool.creator,
+        native_reserve_a_raw: pool.base_reserve,
+        native_reserve_b_raw: pool.quote_reserve,
+        base_reserve: pool.base_reserve,
+        quote_reserve: pool.quote_reserve,
+      });
+      const feeBps = computedFees.totalFeeBps;
       
       // Get decimals from centralized resolver (avoid silent defaults)
       let decA = decimalsMap.get(mint_a);
@@ -1484,7 +1486,11 @@ export async function normalizePumpswapPools(raw: PumpswapPoolApiResponse[] | un
         dex: 'Pumpswap',
         mint_a: finalMintA,
         mint_b: finalMintB,
-        fee_bps: feeBps, // Use extracted fee or default
+        fee_bps: feeBps,
+        fee_lp_bps: computedFees.lpFeeBps,
+        fee_protocol_bps: computedFees.protocolFeeBps,
+        fee_creator_bps: computedFees.creatorFeeBps,
+        fee_source: computedFees.source,
         price_a_per_b,
         liquidity_base,
         updated_ms: now,

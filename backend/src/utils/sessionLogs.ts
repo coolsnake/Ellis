@@ -120,8 +120,10 @@ export function getTxRelatedLogs(traceId: string | undefined, startTime?: number
     const traceIdRequiredPatterns = [
       // Transaction lifecycle patterns (specific execution phases only)
       /^tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc|ix\.coerce)/i,
-      // DEX-specific instruction builder patterns
-      /^(raydium|orca|meteora|pumpswap)\.(clmm|amm|dlmm|whirlpool)\./i,
+      // DEX-specific instruction builder and quote patterns
+      /^(raydium|orca|meteora|meteora_balanced|pumpswap)\.(clmm|amm|dlmm|whirlpool|quote|v2)\./i,
+      // Quote system logs (decimal corrections, sanity checks)
+      /^quote\.(decimal_correction|fallback|sanity)/i,
       /ix\.build\.(raydium|orca|meteora|pumpswap)/i,
       // SDK account verification patterns (explicitly match these)
       /\.sdk\.(account|accounts)\.(missing|verified|verify)/i,

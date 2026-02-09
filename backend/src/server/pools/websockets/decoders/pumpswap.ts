@@ -26,6 +26,7 @@ import { tryActivatePool } from '../../../pools.activation.js';
 import { recordPoolActivity } from '../staleness.js';
 // Import PumpSwap SDK for reliable buffer decoding via Anchor IDL
 import { PUMP_AMM_SDK } from '@pump-fun/pump-swap-sdk';
+import { computePumpswapPoolFees } from '../../pumpswapFees.js';
 import { PublicKey } from '@solana/web3.js';
 import type { 
   DecodedPool, 
@@ -251,12 +252,26 @@ export function decodePumpswapPool(
       return null;
     }
 
+    // Compute per-pool fees from cached GlobalConfig/FeeConfig
+    const poolFeesData = {
+      native_mint_a: mintA,
+      onchain_base_mint: mintA,
+      creator: (existingPool as any).creator,
+      coinCreator: (existingPool as any).creator,
+      native_reserve_a_raw: reserveA.toString(),
+      native_reserve_b_raw: reserveB.toString(),
+    };
+    const poolFees = computePumpswapPoolFees(poolFeesData);
+
     return {
       id: existingPool.id,
       dex: 'Pumpswap',
       mint_a: mintA,
       mint_b: mintB,
-      fee_bps: existingPool.fee_bps || DEFAULT_FEE_BPS,
+      fee_bps: poolFees.totalFeeBps,
+      fee_lp_bps: poolFees.lpFeeBps,
+      fee_protocol_bps: poolFees.protocolFeeBps,
+      fee_creator_bps: poolFees.creatorFeeBps,
       price_a_per_b: 0, // Will be calculated through pipeline
       liquidity_base: 0, // Will be calculated
       updated_ms: Date.now(),
@@ -275,7 +290,7 @@ export function decodePumpswapPool(
       onchain_quote_mint: mintB,
       onchain_base_vault: existingPool.native_account_a,
       onchain_quote_vault: existingPool.native_account_b,
-    };
+    } as any;
   } catch (e) {
     logCatchDebug('pumpswap.decode', e);
     return null;
@@ -435,13 +450,26 @@ export async function handlePumpswapPoolAccountUpdate(
     const wholeB = reserveB ? Number(reserveB) / Math.pow(10, decB) : 0;
     const liquidityBase = Math.min(wholeA, wholeB);
 
+    // Compute per-pool fees from cached GlobalConfig/FeeConfig
+    const updatedFees = computePumpswapPoolFees({
+      native_mint_a: mintA,
+      onchain_base_mint: mintA,
+      creator: (existingPool as any).creator,
+      coinCreator: (existingPool as any).creator,
+      native_reserve_a_raw: reserveA?.toString(),
+      native_reserve_b_raw: reserveB?.toString(),
+    });
+
     // Build the updated pool item
     const item: AmmPool = {
       id: poolId,
       dex: 'Pumpswap',
       mint_a: processedPrice.mintA,
       mint_b: processedPrice.mintB,
-      fee_bps: decoded.fee_bps || DEFAULT_FEE_BPS,
+      fee_bps: updatedFees.totalFeeBps,
+      fee_lp_bps: updatedFees.lpFeeBps,
+      fee_protocol_bps: updatedFees.protocolFeeBps,
+      fee_creator_bps: updatedFees.creatorFeeBps,
       price_a_per_b: processedPrice.priceForward,
       liquidity_base: liquidityBase,
       updated_ms: Date.now(),
@@ -742,13 +770,26 @@ export async function handlePumpswapVaultUpdate(
     const wholeB = reserveB ? Number(reserveB) / Math.pow(10, decB) : 0;
     const liquidityBase = Math.min(wholeA, wholeB);
 
+    // Compute per-pool fees from cached GlobalConfig/FeeConfig
+    const updatedFees = computePumpswapPoolFees({
+      native_mint_a: mintA,
+      onchain_base_mint: mintA,
+      creator: (existingPool as any).creator,
+      coinCreator: (existingPool as any).creator,
+      native_reserve_a_raw: reserveA?.toString(),
+      native_reserve_b_raw: reserveB?.toString(),
+    });
+
     // Build the updated pool item
     const item: AmmPool = {
       id: poolId,
       dex: 'Pumpswap',
       mint_a: processedPrice.mintA,
       mint_b: processedPrice.mintB,
-      fee_bps: decoded.fee_bps || DEFAULT_FEE_BPS,
+      fee_bps: updatedFees.totalFeeBps,
+      fee_lp_bps: updatedFees.lpFeeBps,
+      fee_protocol_bps: updatedFees.protocolFeeBps,
+      fee_creator_bps: updatedFees.creatorFeeBps,
       price_a_per_b: processedPrice.priceForward,
       liquidity_base: liquidityBase,
       updated_ms: Date.now(),

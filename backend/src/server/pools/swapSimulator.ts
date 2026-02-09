@@ -193,6 +193,11 @@ export interface DlmmSwapParams {
  *   The bin's X reserve is available as output. Input capacity:
  *     capacity_Y = reserveX * price
  *
+ * Fee model: Fees are applied per-bin (matching on-chain DLMM swapExactInQuoteAtBin).
+ * At each bin, the gross input consumed includes the fee portion; the net amount
+ * after fee is used to compute the output. This correctly handles per-bin variable
+ * fees if the fee snapshot varies across bins.
+ *
  * @returns total output in whole output tokens, or 0 if simulation fails.
  */
 export function simulateDlmmSwap(params: DlmmSwapParams): number {
@@ -201,7 +206,8 @@ export function simulateDlmmSwap(params: DlmmSwapParams): number {
   if (inputAmount <= 0 || bins.length === 0 || binStep <= 0) return 0;
 
   const feeRate = feeBps / 10000;
-  let remainingInput = inputAmount * (1 - feeRate);
+  // Per-bin fee: remainingInput is the full gross amount (fee deducted at each bin)
+  let remainingInput = inputAmount;
   let totalOutput = 0;
   const stepMult = 1 + binStep / 10000;
 
@@ -217,13 +223,18 @@ export function simulateDlmmSwap(params: DlmmSwapParams): number {
       const price = Math.pow(stepMult, bin.id);
       if (price <= 0 || !Number.isFinite(price)) continue;
 
-      // How much X can we sell to drain this bin's Y?
-      const capacityX = bin.reserveY / price;
-      const consumed = Math.min(remainingInput, capacityX);
-      const output = consumed * price;
+      // Net capacity (how much net X drains this bin's Y)
+      const netCapacityX = bin.reserveY / price;
+      // Gross capacity includes the fee portion: gross = net / (1 - feeRate)
+      const grossCapacityX = netCapacityX / (1 - feeRate);
+      const grossConsumed = Math.min(remainingInput, grossCapacityX);
+      // Fee extracted per-bin (matches on-chain DLMM model)
+      const fee = grossConsumed * feeRate;
+      const netConsumed = grossConsumed - fee;
+      const output = netConsumed * price;
 
       totalOutput += output;
-      remainingInput -= consumed;
+      remainingInput -= grossConsumed;
     }
   } else {
     // Selling Y for X — consuming X reserves — walk bins upward from active
@@ -236,13 +247,17 @@ export function simulateDlmmSwap(params: DlmmSwapParams): number {
       const price = Math.pow(stepMult, bin.id);
       if (price <= 0 || !Number.isFinite(price)) continue;
 
-      // How much Y can we sell to drain this bin's X?
-      const capacityY = bin.reserveX * price;
-      const consumed = Math.min(remainingInput, capacityY);
-      const output = consumed / price;
+      // Net capacity (how much net Y drains this bin's X)
+      const netCapacityY = bin.reserveX * price;
+      // Gross capacity includes the fee portion
+      const grossCapacityY = netCapacityY / (1 - feeRate);
+      const grossConsumed = Math.min(remainingInput, grossCapacityY);
+      const fee = grossConsumed * feeRate;
+      const netConsumed = grossConsumed - fee;
+      const output = netConsumed / price;
 
       totalOutput += output;
-      remainingInput -= consumed;
+      remainingInput -= grossConsumed;
     }
   }
 

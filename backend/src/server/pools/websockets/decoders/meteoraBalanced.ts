@@ -53,7 +53,8 @@ const V2_OFFSET_TOKEN_A_MINT = 168;   // 32 bytes
 const V2_OFFSET_TOKEN_B_MINT = 200;   // 32 bytes
 const V2_OFFSET_TOKEN_A_VAULT = 232;  // 32 bytes
 const V2_OFFSET_TOKEN_B_VAULT = 264;  // 32 bytes
-const V2_OFFSET_SQRT_PRICE = 456;     // 16 bytes (u128)
+const V2_OFFSET_LIQUIDITY = 440;      // 16 bytes (u128, Q64.64)
+const V2_OFFSET_SQRT_PRICE = 456;     // 16 bytes (u128, Q64.64)
 
 // Q64.64 fixed-point constants for sqrtPrice conversion
 const TWO_POW_64 = BigInt(2) ** BigInt(64);
@@ -278,6 +279,7 @@ interface DammV2PoolState {
   tokenAVault: string;  // CP-AMM uses tokenAVault/tokenBVault naming
   tokenBVault: string;
   sqrtPrice: bigint;    // Q64.64 fixed-point: sqrt(tokenB/tokenA) * 2^64
+  liquidity: bigint;    // Q64.64 fixed-point concentrated liquidity
 }
 
 /**
@@ -364,19 +366,25 @@ export async function decodeDammV2PoolAccount(data: Buffer): Promise<DammV2PoolS
     const sqrtPriceLow = buf.readBigUInt64LE(V2_OFFSET_SQRT_PRICE);
     const sqrtPriceHigh = buf.readBigUInt64LE(V2_OFFSET_SQRT_PRICE + 8);
     const sqrtPrice = sqrtPriceLow + (sqrtPriceHigh << BigInt(64));
-    
+
+    // liquidity is u128 (16 bytes) stored as little-endian (Q64.64 format)
+    const liquidityLow = buf.readBigUInt64LE(V2_OFFSET_LIQUIDITY);
+    const liquidityHigh = buf.readBigUInt64LE(V2_OFFSET_LIQUIDITY + 8);
+    const liquidity = liquidityLow + (liquidityHigh << BigInt(64));
+
     // Validate mints
     if (!tokenAMint || !tokenBMint || tokenAMint.length < 32 || tokenBMint.length < 32) {
       logCatchDebug('meteora_balanced.decodeDammV2', 'Invalid mints decoded from V2 pool');
       return null;
     }
-    
+
     return {
       tokenAMint,
       tokenBMint,
       tokenAVault,
       tokenBVault,
       sqrtPrice,
+      liquidity,
     };
   } catch (e) {
     logCatchDebug('meteora_balanced.decodeDammV2PoolAccount', e);
@@ -780,8 +788,9 @@ export async function handleMeteoraBalancedVaultUpdate(
     const dexName = decoded.dex || 'MeteoraBalanced_v2';
     const isV2Pool = dexName === 'MeteoraBalanced_v2' || dexName.includes('_v2');
     
-    // Try to get sqrtPrice from cached pool data for V2 pools
+    // Try to get sqrtPrice + liquidity from cached pool data for V2 pools
     let storedSqrtPrice = (existingPool as any)?._sqrtPrice;
+    let storedLiquidity = (existingPool as any)?._liquidity;
     let processedPrice: ProcessedPriceResult | undefined;
     
     // CRITICAL: On-demand fetch sqrtPrice for V2 pools when missing from cache
@@ -824,14 +833,19 @@ export async function handleMeteoraBalancedVaultUpdate(
             });
           } else {
             storedSqrtPrice = decodedPool.sqrtPrice.toString();
-            
+            if (decodedPool.liquidity && decodedPool.liquidity > BigInt(0)) {
+              storedLiquidity = decodedPool.liquidity.toString();
+            }
+
             // Update cache for future vault updates
             (existingPool as any)._sqrtPrice = storedSqrtPrice;
-            
+            if (storedLiquidity) (existingPool as any)._liquidity = storedLiquidity;
+
             // Also update the pool in metbalCache.data for persistence
             const cached = metbalCache.data?.amm?.find(p => p.id === poolId);
             if (cached) {
               (cached as any)._sqrtPrice = storedSqrtPrice;
+              if (storedLiquidity) (cached as any)._liquidity = storedLiquidity;
             }
             
             logger.info('meteora_balanced.vault.v2.sqrtPrice_fetched', {
@@ -948,8 +962,9 @@ export async function handleMeteoraBalancedVaultUpdate(
       native_account_a: vaultA,
       native_account_b: vaultB,
       _pipelineProcessed: true,
-      // Preserve sqrtPrice for V2 pools
+      // Preserve sqrtPrice + liquidity for V2 pools (needed for quote math)
       ...(storedSqrtPrice ? { _sqrtPrice: storedSqrtPrice } : {}),
+      ...(storedLiquidity ? { _liquidity: storedLiquidity } : {}),
     } as AmmPool;
 
     // Validate decoded pool
@@ -1132,7 +1147,7 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
     // CRITICAL: V1 and V2 have DIFFERENT on-chain layouts AND pricing mechanisms!
     // - V1: Constant-product AMM, price = reserveB / reserveA
     // - V2: Concentrated liquidity, price = (sqrtPrice / 2^64)^2
-    let decoded: { tokenAMint: string; tokenBMint: string; aVault: string; bVault: string; fees?: any; sqrtPrice?: bigint } | null = null;
+    let decoded: { tokenAMint: string; tokenBMint: string; aVault: string; bVault: string; fees?: any; sqrtPrice?: bigint; liquidity?: bigint } | null = null;
     
     if (isV2) {
       // Use V2 decoder (CP-AMM SDK)
@@ -1324,8 +1339,9 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
       account_a: processedPrice?.wasSwapped ? decoded.bVault : decoded.aVault,
       account_b: processedPrice?.wasSwapped ? decoded.aVault : decoded.bVault,
       _pipelineProcessed: !!processedPrice,
-      // Store sqrtPrice for V2 pools - used for pricing on subsequent vault updates
+      // Store sqrtPrice + liquidity for V2 pools - used for pricing and quote math
       ...(isV2 && decoded.sqrtPrice ? { _sqrtPrice: decoded.sqrtPrice.toString() } : {}),
+      ...(isV2 && decoded.liquidity ? { _liquidity: decoded.liquidity.toString() } : {}),
     } as AmmPool;
     
     // If we don't have a valid price, we can still update the pool metadata
@@ -1345,11 +1361,14 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
         updated.fee_bps = feeBps;
         updated.updated_ms = Date.now();
         
-        // CRITICAL: Always store sqrtPrice for V2 pools from WS updates
+        // CRITICAL: Always store sqrtPrice + liquidity for V2 pools from WS updates
         // This ensures vault updates can use it for correct pricing even if
         // price calculation failed (e.g., vault balances not yet available)
         if (isV2 && decoded.sqrtPrice && decoded.sqrtPrice > BigInt(0)) {
           (updated as any)._sqrtPrice = decoded.sqrtPrice.toString();
+        }
+        if (isV2 && decoded.liquidity && decoded.liquidity > BigInt(0)) {
+          (updated as any)._liquidity = decoded.liquidity.toString();
         }
         
         prev.amm[idx] = updated;

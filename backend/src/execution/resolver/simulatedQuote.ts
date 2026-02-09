@@ -11,6 +11,16 @@ import { getRangeData } from '../../server/pools/rangeCache.js';
 import { simulateClmmSwap, simulateDlmmSwap } from '../../server/pools/swapSimulator.js';
 import type { ClmmRangeData, DlmmRangeData } from '../../server/pools/rangeCache.js';
 
+/** Convert Q64.64 sqrtPriceX64 to float. This is the exact value — no tick approximation. */
+function sqrtPriceX64ToFloat(sqrtPriceX64: bigint): number {
+  // sqrtPrice_float = sqrtPriceX64 / 2^64
+  // For precision: split into high and low 64-bit words to avoid BigInt→Number truncation
+  const Q64 = 1n << 64n;
+  const hi = Number(sqrtPriceX64 / Q64);
+  const lo = Number(sqrtPriceX64 % Q64) / Number(Q64);
+  return hi + lo;
+}
+
 /**
  * Quote a CLMM swap (Orca Whirlpool / Raydium CLMM) using tick-walk simulation.
  *
@@ -21,7 +31,7 @@ import type { ClmmRangeData, DlmmRangeData } from '../../server/pools/rangeCache
  * @param decOut       Output token decimals
  * @param feeBps       Fee in basis points
  * @param aToB         true = selling token A for token B (native direction)
- * @param currentTick  Current tick index (optional, derived from sqrtPriceX64 if missing)
+ * @param currentTick  Current tick index (optional, from rangeData if missing)
  * @param liquidity    Current active liquidity L (optional, from rangeData if missing)
  * @returns Output in atomic units (BigInt), or null if simulation not possible
  */
@@ -42,17 +52,16 @@ export function quoteClmmViaSimulator(
   const clmm = rangeData as ClmmRangeData;
   if (!clmm.ticks || clmm.ticks.length === 0) return null;
 
-  // Convert sqrtPriceX64 (Q64.64) to float sqrtPrice for the simulator
-  // sqrtPrice_float = sqrtPriceX64 / 2^64
-  // But the simulator uses 1.0001^(tick/2) convention, so we use currentTick instead
+  // Convert sqrtPriceX64 directly to float — this is exact, no tick approximation
+  // The on-chain sqrtPriceX64 is the authoritative current price, more precise than
+  // deriving from tick via Math.pow(1.0001, tick/2) which accumulates float error
+  const currentSqrtPrice = sqrtPriceX64ToFloat(sqrtPriceX64);
   const tick = currentTick ?? clmm.currentTick;
-  const currentSqrtPrice = Math.pow(1.0001, tick / 2);
   const L = liquidity ?? clmm.currentLiquidity;
 
   if (currentSqrtPrice <= 0 || L <= 0) return null;
 
   // simulateClmmSwap expects atomic units for input and produces atomic units for output
-  // (confirmed by graph.edges.ts which multiplies whole tokens by 10^dec before passing)
   const inputAtomic = Number(amountInRaw);
   if (!Number.isFinite(inputAtomic) || inputAtomic <= 0) return null;
 

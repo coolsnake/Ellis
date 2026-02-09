@@ -59,9 +59,8 @@ export function deriveOrcaFeeBps(raw: any): number {
   let feeBps = toBps(feeRateRaw);
 
   if (feeBps > 0) {
-    if (protocolBps > 0 && protocolBps <= feeBps) {
-      feeBps -= protocolBps;
-    }
+    // Note: protocolFeeRate is a percentage of the collected fee that goes to protocol,
+    // NOT a separate fee rate. The user pays the full feeRate — protocol/LP split is internal.
     return feeBps;
   }
 

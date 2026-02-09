@@ -573,15 +573,24 @@ export async function handleMeteoraUpdate(
     );
 
     if (Number.isFinite(binStep) && binStep > 0 && Number.isFinite(baseFactor) && baseFactor > 0) {
-      // Base fee: fb = B * s * 10^base_fee_power_factor
+      // Matches @meteora-ag/dlmm SDK fee computation (FEE_PRECISION = 10^9):
+      //
+      // Base fee (SDK getBaseFee):
+      //   baseFeeRate_precision = baseFactor * binStep * 10 * 10^baseFeePowerFactor
+      //   baseFee_BPS = baseFeeRate_precision / FEE_PRECISION * 10000
+      //                = baseFactor * binStep * 10^(1+p) / 10^9 * 10^4
+      //                = baseFactor * binStep * 10^p / 10^4
       const powerFactor = Number.isFinite(baseFeePowerFactor) ? baseFeePowerFactor : 0;
       const baseFee = (binStep * baseFactor * Math.pow(10, powerFactor)) / 10000;
 
-      // Variable fee: fv = A * (va * s)^2
+      // Variable fee (SDK getVariableFee):
+      //   vFee_precision = ceil(variableFeeControl * (va * binStep)^2 / 10^11)
+      //   variableFee_BPS = vFee_precision / FEE_PRECISION * 10000 = vFee_precision / 10^5
       let variableFee = 0;
-      if (Number.isFinite(variableFeeControl) && variableFeeControl > 0 && Number.isFinite(volatilityAccumulator)) {
+      if (Number.isFinite(variableFeeControl) && variableFeeControl > 0 && Number.isFinite(volatilityAccumulator) && volatilityAccumulator > 0) {
         const scaledVol = volatilityAccumulator * binStep;
-        variableFee = variableFeeControl * (scaledVol * scaledVol);
+        const vFeePrecision = Math.ceil(variableFeeControl * scaledVol * scaledVol / 1e11);
+        variableFee = vFeePrecision / 1e5;
       }
 
       const totalFee = baseFee + variableFee;

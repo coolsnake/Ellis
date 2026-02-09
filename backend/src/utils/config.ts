@@ -1117,7 +1117,7 @@ export const CONFIG = {
     cacheTtlMs: Number(process.env.PUMPSWAP_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.PUMPSWAP_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.PUMPSWAP_HTTP_BACKOFF_MS || 500),
-    defaultFeeBps: Number(process.env.PUMPSWAP_DEFAULT_FEE_BPS || 100), // 1% default fee
+    defaultFeeBps: Number(process.env.PUMPSWAP_DEFAULT_FEE_BPS || 25), // 0.25% = 20 bps LP + 5 bps protocol
     minLiqBase: Number(process.env.PUMPSWAP_MIN_LIQ_BASE || 0),
     pageSize: Number(process.env.PUMPSWAP_PAGE_SIZE || 1000),
     maxPages: Number(process.env.PUMPSWAP_MAX_PAGES || 10),

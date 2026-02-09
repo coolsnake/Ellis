@@ -195,7 +195,8 @@ class RealtimeLogger extends EventEmitter {
     /^tx\.(lookup_table|alt|build|preflight|send|resolve|sim)/i,  // ALT, build, and tx lifecycle logs
     /^arb\.executor\./i,               // Arb executor logs
     /^arb\.jito\./i,                   // Jito execution logs
-    /^(raydium|orca|meteora|pumpswap)\./i,  // DEX-specific instruction builder logs
+    /^(raydium|orca|meteora|meteora_balanced|pumpswap)\./i,  // DEX-specific instruction builder logs
+    /^quote\./i,                           // Quote system logs (decimal corrections, sanity checks)
     /^ix\.build\./i,                   // Instruction building logs
     /^resolver\./i,                    // Resolver logs (plan resolution)
     /^sdkQuote(Builder)?\./i,          // SDK quote builder logs (cache hits/misses)
