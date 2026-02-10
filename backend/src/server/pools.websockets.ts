@@ -6547,12 +6547,12 @@ export async function subscribeToDiscoveredPools(poolsByDex: {
   
   const subscriptionMode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
   
-  // Skip if subscriptions are disabled
-  if (subscriptionMode === 'disabled' || !(CONFIG.system as any)?.enablePoolWs) {
-    logger.debug('discovery.subscribe.skipped', { reason: 'subscriptions_disabled', cat: 'discovery' });
+  // Skip if subscriptions are disabled or in program mode (program subs cover all pools)
+  if (subscriptionMode === 'disabled' || subscriptionMode === 'wss-program' || !(CONFIG.system as any)?.enablePoolWs) {
+    logger.debug('discovery.subscribe.skipped', { reason: subscriptionMode === 'wss-program' ? 'program_mode_covers_all' : 'subscriptions_disabled', cat: 'discovery' });
     return result;
   }
-  
+
   // For gRPC mode, trigger an immediate retarget to include newly discovered pools
   if (subscriptionMode === 'grpc') {
     logger.debug('discovery.subscribe.grpc_retarget', { 
