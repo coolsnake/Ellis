@@ -10,7 +10,9 @@
       "Bash(git -C \"D:\\\\lawprojects\\\\lockstone-dev\" diff HEAD backend/src/server/pools.websockets.ts backend/src/server/pools/websockets/validation.ts)",
       "Bash(find:*)",
       "WebFetch(domain:docs.meteora.ag)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "mcp__acp__Bash",
+      "mcp__acp__Edit"
     ]
   }
 }

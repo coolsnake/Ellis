@@ -136,3 +136,35 @@ Socket.IO channels for real-time updates:
 - `backend/config/watchlist.json` - Token watchlist
 - `backend/config/walletTokens.json` - Tracked wallet tokens
 - `backend/logs/` - Trade summaries, quotes, intents (JSONL)
+
+## Domain Knowledge (`.cursor/skills/`)
+
+Deep reference docs live in `.cursor/skills/`. Read the relevant skill files before working on the corresponding area of the codebase.
+
+### Component Skills
+| Skill | Path | Use when working on |
+|-------|------|---------------------|
+| lockstone-backend | `lockstone-backend/SKILL.md` | Backend server, pool fetching, graph construction, execution flow, WebSocket events |
+| lockstone-arb-rs | `lockstone-arb-rs/SKILL.md` | Rust cycle detection service, graph algorithms, opportunity filtering, arb-rs HTTP/WS API |
+| lockstone-arb-router | `lockstone-arb-router/SKILL.md` | Anchor program, vault system, DEX CPIs, transaction building, on-chain execution |
+
+### DEX Integration Skills
+| Skill | Path | Use when working on |
+|-------|------|---------------------|
+| dex-raydium | `dex-raydium/SKILL.md` | Raydium AMM v4, CLMM, CPMM pool types, swap instructions |
+| dex-orca | `dex-orca/SKILL.md` | Orca Whirlpool, concentrated liquidity, tick arrays, sqrt price math |
+| dex-meteora | `dex-meteora/SKILL.md` | Meteora DLMM, DAMM v1/v2, bin arrays, swap/swap2 variants |
+| dex-pumpswap | `dex-pumpswap/SKILL.md` | PumpSwap buy/sell instructions, bonding curve graduation |
+
+### Arbitrage Theory
+| Skill | Path | Covers |
+|-------|------|--------|
+| atomic-arbitrage | `atomic-arbitrage/SKILL.md` | Overview and index for all sub-topics below |
+| | `atomic-arbitrage/cycle-detection.md` | Bellman-Ford, SPFA algorithm implementations |
+| | `atomic-arbitrage/amm-mathematics.md` | CPMM and CLMM swap math formulas |
+| | `atomic-arbitrage/flash-loans.md` | Flash loan mechanics and patterns |
+| | `atomic-arbitrage/mev-protection.md` | Jito bundles, frontrun protection strategies |
+| | `atomic-arbitrage/optimal-execution.md` | Trade sizing, slippage models, price impact |
+| | `atomic-arbitrage/references.md` | Academic paper citations |
+
+All paths above are relative to `.cursor/skills/`.
