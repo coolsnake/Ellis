@@ -26,6 +26,7 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     logAllowCats: '',
     // Pool activation mode
     poolActivationMode: 'immediate' as 'immediate' | 'lazy' | 'hybrid',
+    poolSubscriptionMode: 'wss' as 'wss' | 'wss-program' | 'grpc' | 'disabled',
     poolActivationStats: null as null | { enabled: boolean; activatedCount: number; pendingBatchCount: number },
   });
   const [saving, setSaving] = useState(false);
@@ -60,6 +61,7 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             sanity_applyOrcaClmm: (j?.sanity?.sanity_applyOrcaClmm ?? true) !== false,
             // Pool activation mode
             poolActivationMode: j?.pools?.activationMode || 'immediate',
+            poolSubscriptionMode: j?.system?.poolSubscriptionMode || 'wss',
             poolActivationStats: j?.pools?.activationStats || null,
           }));
         }
@@ -85,6 +87,7 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         graphDiffWeightEps: Number(cfg.graphDiffWeightEps),
         logMinLevel: String(cfg.logMinLevel || 'info'),
         logAllowCats: String(cfg.logAllowCats || '').split(',').map((s)=>s.trim()).filter(Boolean),
+        poolSubscriptionMode: cfg.poolSubscriptionMode,
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -170,8 +173,27 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           </div>
 
           <div className="bg-gray-700 rounded p-4">
-            <h3 className="text-lg font-semibold mb-3">Pool Activation Mode</h3>
+            <h3 className="text-lg font-semibold mb-3">Pool Subscriptions</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm mb-1">Subscription Mode</label>
+                <select
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1"
+                  value={cfg.poolSubscriptionMode}
+                  onChange={(e) => set('poolSubscriptionMode', e.target.value)}
+                >
+                  <option value="wss">WebSocket Per-Pool (RPC)</option>
+                  <option value="wss-program">WebSocket Programs (RPC)</option>
+                  <option value="grpc">gRPC (Yellowstone/Shyft)</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+                <div className="text-xs text-gray-300 mt-1">
+                  {cfg.poolSubscriptionMode === 'wss' && 'Subscribe to each pool account individually via RPC WebSocket.'}
+                  {cfg.poolSubscriptionMode === 'wss-program' && 'Subscribe to DEX programs instead of individual pools (9 subscriptions total). Avoids the 100-sub-per-connection limit.'}
+                  {cfg.poolSubscriptionMode === 'grpc' && 'Use Yellowstone/Shyft gRPC stream for pool updates.'}
+                  {cfg.poolSubscriptionMode === 'disabled' && 'Pool subscriptions disabled. Graph will only update on manual refresh.'}
+                </div>
+              </div>
               <div>
                 <label className="block text-sm mb-1">Activation Mode</label>
                 <select 
