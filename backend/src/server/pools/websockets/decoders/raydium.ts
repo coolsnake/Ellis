@@ -214,7 +214,6 @@ export async function decodeRaydiumClmmPool(
       price_a_per_b: 0, // Will be calculated through pipeline
       native_mint_a: mintA,
       native_mint_b: mintB,
-      amm_config: clmmAmmConfig || undefined,
     };
   } catch (e) {
     logCatchDebug('raydium.decodeClmm', e, { poolId });
