@@ -1,9 +1,9 @@
-import type { GraphEdge } from './graph.types.js';
-import type { AmmPool, ClmmPool, CpmmPool } from './pools/types.js';
-import { logger } from '../utils/logger.js';
-import { getRangeData } from './pools/rangeCache.js';
-import type { ClmmRangeData, DlmmRangeData } from './pools/rangeCache.js';
-import { simulateClmmSwap, simulateDlmmSwap } from './pools/swapSimulator.js';
+import type { GraphEdge } from "./graph.types.js";
+import type { AmmPool, ClmmPool, CpmmPool } from "./pools/types.js";
+import { logger } from "../utils/logger.js";
+import { getRangeData } from "./pools/rangeCache.js";
+import type { ClmmRangeData, DlmmRangeData } from "./pools/rangeCache.js";
+import { simulateClmmSwap, simulateDlmmSwap } from "./pools/swapSimulator.js";
 
 export type EdgeAllow = {
   raydium?: { amm?: boolean; clmm?: boolean; cpmm?: boolean };
@@ -13,7 +13,11 @@ export type EdgeAllow = {
   pumpswap?: { amm?: boolean };
 };
 
-const clampPriceInc = (px: number | undefined, min: number, max: number): number | undefined => {
+const clampPriceInc = (
+  px: number | undefined,
+  min: number,
+  max: number
+): number | undefined => {
   const v = Number(px);
   if (!Number.isFinite(v) || !(v > 0)) return undefined;
   return Math.min(max, Math.max(min, v));
@@ -29,9 +33,77 @@ function liqDisplayFromPool(pool: any): number | undefined {
   if (Number.isFinite(tvl) && tvl > 0) return tvl;
   const disp = Number((pool as any)?.liquidity_display);
   if (Number.isFinite(disp) && disp > 0) return disp;
-  const raw = Number((pool as any)?.pool_liquidity_raw ?? (pool as any)?.liquidity ?? (pool as any)?.liquidity_base);
+  const raw = Number(
+    (pool as any)?.pool_liquidity_raw ??
+      (pool as any)?.liquidity ??
+      (pool as any)?.liquidity_base
+  );
   if (Number.isFinite(raw) && raw > 0) return raw;
   return undefined;
+}
+
+/**
+ * Enrich a pool with tvl_usd and pool_liquidity_raw if missing.
+ * Computes from reserves + USD prices. Mutates the pool in place.
+ * Idempotent: no-op if tvl_usd is already set (e.g. from HTTP).
+ */
+export function enrichPoolLiquidity(
+  pool: any,
+  getUsd: (mint: string) => number | undefined
+): void {
+  if (Number.isFinite(pool.tvl_usd) && pool.tvl_usd > 0) return;
+
+  const mintA = pool.mint_a;
+  const mintB = pool.mint_b;
+  if (!mintA || !mintB) return;
+
+  const priceA = getUsd(mintA);
+  const priceB = getUsd(mintB);
+  if (priceA == null && priceB == null) return;
+
+  const decA = Number(pool.decimals_a ?? pool.native_decimals_a);
+  const decB = Number(pool.decimals_b ?? pool.native_decimals_b);
+
+  const rawA = pool.reserve_a_raw ?? pool.native_reserve_a_raw;
+  const rawB = pool.reserve_b_raw ?? pool.native_reserve_b_raw;
+
+  let tvl: number | undefined;
+
+  if (rawA && rawB && Number.isFinite(decA) && Number.isFinite(decB)) {
+    try {
+      const wholeA = Number(BigInt(String(rawA))) / 10 ** decA;
+      const wholeB = Number(BigInt(String(rawB))) / 10 ** decB;
+
+      if (priceA != null && priceB != null) {
+        tvl = wholeA * priceA + wholeB * priceB;
+      } else if (priceA != null) {
+        tvl = wholeA * priceA * 2;
+      } else if (priceB != null) {
+        tvl = wholeB * priceB * 2;
+      }
+    } catch {}
+  } else if (
+    (pool.liquidity_base > 0 || pool.liquidity > 0) &&
+    Number.isFinite(decA) &&
+    Number.isFinite(decB)
+  ) {
+    const liqBase = Number(pool.liquidity_base ?? pool.liquidity ?? 0);
+    if (liqBase > 0) {
+      const price = priceA ?? priceB;
+      if (price != null && price > 0) {
+        const wholeLiq = liqBase / 10 ** Math.min(decA, decB);
+        tvl = wholeLiq * price * 2;
+      }
+    }
+  }
+
+  if (tvl != null && Number.isFinite(tvl) && tvl > 0) {
+    pool.tvl_usd = tvl;
+    if (pool.pool_liquidity_raw == null) {
+      pool.pool_liquidity_raw = tvl;
+    }
+    pool.liquidity_display = tvl;
+  }
 }
 
 function weightFrom(liq?: number, fee_bps?: number): number {
@@ -53,7 +125,12 @@ function parseReserveRaw(raw: any, decimals?: number): number {
   }
 }
 
-function computeAmmOutput(input: number, reserveIn: number, reserveOut: number, feeBps: number): number {
+function computeAmmOutput(
+  input: number,
+  reserveIn: number,
+  reserveOut: number,
+  feeBps: number
+): number {
   if (!(input > 0 && reserveIn > 0 && reserveOut > 0)) return 0;
   const feeMultiplier = 1 - Math.max(0, feeBps) / 10000;
   const inputAfterFee = input * feeMultiplier;
@@ -66,7 +143,7 @@ function blendSpotAmmOutput(
   reserveOut: number,
   feeBps: number,
   spotRate: number,
-  curveExponent: number,
+  curveExponent: number
 ): number {
   if (!(input > 0 && reserveIn > 0 && reserveOut > 0 && spotRate > 0)) return 0;
   const ratio = input / (reserveIn + input);
@@ -83,11 +160,10 @@ function buildSlippageCurveSource(
   feeBps: number,
   spotRate: number,
   computedAt?: number,
-  sourceLabel: string = 'native_reserve',
-): GraphEdge['slippage_curve'] | undefined {
+  sourceLabel: string = "native_reserve"
+): GraphEdge["slippage_curve"] | undefined {
   if (!(reserveIn > 0 && reserveOut > 0 && spotRate > 0)) return undefined;
-  const sizes = NATIVE_SIZE_FRACTIONS
-    .map((f) => reserveIn * f)
+  const sizes = NATIVE_SIZE_FRACTIONS.map((f) => reserveIn * f)
     .filter((s) => Number.isFinite(s) && s > 0)
     .sort((a, b) => a - b);
   if (sizes.length === 0) return undefined;
@@ -95,28 +171,45 @@ function buildSlippageCurveSource(
   const mults: number[] = [];
   for (const size of sizes) {
     let output = 0;
-    if (kind === 'amm' || kind === 'cpmm') {
+    if (kind === "amm" || kind === "cpmm") {
       output = computeAmmOutput(size, reserveIn, reserveOut, feeBps);
-    } else if (kind === 'clmm') {
-      output = blendSpotAmmOutput(size, reserveIn, reserveOut, feeBps, spotRate, 0.7);
-    } else if (kind === 'dlmm') {
-      output = blendSpotAmmOutput(size, reserveIn, reserveOut, feeBps, spotRate, 1.5);
+    } else if (kind === "clmm") {
+      output = blendSpotAmmOutput(
+        size,
+        reserveIn,
+        reserveOut,
+        feeBps,
+        spotRate,
+        0.7
+      );
+    } else if (kind === "dlmm") {
+      output = blendSpotAmmOutput(
+        size,
+        reserveIn,
+        reserveOut,
+        feeBps,
+        spotRate,
+        1.5
+      );
     } else {
       output = size * spotRate;
     }
     const mult = output > 0 ? output / (size * spotRate) : 0;
     // Cap at 1.0: slippage can only reduce output, never amplify it.
     // A mult > 1.0 indicates a modelling error (e.g. asymmetric reserves).
-    const clampedMult = Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
+    const clampedMult =
+      Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
     mults.push(clampedMult);
   }
 
   return {
-    unit: 'source',
+    unit: "source",
     sizes,
     mults,
-    computed_at: Number.isFinite(Number(computedAt)) ? Number(computedAt) : Date.now(),
-    confidence: 'low',
+    computed_at: Number.isFinite(Number(computedAt))
+      ? Number(computedAt)
+      : Date.now(),
+    confidence: "low",
     source: sourceLabel,
   };
 }
@@ -125,7 +218,7 @@ function computeVirtualReservesFromClmm(
   sqrtPriceX64Raw: bigint,
   liquidityRaw: bigint,
   decimalsA: number,
-  decimalsB: number,
+  decimalsB: number
 ): { reserveA: number; reserveB: number } | undefined {
   try {
     if (sqrtPriceX64Raw <= 0n || liquidityRaw <= 0n) return undefined;
@@ -135,8 +228,10 @@ function computeVirtualReservesFromClmm(
     if (!(L > 0)) return undefined;
     const reserveAAtomic = L / sqrtP;
     const reserveBAtomic = L * sqrtP;
-    const reserveA = reserveAAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsA)));
-    const reserveB = reserveBAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsB)));
+    const reserveA =
+      reserveAAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsA)));
+    const reserveB =
+      reserveBAtomic / Math.pow(10, Math.max(0, Math.min(18, decimalsB)));
     if (reserveA > 0 && reserveB > 0) return { reserveA, reserveB };
   } catch {}
   return undefined;
@@ -163,11 +258,19 @@ function computeBoundedClmmReserves(
   decimalsA: number,
   decimalsB: number,
   sqrtPriceLower: number,
-  sqrtPriceUpper: number,
-): { reserveA: number; reserveB: number; reserveARaw: number; reserveBRaw: number } | undefined {
+  sqrtPriceUpper: number
+):
+  | {
+      reserveA: number;
+      reserveB: number;
+      reserveARaw: number;
+      reserveBRaw: number;
+    }
+  | undefined {
   try {
     if (sqrtPriceX64Raw <= 0n || liquidityRaw <= 0n) return undefined;
-    if (!(sqrtPriceLower > 0) || !(sqrtPriceUpper > sqrtPriceLower)) return undefined;
+    if (!(sqrtPriceLower > 0) || !(sqrtPriceUpper > sqrtPriceLower))
+      return undefined;
 
     const sqrtP = Number(sqrtPriceX64Raw) / Number(2n ** 64n);
     if (!(sqrtP > 0)) return undefined;
@@ -192,14 +295,15 @@ function computeBoundedClmmReserves(
     const reserveARaw = Math.floor(Math.max(0, reserveAAtomic));
     const reserveBRaw = Math.floor(Math.max(0, reserveBAtomic));
 
-    if (reserveA > 0 && reserveB > 0) return { reserveA, reserveB, reserveARaw, reserveBRaw };
+    if (reserveA > 0 && reserveB > 0)
+      return { reserveA, reserveB, reserveARaw, reserveBRaw };
   } catch {}
   return undefined;
 }
 
 function computeHeuristicReservesFromMin(
   minReserve: number,
-  priceAperB: number,
+  priceAperB: number
 ): { reserveA: number; reserveB: number } | undefined {
   if (!(minReserve > 0) || !(priceAperB > 0)) return undefined;
   // price_a_per_b = B per 1 A
@@ -221,16 +325,18 @@ function computeActiveRangeCapacityRaw(
   kind: string,
   poolId: string,
   pool: any,
-  wasSwapped: boolean,
+  wasSwapped: boolean
 ): string | undefined {
   try {
     const rangeData = getRangeData(poolId);
     if (!rangeData) return undefined;
 
-    if (kind === 'clmm' && rangeData.kind === 'clmm') {
+    if (kind === "clmm" && rangeData.kind === "clmm") {
       const clmm = rangeData as ClmmRangeData;
       if (clmm.currentLiquidity <= 0) return undefined;
-      const s64 = BigInt(String(pool?.sqrt_price_x64 || pool?.sqrt_price_x64_raw || 0));
+      const s64 = BigInt(
+        String(pool?.sqrt_price_x64 || pool?.sqrt_price_x64_raw || 0)
+      );
       if (s64 <= 0n) return undefined;
       const currentSqrtPrice = Number(s64) / Number(2n ** 64n);
       if (!(currentSqrtPrice > 0)) return undefined;
@@ -240,7 +346,8 @@ function computeActiveRangeCapacityRaw(
       let activeCapacityAtomic: number;
       if (aToB) {
         const sqrtPLower = Math.pow(1.0001, clmm.tickLower / 2);
-        activeCapacityAtomic = L * Math.abs(1 / sqrtPLower - 1 / currentSqrtPrice);
+        activeCapacityAtomic =
+          L * Math.abs(1 / sqrtPLower - 1 / currentSqrtPrice);
       } else {
         const sqrtPUpper = Math.pow(1.0001, clmm.tickUpper / 2);
         activeCapacityAtomic = L * Math.abs(sqrtPUpper - currentSqrtPrice);
@@ -250,14 +357,16 @@ function computeActiveRangeCapacityRaw(
       return cap > 0 ? String(cap) : undefined;
     }
 
-    if (kind === 'dlmm' && rangeData.kind === 'dlmm') {
+    if (kind === "dlmm" && rangeData.kind === "dlmm") {
       const dlmm = rangeData as DlmmRangeData;
       if (!dlmm.bins || dlmm.bins.length === 0) return undefined;
-      const binStep = Number(pool?.tick_spacing ?? pool?.tickSpacing ?? pool?.bin_step ?? 0);
+      const binStep = Number(
+        pool?.tick_spacing ?? pool?.tickSpacing ?? pool?.bin_step ?? 0
+      );
       if (binStep <= 0) return undefined;
 
       const xToY = !wasSwapped;
-      const activeBin = dlmm.bins.find(b => b.id === dlmm.activeBinId);
+      const activeBin = dlmm.bins.find((b) => b.id === dlmm.activeBinId);
       const stepMult = 1 + binStep / 10000;
       let activeCapacity = 0;
 
@@ -265,7 +374,7 @@ function computeActiveRangeCapacityRaw(
         const price = Math.pow(stepMult, dlmm.activeBinId);
         activeCapacity = (activeBin?.reserveY ?? 0) / (price > 0 ? price : 1);
         if (activeCapacity <= 0) {
-          for (const bin of dlmm.bins.filter(b => b.id <= dlmm.activeBinId)) {
+          for (const bin of dlmm.bins.filter((b) => b.id <= dlmm.activeBinId)) {
             const p = Math.pow(stepMult, bin.id);
             activeCapacity += bin.reserveY / (p > 0 ? p : 1);
           }
@@ -274,7 +383,7 @@ function computeActiveRangeCapacityRaw(
         const price = Math.pow(stepMult, dlmm.activeBinId);
         activeCapacity = (activeBin?.reserveX ?? 0) * (price > 0 ? price : 1);
         if (activeCapacity <= 0) {
-          for (const bin of dlmm.bins.filter(b => b.id >= dlmm.activeBinId)) {
+          for (const bin of dlmm.bins.filter((b) => b.id >= dlmm.activeBinId)) {
             const p = Math.pow(stepMult, bin.id);
             activeCapacity += bin.reserveX * (p > 0 ? p : 1);
           }
@@ -314,21 +423,23 @@ function buildSlippageCurveFromSimulation(
   feeBps: number,
   spotRate: number,
   wasSwapped: boolean,
-  pool: any,
-): GraphEdge['slippage_curve'] | undefined {
+  pool: any
+): GraphEdge["slippage_curve"] | undefined {
   if (spotRate <= 0) return undefined;
-  if (kind !== 'clmm' && kind !== 'dlmm') return undefined;
+  if (kind !== "clmm" && kind !== "dlmm") return undefined;
 
   const rangeData = getRangeData(poolId);
   if (!rangeData) return undefined;
 
   // ── CLMM tick-walk simulation ──
-  if (kind === 'clmm' && rangeData.kind === 'clmm') {
+  if (kind === "clmm" && rangeData.kind === "clmm") {
     const clmm = rangeData as ClmmRangeData;
     if (clmm.ticks.length === 0 || clmm.currentLiquidity <= 0) return undefined;
 
     // sqrtPrice as float
-    const s64 = BigInt(String(pool?.sqrt_price_x64 || pool?.sqrt_price_x64_raw || 0));
+    const s64 = BigInt(
+      String(pool?.sqrt_price_x64 || pool?.sqrt_price_x64_raw || 0)
+    );
     if (s64 <= 0n) return undefined;
     const currentSqrtPrice = Number(s64) / Number(2n ** 64n);
     if (!(currentSqrtPrice > 0)) return undefined;
@@ -358,7 +469,8 @@ function buildSlippageCurveFromSimulation(
     const decOut = wasSwapped
       ? Number(pool?.native_decimals_a ?? pool?.decimals_a ?? 9)
       : Number(pool?.native_decimals_b ?? pool?.decimals_b ?? 9);
-    activeRangeCapacity = activeRangeCapacity / Math.pow(10, Math.max(0, decIn));
+    activeRangeCapacity =
+      activeRangeCapacity / Math.pow(10, Math.max(0, decIn));
 
     if (!(activeRangeCapacity > 0)) return undefined;
 
@@ -385,7 +497,8 @@ function buildSlippageCurveFromSimulation(
       const outputWhole = outputAtomic / Math.pow(10, decOut);
       const expectedOutput = inputWhole * spotRate;
       const mult = expectedOutput > 0 ? outputWhole / expectedOutput : 0;
-      const clamped = Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
+      const clamped =
+        Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
 
       sizes.push(inputWhole);
       mults.push(clamped);
@@ -394,21 +507,23 @@ function buildSlippageCurveFromSimulation(
     if (sizes.length === 0) return undefined;
 
     return {
-      unit: 'source',
+      unit: "source",
       sizes,
       mults,
       computed_at: Date.now(),
-      confidence: 'high',
-      source: 'tick_simulation',
+      confidence: "high",
+      source: "tick_simulation",
     };
   }
 
   // ── DLMM bin-walk simulation ──
-  if (kind === 'dlmm' && rangeData.kind === 'dlmm') {
+  if (kind === "dlmm" && rangeData.kind === "dlmm") {
     const dlmm = rangeData as DlmmRangeData;
     if (!dlmm.bins || dlmm.bins.length === 0) return undefined;
 
-    const binStep = Number(pool?.tick_spacing ?? pool?.tickSpacing ?? pool?.bin_step ?? 0);
+    const binStep = Number(
+      pool?.tick_spacing ?? pool?.tickSpacing ?? pool?.bin_step ?? 0
+    );
     if (binStep <= 0) return undefined;
 
     // For forward edge (canonical A→B):
@@ -417,7 +532,7 @@ function buildSlippageCurveFromSimulation(
     const xToY = !wasSwapped;
 
     // Compute active bin capacity for test size generation
-    const activeBin = dlmm.bins.find(b => b.id === dlmm.activeBinId);
+    const activeBin = dlmm.bins.find((b) => b.id === dlmm.activeBinId);
     let activeCapacity: number;
     if (xToY) {
       // X→Y: output is Y, capacity limited by Y reserves in active + lower bins
@@ -435,12 +550,12 @@ function buildSlippageCurveFromSimulation(
     if (activeCapacity <= 0) {
       const stepMult = 1 + binStep / 10000;
       if (xToY) {
-        for (const bin of dlmm.bins.filter(b => b.id <= dlmm.activeBinId)) {
+        for (const bin of dlmm.bins.filter((b) => b.id <= dlmm.activeBinId)) {
           const price = Math.pow(stepMult, bin.id);
           activeCapacity += bin.reserveY / (price > 0 ? price : 1);
         }
       } else {
-        for (const bin of dlmm.bins.filter(b => b.id >= dlmm.activeBinId)) {
+        for (const bin of dlmm.bins.filter((b) => b.id >= dlmm.activeBinId)) {
           const price = Math.pow(stepMult, bin.id);
           activeCapacity += bin.reserveX * (price > 0 ? price : 1);
         }
@@ -468,7 +583,8 @@ function buildSlippageCurveFromSimulation(
 
       const expectedOutput = inputWhole * spotRate;
       const mult = expectedOutput > 0 ? outputWhole / expectedOutput : 0;
-      const clamped = Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
+      const clamped =
+        Number.isFinite(mult) && mult > 0 ? Math.min(mult, 1.0) : 0;
 
       sizes.push(inputWhole);
       mults.push(clamped);
@@ -477,12 +593,12 @@ function buildSlippageCurveFromSimulation(
     if (sizes.length === 0) return undefined;
 
     return {
-      unit: 'source',
+      unit: "source",
       sizes,
       mults,
       computed_at: Date.now(),
-      confidence: 'high',
-      source: 'bin_simulation',
+      confidence: "high",
+      source: "bin_simulation",
     };
   }
 
@@ -503,50 +619,64 @@ export function isPoolValidForGraph(
   getUsd: (mint: string) => number | undefined,
   config: PoolValidationConfig
 ): boolean {
-  const { feeMin = 0, feeMax = 10000, maxPriceDeviation = 10, sanityEnabled = true } = config;
+  const {
+    feeMin = 0,
+    feeMax = 10000,
+    maxPriceDeviation = 10,
+    sanityEnabled = true,
+  } = config;
 
   if (!sanityEnabled) return true;
 
   const fb = Number(p?.fee_bps);
-    if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) {
+  if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) {
     try {
-      const kind = String((p as any)?.pool_kind || '');
-      if (kind === 'clmm' || kind === 'dlmm') {
-        logger.info('graph.sanity.filter.badFees', {
-          dex: String((p as any)?.dex || ''),
+      const kind = String((p as any)?.pool_kind || "");
+      if (kind === "clmm" || kind === "dlmm") {
+        logger.info("graph.sanity.filter.badFees", {
+          dex: String((p as any)?.dex || ""),
           kind,
           pool_id: (p as any)?.id?.slice(0, 12),
           fee_bps: fb,
           feeMin,
           feeMax,
-          reason: 'badFees',
-          cat: 'graph'
+          reason: "badFees",
+          cat: "graph",
         });
       }
     } catch {}
     return false; // 'badFees'
   }
 
-  const kind = String((p as any)?.pool_kind || '');
-  const s64 = Number((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0);
+  const kind = String((p as any)?.pool_kind || "");
+  const s64 = Number(
+    (p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0
+  );
   const price = Number((p as any)?.price_a_per_b);
-  const dex = String((p as any)?.dex || '');
+  const dex = String((p as any)?.dex || "");
 
   // Allow CLMM pools that can derive price from sqrt even if price_a_per_b is missing
   // Allow CPMM pools that have valid reserves (price can be computed from reserves)
   if (!Number.isFinite(price) || price <= 0) {
-    const clmmCanDerive = kind === 'clmm' && s64 > 0;
-    
+    const clmmCanDerive = kind === "clmm" && s64 > 0;
+
     // CPMM pools can derive price from reserves
-    const reserveA = BigInt(String((p as any)?.reserve_a_raw || (p as any)?.native_reserve_a_raw || 0));
-    const reserveB = BigInt(String((p as any)?.reserve_b_raw || (p as any)?.native_reserve_b_raw || 0));
-    const cpmmCanDerive = kind === 'cpmm' && reserveA > 0n && reserveB > 0n;
-    
+    const reserveA = BigInt(
+      String((p as any)?.reserve_a_raw || (p as any)?.native_reserve_a_raw || 0)
+    );
+    const reserveB = BigInt(
+      String((p as any)?.reserve_b_raw || (p as any)?.native_reserve_b_raw || 0)
+    );
+    const cpmmCanDerive = kind === "cpmm" && reserveA > 0n && reserveB > 0n;
+
     if (!clmmCanDerive && !cpmmCanDerive) {
       // Log when we filter out a pool for missing price (use info for CLMM/CPMM to debug)
       try {
-        const logLevel = (kind === 'clmm' || kind === 'dlmm' || kind === 'cpmm') ? 'info' : 'debug';
-        logger[logLevel]('graph.sanity.filter.price', {
+        const logLevel =
+          kind === "clmm" || kind === "dlmm" || kind === "cpmm"
+            ? "info"
+            : "debug";
+        logger[logLevel]("graph.sanity.filter.price", {
           dex,
           kind,
           pool_id: (p as any)?.id?.slice(0, 12),
@@ -558,34 +688,34 @@ export function isPoolValidForGraph(
           s64_converted: s64,
           reserve_a_raw: (p as any)?.reserve_a_raw,
           reserve_b_raw: (p as any)?.reserve_b_raw,
-          reason: 'nonFinitePrice',
-          cat: 'graph'
+          reason: "nonFinitePrice",
+          cat: "graph",
         });
       } catch {}
       return false; // 'nonFinitePrice'
     } else if (clmmCanDerive) {
       // Log successful CLMM validation with sqrt fallback
       try {
-        logger.debug('graph.sanity.filter.clmm.sqrt_fallback', {
+        logger.debug("graph.sanity.filter.clmm.sqrt_fallback", {
           dex,
           pool_id: (p as any)?.id?.slice(0, 12),
           price,
           sqrt_price_x64: (p as any)?.sqrt_price_x64,
           sqrt_price_x64_raw: (p as any)?.sqrt_price_x64_raw,
           s64_converted: s64,
-          cat: 'graph'
+          cat: "graph",
         });
       } catch {}
     } else if (cpmmCanDerive) {
       // Log successful CPMM validation with reserves fallback
       try {
-        logger.debug('graph.sanity.filter.cpmm.reserves_fallback', {
+        logger.debug("graph.sanity.filter.cpmm.reserves_fallback", {
           dex,
           pool_id: (p as any)?.id?.slice(0, 12),
           price,
           reserve_a_raw: String(reserveA),
           reserve_b_raw: String(reserveB),
-          cat: 'graph'
+          cat: "graph",
         });
       } catch {}
     }
@@ -593,25 +723,30 @@ export function isPoolValidForGraph(
 
   const aUsd = getUsd(p.mint_a);
   const bUsd = getUsd(p.mint_b);
-  
+
   // Avoid double-applying price deviation sanity if source already sanitized
   // Note: Configuration for avoidDoubleApply is assumed true here or handled by caller config
-  const sourceSanitized = (
+  const sourceSanitized =
     // All CLMMs receive orientation/clamp handling in their dedicated blocks
-    (kind === 'clmm') ||
-    (kind === 'cpmm') || // CPMM also goes through pipeline
-    (dex === 'Raydium' && kind === 'amm') // Assuming sanity_applyRaydiumAmm is true
-  );
-  
-  if (!sourceSanitized && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
+    kind === "clmm" ||
+    kind === "cpmm" || // CPMM also goes through pipeline
+    (dex === "Raydium" && kind === "amm"); // Assuming sanity_applyRaydiumAmm is true
+
+  if (
+    !sourceSanitized &&
+    Number.isFinite(aUsd as any) &&
+    Number.isFinite(bUsd as any) &&
+    (aUsd as number) > 0 &&
+    (bUsd as number) > 0
+  ) {
     // price is B per 1 A, USD ref should be USD(A)/USD(B)
     if (Number.isFinite(price) && price > 0) {
       const ref = (aUsd as number) / (bUsd as number);
       const dev = Math.max(price / ref, ref / price);
       if (dev > maxPriceDeviation) {
         try {
-          if (kind === 'clmm') {
-            logger.info('graph.sanity.filter.priceOutlier', {
+          if (kind === "clmm") {
+            logger.info("graph.sanity.filter.priceOutlier", {
               dex,
               kind,
               pool_id: (p as any)?.id?.slice(0, 12),
@@ -619,8 +754,8 @@ export function isPoolValidForGraph(
               ref,
               deviation: dev,
               maxDeviation: maxPriceDeviation,
-              reason: 'priceOutliers',
-              cat: 'graph'
+              reason: "priceOutliers",
+              cat: "graph",
             });
           }
         } catch {}
@@ -634,39 +769,60 @@ export function isPoolValidForGraph(
 
 /**
  * Create graph edges from a pool
- * 
+ *
  * SIMPLIFIED: Trust the pipeline price completely - NO rescaling, NO calibration
  * The pool's price should already be processed through the pipeline.
  */
 export function edgesFromPoolIncremental(
   p: AmmPool | ClmmPool | CpmmPool,
   getUsd: (mint: string) => number | undefined,
-  options?: EdgeBuildOptions,
+  options?: EdgeBuildOptions
 ): GraphEdge[] {
-  const dex = String((p as any)?.dex || '');
-  const id = String((p as any)?.id || '');
-  const a = String((p as any)?.mint_a || '');
-  const b = String((p as any)?.mint_b || '');
+  const dex = String((p as any)?.dex || "");
+  const id = String((p as any)?.id || "");
+  const a = String((p as any)?.mint_a || "");
+  const b = String((p as any)?.mint_b || "");
   const fee = Number((p as any)?.fee_bps || 0);
   const liq = liqDisplayFromPool(p);
   const w = weightFrom(liq, fee);
   let fwdRaw = Number((p as any)?.price_a_per_b);
-  const clampMin = Number.isFinite(options?.priceClampMin) ? Number(options?.priceClampMin) : 1e-12;
-  const clampMax = Number.isFinite(options?.priceClampMax) ? Number(options?.priceClampMax) : 1e12;
-  
-  const kind = (p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
-  
+  const clampMin = Number.isFinite(options?.priceClampMin)
+    ? Number(options?.priceClampMin)
+    : 1e-12;
+  const clampMax = Number.isFinite(options?.priceClampMax)
+    ? Number(options?.priceClampMax)
+    : 1e12;
+
+  const kind =
+    (p as any)?.pool_kind ||
+    ((p as any)?.sqrt_price_x64_raw != null ||
+    typeof (p as any)?.sqrt_price_x64 === "number"
+      ? "clmm"
+      : "amm");
+
   // If price_a_per_b is missing, try to derive from reserves (CPMM) or sqrt_price (CLMM)
   if (!Number.isFinite(fwdRaw) || fwdRaw <= 0) {
-    if (kind === 'cpmm') {
+    if (kind === "cpmm") {
       // CPMM: Price B-per-A = reserveB / reserveA (adjusted for decimals)
       // For constant product AMM: to get 1 unit of A, you pay (reserveB/reserveA) units of B
       // This is the same formula as Raydium AMM v4
       try {
-        const reserveA = BigInt(String((p as any)?.reserve_a_raw || (p as any)?.native_reserve_a_raw || 0));
-        const reserveB = BigInt(String((p as any)?.reserve_b_raw || (p as any)?.native_reserve_b_raw || 0));
-        const decA = Number((p as any)?.decimals_a || (p as any)?.native_decimals_a || 9);
-        const decB = Number((p as any)?.decimals_b || (p as any)?.native_decimals_b || 9);
+        const reserveA = BigInt(
+          String(
+            (p as any)?.reserve_a_raw || (p as any)?.native_reserve_a_raw || 0
+          )
+        );
+        const reserveB = BigInt(
+          String(
+            (p as any)?.reserve_b_raw || (p as any)?.native_reserve_b_raw || 0
+          )
+        );
+        const decA = Number(
+          (p as any)?.decimals_a || (p as any)?.native_decimals_a || 9
+        );
+        const decB = Number(
+          (p as any)?.decimals_b || (p as any)?.native_decimals_b || 9
+        );
         if (reserveA > 0n && reserveB > 0n) {
           // Price B-per-A = reserveB / reserveA * 10^(decA - decB)
           // atomic_ratio = reserveB / reserveA
@@ -676,13 +832,21 @@ export function edgesFromPoolIncremental(
           fwdRaw = atomicRatio * decimalAdjust;
         }
       } catch {}
-    } else if (kind === 'clmm') {
+    } else if (kind === "clmm") {
       // CLMM: derive from sqrt_price_x64
       try {
-        const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
+        const s64 = BigInt(
+          String(
+            (p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0
+          )
+        );
         if (s64 > 0n) {
-          const decA = Number((p as any)?.decimals_a || (p as any)?.native_decimals_a || 9);
-          const decB = Number((p as any)?.decimals_b || (p as any)?.native_decimals_b || 9);
+          const decA = Number(
+            (p as any)?.decimals_a || (p as any)?.native_decimals_a || 9
+          );
+          const decB = Number(
+            (p as any)?.decimals_b || (p as any)?.native_decimals_b || 9
+          );
           // sqrt_price_x64 = sqrt(tokenB_atomic / tokenA_atomic) * 2^64
           // sqrt_price_x64^2 / 2^128 = tokenB_atomic / tokenA_atomic = price_a_per_b_atomic
           // price_a_per_b_whole = price_a_per_b_atomic * 10^(decA - decB)
@@ -694,7 +858,7 @@ export function edgesFromPoolIncremental(
       } catch {}
     }
   }
-  
+
   // Trust the pipeline price directly - only clamp for safety
   const fwd = clampPriceInc(fwdRaw, clampMin, clampMax);
   const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
@@ -706,27 +870,33 @@ export function edgesFromPoolIncremental(
   const nativeDecB = (p as any)?.native_decimals_b ?? decB;
   const canonicalReserveA = parseReserveRaw((p as any)?.reserve_a_raw, decA);
   const canonicalReserveB = parseReserveRaw((p as any)?.reserve_b_raw, decB);
-  const nativeReserveA = parseReserveRaw((p as any)?.native_reserve_a_raw, nativeDecA);
-  const nativeReserveB = parseReserveRaw((p as any)?.native_reserve_b_raw, nativeDecB);
+  const nativeReserveA = parseReserveRaw(
+    (p as any)?.native_reserve_a_raw,
+    nativeDecA
+  );
+  const nativeReserveB = parseReserveRaw(
+    (p as any)?.native_reserve_b_raw,
+    nativeDecB
+  );
   let reserveA = 0;
   let reserveB = 0;
-  let curveSource = '';
+  let curveSource = "";
 
   if (canonicalReserveA > 0 && canonicalReserveB > 0) {
     reserveA = canonicalReserveA;
     reserveB = canonicalReserveB;
-    curveSource = 'canonical_reserve';
+    curveSource = "canonical_reserve";
   } else if (nativeReserveA > 0 && nativeReserveB > 0) {
     if (wasSwapped) {
       reserveA = nativeReserveB;
       reserveB = nativeReserveA;
-      curveSource = 'native_reserve_swapped';
+      curveSource = "native_reserve_swapped";
     } else {
       reserveA = nativeReserveA;
       reserveB = nativeReserveB;
-      curveSource = 'native_reserve';
+      curveSource = "native_reserve";
     }
-  } else if (kind === 'clmm') {
+  } else if (kind === "clmm") {
     // ALWAYS use virtual (unbounded) reserves for the slippage curve.
     // Bounded reserves represent real token amounts in the active tick range,
     // but the constant-product AMM approximation used in the curve builder
@@ -735,40 +905,57 @@ export function edgesFromPoolIncremental(
     // (one side near zero, the other large), causing the AMM formula to
     // produce multipliers >> 1.0 — wildly overestimating output.
     try {
-      const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
-      const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
-      const virt = computeVirtualReservesFromClmm(s64, Lraw, Number(decA || 0), Number(decB || 0));
+      const s64 = BigInt(
+        String(
+          (p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0
+        )
+      );
+      const Lraw = BigInt(
+        String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0)
+      );
+      const virt = computeVirtualReservesFromClmm(
+        s64,
+        Lraw,
+        Number(decA || 0),
+        Number(decB || 0)
+      );
       if (virt) {
         reserveA = virt.reserveA;
         reserveB = virt.reserveB;
-        curveSource = 'virtual_liquidity';
+        curveSource = "virtual_liquidity";
       }
     } catch {}
-  } else if (kind === 'dlmm') {
+  } else if (kind === "dlmm") {
     // Priority 1: active bin reserves from range cache (most accurate)
     const rangeData = getRangeData(id);
-    if (rangeData?.kind === 'dlmm' && rangeData.reserveX > 0 && rangeData.reserveY > 0) {
+    if (
+      rangeData?.kind === "dlmm" &&
+      rangeData.reserveX > 0 &&
+      rangeData.reserveY > 0
+    ) {
       // Reserves are in native Meteora order (X = tokenX, Y = tokenY).
       // Swap to canonical order if the pool's token order was inverted.
       if (wasSwapped) {
         reserveA = rangeData.reserveY;
         reserveB = rangeData.reserveX;
-        curveSource = 'active_bin_swapped';
+        curveSource = "active_bin_swapped";
       } else {
         reserveA = rangeData.reserveX;
         reserveB = rangeData.reserveY;
-        curveSource = 'active_bin';
+        curveSource = "active_bin";
       }
     }
     // Priority 2: fallback to heuristic reserves
     if (reserveA === 0 || reserveB === 0) {
-      const minLiquidity = Number((p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_display ?? 0);
+      const minLiquidity = Number(
+        (p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_display ?? 0
+      );
       if (minLiquidity > 0 && fwd && fwd > 0) {
         const heur = computeHeuristicReservesFromMin(minLiquidity, fwd);
         if (heur) {
           reserveA = heur.reserveA;
           reserveB = heur.reserveB;
-          curveSource = 'liquidity_min_heuristic';
+          curveSource = "liquidity_min_heuristic";
         }
       }
     }
@@ -779,7 +966,15 @@ export function edgesFromPoolIncremental(
   // Priority chain: tick/bin simulation (high confidence) > reserve-based (low)
   const slippageCurve =
     buildSlippageCurveFromSimulation(kind, id, fee, spotRate, wasSwapped, p) ||
-    buildSlippageCurveSource(kind, reserveA, reserveB, fee, spotRate, (p as any)?.updated_ms, curveSource || 'native_reserve');
+    buildSlippageCurveSource(
+      kind,
+      reserveA,
+      reserveB,
+      fee,
+      spotRate,
+      (p as any)?.updated_ms,
+      curveSource || "native_reserve"
+    );
 
   // ── For CLMM: compute bounded (active-range) reserves to replace vault reserves ──
   // Vault balances include liquidity across ALL tick ranges and vastly overstate the
@@ -787,16 +982,30 @@ export function edgesFromPoolIncremental(
   // when it falls back from curve to the AMM-blend formula.
   let boundedReserveARaw: string | undefined;
   let boundedReserveBRaw: string | undefined;
-  if (kind === 'clmm') {
+  if (kind === "clmm") {
     try {
       const rangeData = getRangeData(id);
-      if (rangeData?.kind === 'clmm' && rangeData.currentLiquidity > 0 && rangeData.sqrtPriceLower > 0 && rangeData.sqrtPriceUpper > rangeData.sqrtPriceLower) {
-        const s64 = BigInt(String((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0));
-        const Lraw = BigInt(String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0));
+      if (
+        rangeData?.kind === "clmm" &&
+        rangeData.currentLiquidity > 0 &&
+        rangeData.sqrtPriceLower > 0 &&
+        rangeData.sqrtPriceUpper > rangeData.sqrtPriceLower
+      ) {
+        const s64 = BigInt(
+          String(
+            (p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0
+          )
+        );
+        const Lraw = BigInt(
+          String((p as any)?.liquidity_raw || (p as any)?.liquidity || 0)
+        );
         const bounded = computeBoundedClmmReserves(
-          s64, Lraw,
-          Number(nativeDecA || 0), Number(nativeDecB || 0),
-          rangeData.sqrtPriceLower, rangeData.sqrtPriceUpper,
+          s64,
+          Lraw,
+          Number(nativeDecA || 0),
+          Number(nativeDecB || 0),
+          rangeData.sqrtPriceLower,
+          rangeData.sqrtPriceUpper
         );
         if (bounded) {
           // bounded reserves are in NATIVE order (A = native_mint_a, B = native_mint_b).
@@ -817,12 +1026,12 @@ export function edgesFromPoolIncremental(
   const pipelineProcessed = (p as any)?._pipelineProcessed === true;
   if (!pipelineProcessed) {
     try {
-      logger.warn('graph.edge.not_processed', {
+      logger.warn("graph.edge.not_processed", {
         dex,
         pool_id: id.slice(0, 12),
         mint_a: a.slice(0, 8),
         mint_b: b.slice(0, 8),
-        cat: 'graph'
+        cat: "graph",
       });
     } catch {}
   }
@@ -834,22 +1043,29 @@ export function edgesFromPoolIncremental(
   //   AMM/CPMM:  full source reserve (the pool's actual on-chain balance).
   let capacity_input_raw: string | undefined;
   try {
-    if (kind === 'clmm' || kind === 'dlmm') {
-      capacity_input_raw = computeActiveRangeCapacityRaw(kind, id, p, wasSwapped);
+    if (kind === "clmm" || kind === "dlmm") {
+      capacity_input_raw = computeActiveRangeCapacityRaw(
+        kind,
+        id,
+        p,
+        wasSwapped
+      );
     }
     // AMM/CPMM (or CLMM/DLMM without range data) → full source reserve as physical cap
     if (!capacity_input_raw) {
       const sourceReserveRaw = wasSwapped
-        ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)
-        : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw);
-      if (sourceReserveRaw != null && String(sourceReserveRaw).trim() !== '') {
+        ? (p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw
+        : (p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw;
+      if (sourceReserveRaw != null && String(sourceReserveRaw).trim() !== "") {
         const big = BigInt(String(sourceReserveRaw));
         if (big > 0n) capacity_input_raw = big.toString();
       }
       if (!capacity_input_raw && reserveA > 0) {
         const decSource = wasSwapped
           ? Number((p as any)?.native_decimals_b ?? (p as any)?.decimals_b ?? 9)
-          : Number((p as any)?.native_decimals_a ?? (p as any)?.decimals_a ?? 9);
+          : Number(
+              (p as any)?.native_decimals_a ?? (p as any)?.decimals_a ?? 9
+            );
         if (Number.isFinite(decSource) && decSource >= 0 && decSource <= 18) {
           const scale = 10 ** Math.max(0, decSource);
           const capRaw = Math.floor(reserveA * scale);
@@ -876,19 +1092,23 @@ export function edgesFromPoolIncremental(
     // reserves and decimals so _a always corresponds to the edge source token.
     // This is critical for arb-rs slippage simulation which assumes _a = input.
     native_decimals_a: wasSwapped
-      ? ((p as any)?.native_decimals_b ?? (p as any)?.decimals_b)
-      : ((p as any)?.native_decimals_a ?? (p as any)?.decimals_a),
+      ? (p as any)?.native_decimals_b ?? (p as any)?.decimals_b
+      : (p as any)?.native_decimals_a ?? (p as any)?.decimals_a,
     native_decimals_b: wasSwapped
-      ? ((p as any)?.native_decimals_a ?? (p as any)?.decimals_a)
-      : ((p as any)?.native_decimals_b ?? (p as any)?.decimals_b),
+      ? (p as any)?.native_decimals_a ?? (p as any)?.decimals_a
+      : (p as any)?.native_decimals_b ?? (p as any)?.decimals_b,
     native_account_a: (p as any)?.native_account_a ?? (p as any)?.account_a,
     native_account_b: (p as any)?.native_account_b ?? (p as any)?.account_b,
-    native_reserve_a_raw: boundedReserveARaw ?? (wasSwapped
-      ? ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)
-      : ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw)),
-    native_reserve_b_raw: boundedReserveBRaw ?? (wasSwapped
-      ? ((p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw)
-      : ((p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw)),
+    native_reserve_a_raw:
+      boundedReserveARaw ??
+      (wasSwapped
+        ? (p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw
+        : (p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw),
+    native_reserve_b_raw:
+      boundedReserveBRaw ??
+      (wasSwapped
+        ? (p as any)?.native_reserve_a_raw ?? (p as any)?.reserve_a_raw
+        : (p as any)?.native_reserve_b_raw ?? (p as any)?.reserve_b_raw),
     fee_bps: fee,
     source_price_usd: getUsd(a),
     target_price_usd: getUsd(b),
@@ -898,7 +1118,7 @@ export function edgesFromPoolIncremental(
     price_a_per_b: fwd,
     tvl_usd: (p as any)?.tvl_usd,
     pool_kind: kind as any,
-    direction: 'canonical',
+    direction: "canonical",
     pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
     capacity_input_raw,
     was_swapped: (p as any)?.was_swapped, // Preserve swap state
@@ -932,28 +1152,32 @@ export function edgeChangedSimple(a: GraphEdge, b: GraphEdge): boolean {
   return false;
 }
 
-export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm' | 'dlmm' | 'cpmm', allow: EdgeAllow): boolean {
-  const d = String(dex || '').toLowerCase();
-  const k = String(kind || 'amm') as 'amm' | 'clmm' | 'dlmm' | 'cpmm';
-  if (d.includes('raydium')) return (allow.raydium?.[k] !== false);
-  if (d.includes('orca')) return (allow.orca?.[k] !== false);
+export function isDexKindAllowed(
+  dex: string,
+  kind: "amm" | "clmm" | "dlmm" | "cpmm",
+  allow: EdgeAllow
+): boolean {
+  const d = String(dex || "").toLowerCase();
+  const k = String(kind || "amm") as "amm" | "clmm" | "dlmm" | "cpmm";
+  if (d.includes("raydium")) return allow.raydium?.[k] !== false;
+  if (d.includes("orca")) return allow.orca?.[k] !== false;
   // Check MeteoraBalanced BEFORE plain Meteora (more specific first)
   // Support v1/v2 variants separately, with backward compatibility for old 'amm' field
-  if (d.includes('meteorabalanced')) {
+  if (d.includes("meteorabalanced")) {
     // Check for version-specific variants first
-    if (d.includes('_v1') || d.includes('-v1')) {
+    if (d.includes("_v1") || d.includes("-v1")) {
       // If old 'amm' field exists, use it; otherwise use v1 field
       if (allow.meteoraBalanced?.amm !== undefined) {
         return allow.meteoraBalanced.amm !== false;
       }
-      return (allow.meteoraBalanced?.v1 !== false);
+      return allow.meteoraBalanced?.v1 !== false;
     }
-    if (d.includes('_v2') || d.includes('-v2')) {
+    if (d.includes("_v2") || d.includes("-v2")) {
       // If old 'amm' field exists, use it; otherwise use v2 field
       if (allow.meteoraBalanced?.amm !== undefined) {
         return allow.meteoraBalanced.amm !== false;
       }
-      return (allow.meteoraBalanced?.v2 !== false);
+      return allow.meteoraBalanced?.v2 !== false;
     }
     // Fallback: if no version specified, check old 'amm' field first (backward compatibility)
     if (allow.meteoraBalanced?.amm !== undefined) {
@@ -963,20 +1187,21 @@ export function isDexKindAllowed(dex: string, kind: 'amm' | 'clmm' | 'dlmm' | 'c
     const v1Allowed = allow.meteoraBalanced?.v1 !== false;
     const v2Allowed = allow.meteoraBalanced?.v2 !== false;
     // If both are undefined, allow (default behavior)
-    if (allow.meteoraBalanced?.v1 === undefined && allow.meteoraBalanced?.v2 === undefined) {
+    if (
+      allow.meteoraBalanced?.v1 === undefined &&
+      allow.meteoraBalanced?.v2 === undefined
+    ) {
       return true;
     }
     // Otherwise, allow if at least one version is allowed
     return v1Allowed || v2Allowed;
   }
-  if (d.includes('meteora')) {
-    if (k === 'dlmm' && allow.meteora?.dlmm === undefined) {
+  if (d.includes("meteora")) {
+    if (k === "dlmm" && allow.meteora?.dlmm === undefined) {
       return allow.meteora?.clmm !== false;
     }
-    return (allow.meteora?.[k] !== false);
+    return allow.meteora?.[k] !== false;
   }
-  if (d.includes('pumpswap')) return (allow.pumpswap?.[k] !== false);
+  if (d.includes("pumpswap")) return allow.pumpswap?.[k] !== false;
   return true;
 }
-
-
