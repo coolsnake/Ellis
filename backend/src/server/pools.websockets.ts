@@ -6560,7 +6560,7 @@ export async function subscribeToDiscoveredPools(poolsByDex: {
         const debounceKey = `discovery:subscribe:${poolId}`;
         await withDebounce(debounceKey, async () => {
           await acquireRpcSlots(1);
-          await wsConnPool.onAccountChange(pk, () => {
+          conn.onAccountChange(pk, () => {
             // The existing handlers will process the data via the shared handle function
           });
         }, 100);
