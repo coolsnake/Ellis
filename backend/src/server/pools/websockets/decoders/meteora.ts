@@ -382,7 +382,9 @@ export async function handleMeteoraUpdate(
       cat: 'pools'
     });
 
-    if (!tokenX || !tokenY) {
+    // Filter non-pool accounts that have zero-pubkey mint fields
+    const _SYS = '11111111111111111111111111111111';
+    if (!tokenX || !tokenY || tokenX === _SYS || tokenY === _SYS || tokenX === tokenY) {
       wsDeltaStats.meteora_dlmm.skipped += 1;
       incrementSkipReason('meteora_dlmm', 'missing_tokens');
       return { success: false, error: 'missing_tokens', skipped: true };

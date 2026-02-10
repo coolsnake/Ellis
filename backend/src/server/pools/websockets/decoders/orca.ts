@@ -326,10 +326,12 @@ async function decodeWithNewClient(
       ? decoded.tokenMintB 
       : decoded.tokenMintB?.toString?.() || '';
     
-    if (!mintA || !mintB) {
+    // Filter non-pool accounts that have zero-pubkey mint fields
+    const _SYS = '11111111111111111111111111111111';
+    if (!mintA || !mintB || mintA === _SYS || mintB === _SYS || mintA === mintB) {
       return null;
     }
-    
+
     // Convert to a format compatible with the rest of the codebase
     // Note: Oracle is NOT stored in the Whirlpool account - it's a separate PDA
     // derived from seeds: ["oracle", whirlpool_address]. Callers should use

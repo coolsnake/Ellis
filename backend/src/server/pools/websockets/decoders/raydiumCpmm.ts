@@ -45,6 +45,138 @@ let CpmmPoolInfoLayout: any = null;
 let cpmmApplyState: { baseline: { cpmm: CpmmPool[] } | null; timer: NodeJS.Timeout | null } = { baseline: null, timer: null };
 const DEBOUNCE_MS = 50;
 
+// ─── Batched vault balance fetcher (for program-mode where vaults don't arrive via WS) ───
+const VAULT_BATCH_DELAY_MS = 75;
+const pendingVaultFetches = new Map<string, Array<{ resolve: (v: bigint | undefined) => void }>>();
+let vaultFetchTimer: ReturnType<typeof setTimeout> | null = null;
+
+function queueVaultFetch(vaultAddress: string): Promise<bigint | undefined> {
+  // Check cache first (avoid queueing if already known)
+  try {
+    const { vaultBalanceCache } = require('../../../pools.cache.js');
+    if (vaultBalanceCache.has(vaultAddress)) {
+      return Promise.resolve(vaultBalanceCache.get(vaultAddress));
+    }
+  } catch {}
+
+  return new Promise((resolve) => {
+    if (!pendingVaultFetches.has(vaultAddress)) {
+      pendingVaultFetches.set(vaultAddress, []);
+    }
+    pendingVaultFetches.get(vaultAddress)!.push({ resolve });
+
+    if (!vaultFetchTimer) {
+      vaultFetchTimer = setTimeout(flushVaultFetches, VAULT_BATCH_DELAY_MS);
+    }
+  });
+}
+
+async function flushVaultFetches(): Promise<void> {
+  vaultFetchTimer = null;
+  const batch = new Map(pendingVaultFetches);
+  pendingVaultFetches.clear();
+  if (batch.size === 0) return;
+
+  let vaultBalanceCache: Map<string, bigint>;
+  try {
+    vaultBalanceCache = (await import('../../../pools.cache.js')).vaultBalanceCache;
+  } catch { return; }
+
+  // Resolve any that got cached while waiting for the batch timer
+  const toFetch: string[] = [];
+  for (const [addr, waiters] of batch) {
+    if (vaultBalanceCache.has(addr)) {
+      const val = vaultBalanceCache.get(addr);
+      for (const w of waiters) w.resolve(val);
+    } else {
+      toFetch.push(addr);
+    }
+  }
+  if (toFetch.length === 0) return;
+
+  try {
+    const { getConnection } = await import('../../../../wallet/rpc.js');
+    const { PublicKey } = await import('@solana/web3.js');
+    const conn = getConnection();
+
+    // Batch RPC in chunks of 100
+    for (let i = 0; i < toFetch.length; i += 100) {
+      const chunk = toFetch.slice(i, i + 100);
+      try {
+        const infos = await conn.getMultipleAccountsInfo(
+          chunk.map((a: string) => new PublicKey(a))
+        );
+        for (let j = 0; j < chunk.length; j++) {
+          const info = infos[j];
+          let balance: bigint | undefined;
+          if (info?.data) {
+            const buf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data);
+            if (buf.length >= 72) {
+              balance = buf.readBigUInt64LE(64);
+              vaultBalanceCache.set(chunk[j], balance);
+            }
+          }
+          const waiters = batch.get(chunk[j]);
+          if (waiters) for (const w of waiters) w.resolve(balance);
+        }
+      } catch (err) {
+        logger.warn('cpmm.vault.batch_fetch.chunk_error', { chunkSize: chunk.length, error: String(err), cat: 'pools' });
+        // Resolve chunk with undefined on error
+        for (const addr of chunk) {
+          const waiters = batch.get(addr);
+          if (waiters) for (const w of waiters) w.resolve(undefined);
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn('cpmm.vault.batch_fetch.error', { total: toFetch.length, error: String(err), cat: 'pools' });
+    for (const addr of toFetch) {
+      const waiters = batch.get(addr);
+      if (waiters) for (const w of waiters) w.resolve(undefined);
+    }
+  }
+}
+
+// ─── ammConfig fee cache (for resolving real fees from on-chain config accounts) ───
+const ammConfigFeeCache = new Map<string, number>();
+let CpmmConfigInfoLayout: any = null;
+
+async function resolveAmmConfigFee(configId: string): Promise<number | undefined> {
+  const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+  if (!configId || configId === SYSTEM_PROGRAM) return undefined;
+  if (ammConfigFeeCache.has(configId)) return ammConfigFeeCache.get(configId);
+
+  try {
+    const { getConnection } = await import('../../../../wallet/rpc.js');
+    const { PublicKey } = await import('@solana/web3.js');
+    const conn = getConnection();
+    const info = await conn.getAccountInfo(new PublicKey(configId));
+    if (!info?.data) return undefined;
+
+    // Load CpmmConfigInfoLayout from SDK (lazy)
+    if (!CpmmConfigInfoLayout) {
+      try {
+        const mod = await import('@raydium-io/raydium-sdk-v2/lib/raydium/cpmm/layout.js');
+        CpmmConfigInfoLayout = mod.CpmmConfigInfoLayout;
+      } catch {
+        return undefined;
+      }
+    }
+    const buf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data);
+    const config = CpmmConfigInfoLayout.decode(buf);
+    // tradeFeeRate is in 1/1_000_000 units → convert to bps (÷ 100)
+    const tradeFeeRate = Number(config.tradeFeeRate || 0);
+    const feeBps = Math.round(tradeFeeRate / 100);
+    ammConfigFeeCache.set(configId, feeBps);
+    return feeBps;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Exported for use by AMM v4 vaults in pools.websockets.ts */
+export { queueVaultFetch, resolveAmmConfigFee, ammConfigFeeCache };
+
 /**
  * Load the CPMM layout from SDK (lazy initialization)
  */
@@ -152,6 +284,17 @@ export async function decodeRaydiumCpmmPool(
     // Extract fields from decoded state
     const token0Mint = state.mintA?.toBase58?.() || '';
     const token1Mint = state.mintB?.toBase58?.() || '';
+
+    // Filter non-pool accounts (ammConfig, observation, etc.)
+    // In program-level subscription mode, ALL accounts owned by the CPMM program arrive.
+    // Pool accounts have valid mintA/mintB; non-pool accounts have zero-pubkeys.
+    const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+    if (!token0Mint || !token1Mint ||
+        token0Mint === SYSTEM_PROGRAM || token1Mint === SYSTEM_PROGRAM ||
+        token0Mint === token1Mint) {
+      return null;
+    }
+
     const token0Vault = state.vaultA?.toBase58?.() || '';
     const token1Vault = state.vaultB?.toBase58?.() || '';
     const ammConfig = state.configId?.toBase58?.() || '';
@@ -160,12 +303,12 @@ export async function decodeRaydiumCpmmPool(
     const creator = state.poolCreator?.toBase58?.() || '';
     const token0Program = state.mintProgramA?.toBase58?.() || '';
     const token1Program = state.mintProgramB?.toBase58?.() || '';
-    
+
     // CRITICAL: Use symmetric fallback (9) to avoid ratio errors from mismatched decimals
     // On-chain state should always have decimals, but if missing, log warning
     let mint0Decimals = state.mintDecimalA;
     let mint1Decimals = state.mintDecimalB;
-    
+
     if (!Number.isFinite(mint0Decimals) || !Number.isFinite(mint1Decimals)) {
       // Log warning - on-chain decimals should never be missing
       logger.warn('raydium.cpmm.decode.decimals_missing_onchain', {
@@ -180,12 +323,7 @@ export async function decodeRaydiumCpmmPool(
       if (!Number.isFinite(mint0Decimals)) mint0Decimals = 9;
       if (!Number.isFinite(mint1Decimals)) mint1Decimals = 9;
     }
-    
-    // Validate required fields
-    if (!token0Mint || !token1Mint) {
-      return null;
-    }
-    
+
     if (!token0Vault || !token1Vault) {
       return null;
     }
@@ -194,8 +332,8 @@ export async function decodeRaydiumCpmmPool(
     const tokenProgramA = token0Program === TOKEN_2022_PROGRAM_ID ? 'token-2022' : 'spl-token';
     const tokenProgramB = token1Program === TOKEN_2022_PROGRAM_ID ? 'token-2022' : 'spl-token';
 
-    // CPMM uses 25 bps default fee
-    const fee_bps = 25;
+    // Use cached ammConfig fee if available, otherwise default to 25 bps
+    const fee_bps = ammConfigFeeCache.get(ammConfig) ?? 25;
 
     return {
       id: poolId,
@@ -349,12 +487,11 @@ async function handleCpmmUpdate(
   // Try to get from execution cache hot data (updated by vault subscriptions)
   let reserveA: bigint | undefined;
   let reserveB: bigint | undefined;
-  
+  const vaultA = decoded.account_a || (decoded as any).native_account_a;
+  const vaultB = decoded.account_b || (decoded as any).native_account_b;
+
   try {
     const { vaultBalanceCache } = await import('../../../pools.cache.js');
-    const vaultA = decoded.account_a || (decoded as any).native_account_a;
-    const vaultB = decoded.account_b || (decoded as any).native_account_b;
-    
     if (vaultA && vaultBalanceCache.has(vaultA)) {
       reserveA = vaultBalanceCache.get(vaultA);
     }
@@ -362,6 +499,23 @@ async function handleCpmmUpdate(
       reserveB = vaultBalanceCache.get(vaultB);
     }
   } catch {}
+
+  // If vaults not in cache (e.g. program-mode where vault WS events don't arrive),
+  // fetch via batched RPC
+  if ((!reserveA || !reserveB) && vaultA && vaultB) {
+    try {
+      if (!reserveA) reserveA = await queueVaultFetch(vaultA);
+      if (!reserveB) reserveB = await queueVaultFetch(vaultB);
+    } catch {}
+  }
+
+  // Resolve fee from ammConfig if still at default 25 bps
+  if ((decoded as any).amm_config && decoded.fee_bps === 25) {
+    try {
+      const resolvedFee = await resolveAmmConfigFee((decoded as any).amm_config);
+      if (resolvedFee !== undefined) (decoded as any).fee_bps = resolvedFee;
+    } catch {}
+  }
 
   // Process through price pipeline
   let processedPrice: ProcessedPriceResult | null = null;

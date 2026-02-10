@@ -5012,6 +5012,16 @@ function runWebsocketRefreshLoop(): void {
             }
           }
           logger.info('pools.ws.program.mode.active', { totalPrograms: subs.length, cat: 'pools' });
+
+          // Enable lazy activation in program mode — ensures new pools from program
+          // subscriptions only enter the graph once they have valid pricing
+          try {
+            const { setLazyActivationEnabled } = await import('./pools.activation.js');
+            setLazyActivationEnabled(true);
+            logger.info('pools.ws.program.lazy_activation.enabled', { cat: 'pools' });
+          } catch (actErr: any) {
+            logger.warn('pools.ws.program.lazy_activation.failed', { error: String(actErr?.message || actErr), cat: 'pools' });
+          }
         }
 
         if (subscriptionMode !== 'wss-program') {

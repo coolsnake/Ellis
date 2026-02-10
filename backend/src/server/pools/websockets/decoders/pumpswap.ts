@@ -88,9 +88,17 @@ export function decodePumpswapPoolState(data: Buffer): PumpswapPoolState | null 
       return null;
     }
 
+    // Filter non-pool accounts that have zero-pubkey mint fields
+    const _baseMint = decoded.baseMint?.toBase58?.() || '';
+    const _quoteMint = decoded.quoteMint?.toBase58?.() || '';
+    const _SYS = '11111111111111111111111111111111';
+    if (!_baseMint || !_quoteMint || _baseMint === _SYS || _quoteMint === _SYS || _baseMint === _quoteMint) {
+      return null;
+    }
+
     return {
-      baseMint: decoded.baseMint.toBase58(),
-      quoteMint: decoded.quoteMint.toBase58(),
+      baseMint: _baseMint,
+      quoteMint: _quoteMint,
       vaultA: decoded.poolBaseTokenAccount.toBase58(),
       vaultB: decoded.poolQuoteTokenAccount.toBase58(),
       lpSupply: decoded.lpSupply ? BigInt(decoded.lpSupply.toString()) : undefined,

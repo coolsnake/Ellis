@@ -790,9 +790,19 @@ export function resetDecimalResolutionMetrics(): void {
  * @param mint Token mint address
  * @returns Decimals value or undefined if resolution fails
  */
+// Known invalid addresses that should never be resolved via RPC
+const INVALID_MINTS = new Set([
+  '11111111111111111111111111111111',                     // System Program
+  'NativeLoader1111111111111111111111111111111',           // NativeLoader (variant)
+  'NativeLoader1111111111111111111111111111112',           // NativeLoader
+]);
+
 export async function resolveDecimalsFromRpc(mint: string): Promise<number | undefined> {
   if (!mint || mint.length < 32) return undefined;
-  
+
+  // Early reject known non-token addresses
+  if (INVALID_MINTS.has(mint)) return undefined;
+
   // Check anchors first (these are hardcoded and authoritative)
   if (ANCHOR_DECIMALS.has(mint)) {
     resolutionMetrics.anchorHits++;
@@ -831,6 +841,23 @@ export async function resolveDecimalsFromRpc(mint: string): Promise<number | und
       const isTokenProgram = owner === TOKEN_PROGRAM_ID_STR || owner === TOKEN_2022_PROGRAM_ID_STR;
       
       if (!isTokenProgram) {
+        // Still try to parse as Mint layout — some accounts may have unexpected owners
+        // SPL Token Mint layout: decimals at offset 44 (u8), min size 82 bytes
+        if (accountInfo.data.length >= 82) {
+          const possibleDecimals = accountInfo.data[44];
+          if (possibleDecimals >= 0 && possibleDecimals <= 18) {
+            logger.debug('decimals.rpc.non_token_owner_parsed', {
+              mint: mint.slice(0, 12) + '…',
+              owner: owner.slice(0, 12) + '…',
+              decimals: possibleDecimals,
+              cat: 'decimals'
+            });
+            resolutionMetrics.rpcSuccesses++;
+            resolveCache.set(mint, possibleDecimals);
+            schedulePersist();
+            return possibleDecimals;
+          }
+        }
         resolutionMetrics.rpcFailures++;
         logger.warn('decimals.rpc.not_token_account', {
           mint: mint.slice(0, 12) + '…',
@@ -1053,10 +1080,10 @@ export async function resolveDecimalsGuaranteed(
   poolId?: string,
   dex?: string
 ): Promise<{ decimals: number; source: 'anchor' | 'cache' | 'rpc' | 'jupiter' | 'default'; validated: boolean }> {
-  if (!mint || mint.length < 32) {
+  if (!mint || mint.length < 32 || INVALID_MINTS.has(mint)) {
     return { decimals: 9, source: 'default', validated: false };
   }
-  
+
   // 1. Anchor decimals (highest priority, always correct)
   if (ANCHOR_DECIMALS.has(mint)) {
     resolutionMetrics.anchorHits++;

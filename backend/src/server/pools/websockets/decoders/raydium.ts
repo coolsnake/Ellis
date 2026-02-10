@@ -117,7 +117,9 @@ export async function decodeRaydiumClmmPool(
 
     const mintA = (state.mintA || state.tokenMintA)?.toBase58?.() || '';
     const mintB = (state.mintB || state.tokenMintB)?.toBase58?.() || '';
-    if (!mintA || !mintB) return null;
+    // Filter non-pool accounts (ammConfig, etc.) that have zero-pubkey mint fields
+    const _SYS = '11111111111111111111111111111111';
+    if (!mintA || !mintB || mintA === _SYS || mintB === _SYS || mintA === mintB) return null;
 
     const sqrtRaw = anyToBigInt(state.sqrtPriceX64 ?? state.sqrt_price_x64 ?? state.sqrtPrice ?? 0);
     const liqRaw = anyToBigInt(state.liquidity ?? 0);
@@ -233,7 +235,9 @@ export async function decodeRaydiumAmmPool(
 
     const mintA = (state.baseMint || state.mintA || state.mint_a)?.toBase58?.() || '';
     const mintB = (state.quoteMint || state.mintB || state.mint_b)?.toBase58?.() || '';
-    if (!mintA || !mintB) return null;
+    // Filter non-pool accounts that have zero-pubkey mint fields
+    const _SYS2 = '11111111111111111111111111111111';
+    if (!mintA || !mintB || mintA === _SYS2 || mintB === _SYS2 || mintA === mintB) return null;
 
     // Reserves may be BN; best-effort convert to number
     const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? state.baseReserve.toString() : (state.baseReserve || 0));

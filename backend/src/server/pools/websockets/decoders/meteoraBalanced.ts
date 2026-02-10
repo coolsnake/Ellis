@@ -249,11 +249,16 @@ export async function decodeDammV1PoolAccount(data: Buffer): Promise<DammV1PoolS
     const lpMint = new PublicKey(data.subarray(8, 40)).toBase58();
     const tokenAMint = new PublicKey(data.subarray(40, 72)).toBase58();
     const tokenBMint = new PublicKey(data.subarray(72, 104)).toBase58();
+
+    // Filter non-pool accounts that have zero-pubkey mint fields
+    const _SYS = '11111111111111111111111111111111';
+    if (tokenAMint === _SYS || tokenBMint === _SYS || tokenAMint === tokenBMint) return null;
+
     const aVault = new PublicKey(data.subarray(104, 136)).toBase58();
     const bVault = new PublicKey(data.subarray(136, 168)).toBase58();
     const aVaultLp = new PublicKey(data.subarray(168, 200)).toBase58();
     const bVaultLp = new PublicKey(data.subarray(200, 232)).toBase58();
-    
+
     return {
       lpMint,
       tokenAMint,
@@ -372,8 +377,10 @@ export async function decodeDammV2PoolAccount(data: Buffer): Promise<DammV2PoolS
     const liquidityHigh = buf.readBigUInt64LE(V2_OFFSET_LIQUIDITY + 8);
     const liquidity = liquidityLow + (liquidityHigh << BigInt(64));
 
-    // Validate mints
-    if (!tokenAMint || !tokenBMint || tokenAMint.length < 32 || tokenBMint.length < 32) {
+    // Validate mints — reject non-pool accounts with zero-pubkey mint fields
+    const _SYS2 = '11111111111111111111111111111111';
+    if (!tokenAMint || !tokenBMint || tokenAMint.length < 32 || tokenBMint.length < 32 ||
+        tokenAMint === _SYS2 || tokenBMint === _SYS2 || tokenAMint === tokenBMint) {
       logCatchDebug('meteora_balanced.decodeDammV2', 'Invalid mints decoded from V2 pool');
       return null;
     }
