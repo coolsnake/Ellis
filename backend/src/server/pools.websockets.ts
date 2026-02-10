@@ -4988,6 +4988,33 @@ function runWebsocketRefreshLoop(): void {
           logger.info('pools.ws sequential.mode', { enabled: true, staggerMs: staggerDelayMs, cat: 'pools' });
         }
 
+        // ── WSS-PROGRAM MODE: subscribe to DEX programs instead of individual pools ──
+        if (subscriptionMode === 'wss-program') {
+          const { PUMPSWAP_PROGRAM_ID: _pumpProg } = await import('./pools/pumpswap.js');
+          const programs: Array<{ name: string; pk: any }> = [
+            { name: 'raydium-amm',      pk: rayAmm },
+            { name: 'raydium-clmm',     pk: rayClmm },
+            { name: 'raydium-cpmm',     pk: rayCpmm },
+            { name: 'orca-whirlpool',   pk: orcaProg },
+            { name: 'meteora-dlmm',     pk: new web3.PublicKey(String((CONFIG as any)?.meteora?.programId || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo').trim()) },
+            { name: 'meteora-damm-v1',  pk: new web3.PublicKey(METEORA_BALANCED_V1_PROGRAM) },
+            { name: 'meteora-damm-v2',  pk: new web3.PublicKey(METEORA_BALANCED_V2_PROGRAM) },
+            { name: 'pumpswap-bonding', pk: new web3.PublicKey(String((CONFIG as any)?.pumpswap?.bondingCurveProgramId || '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P').trim()) },
+            { name: 'pumpswap-amm',     pk: new web3.PublicKey(_pumpProg) },
+          ];
+          for (const { name, pk } of programs) {
+            try {
+              const id = await subscribeProgramWithRetry(pk, (ch: any) => handle(ch.accountId, ch.accountInfo));
+              subs.push({ kind: 'program', id });
+              logger.info('pools.ws.program.subscribed', { program: name, cat: 'pools' });
+            } catch (err: any) {
+              logger.warn('pools.ws.program.failed', { program: name, error: String(err?.message || err), cat: 'pools' });
+            }
+          }
+          logger.info('pools.ws.program.mode.active', { totalPrograms: subs.length, cat: 'pools' });
+        }
+
+        if (subscriptionMode !== 'wss-program') {
         // Subscribe to Orca Whirlpool POOL accounts only: prefer graph edge pool ids, else derive PDAs from watchlist
         // CRITICAL: Check if Orca is enabled in dex source control before subscribing
         const orcaEnabled = (() => {
@@ -6061,6 +6088,7 @@ function runWebsocketRefreshLoop(): void {
           attachedMeteoraBalancedPools = 0;
         }
         } // End of meteoraBalancedEnabled check
+        } // End of subscriptionMode !== 'wss-program' check
 
         wsUnsubscribe = () => {
           try {

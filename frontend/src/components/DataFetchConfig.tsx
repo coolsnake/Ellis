@@ -766,11 +766,13 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                   onChange={(e) => set('poolSubscriptionMode', e.target.value)}
                 >
                   <option value="wss">WebSocket (RPC)</option>
+                  <option value="wss-program">WebSocket Programs (RPC)</option>
                   <option value="grpc">gRPC (Yellowstone)</option>
                   <option value="disabled">Disabled</option>
                 </select>
                 <p className="text-xs text-gray-400 mt-1">
-                  {cfg.poolSubscriptionMode === 'wss' && 'Standard RPC WebSocket subscriptions (onAccountChange)'}
+                  {cfg.poolSubscriptionMode === 'wss' && 'Standard RPC WebSocket subscriptions (onAccountChange per pool)'}
+                  {cfg.poolSubscriptionMode === 'wss-program' && 'Subscribe to DEX programs instead of individual pools (9 subscriptions total)'}
                   {cfg.poolSubscriptionMode === 'grpc' && 'Low-latency gRPC streaming via Shyft Yellowstone'}
                   {cfg.poolSubscriptionMode === 'disabled' && 'No real-time updates (HTTP polling only)'}
                 </p>

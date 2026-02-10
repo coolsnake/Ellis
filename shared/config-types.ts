@@ -186,7 +186,7 @@ export const DEFAULT_SIZING_CONFIG_PUBLIC: SizingConfigPublic = {
 };
 
 // Pool Subscription Mode (WSS vs gRPC)
-export type PoolSubscriptionMode = 'wss' | 'grpc' | 'disabled';
+export type PoolSubscriptionMode = 'wss' | 'wss-program' | 'grpc' | 'disabled';
 
 // gRPC Stream Configuration (Yellowstone/Shyft)
 export interface GrpcStreamConfig {
