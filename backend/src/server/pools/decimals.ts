@@ -84,6 +84,20 @@ let decimalValidationMismatches = 0;
 // In-memory cache for resolved decimals
 const resolveCache = new Map<string, number>();
 
+// Negative cache: mints that failed RPC resolution (avoids repeated RPC calls)
+const negativeCache = new Map<string, number>(); // mint → timestamp of failure
+const NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000; // retry after 5 minutes
+
+function isNegativelyCached(mint: string): boolean {
+  const ts = negativeCache.get(mint);
+  if (ts == null) return false;
+  if (Date.now() - ts > NEGATIVE_CACHE_TTL_MS) {
+    negativeCache.delete(mint);
+    return false;
+  }
+  return true;
+}
+
 // Jupiter map cache (refreshed periodically)
 let jupMapCache: Record<string, { decimals: number }> | null = null;
 let jupMapCacheTime = 0;
@@ -687,6 +701,7 @@ export async function resolveManyDecimals(
  */
 export function clearDecimalsCache(): void {
   resolveCache.clear();
+  negativeCache.clear();
   jupMapCache = null;
   jupMapCacheTime = 0;
 }
@@ -803,6 +818,9 @@ export async function resolveDecimalsFromRpc(mint: string): Promise<number | und
   // Early reject known non-token addresses
   if (INVALID_MINTS.has(mint)) return undefined;
 
+  // Skip mints that recently failed RPC resolution (avoids repeated slow calls)
+  if (isNegativelyCached(mint)) return undefined;
+
   // Check anchors first (these are hardcoded and authoritative)
   if (ANCHOR_DECIMALS.has(mint)) {
     resolutionMetrics.anchorHits++;
@@ -830,6 +848,7 @@ export async function resolveDecimalsFromRpc(mint: string): Promise<number | und
       
       if (!accountInfo) {
         resolutionMetrics.rpcFailures++;
+        negativeCache.set(mint, Date.now());
         logger.warn('decimals.rpc.account_not_found', {
           mint: mint.slice(0, 12) + '…',
           cat: 'decimals'
@@ -859,6 +878,7 @@ export async function resolveDecimalsFromRpc(mint: string): Promise<number | und
           }
         }
         resolutionMetrics.rpcFailures++;
+        negativeCache.set(mint, Date.now());
         logger.warn('decimals.rpc.not_token_account', {
           mint: mint.slice(0, 12) + '…',
           owner: owner.slice(0, 12) + '…',
@@ -866,9 +886,10 @@ export async function resolveDecimalsFromRpc(mint: string): Promise<number | und
         });
         return undefined;
       }
-      
+
       if (accountInfo.data.length < 45) {
         resolutionMetrics.rpcFailures++;
+        negativeCache.set(mint, Date.now());
         logger.warn('decimals.rpc.invalid_data_length', {
           mint: mint.slice(0, 12) + '…',
           dataLength: accountInfo.data.length,
