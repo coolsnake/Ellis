@@ -95,7 +95,7 @@ async function flushVaultFetches(): Promise<void> {
   if (toFetch.length === 0) return;
 
   try {
-    const { getConnection } = await import('../../../../wallet/rpc.js');
+    const { getConnection } = await import('../../../../wallet/wallet.js');
     const { PublicKey } = await import('@solana/web3.js');
     const conn = getConnection();
 
@@ -147,7 +147,7 @@ async function resolveAmmConfigFee(configId: string): Promise<number | undefined
   if (ammConfigFeeCache.has(configId)) return ammConfigFeeCache.get(configId);
 
   try {
-    const { getConnection } = await import('../../../../wallet/rpc.js');
+    const { getConnection } = await import('../../../../wallet/wallet.js');
     const { PublicKey } = await import('@solana/web3.js');
     const conn = getConnection();
     const info = await conn.getAccountInfo(new PublicKey(configId));

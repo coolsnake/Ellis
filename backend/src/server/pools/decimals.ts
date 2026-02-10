@@ -854,7 +854,7 @@ export async function resolveDecimalsFromRpc(mint: string): Promise<number | und
             });
             resolutionMetrics.rpcSuccesses++;
             resolveCache.set(mint, possibleDecimals);
-            schedulePersist();
+            schedulePersist(mint, possibleDecimals, 'rpc');
             return possibleDecimals;
           }
         }
