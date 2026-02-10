@@ -724,6 +724,8 @@ export async function handleOrcaUpdate(
         raw: rawTickSpacing,
         cat: 'pools',
       });
+      incrementSkipReason('orca', 'invalid_tick_spacing');
+      return { success: false, error: 'invalid_tick_spacing', skipped: true, skipReason: 'invalid_tick_spacing' };
     }
     const fee_bps = deriveOrcaFeeBps(parsed as any);
 

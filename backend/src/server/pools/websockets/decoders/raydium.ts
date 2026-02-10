@@ -121,6 +121,9 @@ export async function decodeRaydiumClmmPool(
     const _SYS = '11111111111111111111111111111111';
     if (!mintA || !mintB || mintA === _SYS || mintB === _SYS || mintA === mintB) return null;
 
+    // Extract ammConfig for fee resolution (CLMM fees live in ammConfig account, not pool state)
+    const clmmAmmConfig = (state.ammConfig || state.amm_config)?.toBase58?.() || '';
+
     const sqrtRaw = anyToBigInt(state.sqrtPriceX64 ?? state.sqrt_price_x64 ?? state.sqrtPrice ?? 0);
     const liqRaw = anyToBigInt(state.liquidity ?? 0);
     const liq = Number(state.liquidity ?? 0);
@@ -156,6 +159,15 @@ export async function decodeRaydiumClmmPool(
           }
         } catch {}
       }
+    }
+
+    // Final fallback: resolve fee from ammConfig account via RPC (program mode)
+    if ((!Number.isFinite(fee) || fee <= 0) && clmmAmmConfig && clmmAmmConfig !== _SYS) {
+      try {
+        const { resolveAmmConfigFee } = await import('./raydiumCpmm.js');
+        const resolved = await resolveAmmConfigFee(clmmAmmConfig);
+        if (resolved !== undefined && resolved > 0) fee = resolved;
+      } catch {}
     }
 
     if (tick <= 0) return null;
@@ -202,6 +214,7 @@ export async function decodeRaydiumClmmPool(
       price_a_per_b: 0, // Will be calculated through pipeline
       native_mint_a: mintA,
       native_mint_b: mintB,
+      amm_config: clmmAmmConfig || undefined,
     };
   } catch (e) {
     logCatchDebug('raydium.decodeClmm', e, { poolId });
