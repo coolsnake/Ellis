@@ -1,18 +1,18 @@
 [
   {
     "type": "swap",
-    "time": "2025-11-17T18:11:21.328Z",
+    "time": "2026-02-06T04:24:55.060Z",
     "fromToken": "USDC",
     "fromAmount": 0.1,
     "toToken": "SOL",
-    "toAmount": 0.000753157
+    "toAmount": 0.001298171
   },
   {
     "type": "swap",
-    "time": "2025-11-17T18:11:21.743Z",
+    "time": "2026-02-06T04:24:55.284Z",
     "fromToken": "SOL",
-    "fromAmount": 0.000753157,
+    "fromAmount": 0.001298171,
     "toToken": "USDC",
-    "toAmount": 0.09994392280551555
+    "toAmount": 0.1000693511879854
   }
 ]

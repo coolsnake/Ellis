@@ -1,9 +1,9 @@
 /**
  * Yellowstone gRPC Stream Adapter
- * 
+ *
  * Provides a unified interface for streaming pool account updates via gRPC.
  * Designed as a drop-in alternative to WSS subscriptions.
- * 
+ *
  * Key features:
  * - Subscribes to specific pool accounts (not all program accounts)
  * - Uses 'processed' commitment for lowest latency
@@ -13,12 +13,19 @@
  * - Ping/keepalive for stream health
  */
 
-import Client, { CommitmentLevel, SubscribeRequest } from "@triton-one/yellowstone-grpc";
+import Client, {
+  CommitmentLevel,
+  SubscribeRequest,
+} from "@triton-one/yellowstone-grpc";
+import type { GrpcAccountFilter } from "../websockets/filters.js";
 import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import { logger } from "../../../utils/logger.js";
 import { emit } from "../../realtime.js";
-import type { AccountInfo, DerivedAccountInfo } from "../websockets/decoders/types.js";
+import type {
+  AccountInfo,
+  DerivedAccountInfo,
+} from "../websockets/decoders/types.js";
 import {
   handleRaydiumUpdate,
   handleRaydiumCpmmUpdate,
@@ -35,40 +42,46 @@ export interface DexMetrics {
   lastUpdateMs: number;
 }
 
-export type DexMetricsMap = Record<PoolSubscription['dex'], DexMetrics>;
+export type DexMetricsMap = Record<PoolSubscription["dex"], DexMetrics>;
 
 export interface GrpcAdapterConfig {
   endpoint: string;
   xToken: string;
-  commitment?: 'processed' | 'confirmed' | 'finalized';
+  commitment?: "processed" | "confirmed" | "finalized";
   maxReconnectAttempts?: number;
   reconnectDelayMs?: number;
 }
 
 export interface PoolSubscription {
   poolId: string;
-  dex: 'raydium' | 'raydium-cpmm' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced';
-  derivedAccounts?: string[];  // Vault accounts, tick arrays, etc.
+  dex:
+    | "raydium"
+    | "raydium-cpmm"
+    | "orca"
+    | "meteora"
+    | "pumpswap"
+    | "meteora_balanced";
+  derivedAccounts?: string[]; // Vault accounts, tick arrays, etc.
 }
 
 // Map commitment string to Yellowstone enum
 const COMMITMENT_MAP = {
-  'processed': CommitmentLevel.PROCESSED,
-  'confirmed': CommitmentLevel.CONFIRMED,
-  'finalized': CommitmentLevel.FINALIZED,
+  processed: CommitmentLevel.PROCESSED,
+  confirmed: CommitmentLevel.CONFIRMED,
+  finalized: CommitmentLevel.FINALIZED,
 } as const;
 
 // Program ID to DEX mapping
-const PROGRAM_TO_DEX: Record<string, PoolSubscription['dex']> = {
-  '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'raydium',  // AMM v4
-  'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK': 'raydium',  // CLMM
-  'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C': 'raydium-cpmm',  // CPMM
-  'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc': 'orca',
-  'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo': 'meteora',
-  '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P': 'pumpswap',  // Bonding curve
-  'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA': 'pumpswap',  // Post-graduation AMM
-  'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB': 'meteora_balanced',  // Dynamic AMM v1
-  'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG': 'meteora_balanced',  // CP-AMM v2
+const PROGRAM_TO_DEX: Record<string, PoolSubscription["dex"]> = {
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "raydium", // AMM v4
+  CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK: "raydium", // CLMM
+  CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C: "raydium-cpmm", // CPMM
+  whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc: "orca",
+  LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo: "meteora",
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "pumpswap", // Bonding curve
+  pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA: "pumpswap", // Post-graduation AMM
+  Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB: "meteora_balanced", // Dynamic AMM v1
+  cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG: "meteora_balanced", // CP-AMM v2
 };
 
 export class GrpcStreamAdapter {
@@ -77,7 +90,7 @@ export class GrpcStreamAdapter {
   private config: GrpcAdapterConfig;
   private subscriptions: Map<string, PoolSubscription> = new Map();
   private derivedAccountToPool: Map<string, DerivedAccountInfo> = new Map();
-  private poolIdToDex: Map<string, PoolSubscription['dex']> = new Map();
+  private poolIdToDex: Map<string, PoolSubscription["dex"]> = new Map();
   private isConnected: boolean = false;
   private reconnectAttempts: number = 0;
   private eventCount: number = 0;
@@ -85,11 +98,21 @@ export class GrpcStreamAdapter {
   private reconnecting: boolean = false;
   private pingTimer: NodeJS.Timeout | null = null;
   private lastPongMs: number = 0;
-  
+
+  // Program-level subscription state (for reconnect)
+  private programSubscriptions: Array<{
+    name: string;
+    programId: string;
+    filters: GrpcAccountFilter[];
+  }> | null = null;
+
+  // Dynamic vault accounts accumulated during program-mode operation
+  private vaultAccounts: Set<string> = new Set();
+
   // Per-DEX metrics for monitoring
   private dexMetrics: DexMetricsMap = {
     raydium: { updates: 0, errors: 0, lastUpdateMs: 0 },
-    'raydium-cpmm': { updates: 0, errors: 0, lastUpdateMs: 0 },
+    "raydium-cpmm": { updates: 0, errors: 0, lastUpdateMs: 0 },
     orca: { updates: 0, errors: 0, lastUpdateMs: 0 },
     meteora: { updates: 0, errors: 0, lastUpdateMs: 0 },
     pumpswap: { updates: 0, errors: 0, lastUpdateMs: 0 },
@@ -98,7 +121,7 @@ export class GrpcStreamAdapter {
 
   constructor(config: GrpcAdapterConfig) {
     this.config = {
-      commitment: 'processed',  // Default to processed for lowest latency
+      commitment: "processed", // Default to processed for lowest latency
       maxReconnectAttempts: 10,
       reconnectDelayMs: 1000,
       ...config,
@@ -110,10 +133,10 @@ export class GrpcStreamAdapter {
    */
   async connect(): Promise<boolean> {
     try {
-      logger.info('grpc.adapter.connecting', {
+      logger.info("grpc.adapter.connecting", {
         endpoint: this.config.endpoint,
         commitment: this.config.commitment,
-        cat: 'grpc'
+        cat: "grpc",
       });
 
       this.client = new Client(
@@ -127,19 +150,19 @@ export class GrpcStreamAdapter {
       this.isConnected = true;
       this.reconnectAttempts = 0;
 
-      logger.info('grpc.adapter.connected', { cat: 'grpc' });
-      emit('log', {
-        level: 'info',
-        message: 'gRPC stream connected',
+      logger.info("grpc.adapter.connected", { cat: "grpc" });
+      emit("log", {
+        level: "info",
+        message: "gRPC stream connected",
         timestamp: new Date().toISOString(),
-        context: { cat: 'grpc' }
+        context: { cat: "grpc" },
       });
 
       return true;
     } catch (err) {
-      logger.error('grpc.adapter.connect_failed', {
+      logger.error("grpc.adapter.connect_failed", {
         error: String((err as Error)?.message || err),
-        cat: 'grpc'
+        cat: "grpc",
       });
       return false;
     }
@@ -160,20 +183,20 @@ export class GrpcStreamAdapter {
         } else if (data.pong) {
           // Handle pong response for keepalive
           this.lastPongMs = Date.now();
-          logger.debug('grpc.adapter.pong_received', { cat: 'grpc' });
+          logger.debug("grpc.adapter.pong_received", { cat: "grpc" });
         }
       } catch (err) {
-        logger.error('grpc.adapter.data_error', {
+        logger.error("grpc.adapter.data_error", {
           error: String((err as Error)?.message || err),
-          cat: 'grpc'
+          cat: "grpc",
         });
       }
     });
 
     this.stream.on("error", async (err: Error) => {
-      logger.error('grpc.adapter.stream_error', {
+      logger.error("grpc.adapter.stream_error", {
         error: String(err?.message || err),
-        cat: 'grpc'
+        cat: "grpc",
       });
       this.isConnected = false;
       this.stopPingTimer();
@@ -181,7 +204,7 @@ export class GrpcStreamAdapter {
     });
 
     this.stream.on("end", async () => {
-      logger.warn('grpc.adapter.stream_ended', { cat: 'grpc' });
+      logger.warn("grpc.adapter.stream_ended", { cat: "grpc" });
       this.isConnected = false;
       this.stopPingTimer();
       await this.attemptReconnect();
@@ -193,23 +216,23 @@ export class GrpcStreamAdapter {
    */
   private startPingTimer(): void {
     this.stopPingTimer();
-    
+
     // Send ping every 30 seconds
     this.pingTimer = setInterval(() => {
       if (this.isConnected && this.stream) {
         try {
           this.stream.write({ ping: { id: Date.now() } }, (err: any) => {
             if (err) {
-              logger.warn('grpc.adapter.ping_failed', {
+              logger.warn("grpc.adapter.ping_failed", {
                 error: String(err?.message || err),
-                cat: 'grpc'
+                cat: "grpc",
               });
             }
           });
         } catch (err) {
-          logger.warn('grpc.adapter.ping_error', {
+          logger.warn("grpc.adapter.ping_error", {
             error: String((err as Error)?.message || err),
-            cat: 'grpc'
+            cat: "grpc",
           });
         }
       }
@@ -235,27 +258,29 @@ export class GrpcStreamAdapter {
 
     try {
       if (this.reconnectAttempts >= (this.config.maxReconnectAttempts || 10)) {
-        logger.error('grpc.adapter.max_reconnect_exceeded', { cat: 'grpc' });
-        emit('log', {
-          level: 'error',
-          message: 'gRPC max reconnection attempts exceeded',
+        logger.error("grpc.adapter.max_reconnect_exceeded", { cat: "grpc" });
+        emit("log", {
+          level: "error",
+          message: "gRPC max reconnection attempts exceeded",
           timestamp: new Date().toISOString(),
-          context: { cat: 'grpc' }
+          context: { cat: "grpc" },
         });
         return;
       }
 
       this.reconnectAttempts++;
-      const delay = (this.config.reconnectDelayMs || 1000) * Math.pow(2, this.reconnectAttempts - 1);
-      
-      logger.info('grpc.adapter.reconnecting', {
+      const delay =
+        (this.config.reconnectDelayMs || 1000) *
+        Math.pow(2, this.reconnectAttempts - 1);
+
+      logger.info("grpc.adapter.reconnecting", {
         attempt: this.reconnectAttempts,
         delayMs: delay,
-        cat: 'grpc'
+        cat: "grpc",
       });
 
-      await new Promise(r => setTimeout(r, delay));
-      
+      await new Promise((r) => setTimeout(r, delay));
+
       const connected = await this.connect();
       if (connected && this.subscriptions.size > 0) {
         await this.resubscribeAll();
@@ -268,12 +293,16 @@ export class GrpcStreamAdapter {
   /**
    * Convert gRPC account update to AccountInfo format for existing decoders
    */
-  private toAccountInfo(grpcAccount: any): { info: AccountInfo; pubkey: string; owner: string } {
+  private toAccountInfo(grpcAccount: any): {
+    info: AccountInfo;
+    pubkey: string;
+    owner: string;
+  } {
     const account = grpcAccount.account || grpcAccount;
     const pubkeyBytes = account.pubkey;
     const ownerBytes = account.owner;
     const dataBytes = account.data;
-    
+
     return {
       info: {
         data: Buffer.from(dataBytes),
@@ -301,13 +330,16 @@ export class GrpcStreamAdapter {
     // Determine pool ID (for metrics) and DEX type (for routing)
     // poolId is used for metrics/logging, pubkey is passed to decoders
     const poolId = subscription?.poolId || derivedInfo?.poolId || pubkey;
-    let dex = subscription?.dex || this.poolIdToDex.get(poolId) || this.getDexFromOwner(owner);
+    let dex =
+      subscription?.dex ||
+      this.poolIdToDex.get(poolId) ||
+      this.getDexFromOwner(owner);
 
     if (!dex) {
-      logger.debug('grpc.adapter.unknown_account', {
+      logger.debug("grpc.adapter.unknown_account", {
         pubkey: pubkey.slice(0, 8),
         owner: owner.slice(0, 8),
-        cat: 'grpc'
+        cat: "grpc",
       });
       return;
     }
@@ -319,25 +351,38 @@ export class GrpcStreamAdapter {
     // 2. Look up in derivedAccountToPool map for vault routing
     try {
       switch (dex) {
-        case 'raydium':
+        case "raydium":
           await handleRaydiumUpdate(info, pubkey, this.derivedAccountToPool);
           break;
-        case 'raydium-cpmm':
-          await handleRaydiumCpmmUpdate(info, pubkey, this.derivedAccountToPool);
+        case "raydium-cpmm":
+          await handleRaydiumCpmmUpdate(
+            info,
+            pubkey,
+            this.derivedAccountToPool
+          );
           break;
-        case 'orca':
+        case "orca":
           // Orca SDK requires PublicKey for parsing - create from the base58 pubkey
           const accountPubkey = new PublicKey(pubkey);
-          await handleOrcaUpdate(info, pubkey, this.derivedAccountToPool, accountPubkey);
+          await handleOrcaUpdate(
+            info,
+            pubkey,
+            this.derivedAccountToPool,
+            accountPubkey
+          );
           break;
-        case 'meteora':
+        case "meteora":
           await handleMeteoraUpdate(info, pubkey, this.derivedAccountToPool);
           break;
-        case 'pumpswap':
+        case "pumpswap":
           await handlePumpswapUpdate(info, pubkey, this.derivedAccountToPool);
           break;
-        case 'meteora_balanced':
-          await handleMeteoraBalancedUpdate(info, pubkey, this.derivedAccountToPool);
+        case "meteora_balanced":
+          await handleMeteoraBalancedUpdate(
+            info,
+            pubkey,
+            this.derivedAccountToPool
+          );
           break;
       }
 
@@ -348,13 +393,13 @@ export class GrpcStreamAdapter {
       // Track errors per-DEX
       this.dexMetrics[dex].errors++;
 
-      logger.error('grpc.adapter.decoder_error', {
+      logger.error("grpc.adapter.decoder_error", {
         dex,
         pubkey: pubkey.slice(0, 8),
         poolId: poolId.slice(0, 8),
         isDerived: !!derivedInfo,
         error: String((err as Error)?.message || err),
-        cat: 'grpc'
+        cat: "grpc",
       });
     }
   }
@@ -362,7 +407,7 @@ export class GrpcStreamAdapter {
   /**
    * Determine DEX from account owner program ID
    */
-  private getDexFromOwner(owner: string): PoolSubscription['dex'] | null {
+  private getDexFromOwner(owner: string): PoolSubscription["dex"] | null {
     return PROGRAM_TO_DEX[owner] || null;
   }
 
@@ -371,20 +416,20 @@ export class GrpcStreamAdapter {
    */
   async subscribeToAccounts(pools: PoolSubscription[]): Promise<void> {
     if (!this.isConnected || !this.stream) {
-      throw new Error('gRPC not connected');
+      throw new Error("gRPC not connected");
     }
 
     // Store subscriptions
     for (const pool of pools) {
       this.subscriptions.set(pool.poolId, pool);
       this.poolIdToDex.set(pool.poolId, pool.dex);
-      
+
       // Also track derived accounts
       if (pool.derivedAccounts) {
         for (const derived of pool.derivedAccounts) {
           this.derivedAccountToPool.set(derived, {
             poolId: pool.poolId,
-            accountType: 'vault',  // Generic - could be more specific
+            accountType: "vault", // Generic - could be more specific
           });
         }
       }
@@ -402,7 +447,7 @@ export class GrpcStreamAdapter {
     const req: SubscribeRequest = {
       accounts: {
         poolUpdates: {
-          owner: [],  // Don't filter by owner - we're subscribing to specific accounts
+          owner: [], // Don't filter by owner - we're subscribing to specific accounts
           account: allAccounts,
           filters: [],
         },
@@ -415,34 +460,34 @@ export class GrpcStreamAdapter {
       blocksMeta: {},
       accountsDataSlice: [],
       ping: undefined,
-      commitment: COMMITMENT_MAP[this.config.commitment || 'processed'],
+      commitment: COMMITMENT_MAP[this.config.commitment || "processed"],
     };
 
     await new Promise<void>((resolve, reject) => {
       this.stream.write(req, (err: any) => {
         if (err) {
-          logger.error('grpc.adapter.subscribe_failed', {
+          logger.error("grpc.adapter.subscribe_failed", {
             error: String(err?.message || err),
             accountCount: allAccounts.length,
-            cat: 'grpc'
+            cat: "grpc",
           });
           reject(err);
         } else {
-          logger.info('grpc.adapter.subscribed', {
+          logger.info("grpc.adapter.subscribed", {
             poolCount: pools.length,
             accountCount: allAccounts.length,
-            cat: 'grpc'
+            cat: "grpc",
           });
-          emit('log', {
-            level: 'info',
+          emit("log", {
+            level: "info",
             message: `gRPC subscribed to ${pools.length} pools (${allAccounts.length} accounts)`,
             timestamp: new Date().toISOString(),
-            context: { cat: 'grpc' }
+            context: { cat: "grpc" },
           });
-          
+
           // Start keepalive ping timer after successful subscription
           this.startPingTimer();
-          
+
           resolve();
         }
       });
@@ -450,9 +495,173 @@ export class GrpcStreamAdapter {
   }
 
   /**
+   * Subscribe to program-owned accounts with discriminator/dataSize filters.
+   * Each program gets its own named filter group in the SubscribeRequest.
+   * Used by grpc-program mode to subscribe to entire DEX programs efficiently.
+   */
+  async subscribeToProgramAccounts(
+    programs: Array<{
+      name: string;
+      programId: string;
+      filters: GrpcAccountFilter[];
+    }>
+  ): Promise<void> {
+    if (!this.isConnected || !this.stream) {
+      throw new Error("gRPC not connected");
+    }
+
+    // Store for reconnect
+    this.programSubscriptions = programs;
+
+    // Build the accounts map with one named entry per program
+    const accountsMap: Record<
+      string,
+      { owner: string[]; account: string[]; filters: any[] }
+    > = {};
+
+    for (const { name, programId, filters } of programs) {
+      accountsMap[name] = {
+        owner: [programId],
+        account: [], // Empty — subscribing by owner, not by specific accounts
+        filters: filters.map((f: any) => {
+          if (f.memcmp) return { memcmp: f.memcmp };
+          if (f.datasize) return { datasize: f.datasize };
+          return {};
+        }),
+      };
+    }
+
+    // Include dynamically discovered vault accounts if any
+    if (this.vaultAccounts.size > 0) {
+      accountsMap["vault-accounts"] = {
+        owner: [],
+        account: Array.from(this.vaultAccounts),
+        filters: [],
+      };
+    }
+
+    const req: SubscribeRequest = {
+      accounts: accountsMap,
+      slots: {},
+      transactions: {},
+      transactionsStatus: {},
+      entry: {},
+      blocks: {},
+      blocksMeta: {},
+      accountsDataSlice: [],
+      ping: undefined,
+      commitment: COMMITMENT_MAP[this.config.commitment || "processed"],
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      this.stream.write(req, (err: any) => {
+        if (err) {
+          logger.error("grpc.adapter.program_subscribe_failed", {
+            error: String(err?.message || err),
+            programCount: programs.length,
+            cat: "grpc",
+          });
+          reject(err);
+        } else {
+          logger.info("grpc.adapter.program_subscribed", {
+            programCount: programs.length,
+            programs: programs.map((p) => p.name),
+            vaultAccounts: this.vaultAccounts.size,
+            cat: "grpc",
+          });
+          emit("log", {
+            level: "info",
+            message: `gRPC program-subscribed to ${programs.length} DEX programs with filters`,
+            timestamp: new Date().toISOString(),
+            context: { cat: "grpc" },
+          });
+
+          this.startPingTimer();
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * Dynamically add vault accounts to an active program-level subscription.
+   * Accumulates vaults and re-writes the subscription request to include them.
+   * Batches calls within a short window to avoid excessive re-subscribes.
+   */
+  private vaultBatchTimer: NodeJS.Timeout | null = null;
+  private readonly VAULT_BATCH_DELAY_MS = 500;
+
+  async addVaultAccounts(
+    vaultAddresses: string[],
+    meta?: {
+      poolId: string;
+      dex: PoolSubscription["dex"];
+      vaultA: string;
+      vaultB: string;
+    }
+  ): Promise<void> {
+    let newCount = 0;
+    for (const addr of vaultAddresses) {
+      if (!this.vaultAccounts.has(addr)) {
+        this.vaultAccounts.add(addr);
+        newCount++;
+      }
+    }
+
+    // Populate derivedAccountToPool and poolIdToDex for vault routing
+    if (meta) {
+      this.poolIdToDex.set(meta.poolId, meta.dex);
+      if (meta.vaultA && !this.derivedAccountToPool.has(meta.vaultA)) {
+        this.derivedAccountToPool.set(meta.vaultA, {
+          poolId: meta.poolId,
+          accountType: "vault",
+        });
+      }
+      if (meta.vaultB && !this.derivedAccountToPool.has(meta.vaultB)) {
+        this.derivedAccountToPool.set(meta.vaultB, {
+          poolId: meta.poolId,
+          accountType: "vault",
+        });
+      }
+    }
+
+    if (newCount === 0) return;
+
+    // Batch vault subscription updates to avoid rapid re-subscribes
+    if (this.vaultBatchTimer) return; // Already scheduled
+    this.vaultBatchTimer = setTimeout(async () => {
+      this.vaultBatchTimer = null;
+      if (
+        !this.isConnected ||
+        !this.stream ||
+        !this.programSubscriptions?.length
+      )
+        return;
+      try {
+        await this.subscribeToProgramAccounts(this.programSubscriptions);
+        logger.info("grpc.adapter.vault_accounts_added", {
+          totalVaults: this.vaultAccounts.size,
+          cat: "grpc",
+        });
+      } catch (err: any) {
+        logger.warn("grpc.adapter.vault_accounts_add_failed", {
+          error: String(err?.message || err),
+          cat: "grpc",
+        });
+      }
+    }, this.VAULT_BATCH_DELAY_MS);
+  }
+
+  /**
    * Resubscribe to all tracked accounts (used after reconnect)
    */
   private async resubscribeAll(): Promise<void> {
+    // If we were using program-level subscriptions, restore those
+    if (this.programSubscriptions && this.programSubscriptions.length > 0) {
+      await this.subscribeToProgramAccounts(this.programSubscriptions);
+      return;
+    }
+    // Otherwise fall back to account-level subscriptions
     const pools = Array.from(this.subscriptions.values());
     if (pools.length > 0) {
       await this.subscribeToAccounts(pools);
@@ -464,36 +673,36 @@ export class GrpcStreamAdapter {
    * Uses differential updates to minimize subscription gaps
    */
   async retarget(newPools: PoolSubscription[]): Promise<void> {
-    const newPoolIds = new Set(newPools.map(p => p.poolId));
+    const newPoolIds = new Set(newPools.map((p) => p.poolId));
     const existingPoolIds = new Set(this.subscriptions.keys());
-    
+
     // Calculate what changed
     const added: PoolSubscription[] = [];
     const removed: string[] = [];
-    
+
     for (const pool of newPools) {
       if (!existingPoolIds.has(pool.poolId)) {
         added.push(pool);
       }
     }
-    
+
     for (const existingId of existingPoolIds) {
       if (!newPoolIds.has(existingId)) {
         removed.push(existingId);
       }
     }
-    
+
     // If changes are minimal, we could do incremental updates
     // But Yellowstone gRPC requires a full subscription update, so we still need to resubscribe
     // However, we preserve the internal tracking to avoid gaps in event processing
-    
-    logger.info('grpc.adapter.retarget.diff', {
+
+    logger.info("grpc.adapter.retarget.diff", {
       added: added.length,
       removed: removed.length,
       unchanged: newPools.length - added.length,
-      cat: 'grpc'
+      cat: "grpc",
     });
-    
+
     // Clear existing subscriptions
     this.subscriptions.clear();
     this.derivedAccountToPool.clear();
@@ -504,9 +713,9 @@ export class GrpcStreamAdapter {
       await this.subscribeToAccounts(newPools);
     }
 
-    logger.info('grpc.adapter.retargeted', {
+    logger.info("grpc.adapter.retargeted", {
       poolCount: newPools.length,
-      cat: 'grpc'
+      cat: "grpc",
     });
   }
 
@@ -546,7 +755,7 @@ export class GrpcStreamAdapter {
   async disconnect(): Promise<void> {
     this.isConnected = false;
     this.stopPingTimer();
-    
+
     if (this.stream) {
       try {
         this.stream.cancel();
@@ -558,13 +767,19 @@ export class GrpcStreamAdapter {
     this.subscriptions.clear();
     this.derivedAccountToPool.clear();
     this.poolIdToDex.clear();
-    
-    logger.info('grpc.adapter.disconnected', { cat: 'grpc' });
-    emit('log', {
-      level: 'info',
-      message: 'gRPC stream disconnected',
+    this.programSubscriptions = null;
+    this.vaultAccounts.clear();
+    if (this.vaultBatchTimer) {
+      clearTimeout(this.vaultBatchTimer);
+      this.vaultBatchTimer = null;
+    }
+
+    logger.info("grpc.adapter.disconnected", { cat: "grpc" });
+    emit("log", {
+      level: "info",
+      message: "gRPC stream disconnected",
       timestamp: new Date().toISOString(),
-      context: { cat: 'grpc' }
+      context: { cat: "grpc" },
     });
   }
 
@@ -575,9 +790,10 @@ export class GrpcStreamAdapter {
     this.eventCount = 0;
     this.lastEventMs = 0;
     this.lastPongMs = 0;
-    for (const dex of Object.keys(this.dexMetrics) as PoolSubscription['dex'][]) {
+    for (const dex of Object.keys(
+      this.dexMetrics
+    ) as PoolSubscription["dex"][]) {
       this.dexMetrics[dex] = { updates: 0, errors: 0, lastUpdateMs: 0 };
     }
   }
 }
-

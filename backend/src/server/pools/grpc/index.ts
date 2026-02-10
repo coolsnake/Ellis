@@ -1,27 +1,44 @@
 /**
  * gRPC Pool Streaming Module
- * 
+ *
  * Provides Yellowstone gRPC streaming as an alternative to WSS subscriptions.
  * Exports adapter management functions and helpers.
  */
 
-import { GrpcStreamAdapter, GrpcAdapterConfig, PoolSubscription, DexMetrics, DexMetricsMap } from './adapter.js';
-import { CONFIG } from '../../../utils/config.js';
-import { logger } from '../../../utils/logger.js';
-import { isValidPublicKey } from '../../../execution/builder/utils.js';
-import { isLazyActivationEnabled } from '../../pools.activation.js';
+import {
+  GrpcStreamAdapter,
+  GrpcAdapterConfig,
+  PoolSubscription,
+  DexMetrics,
+  DexMetricsMap,
+} from "./adapter.js";
+import {
+  PROGRAM_IDS,
+  getGrpcFiltersForProgram,
+} from "../websockets/filters.js";
+import type { GrpcAccountFilter } from "../websockets/filters.js";
+import { CONFIG } from "../../../utils/config.js";
+import { logger } from "../../../utils/logger.js";
+import { isValidPublicKey } from "../../../execution/builder/utils.js";
+import { isLazyActivationEnabled } from "../../pools.activation.js";
 import {
   raydiumCache,
   orcaCache,
   meteoraCache,
   metbalCache,
   pumpswapCache,
-  cpmmCache
-} from '../../pools.cache.js';
-import type { AmmPool, ClmmPool, CpmmPool } from '../types.js';
+  cpmmCache,
+} from "../../pools.cache.js";
+import type { AmmPool, ClmmPool, CpmmPool } from "../types.js";
 
 // Re-export types
-export { GrpcStreamAdapter, GrpcAdapterConfig, PoolSubscription, DexMetrics, DexMetricsMap };
+export {
+  GrpcStreamAdapter,
+  GrpcAdapterConfig,
+  PoolSubscription,
+  DexMetrics,
+  DexMetricsMap,
+};
 
 // Singleton instance
 let grpcAdapter: GrpcStreamAdapter | null = null;
@@ -73,7 +90,7 @@ export function getGrpcConfig(): GrpcAdapterConfig | null {
   return {
     endpoint: grpcConfig.endpoint,
     xToken: grpcConfig.xToken,
-    commitment: grpcConfig.commitment || 'processed',
+    commitment: grpcConfig.commitment || "processed",
     maxReconnectAttempts: grpcConfig.maxReconnectAttempts || 10,
     reconnectDelayMs: grpcConfig.reconnectDelayMs || 1000,
   };
@@ -90,7 +107,7 @@ export function getGrpcConfig(): GrpcAdapterConfig | null {
  */
 function getDerivedAccountsForPool(
   poolId: string,
-  dexType: PoolSubscription['dex']
+  dexType: PoolSubscription["dex"]
 ): string[] {
   const derivedAccounts: string[] = [];
 
@@ -102,10 +119,12 @@ function getDerivedAccountsForPool(
   };
 
   // Meteora Balanced (DAMM v1/v2) - vault-based pricing
-  if (dexType === 'meteora_balanced') {
+  if (dexType === "meteora_balanced") {
     const pools = metbalCache.data;
     if (pools) {
-      const pool = pools.amm.find(p => p.id === poolId) as AmmPool | undefined;
+      const pool = pools.amm.find((p) => p.id === poolId) as
+        | AmmPool
+        | undefined;
       if (pool) {
         // Prefer native accounts (on-chain orientation)
         addVault(pool.native_account_a);
@@ -120,10 +139,12 @@ function getDerivedAccountsForPool(
   }
 
   // Pumpswap - vault-based pricing
-  else if (dexType === 'pumpswap') {
+  else if (dexType === "pumpswap") {
     const pools = pumpswapCache.data;
     if (pools) {
-      const pool = pools.amm.find(p => p.id === poolId) as AmmPool | undefined;
+      const pool = pools.amm.find((p) => p.id === poolId) as
+        | AmmPool
+        | undefined;
       if (pool) {
         addVault(pool.native_account_a);
         addVault(pool.native_account_b);
@@ -136,11 +157,13 @@ function getDerivedAccountsForPool(
   }
 
   // Raydium AMM - vault-based pricing (also handles CLMM which doesn't need vaults)
-  else if (dexType === 'raydium') {
+  else if (dexType === "raydium") {
     const pools = raydiumCache.data;
     if (pools) {
       // Check AMM pools (vault-based pricing)
-      const ammPool = pools.amm.find(p => p.id === poolId) as AmmPool | undefined;
+      const ammPool = pools.amm.find((p) => p.id === poolId) as
+        | AmmPool
+        | undefined;
       if (ammPool) {
         addVault(ammPool.native_account_a);
         addVault(ammPool.native_account_b);
@@ -154,10 +177,12 @@ function getDerivedAccountsForPool(
   }
 
   // Raydium CPMM - vault-based pricing
-  else if (dexType === 'raydium-cpmm') {
+  else if (dexType === "raydium-cpmm") {
     const cpmmPools = cpmmCache.data;
     if (cpmmPools) {
-      const cpmmPool = cpmmPools.cpmm.find(p => p.id === poolId) as CpmmPool | undefined;
+      const cpmmPool = cpmmPools.cpmm.find((p) => p.id === poolId) as
+        | CpmmPool
+        | undefined;
       if (cpmmPool) {
         addVault(cpmmPool.native_account_a);
         addVault(cpmmPool.native_account_b);
@@ -171,13 +196,13 @@ function getDerivedAccountsForPool(
 
   // Orca - CLMM pools have price in pool account, but we can optionally track vaults
   // for liquidity updates (not strictly required for pricing)
-  else if (dexType === 'orca') {
+  else if (dexType === "orca") {
     // Orca Whirlpool uses sqrt_price_x64 in pool account - no vault subscription needed
     // However, if we want liquidity tracking, we could add vaults here
   }
 
   // Meteora DLMM - price from activeId/binStep in pool account
-  else if (dexType === 'meteora') {
+  else if (dexType === "meteora") {
     // Meteora DLMM uses activeId + binStep in pool account - no vault subscription needed
   }
 
@@ -193,7 +218,7 @@ function getDerivedAccountsForPool(
  */
 export async function getPoolTargetsForGrpc(): Promise<PoolSubscription[]> {
   try {
-    const { getGraphSnapshot } = await import('../../graph.js');
+    const { getGraphSnapshot } = await import("../../graph.js");
     const snap = await getGraphSnapshot(false);
     const pools: PoolSubscription[] = [];
     const seen = new Set<string>();
@@ -202,14 +227,17 @@ export async function getPoolTargetsForGrpc(): Promise<PoolSubscription[]> {
     let totalVaults = 0;
     const vaultsByDex: Record<string, number> = {
       raydium: 0,
-      'raydium-cpmm': 0,
+      "raydium-cpmm": 0,
       orca: 0,
       meteora: 0,
       meteora_balanced: 0,
       pumpswap: 0,
     };
 
-    const addPoolTarget = (poolId: string, dexType: PoolSubscription['dex']) => {
+    const addPoolTarget = (
+      poolId: string,
+      dexType: PoolSubscription["dex"]
+    ) => {
       if (!poolId || !isValidPublicKey(poolId)) return;
       if (seen.has(poolId)) return;
       seen.add(poolId);
@@ -223,25 +251,26 @@ export async function getPoolTargetsForGrpc(): Promise<PoolSubscription[]> {
       pools.push({
         poolId,
         dex: dexType,
-        derivedAccounts: derivedAccounts.length > 0 ? derivedAccounts : undefined,
+        derivedAccounts:
+          derivedAccounts.length > 0 ? derivedAccounts : undefined,
       });
     };
 
     // Primary source: graph snapshot edges
-    for (const e of (snap?.edges || [])) {
-      const pid = String((e as any)?.pool_id || '');
+    for (const e of snap?.edges || []) {
+      const pid = String((e as any)?.pool_id || "");
       if (!pid) continue;
-      const base = pid.replace(/[#-]rev$/, '');
+      const base = pid.replace(/[#-]rev$/, "");
 
-      const dex = String((e as any)?.dex || '');
-      let dexType: PoolSubscription['dex'] | null = null;
+      const dex = String((e as any)?.dex || "");
+      let dexType: PoolSubscription["dex"] | null = null;
 
-      if (dex === 'Raydium') dexType = 'raydium';
-      else if (dex === 'RaydiumCpmm') dexType = 'raydium-cpmm';
-      else if (dex === 'Orca') dexType = 'orca';
-      else if (dex === 'Meteora') dexType = 'meteora';
-      else if (dex.startsWith('MeteoraBalanced')) dexType = 'meteora_balanced';
-      else if (dex === 'Pumpswap') dexType = 'pumpswap';
+      if (dex === "Raydium") dexType = "raydium";
+      else if (dex === "RaydiumCpmm") dexType = "raydium-cpmm";
+      else if (dex === "Orca") dexType = "orca";
+      else if (dex === "Meteora") dexType = "meteora";
+      else if (dex.startsWith("MeteoraBalanced")) dexType = "meteora_balanced";
+      else if (dex === "Pumpswap") dexType = "pumpswap";
 
       if (!dexType) continue;
       addPoolTarget(base, dexType);
@@ -250,41 +279,49 @@ export async function getPoolTargetsForGrpc(): Promise<PoolSubscription[]> {
     // Fallback: if graph is empty or lazy activation is enabled, use caches
     if (pools.length === 0 || isLazyActivationEnabled()) {
       try {
-        for (const p of (raydiumCache.data?.amm || [])) addPoolTarget(String(p.id), 'raydium');
-        for (const p of (raydiumCache.data?.clmm || [])) addPoolTarget(String(p.id), 'raydium');
-        for (const p of (cpmmCache.data?.cpmm || [])) addPoolTarget(String(p.id), 'raydium-cpmm');
-        for (const p of (orcaCache.data?.clmm || [])) addPoolTarget(String(p.id), 'orca');
-        for (const p of (meteoraCache.data?.clmm || [])) addPoolTarget(String(p.id), 'meteora');
-        for (const p of (metbalCache.data?.amm || [])) addPoolTarget(String(p.id), 'meteora_balanced');
-        for (const p of (pumpswapCache.data?.amm || [])) addPoolTarget(String(p.id), 'pumpswap');
+        for (const p of raydiumCache.data?.amm || [])
+          addPoolTarget(String(p.id), "raydium");
+        for (const p of raydiumCache.data?.clmm || [])
+          addPoolTarget(String(p.id), "raydium");
+        for (const p of cpmmCache.data?.cpmm || [])
+          addPoolTarget(String(p.id), "raydium-cpmm");
+        for (const p of orcaCache.data?.clmm || [])
+          addPoolTarget(String(p.id), "orca");
+        for (const p of meteoraCache.data?.clmm || [])
+          addPoolTarget(String(p.id), "meteora");
+        for (const p of metbalCache.data?.amm || [])
+          addPoolTarget(String(p.id), "meteora_balanced");
+        for (const p of pumpswapCache.data?.amm || [])
+          addPoolTarget(String(p.id), "pumpswap");
       } catch (e) {
-        logger.warn('grpc.targets.cache_fallback_failed', {
+        logger.warn("grpc.targets.cache_fallback_failed", {
           error: String((e as Error)?.message || e),
-          cat: 'grpc'
+          cat: "grpc",
         });
       }
     }
 
-    logger.info('grpc.targets.computed', {
+    logger.info("grpc.targets.computed", {
       totalPools: pools.length,
       totalVaults,
       byDex: {
-        raydium: pools.filter(p => p.dex === 'raydium').length,
-        'raydium-cpmm': pools.filter(p => p.dex === 'raydium-cpmm').length,
-        orca: pools.filter(p => p.dex === 'orca').length,
-        meteora: pools.filter(p => p.dex === 'meteora').length,
-        meteora_balanced: pools.filter(p => p.dex === 'meteora_balanced').length,
-        pumpswap: pools.filter(p => p.dex === 'pumpswap').length,
+        raydium: pools.filter((p) => p.dex === "raydium").length,
+        "raydium-cpmm": pools.filter((p) => p.dex === "raydium-cpmm").length,
+        orca: pools.filter((p) => p.dex === "orca").length,
+        meteora: pools.filter((p) => p.dex === "meteora").length,
+        meteora_balanced: pools.filter((p) => p.dex === "meteora_balanced")
+          .length,
+        pumpswap: pools.filter((p) => p.dex === "pumpswap").length,
       },
       vaultsByDex,
-      cat: 'grpc'
+      cat: "grpc",
     });
 
     return pools;
   } catch (err) {
-    logger.error('grpc.targets.failed', {
+    logger.error("grpc.targets.failed", {
       error: String((err as Error)?.message || err),
-      cat: 'grpc'
+      cat: "grpc",
     });
     return [];
   }
@@ -294,7 +331,7 @@ export async function getPoolTargetsForGrpc(): Promise<PoolSubscription[]> {
  * Get gRPC adapter status including per-DEX metrics
  */
 export function getGrpcStatus(): {
-  mode: 'grpc' | 'wss' | 'disabled';
+  mode: "grpc" | "wss" | "disabled";
   configured: boolean;
   connected: boolean;
   subscriptionCount: number;
@@ -304,9 +341,9 @@ export function getGrpcStatus(): {
   reconnectAttempts: number;
   dexMetrics: DexMetricsMap | null;
 } {
-  const mode = (CONFIG.system as any)?.poolSubscriptionMode || 'wss';
+  const mode = (CONFIG.system as any)?.poolSubscriptionMode || "wss";
   const configured = isGrpcConfigured();
-  
+
   if (!grpcAdapter) {
     return {
       mode,
@@ -320,7 +357,7 @@ export function getGrpcStatus(): {
       dexMetrics: null,
     };
   }
-  
+
   const status = grpcAdapter.getStatus();
   return {
     mode,
@@ -341,49 +378,129 @@ export function getGrpcStatus(): {
  */
 export async function startGrpcSubscriptions(): Promise<boolean> {
   const config = getGrpcConfig();
-  
+
   if (!config) {
-    logger.error('grpc.start.config_missing', {
-      message: 'gRPC endpoint or xToken not configured',
-      cat: 'grpc'
+    logger.error("grpc.start.config_missing", {
+      message: "gRPC endpoint or xToken not configured",
+      cat: "grpc",
     });
     return false;
   }
-  
+
   try {
     const adapter = initGrpcAdapter(config);
     const connected = await adapter.connect();
-    
+
     if (!connected) {
-      logger.error('grpc.start.connect_failed', { cat: 'grpc' });
+      logger.error("grpc.start.connect_failed", { cat: "grpc" });
       return false;
     }
-    
+
     // Get pool targets and subscribe
     const pools = await getPoolTargetsForGrpc();
-    
+
     if (pools.length > 0) {
       await adapter.subscribeToAccounts(pools);
     } else {
-      logger.warn('grpc.start.no_pools', {
-        message: 'No pool targets found in graph',
-        cat: 'grpc'
+      logger.warn("grpc.start.no_pools", {
+        message: "No pool targets found in graph",
+        cat: "grpc",
       });
     }
-    
-    logger.info('grpc.start.success', {
+
+    logger.info("grpc.start.success", {
       poolCount: pools.length,
-      cat: 'grpc'
+      cat: "grpc",
     });
-    
+
     return true;
   } catch (err) {
-    logger.error('grpc.start.error', {
+    logger.error("grpc.start.error", {
       error: String((err as Error)?.message || err),
-      cat: 'grpc'
+      cat: "grpc",
     });
     return false;
   }
+}
+
+/**
+ * Start gRPC program-level subscriptions with discriminator/dataSize filters.
+ * Subscribes to entire DEX programs but filters server-side to pool accounts only.
+ * Called when poolSubscriptionMode is 'grpc-program'.
+ */
+export async function startGrpcProgramSubscriptions(): Promise<boolean> {
+  const config = getGrpcConfig();
+
+  if (!config) {
+    logger.error("grpc.program.start.config_missing", {
+      message: "gRPC endpoint or xToken not configured",
+      cat: "grpc",
+    });
+    return false;
+  }
+
+  try {
+    const adapter = initGrpcAdapter(config);
+    const connected = await adapter.connect();
+
+    if (!connected) {
+      logger.error("grpc.program.start.connect_failed", { cat: "grpc" });
+      return false;
+    }
+
+    // Build program subscription list with per-program filters
+    const programs = Object.entries(PROGRAM_IDS).map(([key, programId]) => ({
+      name: key.toLowerCase().replace(/_/g, "-"),
+      programId,
+      filters: getGrpcFiltersForProgram(programId),
+    }));
+
+    await adapter.subscribeToProgramAccounts(programs);
+
+    // Enable lazy activation in program mode (same as wss-program)
+    try {
+      const { setLazyActivationEnabled } = await import(
+        "../../pools.activation.js"
+      );
+      setLazyActivationEnabled(true);
+    } catch (actErr: any) {
+      logger.warn("grpc.program.lazy_activation.failed", {
+        error: String(actErr?.message || actErr),
+        cat: "grpc",
+      });
+    }
+
+    logger.info("grpc.program.start.success", {
+      programCount: programs.length,
+      programs: programs.map((p) => `${p.name} (${p.filters.length} filters)`),
+      cat: "grpc",
+    });
+
+    return true;
+  } catch (err) {
+    logger.error("grpc.program.start.error", {
+      error: String((err as Error)?.message || err),
+      cat: "grpc",
+    });
+    return false;
+  }
+}
+
+/**
+ * Add vault accounts to the active gRPC program-level subscription.
+ * Used in grpc-program mode when vault-dependent pools are discovered.
+ */
+export async function addGrpcVaultAccounts(
+  vaultAddresses: string[],
+  meta?: {
+    poolId: string;
+    dex: PoolSubscription["dex"];
+    vaultA: string;
+    vaultB: string;
+  }
+): Promise<void> {
+  if (!grpcAdapter) return;
+  await grpcAdapter.addVaultAccounts(vaultAddresses, meta);
 }
 
 /**
@@ -391,26 +508,25 @@ export async function startGrpcSubscriptions(): Promise<boolean> {
  */
 export async function retargetGrpcSubscriptions(): Promise<boolean> {
   if (!grpcAdapter || !grpcAdapter.isActive()) {
-    logger.warn('grpc.retarget.not_active', { cat: 'grpc' });
+    logger.warn("grpc.retarget.not_active", { cat: "grpc" });
     return false;
   }
-  
+
   try {
     const pools = await getPoolTargetsForGrpc();
     await grpcAdapter.retarget(pools);
-    
-    logger.info('grpc.retarget.success', {
+
+    logger.info("grpc.retarget.success", {
       poolCount: pools.length,
-      cat: 'grpc'
+      cat: "grpc",
     });
-    
+
     return true;
   } catch (err) {
-    logger.error('grpc.retarget.error', {
+    logger.error("grpc.retarget.error", {
       error: String((err as Error)?.message || err),
-      cat: 'grpc'
+      cat: "grpc",
     });
     return false;
   }
 }
-

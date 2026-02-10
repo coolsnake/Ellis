@@ -1,7 +1,7 @@
 // Shared configuration types across frontend and backend (public overlap only)
 // These interfaces intentionally include only fields exposed in UI and public APIs.
 
-export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
+export type LogLevel = "error" | "warn" | "info" | "debug";
 
 export interface SharedSystemConfig {
   jupiterApiUrl?: string;
@@ -24,13 +24,18 @@ export interface SharedSystemConfig {
     sample?: Record<string, number>;
     rateLimit?: Record<string, { perSec?: number; minIntervalMs?: number }>;
   };
-  // Pool subscription mode (WSS vs gRPC)
-  poolSubscriptionMode?: 'wss' | 'grpc' | 'disabled';
+  // Pool subscription mode (WSS vs gRPC, per-account vs program-level)
+  poolSubscriptionMode?:
+    | "wss"
+    | "wss-program"
+    | "grpc"
+    | "grpc-program"
+    | "disabled";
   // gRPC stream configuration
   grpc?: {
     endpoint?: string;
     xToken?: string;
-    commitment?: 'processed' | 'confirmed' | 'finalized';
+    commitment?: "processed" | "confirmed" | "finalized";
     maxReconnectAttempts?: number;
     reconnectDelayMs?: number;
   };
@@ -55,7 +60,7 @@ export interface SharedFeesConfig {
 }
 
 export interface ExecEngineConfigPublic {
-  mode: 'simulate' | 'direct' | 'simulate_then_execute';
+  mode: "simulate" | "direct" | "simulate_then_execute";
   slippageBpsDefault: number;
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;
@@ -67,7 +72,7 @@ export interface ExecEngineConfigPublic {
   dynamicCuBuffer?: number;
   // Dynamic priority fees (use background-polled network fees)
   dynamicPriorityFees?: boolean;
-  priorityFeeUrgency?: 'low' | 'medium' | 'high' | 'critical';
+  priorityFeeUrgency?: "low" | "medium" | "high" | "critical";
 }
 
 export interface ArbDetectorConfigPublic {
@@ -114,7 +119,9 @@ export interface SystemConfigResponse {
 }
 
 export type FeesConfigRequest = SharedFeesConfig;
-export interface FeesConfigResponse { fees: SharedFeesConfig }
+export interface FeesConfigResponse {
+  fees: SharedFeesConfig;
+}
 
 export type ExecConfigRequest = Partial<ExecEngineConfigPublic>;
 export type ExecConfigResponse = ExecEngineConfigPublic;
@@ -126,7 +133,7 @@ export type ArbConfigResponse = ArbDetectorConfigPublic;
 export interface ShyftConfig {
   apiKey?: string;
   endpoint?: string;
-  network?: 'mainnet-beta' | 'devnet';
+  network?: "mainnet-beta" | "devnet";
 }
 
 export interface RaydiumGraphQLConfig {
@@ -148,7 +155,7 @@ export interface MeteoraGraphQLConfig {
 }
 
 // Trade Sizing Configuration (capacity-based system)
-export type PoolTypeAdjustment = 'default' | 'cautious' | 'aggressive';
+export type PoolTypeAdjustment = "default" | "cautious" | "aggressive";
 
 export interface SizingConfigPublic {
   /** Master toggle for dynamic sizing */
@@ -176,23 +183,23 @@ export const DEFAULT_SIZING_CONFIG_PUBLIC: SizingConfigPublic = {
   minSizeUsd: 5,
   maxSizeUsd: 500,
   respectWalletBalance: true,
-  aggressiveness: 0.70,
+  aggressiveness: 0.7,
   maxSlippageBps: 500,
   poolTypeAdjustments: {
-    amm: 'default',
-    clmm: 'default',
-    dlmm: 'default',
+    amm: "default",
+    clmm: "default",
+    dlmm: "default",
   },
 };
 
 // Pool Subscription Mode (WSS vs gRPC)
-export type PoolSubscriptionMode = 'wss' | 'wss-program' | 'grpc' | 'disabled';
+export type PoolSubscriptionMode = "wss" | "wss-program" | "grpc" | "disabled";
 
 // gRPC Stream Configuration (Yellowstone/Shyft)
 export interface GrpcStreamConfig {
-  endpoint?: string;                    // e.g., "grpc.ams.shyft.to:443"
-  xToken?: string;                      // Shyft x-token for authentication
-  commitment?: 'processed' | 'confirmed' | 'finalized';
+  endpoint?: string; // e.g., "grpc.ams.shyft.to:443"
+  xToken?: string; // Shyft x-token for authentication
+  commitment?: "processed" | "confirmed" | "finalized";
   maxReconnectAttempts?: number;
   reconnectDelayMs?: number;
 }
@@ -226,13 +233,13 @@ export type AltConfig = {
   };
   dexAlts?: {
     raydium?: DexAltSet;
-    'raydium-amm'?: DexAltSet;
-    'raydium-cpmm'?: DexAltSet;
+    "raydium-amm"?: DexAltSet;
+    "raydium-cpmm"?: DexAltSet;
     orca?: DexAltSet;
     meteora?: DexAltSet;
-    'meteora-balanced'?: DexAltSet;
-    'meteora-damm-v1'?: DexAltSet;
-    'meteora-damm-v2'?: DexAltSet;
+    "meteora-balanced"?: DexAltSet;
+    "meteora-damm-v1"?: DexAltSet;
+    "meteora-damm-v2"?: DexAltSet;
     pumpswap?: DexAltSet;
   };
   userPdaAlts?: UserPdaAltSet;
@@ -242,4 +249,3 @@ export type AltConfig = {
   lastValidated?: number;
   walletPublicKey?: string;
 };
-
