@@ -532,9 +532,13 @@ async function scheduleDexApply(
         if (current && metbalApplyState.baseline) {
           // Use applyPoolUpdates for incremental graph updates
           if (typeof gmod?.applyPoolUpdates === "function") {
-            await gmod.applyPoolUpdates(metbalApplyState.baseline, current, {
-              pushToArb: false,
-            });
+            void gmod
+              .applyPoolUpdates(metbalApplyState.baseline, current, {
+                pushToArb: false,
+              })
+              .catch((e: any) =>
+                logCatchDebug("meteora_balanced.applyPoolUpdates", e)
+              );
           }
         }
       } catch (e) {

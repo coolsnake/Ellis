@@ -90,9 +90,11 @@ async function scheduleDexApply(
         if (current && raydiumApplyState.baseline) {
           // Use applyPoolUpdates for incremental graph updates
           if (typeof gmod?.applyPoolUpdates === "function") {
-            await gmod.applyPoolUpdates(raydiumApplyState.baseline, current, {
-              pushToArb: false,
-            });
+            void gmod
+              .applyPoolUpdates(raydiumApplyState.baseline, current, {
+                pushToArb: false,
+              })
+              .catch((e: any) => logCatchDebug("raydium.applyPoolUpdates", e));
           }
         }
       } catch (e) {

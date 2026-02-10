@@ -393,17 +393,24 @@ async function scheduleCpmmApply(baseline: {
 
           // Use standard applyPoolUpdates for incremental graph updates
           if (typeof gmod?.applyPoolUpdates === "function") {
-            await gmod.applyPoolUpdates(prevPayload, nextPayload, {
-              pushToArb: false,
-            });
-            try {
-              const { logger } = await import("../../../../utils/logger.js");
-              logger.debug("raydiumCpmm.graph_update.applied", {
-                prevCount: prevPayload.cpmm.length,
-                nextCount: nextPayload.cpmm.length,
-                cat: "pools",
-              });
-            } catch {}
+            void gmod
+              .applyPoolUpdates(prevPayload, nextPayload, {
+                pushToArb: false,
+              })
+              .then(() => {
+                import("../../../../utils/logger.js")
+                  .then(({ logger: lg }) => {
+                    lg.debug("raydiumCpmm.graph_update.applied", {
+                      prevCount: prevPayload.cpmm.length,
+                      nextCount: nextPayload.cpmm.length,
+                      cat: "pools",
+                    });
+                  })
+                  .catch(() => {});
+              })
+              .catch((e: any) =>
+                logCatchDebug("raydiumCpmm.applyPoolUpdates", e)
+              );
           }
         }
       } catch (e) {

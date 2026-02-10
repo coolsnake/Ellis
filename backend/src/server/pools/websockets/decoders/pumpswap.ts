@@ -207,9 +207,11 @@ async function scheduleDexApply(
         if (current && pumpswapApplyState.baseline) {
           // Use applyPoolUpdates for incremental graph updates
           if (typeof gmod?.applyPoolUpdates === "function") {
-            await gmod.applyPoolUpdates(pumpswapApplyState.baseline, current, {
-              pushToArb: false,
-            });
+            void gmod
+              .applyPoolUpdates(pumpswapApplyState.baseline, current, {
+                pushToArb: false,
+              })
+              .catch((e: any) => logCatchDebug("pumpswap.applyPoolUpdates", e));
           }
         }
       } catch (e) {

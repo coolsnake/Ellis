@@ -85,9 +85,11 @@ async function scheduleDexApply(
         if (current && orcaApplyState.baseline) {
           // Use applyPoolUpdates for incremental graph updates
           if (typeof gmod?.applyPoolUpdates === "function") {
-            await gmod.applyPoolUpdates(orcaApplyState.baseline, current, {
-              pushToArb: false,
-            });
+            void gmod
+              .applyPoolUpdates(orcaApplyState.baseline, current, {
+                pushToArb: false,
+              })
+              .catch((e: any) => logCatchDebug("orca.applyPoolUpdates", e));
           }
         }
       } catch (e) {
