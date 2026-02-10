@@ -34,7 +34,10 @@ import type {
   GraphWorkerResponse,
   GraphIncrementalRequest,
 } from "../workers/graphDiff.types.js";
-import { computeIncrementalGraphUpdate } from "./graph.worker.compute.js";
+import {
+  computeIncrementalGraphUpdate,
+  pruneDeadEndNodes,
+} from "./graph.worker.compute.js";
 import {
   isDexKindAllowed,
   edgesFromPoolIncremental,
@@ -554,6 +557,9 @@ export async function applyPoolUpdates(
         priceClampMin: priceClampMinInc,
         priceClampMax: priceClampMaxInc,
         timestampMs,
+        pruneMinDegree: CONFIG.system.graphPruneDeadEnds
+          ? CONFIG.system.graphPruneMinDegree
+          : 1,
       };
 
       const workerRequest: GraphWorkerRequest = {
@@ -1540,26 +1546,28 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         });
       } catch {}
 
-      // CRITICAL: Clean up nodes that have no incident edges (respecting token universe)
-      // This prevents orphan tokens from Jupiter token lists or previous pool fetches
-      // from lingering in the graph when they no longer have any pools
-      const incident = new Map<string, number>();
-      for (const edge of Object.values(edgesMap)) {
-        incident.set(edge.source, (incident.get(edge.source) || 0) + 1);
-        incident.set(edge.target, (incident.get(edge.target) || 0) + 1);
+      // Dead-end pruning: iteratively remove nodes with degree < minDegree.
+      // Subsumes orphan cleanup (degree-0) and removes dead-ends (degree-1)
+      // that can never participate in arbitrage cycles.
+      const pruneMinDeg = CONFIG.system.graphPruneDeadEnds
+        ? CONFIG.system.graphPruneMinDegree
+        : 1;
+      const nodeMap = new Map(Object.entries(nodesMap));
+      const edgeMap = new Map(Object.entries(edgesMap));
+      const pruneResult = pruneDeadEndNodes(nodeMap, edgeMap, pruneMinDeg);
+      // Write back removals to the Record objects
+      for (const key of Object.keys(nodesMap)) {
+        if (!nodeMap.has(key)) delete nodesMap[key];
       }
-      let removedOrphanNodes = 0;
-      for (const nodeId of Object.keys(nodesMap)) {
-        if (!incident.has(nodeId)) {
-          delete nodesMap[nodeId];
-          removedOrphanNodes++;
-        }
+      for (const key of Object.keys(edgesMap)) {
+        if (!edgeMap.has(key)) delete edgesMap[key];
       }
-      if (removedOrphanNodes > 0) {
+      if (pruneResult.prunedNodes > 0 || pruneResult.prunedEdges > 0) {
         try {
-          logger.info("graph.cleanup.orphan_nodes", {
-            removed: removedOrphanNodes,
-            reason: "no_incident_edges",
+          logger.info("graph.cleanup.dead_end_prune", {
+            prunedNodes: pruneResult.prunedNodes,
+            prunedEdges: pruneResult.prunedEdges,
+            minDegree: pruneMinDeg,
             cat: "graph",
           });
         } catch {}

@@ -1,6 +1,6 @@
-import type { GraphDiff, GraphSnapshot } from '../server/graph.types.js';
-import type { PoolsPayload } from '../server/pools/types.js';
-import type { EdgeAllow } from '../server/graph.edges.js';
+import type { GraphDiff, GraphSnapshot } from "../server/graph.types.js";
+import type { PoolsPayload } from "../server/pools/types.js";
+import type { EdgeAllow } from "../server/graph.edges.js";
 
 export interface GraphIncrementalRequest {
   previousSnapshot: GraphSnapshot;
@@ -12,6 +12,7 @@ export interface GraphIncrementalRequest {
   priceClampMin?: number;
   priceClampMax?: number;
   timestampMs: number;
+  pruneMinDegree?: number;
 }
 
 export interface GraphIncrementalStats {
@@ -30,10 +31,8 @@ export interface GraphIncrementalResult {
 }
 
 export type GraphWorkerRequest = {
-  kind: 'incremental';
+  kind: "incremental";
   payload: GraphIncrementalRequest;
 };
 
 export type GraphWorkerResponse = GraphIncrementalResult;
-
-
