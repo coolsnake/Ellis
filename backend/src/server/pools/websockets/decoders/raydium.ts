@@ -46,6 +46,12 @@ import type { AmmPool, ClmmPool, PoolsPayload } from "../../types.js";
 const RAYDIUM_AMM_PROGRAM = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 const RAYDIUM_CLMM_PROGRAM = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
 
+// Anchor discriminator for CLMM PoolState accounts: sha256("account:PoolState")[0..8]
+// Filters out AmmConfig, ObservationState, OperationState, and other non-pool accounts
+const CLMM_POOL_DISCRIMINATOR = Buffer.from([
+  247, 237, 227, 245, 215, 195, 222, 70,
+]);
+
 // Debounce state for graph updates
 let raydiumApplyState: {
   baseline: PoolsPayload | null;
@@ -110,10 +116,17 @@ export async function decodeRaydiumClmmPool(
   derivedAccountToPool?: Map<string, DerivedAccountInfo>
 ): Promise<DecodedPool | null> {
   try {
+    if (!data || data.length < 8) return null;
+
+    // Check Anchor discriminator — reject non-pool accounts (AmmConfig, Observation, etc.)
+    if (Buffer.compare(data.subarray(0, 8), CLMM_POOL_DISCRIMINATOR) !== 0) {
+      return null;
+    }
+
     const rmod: any = await import("@raydium-io/raydium-sdk-v2").catch(
       () => null
     );
-    if (!rmod || !data) return null;
+    if (!rmod) return null;
 
     const clmmLayout =
       rmod?.Clmm?.PoolStateLayout ||
@@ -487,74 +500,29 @@ async function handleClmmUpdate(
     } catch {}
   }
 
-  // Use batched decimal resolution for any still-missing decimals
-  // Single getMultipleAccountsInfo call instead of 2 sequential getAccountInfo calls
+  // Non-blocking decimal resolution: check cache synchronously, queue background
+  // RPC fetch for misses, and skip this update until decimals are available.
+  // This prevents RPC calls from blocking the WS handler / event loop.
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
-    try {
-      const { resolveDecimalsPair } = await import("../../decimals.js");
-      const {
-        decA: rA,
-        decB: rB,
-        sourceA,
-        sourceB,
-        validatedA,
-        validatedB,
-      } = await resolveDecimalsPair(mintA, mintB, poolId, "Raydium");
-      if (!Number.isFinite(decA)) {
-        decA = rA;
-        if (sourceA === "default" && !validatedA) {
-          logger.warn("raydium.decoder.clmm.decimals_guaranteed_fallback", {
-            poolId: poolId.slice(0, 8) + "…",
-            mint: mintA?.slice(0, 8) + "…",
-            side: "A",
-            decimals: decA,
-            source: sourceA,
-            cat: "pools",
-          });
-        }
-      }
-      if (!Number.isFinite(decB)) {
-        decB = rB;
-        if (sourceB === "default" && !validatedB) {
-          logger.warn("raydium.decoder.clmm.decimals_guaranteed_fallback", {
-            poolId: poolId.slice(0, 8) + "…",
-            mint: mintB?.slice(0, 8) + "…",
-            side: "B",
-            decimals: decB,
-            source: sourceB,
-            cat: "pools",
-          });
-        }
-      }
-    } catch (resolveErr) {
-      logger.warn("raydium.decoder.clmm.decimals_resolve_error", {
-        poolId: poolId.slice(0, 8) + "…",
-        mintA: mintA?.slice(0, 8) + "…",
-        mintB: mintB?.slice(0, 8) + "…",
-        error: String((resolveErr as Error)?.message || resolveErr),
-        cat: "pools",
-      });
-      // Symmetric fallback - use 9 for both to avoid 1000000x price errors from mismatched decimals
-      if (!Number.isFinite(decA)) {
-        decA = 9;
-        logger.warn("raydium.decoder.clmm.decimals_fallback_used", {
-          poolId: poolId.slice(0, 8) + "…",
-          mint: mintA?.slice(0, 8) + "…",
-          side: "A",
-          fallbackDecimals: 9,
-          cat: "pools",
-        });
-      }
-      if (!Number.isFinite(decB)) {
-        decB = 9;
-        logger.warn("raydium.decoder.clmm.decimals_fallback_used", {
-          poolId: poolId.slice(0, 8) + "…",
-          mint: mintB?.slice(0, 8) + "…",
-          side: "B",
-          fallbackDecimals: 9,
-          cat: "pools",
-        });
-      }
+    const { tryResolveDecimalsPairCached } = await import("../../decimals.js");
+    const cached = tryResolveDecimalsPairCached(
+      mintA,
+      mintB,
+      poolId,
+      "Raydium"
+    );
+    if (!Number.isFinite(decA) && cached.decA !== null) decA = cached.decA;
+    if (!Number.isFinite(decB) && cached.decB !== null) decB = cached.decB;
+
+    // If still missing, skip — background fetch is queued and next WS update will succeed
+    if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+      incrementSkipReason("raydium_clmm", "decimals_pending");
+      return {
+        success: false,
+        error: "decimals_pending",
+        skipped: true,
+        skipReason: "decimals_pending",
+      };
     }
   }
 
@@ -998,74 +966,29 @@ async function handleAmmUpdate(
     } catch {}
   }
 
-  // Use batched decimal resolution for any still-missing decimals
-  // Single getMultipleAccountsInfo call instead of 2 sequential getAccountInfo calls
+  // Non-blocking decimal resolution: check cache synchronously, queue background
+  // RPC fetch for misses, and skip this update until decimals are available.
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
-    try {
-      const { resolveDecimalsPair } = await import("../../decimals.js");
-      const {
-        decA: rA,
-        decB: rB,
-        sourceA,
-        sourceB,
-        validatedA,
-        validatedB,
-      } = await resolveDecimalsPair(mintA, mintB, poolId, "Raydium");
-      if (!Number.isFinite(decA)) {
-        decA = rA;
-        if (sourceA === "default" && !validatedA) {
-          logger.warn("raydium.decoder.amm.decimals_guaranteed_fallback", {
-            poolId: poolId.slice(0, 8) + "…",
-            mint: mintA?.slice(0, 8) + "…",
-            side: "A",
-            decimals: decA,
-            source: sourceA,
-            cat: "pools",
-          });
-        }
-      }
-      if (!Number.isFinite(decB)) {
-        decB = rB;
-        if (sourceB === "default" && !validatedB) {
-          logger.warn("raydium.decoder.amm.decimals_guaranteed_fallback", {
-            poolId: poolId.slice(0, 8) + "…",
-            mint: mintB?.slice(0, 8) + "…",
-            side: "B",
-            decimals: decB,
-            source: sourceB,
-            cat: "pools",
-          });
-        }
-      }
-    } catch (resolveErr) {
-      logger.warn("raydium.decoder.amm.decimals_resolve_error", {
-        poolId: poolId.slice(0, 8) + "…",
-        mintA: mintA?.slice(0, 8) + "…",
-        mintB: mintB?.slice(0, 8) + "…",
-        error: String((resolveErr as Error)?.message || resolveErr),
-        cat: "pools",
-      });
-      // Symmetric fallback - use 9 for both to avoid 1000000x price errors from mismatched decimals
-      if (!Number.isFinite(decA)) {
-        decA = 9;
-        logger.warn("raydium.decoder.amm.decimals_fallback_used", {
-          poolId: poolId.slice(0, 8) + "…",
-          mint: mintA?.slice(0, 8) + "…",
-          side: "A",
-          fallbackDecimals: 9,
-          cat: "pools",
-        });
-      }
-      if (!Number.isFinite(decB)) {
-        decB = 9;
-        logger.warn("raydium.decoder.amm.decimals_fallback_used", {
-          poolId: poolId.slice(0, 8) + "…",
-          mint: mintB?.slice(0, 8) + "…",
-          side: "B",
-          fallbackDecimals: 9,
-          cat: "pools",
-        });
-      }
+    const { tryResolveDecimalsPairCached } = await import("../../decimals.js");
+    const cachedDec = tryResolveDecimalsPairCached(
+      mintA,
+      mintB,
+      poolId,
+      "Raydium"
+    );
+    if (!Number.isFinite(decA) && cachedDec.decA !== null)
+      decA = cachedDec.decA;
+    if (!Number.isFinite(decB) && cachedDec.decB !== null)
+      decB = cachedDec.decB;
+
+    if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+      incrementSkipReason("raydium_amm", "decimals_pending");
+      return {
+        success: false,
+        error: "decimals_pending",
+        skipped: true,
+        skipReason: "decimals_pending",
+      };
     }
   }
 

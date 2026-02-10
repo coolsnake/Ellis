@@ -57,7 +57,7 @@ export const METEORA_BALANCED_V2_PROGRAM =
   "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"; // CP-AMM SDK
 
 // Import centralized decimal resolution with RPC + persistence
-import { resolveDecimalsGuaranteed } from "../../decimals.js";
+// Decimal imports are now dynamic via tryResolveDecimalsPairCached (non-blocking)
 
 // Minimum buffer length for pool account decoding
 const MIN_DAMM_V1_POOL_BUFFER_LENGTH = 232;
@@ -852,45 +852,31 @@ export async function handleMeteoraBalancedVaultUpdate(
     let decA = decoded.native_decimals_a ?? decoded.decimals_a;
     let decB = decoded.native_decimals_b ?? decoded.decimals_b;
 
-    // Fallback decimals with logging (vault update path)
-    // Use known decimals if available, otherwise default to 9 (most common on Solana)
-    // Use centralized decimal resolution with RPC + persistence
-    // This ensures decimals are resolved via RPC if not cached, and persisted for future use
-    if (!Number.isFinite(decA) && mintA) {
-      const resolved = await resolveDecimalsGuaranteed(
-        mintA,
-        poolId,
-        "MeteoraBalanced"
+    // Non-blocking decimal resolution for vault update path
+    if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+      const { tryResolveDecimalsPairCached } = await import(
+        "../../decimals.js"
       );
-      decA = resolved.decimals;
-      logger.info("meteora_balanced.decoder.decimals_resolved", {
-        poolId: poolId?.slice(0, 8) + "…",
-        mint: mintA?.slice(0, 8) + "…",
-        side: "A",
-        decimals: decA,
-        source: resolved.source,
-        validated: resolved.validated,
-        reason: "vault_update_missing_decimals",
-        cat: "pools",
-      });
-    }
-    if (!Number.isFinite(decB) && mintB) {
-      const resolved = await resolveDecimalsGuaranteed(
+      const cachedDec = tryResolveDecimalsPairCached(
+        mintA,
         mintB,
         poolId,
         "MeteoraBalanced"
       );
-      decB = resolved.decimals;
-      logger.info("meteora_balanced.decoder.decimals_resolved", {
-        poolId: poolId?.slice(0, 8) + "…",
-        mint: mintB?.slice(0, 8) + "…",
-        side: "B",
-        decimals: decB,
-        source: resolved.source,
-        validated: resolved.validated,
-        reason: "vault_update_missing_decimals",
-        cat: "pools",
-      });
+      if (!Number.isFinite(decA) && cachedDec.decA !== null)
+        decA = cachedDec.decA;
+      if (!Number.isFinite(decB) && cachedDec.decB !== null)
+        decB = cachedDec.decB;
+
+      if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+        incrementSkipReason("meteora_damm_v2", "decimals_pending");
+        return {
+          success: false,
+          error: "decimals_pending",
+          skipped: true,
+          skipReason: "decimals_pending",
+        };
+      }
     }
 
     // Determine if this is a V2 (CP-AMM) pool
@@ -1385,44 +1371,28 @@ export async function handleMeteoraBalancedPoolAccountUpdate(
       existingPool?.native_decimals_b ??
       (wasSwapped ? existingPool?.decimals_a : existingPool?.decimals_b);
 
-    // Use centralized decimal resolution with RPC + persistence
-    // resolveDecimalsGuaranteed handles: anchors → cache → RPC → Jupiter → known → default
-    // and persists RPC-resolved values to disk
-    if (!Number.isFinite(decA) && decoded.tokenAMint) {
-      const resolved = await resolveDecimalsGuaranteed(
-        decoded.tokenAMint,
-        poolId,
-        dexName
+    // Non-blocking decimal resolution for pool account update path
+    if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+      const { tryResolveDecimalsPairCached } = await import(
+        "../../decimals.js"
       );
-      decA = resolved.decimals;
-      logger.info("meteora_balanced.decoder.decimals_resolved", {
-        poolId: poolId?.slice(0, 8) + "…",
-        mint: decoded.tokenAMint?.slice(0, 8) + "…",
-        side: "A",
-        decimals: decA,
-        source: resolved.source,
-        validated: resolved.validated,
-        reason: "pool_account_update_missing_decimals",
-        cat: "pools",
-      });
-    }
-    if (!Number.isFinite(decB) && decoded.tokenBMint) {
-      const resolved = await resolveDecimalsGuaranteed(
-        decoded.tokenBMint,
-        poolId,
-        dexName
-      );
-      decB = resolved.decimals;
-      logger.info("meteora_balanced.decoder.decimals_resolved", {
-        poolId: poolId?.slice(0, 8) + "…",
-        mint: decoded.tokenBMint?.slice(0, 8) + "…",
-        side: "B",
-        decimals: decB,
-        source: resolved.source,
-        validated: resolved.validated,
-        reason: "pool_account_update_missing_decimals",
-        cat: "pools",
-      });
+      const mA = decoded.tokenAMint || "";
+      const mB = decoded.tokenBMint || "";
+      const cachedDec = tryResolveDecimalsPairCached(mA, mB, poolId, dexName);
+      if (!Number.isFinite(decA) && cachedDec.decA !== null)
+        decA = cachedDec.decA;
+      if (!Number.isFinite(decB) && cachedDec.decB !== null)
+        decB = cachedDec.decB;
+
+      if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+        incrementSkipReason(statsKey, "decimals_pending");
+        return {
+          success: false,
+          error: "decimals_pending",
+          skipped: true,
+          skipReason: "decimals_pending",
+        };
+      }
     }
 
     // Calculate fee in BPS from the pool state

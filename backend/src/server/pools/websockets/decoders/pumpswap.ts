@@ -42,11 +42,7 @@ import { recordPoolActivity } from "../staleness.js";
 import { PUMP_AMM_SDK } from "@pump-fun/pump-swap-sdk";
 import { computePumpswapPoolFees } from "../../pumpswapFees.js";
 import { PublicKey } from "@solana/web3.js";
-// Import centralized decimal resolution with RPC + persistence
-import {
-  resolveDecimalsGuaranteed,
-  resolveDecimalsPair,
-} from "../../decimals.js";
+// Decimal imports are now dynamic via tryResolveDecimalsPairCached (non-blocking)
 import type {
   DecodedPool,
   UpdateResult,
@@ -443,41 +439,29 @@ export async function handlePumpswapPoolAccountUpdate(
     // In wss-program mode, program-level subscriptions deliver updates for all pools,
     // including ones not yet in cache. We create a minimal entry so vault updates can find it.
     if (!existingPool) {
-      // Resolve decimals via batched RPC (single getMultipleAccountsInfo for both mints)
-      let decANew = 9;
-      let decBNew = 6;
-      try {
-        const {
-          decA: rA,
-          decB: rB,
-          sourceA,
-          sourceB,
-          validatedA,
-          validatedB,
-        } = await resolveDecimalsPair(baseMint, quoteMint, poolId, "Pumpswap");
-        decANew = rA;
-        decBNew = rB;
-        if (sourceA === "default" && !validatedA) {
-          logger.warn("pumpswap.new_pool.decimals_fallback", {
-            pool: poolId.slice(0, 8) + "…",
-            mint: baseMint.slice(0, 8) + "…",
-            side: "A",
-            decimals: decANew,
-            source: sourceA,
-            cat: "pools",
-          });
-        }
-        if (sourceB === "default" && !validatedB) {
-          logger.warn("pumpswap.new_pool.decimals_fallback", {
-            pool: poolId.slice(0, 8) + "…",
-            mint: quoteMint.slice(0, 8) + "…",
-            side: "B",
-            decimals: decBNew,
-            source: sourceB,
-            cat: "pools",
-          });
-        }
-      } catch {}
+      // Non-blocking decimal resolution: check cache, queue background RPC for misses
+      const { tryResolveDecimalsPairCached } = await import(
+        "../../decimals.js"
+      );
+      const cachedDec = tryResolveDecimalsPairCached(
+        baseMint,
+        quoteMint,
+        poolId,
+        "Pumpswap"
+      );
+
+      // Skip new pool creation until decimals are available
+      if (cachedDec.decA === null || cachedDec.decB === null) {
+        incrementSkipReason("pumpswap", "decimals_pending");
+        return {
+          success: false,
+          error: "decimals_pending",
+          skipped: true,
+          skipReason: "decimals_pending",
+        };
+      }
+      const decANew = cachedDec.decA;
+      const decBNew = cachedDec.decB;
 
       // Build a synthetic existingPool so the rest of the handler can proceed uniformly
       existingPool = {

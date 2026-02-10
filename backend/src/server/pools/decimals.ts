@@ -824,6 +824,78 @@ export async function resolveDecimalsPair(
 }
 
 /**
+ * Non-blocking decimal resolution for WS decoders.
+ * Returns cached decimals synchronously; if either mint is missing,
+ * queues a background RPC fetch and returns null for that side.
+ * Callers should skip the pool update when null is returned —
+ * the next WS update for the same pool will find the decimals cached.
+ */
+export function tryResolveDecimalsPairCached(
+  mintA: string,
+  mintB: string,
+  poolId?: string,
+  dex?: string
+): { decA: number | null; decB: number | null } {
+  const cachedA = getDecimalsFromCache(mintA);
+  const cachedB = getDecimalsFromCache(mintB);
+
+  // Queue background resolution for any misses (fire-and-forget)
+  if (cachedA === undefined || cachedB === undefined) {
+    const missingMints: string[] = [];
+    if (cachedA === undefined) missingMints.push(mintA);
+    if (cachedB === undefined) missingMints.push(mintB);
+    queueDecimalResolution(missingMints, poolId, dex);
+  }
+
+  return {
+    decA: cachedA ?? null,
+    decB: cachedB ?? null,
+  };
+}
+
+// Background decimal resolution queue — batches mints and resolves via RPC
+const pendingDecimalMints = new Set<string>();
+let decimalQueueTimer: ReturnType<typeof setTimeout> | null = null;
+const DECIMAL_QUEUE_DELAY_MS = 50;
+
+function queueDecimalResolution(
+  mints: string[],
+  poolId?: string,
+  dex?: string
+): void {
+  for (const m of mints) {
+    if (m && m.length >= 32 && !isNegativelyCached(m)) {
+      pendingDecimalMints.add(m);
+    }
+  }
+  if (!decimalQueueTimer && pendingDecimalMints.size > 0) {
+    decimalQueueTimer = setTimeout(flushDecimalQueue, DECIMAL_QUEUE_DELAY_MS);
+  }
+}
+
+async function flushDecimalQueue(): Promise<void> {
+  decimalQueueTimer = null;
+  if (pendingDecimalMints.size === 0) return;
+  const mints = Array.from(pendingDecimalMints);
+  pendingDecimalMints.clear();
+
+  // Filter out any that got resolved while waiting
+  const toResolve = mints.filter((m) => getDecimalsFromCache(m) === undefined);
+  if (toResolve.length === 0) return;
+
+  try {
+    // Use the existing batch resolver (getMultipleAccountsInfo internally)
+    await resolveDecimalsGuaranteedBatch(toResolve, {});
+  } catch (e) {
+    logger.debug("decimals.background_queue.error", {
+      count: toResolve.length,
+      error: String((e as Error)?.message || e),
+      cat: "decimals",
+    });
+  }
+}
+
+/**
  * Clear the in-memory cache (useful for testing)
  */
 export function clearDecimalsCache(): void {
