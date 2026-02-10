@@ -1,59 +1,78 @@
 /**
  * Raydium CPMM (Constant Product Market Maker) pool decoder
- * 
+ *
  * Handles decoding and WebSocket updates for Raydium CPMM pools.
- * 
+ *
  * CPMM pools use a constant product formula (x*y=k) like AMM V4 but with
  * a different account structure. They are simpler than CLMM pools.
- * 
+ *
  * Program ID: CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C
  */
 
-import { logger } from '../../../../utils/logger.js';
-import { logCatchError, logCatchDebug } from '../../../../utils/errorHandler.js';
-import { processPriceThroughPipeline } from '../../pricePipeline.js';
-import { canonicalizePools } from '../../canonical.js';
-import { cpmmCache } from '../../../pools.cache.js';
-import { emit } from '../../../realtime.js';
-import { wsDecodeStats, wsDeltaStats, incrementSkipReason } from '../../../pools.metrics.js';
-import { validateDecodedPool, validatePriceDelta } from '../validation.js';
-import { ensureOrientationConsistency } from '../../orientationValidation.js';
-import { tryActivatePool } from '../../../pools.activation.js';
+import { logger } from "../../../../utils/logger.js";
+import {
+  logCatchError,
+  logCatchDebug,
+} from "../../../../utils/errorHandler.js";
+import { processPriceThroughPipeline } from "../../pricePipeline.js";
+import { canonicalizePools } from "../../canonical.js";
+import { cpmmCache } from "../../../pools.cache.js";
+import { emit } from "../../../realtime.js";
+import {
+  wsDecodeStats,
+  wsDeltaStats,
+  incrementSkipReason,
+} from "../../../pools.metrics.js";
+import { validateDecodedPool, validatePriceDelta } from "../validation.js";
+import { ensureOrientationConsistency } from "../../orientationValidation.js";
+import { tryActivatePool } from "../../../pools.activation.js";
 // Import per-pool staleness tracking
-import { recordPoolActivity } from '../staleness.js';
-import type { 
-  DecodedPool, 
-  UpdateResult, 
-  AccountInfo, 
+import { recordPoolActivity } from "../staleness.js";
+import type {
+  DecodedPool,
+  UpdateResult,
+  AccountInfo,
   ProcessedPriceResult,
   DerivedAccountInfo,
-} from './types.js';
-import type { CpmmPool } from '../../types.js';
+} from "./types.js";
+import type { CpmmPool } from "../../types.js";
 
 // Program ID
-const RAYDIUM_CPMM_PROGRAM = 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
-const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-const TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+const RAYDIUM_CPMM_PROGRAM = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
+const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
 // Minimum buffer length for basic validation before SDK decode
 const MIN_CPMM_BUFFER_LENGTH = 200;
+
+// Anchor discriminator for CPMM PoolState accounts: sha256("account:PoolState")[0..8]
+// Non-pool accounts (ammConfig, observation) have different discriminators and are filtered out.
+const CPMM_POOL_DISCRIMINATOR = Buffer.from([
+  247, 237, 227, 245, 215, 195, 222, 70,
+]);
 
 // Cached SDK layout for performance (loaded lazily)
 let CpmmPoolInfoLayout: any = null;
 
 // Debounce state for graph updates
-let cpmmApplyState: { baseline: { cpmm: CpmmPool[] } | null; timer: NodeJS.Timeout | null } = { baseline: null, timer: null };
+let cpmmApplyState: {
+  baseline: { cpmm: CpmmPool[] } | null;
+  timer: NodeJS.Timeout | null;
+} = { baseline: null, timer: null };
 const DEBOUNCE_MS = 50;
 
 // ─── Batched vault balance fetcher (for program-mode where vaults don't arrive via WS) ───
 const VAULT_BATCH_DELAY_MS = 75;
-const pendingVaultFetches = new Map<string, Array<{ resolve: (v: bigint | undefined) => void }>>();
+const pendingVaultFetches = new Map<
+  string,
+  Array<{ resolve: (v: bigint | undefined) => void }>
+>();
 let vaultFetchTimer: ReturnType<typeof setTimeout> | null = null;
 
 function queueVaultFetch(vaultAddress: string): Promise<bigint | undefined> {
   // Check cache first (avoid queueing if already known)
   try {
-    const { vaultBalanceCache } = require('../../../pools.cache.js');
+    const { vaultBalanceCache } = require("../../../pools.cache.js");
     if (vaultBalanceCache.has(vaultAddress)) {
       return Promise.resolve(vaultBalanceCache.get(vaultAddress));
     }
@@ -79,8 +98,11 @@ async function flushVaultFetches(): Promise<void> {
 
   let vaultBalanceCache: Map<string, bigint>;
   try {
-    vaultBalanceCache = (await import('../../../pools.cache.js')).vaultBalanceCache;
-  } catch { return; }
+    vaultBalanceCache = (await import("../../../pools.cache.js"))
+      .vaultBalanceCache;
+  } catch {
+    return;
+  }
 
   // Resolve any that got cached while waiting for the batch timer
   const toFetch: string[] = [];
@@ -95,8 +117,8 @@ async function flushVaultFetches(): Promise<void> {
   if (toFetch.length === 0) return;
 
   try {
-    const { getConnection } = await import('../../../../wallet/wallet.js');
-    const { PublicKey } = await import('@solana/web3.js');
+    const { getConnection } = await import("../../../../wallet/wallet.js");
+    const { PublicKey } = await import("@solana/web3.js");
     const conn = getConnection();
 
     // Batch RPC in chunks of 100
@@ -110,7 +132,9 @@ async function flushVaultFetches(): Promise<void> {
           const info = infos[j];
           let balance: bigint | undefined;
           if (info?.data) {
-            const buf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data);
+            const buf = Buffer.isBuffer(info.data)
+              ? info.data
+              : Buffer.from(info.data);
             if (buf.length >= 72) {
               balance = buf.readBigUInt64LE(64);
               vaultBalanceCache.set(chunk[j], balance);
@@ -120,7 +144,11 @@ async function flushVaultFetches(): Promise<void> {
           if (waiters) for (const w of waiters) w.resolve(balance);
         }
       } catch (err) {
-        logger.warn('cpmm.vault.batch_fetch.chunk_error', { chunkSize: chunk.length, error: String(err), cat: 'pools' });
+        logger.warn("cpmm.vault.batch_fetch.chunk_error", {
+          chunkSize: chunk.length,
+          error: String(err),
+          cat: "pools",
+        });
         // Resolve chunk with undefined on error
         for (const addr of chunk) {
           const waiters = batch.get(addr);
@@ -129,7 +157,11 @@ async function flushVaultFetches(): Promise<void> {
       }
     }
   } catch (err) {
-    logger.warn('cpmm.vault.batch_fetch.error', { total: toFetch.length, error: String(err), cat: 'pools' });
+    logger.warn("cpmm.vault.batch_fetch.error", {
+      total: toFetch.length,
+      error: String(err),
+      cat: "pools",
+    });
     for (const addr of toFetch) {
       const waiters = batch.get(addr);
       if (waiters) for (const w of waiters) w.resolve(undefined);
@@ -141,14 +173,16 @@ async function flushVaultFetches(): Promise<void> {
 const ammConfigFeeCache = new Map<string, number>();
 let CpmmConfigInfoLayout: any = null;
 
-async function resolveAmmConfigFee(configId: string): Promise<number | undefined> {
-  const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+async function resolveAmmConfigFee(
+  configId: string
+): Promise<number | undefined> {
+  const SYSTEM_PROGRAM = "11111111111111111111111111111111";
   if (!configId || configId === SYSTEM_PROGRAM) return undefined;
   if (ammConfigFeeCache.has(configId)) return ammConfigFeeCache.get(configId);
 
   try {
-    const { getConnection } = await import('../../../../wallet/wallet.js');
-    const { PublicKey } = await import('@solana/web3.js');
+    const { getConnection } = await import("../../../../wallet/wallet.js");
+    const { PublicKey } = await import("@solana/web3.js");
     const conn = getConnection();
     const info = await conn.getAccountInfo(new PublicKey(configId));
     if (!info?.data) return undefined;
@@ -156,7 +190,9 @@ async function resolveAmmConfigFee(configId: string): Promise<number | undefined
     // Load CpmmConfigInfoLayout from SDK (lazy)
     if (!CpmmConfigInfoLayout) {
       try {
-        const mod = await import('@raydium-io/raydium-sdk-v2/lib/raydium/cpmm/layout.js');
+        const mod = await import(
+          "@raydium-io/raydium-sdk-v2/lib/raydium/cpmm/layout.js"
+        );
         CpmmConfigInfoLayout = mod.CpmmConfigInfoLayout;
       } catch {
         return undefined;
@@ -174,21 +210,131 @@ async function resolveAmmConfigFee(configId: string): Promise<number | undefined
   }
 }
 
-/** Exported for use by AMM v4 vaults in pools.websockets.ts */
-export { queueVaultFetch, resolveAmmConfigFee, ammConfigFeeCache };
+// ─── Batched ammConfig fee fetcher (batches multiple config lookups into one RPC call) ───
+const pendingConfigFetches = new Map<
+  string,
+  Array<{ resolve: (v: number | undefined) => void }>
+>();
+let configFetchTimer: ReturnType<typeof setTimeout> | null = null;
+const CONFIG_BATCH_DELAY_MS = 75;
+
+function queueAmmConfigFetch(configId: string): Promise<number | undefined> {
+  const SYSTEM_PROGRAM = "11111111111111111111111111111111";
+  if (!configId || configId === SYSTEM_PROGRAM)
+    return Promise.resolve(undefined);
+  if (ammConfigFeeCache.has(configId))
+    return Promise.resolve(ammConfigFeeCache.get(configId));
+
+  return new Promise((resolve) => {
+    if (!pendingConfigFetches.has(configId)) {
+      pendingConfigFetches.set(configId, []);
+    }
+    pendingConfigFetches.get(configId)!.push({ resolve });
+    if (!configFetchTimer) {
+      configFetchTimer = setTimeout(flushConfigFetches, CONFIG_BATCH_DELAY_MS);
+    }
+  });
+}
+
+async function flushConfigFetches(): Promise<void> {
+  configFetchTimer = null;
+  const batch = new Map(pendingConfigFetches);
+  pendingConfigFetches.clear();
+  if (batch.size === 0) return;
+
+  // Resolve any that got cached while waiting
+  const toFetch: string[] = [];
+  for (const [id, waiters] of batch) {
+    if (ammConfigFeeCache.has(id)) {
+      const val = ammConfigFeeCache.get(id);
+      for (const w of waiters) w.resolve(val);
+    } else {
+      toFetch.push(id);
+    }
+  }
+  if (toFetch.length === 0) return;
+
+  try {
+    const { getConnection } = await import("../../../../wallet/wallet.js");
+    const { PublicKey } = await import("@solana/web3.js");
+    const conn = getConnection();
+
+    // Load layout
+    if (!CpmmConfigInfoLayout) {
+      try {
+        const mod = await import(
+          "@raydium-io/raydium-sdk-v2/lib/raydium/cpmm/layout.js"
+        );
+        CpmmConfigInfoLayout = mod.CpmmConfigInfoLayout;
+      } catch {
+        for (const addr of toFetch) {
+          const waiters = batch.get(addr);
+          if (waiters) for (const w of waiters) w.resolve(undefined);
+        }
+        return;
+      }
+    }
+
+    for (let i = 0; i < toFetch.length; i += 100) {
+      const chunk = toFetch.slice(i, i + 100);
+      try {
+        const infos = await conn.getMultipleAccountsInfo(
+          chunk.map((a) => new PublicKey(a))
+        );
+        for (let j = 0; j < chunk.length; j++) {
+          const info = infos[j];
+          let feeBps: number | undefined;
+          if (info?.data) {
+            try {
+              const buf = Buffer.isBuffer(info.data)
+                ? info.data
+                : Buffer.from(info.data);
+              const config = CpmmConfigInfoLayout.decode(buf);
+              const tradeFeeRate = Number(config.tradeFeeRate || 0);
+              feeBps = Math.round(tradeFeeRate / 100);
+              ammConfigFeeCache.set(chunk[j], feeBps);
+            } catch {}
+          }
+          const waiters = batch.get(chunk[j]);
+          if (waiters) for (const w of waiters) w.resolve(feeBps);
+        }
+      } catch {
+        for (const addr of chunk) {
+          const waiters = batch.get(addr);
+          if (waiters) for (const w of waiters) w.resolve(undefined);
+        }
+      }
+    }
+  } catch {
+    for (const addr of toFetch) {
+      const waiters = batch.get(addr);
+      if (waiters) for (const w of waiters) w.resolve(undefined);
+    }
+  }
+}
+
+/** Exported for use by other decoders and pools.websockets.ts */
+export {
+  queueVaultFetch,
+  resolveAmmConfigFee,
+  ammConfigFeeCache,
+  queueAmmConfigFetch,
+};
 
 /**
  * Load the CPMM layout from SDK (lazy initialization)
  */
 async function loadCpmmLayout(): Promise<any> {
   if (CpmmPoolInfoLayout) return CpmmPoolInfoLayout;
-  
+
   try {
-    const cpmmLayoutModule = await import('@raydium-io/raydium-sdk-v2/lib/raydium/cpmm/layout.js');
+    const cpmmLayoutModule = await import(
+      "@raydium-io/raydium-sdk-v2/lib/raydium/cpmm/layout.js"
+    );
     CpmmPoolInfoLayout = cpmmLayoutModule.CpmmPoolInfoLayout;
     return CpmmPoolInfoLayout;
   } catch (e) {
-    logCatchDebug('raydiumCpmm.loadLayout', e);
+    logCatchDebug("raydiumCpmm.loadLayout", e);
     return null;
   }
 }
@@ -197,7 +343,9 @@ async function loadCpmmLayout(): Promise<any> {
  * Schedule debounced graph update for CPMM
  * Wraps CPMM pools in PoolsPayload format expected by applyPoolUpdates
  */
-async function scheduleCpmmApply(baseline: { cpmm: CpmmPool[] }): Promise<void> {
+async function scheduleCpmmApply(baseline: {
+  cpmm: CpmmPool[];
+}): Promise<void> {
   try {
     if (!cpmmApplyState.baseline) {
       cpmmApplyState.baseline = baseline;
@@ -207,41 +355,47 @@ async function scheduleCpmmApply(baseline: { cpmm: CpmmPool[] }): Promise<void> 
     }
     cpmmApplyState.timer = setTimeout(async () => {
       try {
-        const gmod: any = await import('../../../graph.js');
+        const gmod: any = await import("../../../graph.js");
         const current = cpmmCache.data;
         if (current && cpmmApplyState.baseline) {
           // Wrap CPMM pools in PoolsPayload format for applyPoolUpdates
-          const prevPayload = { amm: [], clmm: [], cpmm: cpmmApplyState.baseline.cpmm || [] };
+          const prevPayload = {
+            amm: [],
+            clmm: [],
+            cpmm: cpmmApplyState.baseline.cpmm || [],
+          };
           const nextPayload = { amm: [], clmm: [], cpmm: current.cpmm || [] };
-          
+
           // Use standard applyPoolUpdates for incremental graph updates
-          if (typeof gmod?.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prevPayload, nextPayload, { pushToArb: false });
+          if (typeof gmod?.applyPoolUpdates === "function") {
+            await gmod.applyPoolUpdates(prevPayload, nextPayload, {
+              pushToArb: false,
+            });
             try {
-              const { logger } = await import('../../../../utils/logger.js');
-              logger.debug('raydiumCpmm.graph_update.applied', { 
-                prevCount: prevPayload.cpmm.length, 
+              const { logger } = await import("../../../../utils/logger.js");
+              logger.debug("raydiumCpmm.graph_update.applied", {
+                prevCount: prevPayload.cpmm.length,
                 nextCount: nextPayload.cpmm.length,
-                cat: 'pools' 
+                cat: "pools",
               });
             } catch {}
           }
         }
       } catch (e) {
-        logCatchDebug('raydiumCpmm.scheduleCpmmApply', e);
+        logCatchDebug("raydiumCpmm.scheduleCpmmApply", e);
       } finally {
         cpmmApplyState.baseline = null;
         cpmmApplyState.timer = null;
       }
     }, DEBOUNCE_MS);
   } catch (e) {
-    logCatchDebug('raydiumCpmm.scheduleCpmmApply.setup', e);
+    logCatchDebug("raydiumCpmm.scheduleCpmmApply.setup", e);
   }
 }
 
 /**
  * Decode Raydium CPMM pool from account data
- * 
+ *
  * Uses the Raydium SDK's CpmmPoolInfoLayout for reliable decoding.
  * This is more robust than manual buffer parsing as it uses the official IDL.
  */
@@ -255,15 +409,22 @@ export async function decodeRaydiumCpmmPool(
       return null;
     }
 
+    // Check discriminator before attempting SDK decode.
+    // In program-subscription mode ALL accounts owned by CPMM program arrive;
+    // non-pool accounts (ammConfig, observation) have different discriminators.
+    if (Buffer.compare(data.subarray(0, 8), CPMM_POOL_DISCRIMINATOR) !== 0) {
+      return null;
+    }
+
     // Check for derived account (vault) confusion
     if (derivedAccountToPool?.has(poolId)) {
       const derivedMeta = derivedAccountToPool.get(poolId);
-      logger.warn('raydium.decoder.cpmm.vault_as_pool.prevented', {
-        account: poolId.slice(0, 8) + '…',
+      logger.warn("raydium.decoder.cpmm.vault_as_pool.prevented", {
+        account: poolId.slice(0, 8) + "…",
         accountType: derivedMeta?.accountType,
-        parentPool: derivedMeta?.poolId?.slice(0, 8) + '…',
-        reason: 'account_is_vault_not_pool',
-        cat: 'pools'
+        parentPool: derivedMeta?.poolId?.slice(0, 8) + "…",
+        reason: "account_is_vault_not_pool",
+        cat: "pools",
       });
       return null;
     }
@@ -271,7 +432,10 @@ export async function decodeRaydiumCpmmPool(
     // Load SDK layout (cached after first call)
     const layout = await loadCpmmLayout();
     if (!layout?.decode) {
-      logCatchDebug('raydium.decodeCpmm.layout_unavailable', 'SDK layout not available');
+      logCatchDebug(
+        "raydium.decodeCpmm.layout_unavailable",
+        "SDK layout not available"
+      );
       return null;
     }
 
@@ -282,27 +446,31 @@ export async function decodeRaydiumCpmmPool(
     }
 
     // Extract fields from decoded state
-    const token0Mint = state.mintA?.toBase58?.() || '';
-    const token1Mint = state.mintB?.toBase58?.() || '';
+    const token0Mint = state.mintA?.toBase58?.() || "";
+    const token1Mint = state.mintB?.toBase58?.() || "";
 
     // Filter non-pool accounts (ammConfig, observation, etc.)
     // In program-level subscription mode, ALL accounts owned by the CPMM program arrive.
     // Pool accounts have valid mintA/mintB; non-pool accounts have zero-pubkeys.
-    const SYSTEM_PROGRAM = '11111111111111111111111111111111';
-    if (!token0Mint || !token1Mint ||
-        token0Mint === SYSTEM_PROGRAM || token1Mint === SYSTEM_PROGRAM ||
-        token0Mint === token1Mint) {
+    const SYSTEM_PROGRAM = "11111111111111111111111111111111";
+    if (
+      !token0Mint ||
+      !token1Mint ||
+      token0Mint === SYSTEM_PROGRAM ||
+      token1Mint === SYSTEM_PROGRAM ||
+      token0Mint === token1Mint
+    ) {
       return null;
     }
 
-    const token0Vault = state.vaultA?.toBase58?.() || '';
-    const token1Vault = state.vaultB?.toBase58?.() || '';
-    const ammConfig = state.configId?.toBase58?.() || '';
-    const observationKey = state.observationId?.toBase58?.() || '';
-    const lpMint = state.mintLp?.toBase58?.() || '';
-    const creator = state.poolCreator?.toBase58?.() || '';
-    const token0Program = state.mintProgramA?.toBase58?.() || '';
-    const token1Program = state.mintProgramB?.toBase58?.() || '';
+    const token0Vault = state.vaultA?.toBase58?.() || "";
+    const token1Vault = state.vaultB?.toBase58?.() || "";
+    const ammConfig = state.configId?.toBase58?.() || "";
+    const observationKey = state.observationId?.toBase58?.() || "";
+    const lpMint = state.mintLp?.toBase58?.() || "";
+    const creator = state.poolCreator?.toBase58?.() || "";
+    const token0Program = state.mintProgramA?.toBase58?.() || "";
+    const token1Program = state.mintProgramB?.toBase58?.() || "";
 
     // CRITICAL: Use symmetric fallback (9) to avoid ratio errors from mismatched decimals
     // On-chain state should always have decimals, but if missing, log warning
@@ -311,14 +479,15 @@ export async function decodeRaydiumCpmmPool(
 
     if (!Number.isFinite(mint0Decimals) || !Number.isFinite(mint1Decimals)) {
       // Log warning - on-chain decimals should never be missing
-      logger.warn('raydium.cpmm.decode.decimals_missing_onchain', {
-        poolId: poolId.slice(0, 8) + '…',
-        token0Mint: token0Mint.slice(0, 8) + '…',
-        token1Mint: token1Mint.slice(0, 8) + '…',
+      logger.warn("raydium.cpmm.decode.decimals_missing_onchain", {
+        poolId: poolId.slice(0, 8) + "…",
+        token0Mint: token0Mint.slice(0, 8) + "…",
+        token1Mint: token1Mint.slice(0, 8) + "…",
         mint0Decimals,
         mint1Decimals,
-        warning: 'On-chain decimals missing - using fallback 9, price may be incorrect',
-        cat: 'pools'
+        warning:
+          "On-chain decimals missing - using fallback 9, price may be incorrect",
+        cat: "pools",
       });
       if (!Number.isFinite(mint0Decimals)) mint0Decimals = 9;
       if (!Number.isFinite(mint1Decimals)) mint1Decimals = 9;
@@ -329,21 +498,23 @@ export async function decodeRaydiumCpmmPool(
     }
 
     // Determine token programs
-    const tokenProgramA = token0Program === TOKEN_2022_PROGRAM_ID ? 'token-2022' : 'spl-token';
-    const tokenProgramB = token1Program === TOKEN_2022_PROGRAM_ID ? 'token-2022' : 'spl-token';
+    const tokenProgramA =
+      token0Program === TOKEN_2022_PROGRAM_ID ? "token-2022" : "spl-token";
+    const tokenProgramB =
+      token1Program === TOKEN_2022_PROGRAM_ID ? "token-2022" : "spl-token";
 
     // Use cached ammConfig fee if available, otherwise default to 25 bps
     const fee_bps = ammConfigFeeCache.get(ammConfig) ?? 25;
 
     return {
       id: poolId,
-      dex: 'Raydium',
+      dex: "Raydium",
       mint_a: token0Mint,
       mint_b: token1Mint,
       fee_bps,
       price_a_per_b: 0, // Will be calculated through pipeline after vault fetch
       updated_ms: Date.now(),
-      pool_kind: 'cpmm' as any,
+      pool_kind: "cpmm" as any,
       native_mint_a: token0Mint,
       native_mint_b: token1Mint,
       decimals_a: mint0Decimals,
@@ -363,7 +534,7 @@ export async function decodeRaydiumCpmmPool(
       token_program_b: tokenProgramB,
     } as any;
   } catch (e) {
-    logCatchDebug('raydium.decodeCpmm', e, { poolId });
+    logCatchDebug("raydium.decodeCpmm", e, { poolId });
     return null;
   }
 }
@@ -377,12 +548,18 @@ async function handleCpmmUpdate(
   derivedAccountToPool: Map<string, DerivedAccountInfo>,
   owner: string
 ): Promise<UpdateResult> {
-  const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
-  
+  const data = Buffer.isBuffer(info.data)
+    ? info.data
+    : Buffer.from(info.data ?? []);
+
   // Decode the pool
-  const decoded = await decodeRaydiumCpmmPool(data, poolId, derivedAccountToPool);
+  const decoded = await decodeRaydiumCpmmPool(
+    data,
+    poolId,
+    derivedAccountToPool
+  );
   if (!decoded) {
-    return { success: false, error: 'decode_failed', skipped: true };
+    return { success: false, error: "decode_failed", skipped: true };
   }
 
   const mintA = decoded.native_mint_a || decoded.mint_a;
@@ -401,83 +578,100 @@ async function handleCpmmUpdate(
       // CRITICAL: If native decimals missing, derive from canonical + was_swapped
       // When swapped: canonical A = native B, so native A decimals = canonical B decimals
       const wasSwapped = (existing as any)?.was_swapped === true;
-      if (!Number.isFinite(decA)) decA = existing.native_decimals_a ?? (wasSwapped ? existing.decimals_b : existing.decimals_a);
-      if (!Number.isFinite(decB)) decB = existing.native_decimals_b ?? (wasSwapped ? existing.decimals_a : existing.decimals_b);
+      if (!Number.isFinite(decA))
+        decA =
+          existing.native_decimals_a ??
+          (wasSwapped ? existing.decimals_b : existing.decimals_a);
+      if (!Number.isFinite(decB))
+        decB =
+          existing.native_decimals_b ??
+          (wasSwapped ? existing.decimals_a : existing.decimals_b);
     }
   }
 
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
-      const { executionCache } = await import('../../../../execution/cache.js');
+      const { executionCache } = await import("../../../../execution/cache.js");
       const cached = executionCache.getStatic(poolId);
       // Apply same swap logic for safety
       const cachedWasSwapped = (cached as any)?.was_swapped === true;
-      if (!Number.isFinite(decA)) decA = cached?.native_decimals_a ?? (cachedWasSwapped ? cached?.decimals_b : cached?.decimals_a);
-      if (!Number.isFinite(decB)) decB = cached?.native_decimals_b ?? (cachedWasSwapped ? cached?.decimals_a : cached?.decimals_b);
+      if (!Number.isFinite(decA))
+        decA =
+          cached?.native_decimals_a ??
+          (cachedWasSwapped ? cached?.decimals_b : cached?.decimals_a);
+      if (!Number.isFinite(decB))
+        decB =
+          cached?.native_decimals_b ??
+          (cachedWasSwapped ? cached?.decimals_a : cached?.decimals_b);
     } catch {}
   }
 
-  // Use guaranteed decimal resolution for any still-missing decimals
-  // This will do RPC fetch if needed, avoiding dangerous fallback defaults
+  // Use batched decimal resolution for any still-missing decimals
+  // Single getMultipleAccountsInfo call instead of 2 sequential getAccountInfo calls
   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
     try {
-      const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
-      
-      if (!Number.isFinite(decA) && mintA) {
-        const resultA = await resolveDecimalsGuaranteed(mintA, poolId, 'Raydium');
-        decA = resultA.decimals;
-        if (resultA.source === 'default' && !resultA.validated) {
-          logger.warn('raydium.decoder.cpmm.decimals_guaranteed_fallback', {
-            poolId: poolId.slice(0, 8) + '…',
-            mint: mintA?.slice(0, 8) + '…',
-            side: 'A',
+      const { resolveDecimalsPair } = await import("../../decimals.js");
+      const {
+        decA: rA,
+        decB: rB,
+        sourceA,
+        sourceB,
+        validatedA,
+        validatedB,
+      } = await resolveDecimalsPair(mintA, mintB, poolId, "Raydium");
+      if (!Number.isFinite(decA)) {
+        decA = rA;
+        if (sourceA === "default" && !validatedA) {
+          logger.warn("raydium.decoder.cpmm.decimals_guaranteed_fallback", {
+            poolId: poolId.slice(0, 8) + "…",
+            mint: mintA?.slice(0, 8) + "…",
+            side: "A",
             decimals: decA,
-            source: resultA.source,
-            cat: 'pools'
+            source: sourceA,
+            cat: "pools",
           });
         }
       }
-      if (!Number.isFinite(decB) && mintB) {
-        const resultB = await resolveDecimalsGuaranteed(mintB, poolId, 'Raydium');
-        decB = resultB.decimals;
-        if (resultB.source === 'default' && !resultB.validated) {
-          logger.warn('raydium.decoder.cpmm.decimals_guaranteed_fallback', {
-            poolId: poolId.slice(0, 8) + '…',
-            mint: mintB?.slice(0, 8) + '…',
-            side: 'B',
+      if (!Number.isFinite(decB)) {
+        decB = rB;
+        if (sourceB === "default" && !validatedB) {
+          logger.warn("raydium.decoder.cpmm.decimals_guaranteed_fallback", {
+            poolId: poolId.slice(0, 8) + "…",
+            mint: mintB?.slice(0, 8) + "…",
+            side: "B",
             decimals: decB,
-            source: resultB.source,
-            cat: 'pools'
+            source: sourceB,
+            cat: "pools",
           });
         }
       }
     } catch (resolveErr) {
-      logger.warn('raydium.decoder.cpmm.decimals_resolve_error', {
-        poolId: poolId.slice(0, 8) + '…',
-        mintA: mintA?.slice(0, 8) + '…',
-        mintB: mintB?.slice(0, 8) + '…',
+      logger.warn("raydium.decoder.cpmm.decimals_resolve_error", {
+        poolId: poolId.slice(0, 8) + "…",
+        mintA: mintA?.slice(0, 8) + "…",
+        mintB: mintB?.slice(0, 8) + "…",
         error: String((resolveErr as Error)?.message || resolveErr),
-        cat: 'pools'
+        cat: "pools",
       });
       // Symmetric fallback - use 9 for both to avoid 1000000x price errors from mismatched decimals
       if (!Number.isFinite(decA)) {
         decA = 9;
-        logger.warn('raydium.decoder.cpmm.decimals_fallback_used', {
-          poolId: poolId.slice(0, 8) + '…',
-          mint: mintA?.slice(0, 8) + '…',
-          side: 'A',
+        logger.warn("raydium.decoder.cpmm.decimals_fallback_used", {
+          poolId: poolId.slice(0, 8) + "…",
+          mint: mintA?.slice(0, 8) + "…",
+          side: "A",
           fallbackDecimals: 9,
-          cat: 'pools'
+          cat: "pools",
         });
       }
       if (!Number.isFinite(decB)) {
         decB = 9;
-        logger.warn('raydium.decoder.cpmm.decimals_fallback_used', {
-          poolId: poolId.slice(0, 8) + '…',
-          mint: mintB?.slice(0, 8) + '…',
-          side: 'B',
+        logger.warn("raydium.decoder.cpmm.decimals_fallback_used", {
+          poolId: poolId.slice(0, 8) + "…",
+          mint: mintB?.slice(0, 8) + "…",
+          side: "B",
           fallbackDecimals: 9,
-          cat: 'pools'
+          cat: "pools",
         });
       }
     }
@@ -491,7 +685,7 @@ async function handleCpmmUpdate(
   const vaultB = decoded.account_b || (decoded as any).native_account_b;
 
   try {
-    const { vaultBalanceCache } = await import('../../../pools.cache.js');
+    const { vaultBalanceCache } = await import("../../../pools.cache.js");
     if (vaultA && vaultBalanceCache.has(vaultA)) {
       reserveA = vaultBalanceCache.get(vaultA);
     }
@@ -512,64 +706,87 @@ async function handleCpmmUpdate(
   // Resolve fee from ammConfig if still at default 25 bps
   if ((decoded as any).amm_config && decoded.fee_bps === 25) {
     try {
-      const resolvedFee = await resolveAmmConfigFee((decoded as any).amm_config);
+      const resolvedFee = await queueAmmConfigFetch(
+        (decoded as any).amm_config
+      );
       if (resolvedFee !== undefined) (decoded as any).fee_bps = resolvedFee;
     } catch {}
   }
 
   // Process through price pipeline
   let processedPrice: ProcessedPriceResult | null = null;
-  if (Number.isFinite(decA) && Number.isFinite(decB) && reserveA && reserveB && reserveA > 0n && reserveB > 0n) {
+  if (
+    Number.isFinite(decA) &&
+    Number.isFinite(decB) &&
+    reserveA &&
+    reserveB &&
+    reserveA > 0n &&
+    reserveB > 0n
+  ) {
     processedPrice = processPriceThroughPipeline({
       mintA,
       mintB,
       decimalsA: decA!,
       decimalsB: decB!,
       poolId,
-      dex: 'Raydium',
-      poolType: 'cpmm',
+      dex: "Raydium",
+      poolType: "cpmm",
       reserveA,
       reserveB,
     });
   }
 
   // Calculate whole token amounts from reserves
-  const amountAWhole = reserveA && decA !== undefined ? Number(reserveA) / Math.pow(10, decA) : undefined;
-  const amountBWhole = reserveB && decB !== undefined ? Number(reserveB) / Math.pow(10, decB) : undefined;
+  const amountAWhole =
+    reserveA && decA !== undefined
+      ? Number(reserveA) / Math.pow(10, decA)
+      : undefined;
+  const amountBWhole =
+    reserveB && decB !== undefined
+      ? Number(reserveB) / Math.pow(10, decB)
+      : undefined;
 
   // Build the pool item
   const item: CpmmPool = {
     id: poolId,
-    dex: 'Raydium',
+    dex: "Raydium",
     mint_a: processedPrice?.mintA || mintA,
     mint_b: processedPrice?.mintB || mintB,
     fee_bps: decoded.fee_bps,
     price_a_per_b: processedPrice?.priceForward || 0,
     updated_ms: Date.now(),
-    pool_kind: 'cpmm',
+    pool_kind: "cpmm",
     decimals_a: processedPrice?.decimalsA || decA,
     decimals_b: processedPrice?.decimalsB || decB,
     native_mint_a: mintA,
     native_mint_b: mintB,
     native_decimals_a: decA,
     native_decimals_b: decB,
-    account_a: processedPrice?.wasSwapped ? (decoded as any).account_b : (decoded as any).account_a,
-    account_b: processedPrice?.wasSwapped ? (decoded as any).account_a : (decoded as any).account_b,
+    account_a: processedPrice?.wasSwapped
+      ? (decoded as any).account_b
+      : (decoded as any).account_a,
+    account_b: processedPrice?.wasSwapped
+      ? (decoded as any).account_a
+      : (decoded as any).account_b,
     native_account_a: (decoded as any).account_a,
     native_account_b: (decoded as any).account_b,
     amm_config: (decoded as any).amm_config,
     observation_key: (decoded as any).observation_key,
     lp_mint: (decoded as any).lp_mint,
-    token_program_a: processedPrice?.wasSwapped 
-      ? (decoded as any).token_program_b 
+    token_program_a: processedPrice?.wasSwapped
+      ? (decoded as any).token_program_b
       : (decoded as any).token_program_a,
-    token_program_b: processedPrice?.wasSwapped 
-      ? (decoded as any).token_program_a 
+    token_program_b: processedPrice?.wasSwapped
+      ? (decoded as any).token_program_a
       : (decoded as any).token_program_b,
     was_swapped: processedPrice?.wasSwapped || false,
     // Reserves in canonical order (matching mint_a/mint_b)
-    reserve_a_raw: processedPrice?.wasSwapped ? reserveB?.toString() : reserveA?.toString(),
-    reserve_b_raw: processedPrice?.wasSwapped ? reserveA?.toString() : reserveB?.toString(),
+    reserve_a_raw: processedPrice?.wasSwapped
+      ? reserveB?.toString()
+      : reserveA?.toString(),
+    reserve_b_raw: processedPrice?.wasSwapped
+      ? reserveA?.toString()
+      : reserveB?.toString(),
     // Native reserves preserved for reference
     native_reserve_a_raw: reserveA?.toString(),
     native_reserve_b_raw: reserveB?.toString(),
@@ -580,46 +797,63 @@ async function handleCpmmUpdate(
   };
 
   // Validate decoded pool
-  const validation = validateDecodedPool('raydium-cpmm', item as any, poolId);
+  const validation = validateDecodedPool("raydium-cpmm", item as any, poolId);
   if (!validation.valid) {
     wsDecodeStats.raydium_cpmm.failures += 1;
-    incrementSkipReason('raydium_cpmm', `validation_failed:${validation.reasons.join(',')}`);
-    return { success: false, error: `validation_failed:${validation.reasons.join(',')}`, skipped: true };
+    incrementSkipReason(
+      "raydium_cpmm",
+      `validation_failed:${validation.reasons.join(",")}`
+    );
+    return {
+      success: false,
+      error: `validation_failed:${validation.reasons.join(",")}`,
+      skipped: true,
+    };
   }
 
   // Ensure orientation consistency with authoritative HTTP data
-  const { pool: orientedItem, wasCorrected } = ensureOrientationConsistency(poolId, item);
+  const { pool: orientedItem, wasCorrected } = ensureOrientationConsistency(
+    poolId,
+    item
+  );
   const finalItem = orientedItem as CpmmPool;
   if (wasCorrected) {
-    logger.debug('raydium.cpmm.ws.orientation_corrected', {
-      poolId: poolId.slice(0, 8) + '…',
-      cat: 'pools'
+    logger.debug("raydium.cpmm.ws.orientation_corrected", {
+      poolId: poolId.slice(0, 8) + "…",
+      cat: "pools",
     });
   }
 
   // Update cache
   const prev = cpmmCache.data || { cpmm: [] };
   const next = { cpmm: prev.cpmm.slice() };
-  const idx = next.cpmm.findIndex(p => p.id === finalItem.id);
+  const idx = next.cpmm.findIndex((p) => p.id === finalItem.id);
 
   // Validate price delta against previous value
   if (idx >= 0) {
-    validatePriceDelta('raydium-cpmm' as any, poolId, finalItem.price_a_per_b, next.cpmm[idx].price_a_per_b);
+    validatePriceDelta(
+      "raydium-cpmm" as any,
+      poolId,
+      finalItem.price_a_per_b,
+      next.cpmm[idx].price_a_per_b
+    );
   }
 
   if (idx >= 0) {
     const prevPool = next.cpmm[idx];
-    const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
+    const orientationChanged =
+      prevPool.mint_a !== finalItem.mint_a ||
+      prevPool.mint_b !== finalItem.mint_b;
     if (orientationChanged) {
-      logger.warn('ws.update.orientation_changed', {
-        poolId: poolId.slice(0, 8) + '…',
-        dex: 'Raydium',
-        poolType: 'cpmm',
+      logger.warn("ws.update.orientation_changed", {
+        poolId: poolId.slice(0, 8) + "…",
+        dex: "Raydium",
+        poolType: "cpmm",
         prevMintA: prevPool.mint_a?.slice(0, 8),
         prevMintB: prevPool.mint_b?.slice(0, 8),
         newMintA: finalItem.mint_a?.slice(0, 8),
         newMintB: finalItem.mint_b?.slice(0, 8),
-        cat: 'pools'
+        cat: "pools",
       });
       const orientationIndependentFields = {
         tvl_usd: prevPool.tvl_usd,
@@ -639,16 +873,16 @@ async function handleCpmmUpdate(
 
   // Update execution cache
   try {
-    const { executionCache } = await import('../../../../execution/cache.js');
+    const { executionCache } = await import("../../../../execution/cache.js");
     const existingStatic = executionCache.getStatic(poolId) || {};
-    
+
     executionCache.setStatic(poolId, {
       ...existingStatic,
       rawAccountData: data,
       rawAccountDataUpdatedMs: Date.now(),
       programId: RAYDIUM_CPMM_PROGRAM,
-      dex: 'Raydium',
-      pool_kind: 'cpmm',
+      dex: "Raydium",
+      pool_kind: "cpmm",
       mint_a: finalItem.mint_a,
       mint_b: finalItem.mint_b,
       decimals_a: finalItem.decimals_a,
@@ -668,7 +902,9 @@ async function handleCpmmUpdate(
       token_program_b: item.token_program_b,
     });
   } catch (cacheErr) {
-    logCatchDebug('raydiumCpmm.cache_update', cacheErr, { pool: poolId.slice(0, 8) + '…' });
+    logCatchDebug("raydiumCpmm.cache_update", cacheErr, {
+      pool: poolId.slice(0, 8) + "…",
+    });
   }
 
   // Update stats and cache
@@ -676,8 +912,9 @@ async function handleCpmmUpdate(
   wsDeltaStats.raydium_cpmm.decoded += 1;
 
   // Check for delta
-  const prevPool = prev.cpmm.find(p => p.id === item.id);
-  const hasDelta = !prevPool || 
+  const prevPool = prev.cpmm.find((p) => p.id === item.id);
+  const hasDelta =
+    !prevPool ||
     prevPool.price_a_per_b !== item.price_a_per_b ||
     prevPool.reserve_a_raw !== item.reserve_a_raw ||
     prevPool.reserve_b_raw !== item.reserve_b_raw;
@@ -686,7 +923,7 @@ async function handleCpmmUpdate(
     wsDeltaStats.raydium_cpmm.applied += 1;
   } else {
     wsDeltaStats.raydium_cpmm.skipped += 1;
-    incrementSkipReason('raydium_cpmm', 'no_delta_detected');
+    incrementSkipReason("raydium_cpmm", "no_delta_detected");
   }
 
   cpmmCache.data = next;
@@ -694,11 +931,11 @@ async function handleCpmmUpdate(
 
   // Emit update event
   try {
-    emit('pool-updates', {
-      source: 'raydium-cpmm',
+    emit("pool-updates", {
+      source: "raydium-cpmm",
       updatedCpmm: 1,
       sample: { cpmm: [item] },
-      ts: Date.now()
+      ts: Date.now(),
     });
   } catch {}
 
@@ -713,7 +950,7 @@ async function handleCpmmUpdate(
     Number.isFinite(item.price_a_per_b) &&
     item.price_a_per_b > 0
   );
-  tryActivatePool(poolId, 'raydium-cpmm' as any, hasValidPrice);
+  tryActivatePool(poolId, "raydium-cpmm" as any, hasValidPrice);
 
   return { success: true, pool: item as unknown as DecodedPool };
 }
@@ -727,98 +964,127 @@ export async function handleCpmmVaultUpdate(
   poolId: string
 ): Promise<UpdateResult> {
   try {
-    const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
-    
+    const data = Buffer.isBuffer(info.data)
+      ? info.data
+      : Buffer.from(info.data ?? []);
+
     // SPL Token account is 165 bytes, Token-2022 is larger
     if (data.length < 72) {
-      return { success: false, error: 'invalid_vault_data', skipped: true };
+      return { success: false, error: "invalid_vault_data", skipped: true };
     }
 
     // Read balance from token account (offset 64, u64)
     const balance = data.readBigUInt64LE(64);
-    
+
     // Update vault balance cache
-    const { vaultBalanceCache } = await import('../../../pools.cache.js');
+    const { vaultBalanceCache } = await import("../../../pools.cache.js");
     vaultBalanceCache.set(vaultAddress, balance);
-    
+
     // Try to trigger a pool update if we have both vault balances
-    const { executionCache } = await import('../../../../execution/cache.js');
+    const { executionCache } = await import("../../../../execution/cache.js");
     const poolData = executionCache.getStatic(poolId);
-    
+
     if (poolData) {
       const vaultA = poolData.native_account_a;
       const vaultB = poolData.native_account_b;
-      
+
       if (vaultA && vaultB) {
         const balanceA = vaultBalanceCache.get(vaultA);
         const balanceB = vaultBalanceCache.get(vaultB);
-        
-        if (balanceA !== undefined && balanceB !== undefined && balanceA > 0n && balanceB > 0n) {
+
+        if (
+          balanceA !== undefined &&
+          balanceB !== undefined &&
+          balanceA > 0n &&
+          balanceB > 0n
+        ) {
           // We have both balances - recalculate price
           // CRITICAL: If native decimals missing, derive from canonical + was_swapped
           const wasSwapped = (poolData as any)?.was_swapped === true;
-          let decA: number | undefined = poolData.native_decimals_a ?? (wasSwapped ? poolData.decimals_b : poolData.decimals_a);
-          let decB: number | undefined = poolData.native_decimals_b ?? (wasSwapped ? poolData.decimals_a : poolData.decimals_b);
-          
-          // CRITICAL FIX: Use guaranteed decimals resolution instead of ?? 9/6 fallback
-          // This prevents 10x-1000x price errors from incorrect decimal assumptions
+          let decA: number | undefined =
+            poolData.native_decimals_a ??
+            (wasSwapped ? poolData.decimals_b : poolData.decimals_a);
+          let decB: number | undefined =
+            poolData.native_decimals_b ??
+            (wasSwapped ? poolData.decimals_a : poolData.decimals_b);
+
+          // Use batched decimal resolution instead of sequential calls
           if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
             try {
-              const { resolveDecimalsGuaranteed } = await import('../../decimals.js');
-              const mintA = poolData.native_mint_a || (wasSwapped ? poolData.mint_b : poolData.mint_a);
-              const mintB = poolData.native_mint_b || (wasSwapped ? poolData.mint_a : poolData.mint_b);
-              
-              if (!Number.isFinite(decA) && mintA) {
-                const resultA = await resolveDecimalsGuaranteed(mintA, poolId, 'Raydium_CPMM');
-                decA = resultA.decimals;
-                if (resultA.source === 'default' && !resultA.validated) {
-                  logger.warn('raydium.cpmm.vault.decimals_fallback', {
-                    poolId: poolId.slice(0, 8) + '…',
-                    mint: mintA?.slice(0, 8) + '…',
-                    side: 'A',
+              const { resolveDecimalsPair } = await import("../../decimals.js");
+              const mintA =
+                poolData.native_mint_a ||
+                (wasSwapped ? poolData.mint_b : poolData.mint_a);
+              const mintB =
+                poolData.native_mint_b ||
+                (wasSwapped ? poolData.mint_a : poolData.mint_b);
+
+              const {
+                decA: rA,
+                decB: rB,
+                sourceA,
+                sourceB,
+                validatedA,
+                validatedB,
+              } = await resolveDecimalsPair(
+                mintA,
+                mintB,
+                poolId,
+                "Raydium_CPMM"
+              );
+              if (!Number.isFinite(decA)) {
+                decA = rA;
+                if (sourceA === "default" && !validatedA) {
+                  logger.warn("raydium.cpmm.vault.decimals_fallback", {
+                    poolId: poolId.slice(0, 8) + "…",
+                    mint: mintA?.slice(0, 8) + "…",
+                    side: "A",
                     decimals: decA,
-                    source: resultA.source,
-                    warning: 'Price may be 10x-1000x off if actual decimals differ',
-                    cat: 'pools'
+                    source: sourceA,
+                    warning:
+                      "Price may be 10x-1000x off if actual decimals differ",
+                    cat: "pools",
                   });
                 }
               }
-              if (!Number.isFinite(decB) && mintB) {
-                const resultB = await resolveDecimalsGuaranteed(mintB, poolId, 'Raydium_CPMM');
-                decB = resultB.decimals;
-                if (resultB.source === 'default' && !resultB.validated) {
-                  logger.warn('raydium.cpmm.vault.decimals_fallback', {
-                    poolId: poolId.slice(0, 8) + '…',
-                    mint: mintB?.slice(0, 8) + '…',
-                    side: 'B',
+              if (!Number.isFinite(decB)) {
+                decB = rB;
+                if (sourceB === "default" && !validatedB) {
+                  logger.warn("raydium.cpmm.vault.decimals_fallback", {
+                    poolId: poolId.slice(0, 8) + "…",
+                    mint: mintB?.slice(0, 8) + "…",
+                    side: "B",
                     decimals: decB,
-                    source: resultB.source,
-                    warning: 'Price may be 10x-1000x off if actual decimals differ',
-                    cat: 'pools'
+                    source: sourceB,
+                    warning:
+                      "Price may be 10x-1000x off if actual decimals differ",
+                    cat: "pools",
                   });
                 }
               }
             } catch (resolveErr) {
-              logger.warn('raydium.cpmm.vault.decimals_resolve_error', {
-                poolId: poolId.slice(0, 8) + '…',
+              logger.warn("raydium.cpmm.vault.decimals_resolve_error", {
+                poolId: poolId.slice(0, 8) + "…",
                 error: String((resolveErr as Error)?.message || resolveErr),
-                cat: 'pools'
+                cat: "pools",
               });
               // Last resort fallback to 9 (symmetric to avoid ratio errors)
               if (!Number.isFinite(decA)) decA = 9;
               if (!Number.isFinite(decB)) decB = 9;
             }
           }
-          
+
           // CRITICAL FIX: When falling back to canonical mints, must also swap reserves
           // to maintain consistency. Reserves are ALWAYS in native order (from native_account_a/b),
           // so if native_mint_a is missing and we use canonical mint_a, reserves must be swapped.
-          const hasNativeMints = !!(poolData.native_mint_a && poolData.native_mint_b);
+          const hasNativeMints = !!(
+            poolData.native_mint_a && poolData.native_mint_b
+          );
           let mintA: string | undefined;
           let mintB: string | undefined;
           let reserveA = balanceA;
           let reserveB = balanceB;
-          
+
           if (hasNativeMints) {
             // Native mints available - use them directly with native reserves
             mintA = poolData.native_mint_a;
@@ -834,16 +1100,16 @@ export async function handleCpmmVaultUpdate(
               mintA = poolData.mint_a;
               mintB = poolData.mint_b;
             }
-            
-            logger.debug('raydium.cpmm.vault.derived_native_mints', {
-              poolId: poolId.slice(0, 8) + '…',
+
+            logger.debug("raydium.cpmm.vault.derived_native_mints", {
+              poolId: poolId.slice(0, 8) + "…",
               wasSwapped,
-              mintA: mintA?.slice(0, 8) + '…',
-              mintB: mintB?.slice(0, 8) + '…',
-              cat: 'pools'
+              mintA: mintA?.slice(0, 8) + "…",
+              mintB: mintB?.slice(0, 8) + "…",
+              cat: "pools",
             });
           }
-          
+
           if (mintA && mintB) {
             const processedPrice = processPriceThroughPipeline({
               mintA,
@@ -851,21 +1117,21 @@ export async function handleCpmmVaultUpdate(
               decimalsA: decA,
               decimalsB: decB,
               poolId,
-              dex: 'Raydium',
-              poolType: 'cpmm',
+              dex: "Raydium",
+              poolType: "cpmm",
               reserveA,
               reserveB,
             });
-            
+
             if (processedPrice && processedPrice.priceForward > 0) {
               // Calculate whole token amounts from reserves
               const amountAWhole = Number(balanceA) / Math.pow(10, decA);
               const amountBWhole = Number(balanceB) / Math.pow(10, decB);
-              
+
               // Update pool in cache
               const prev = cpmmCache.data || { cpmm: [] };
-              const idx = prev.cpmm.findIndex(p => p.id === poolId);
-              
+              const idx = prev.cpmm.findIndex((p) => p.id === poolId);
+
               if (idx >= 0) {
                 const next = { cpmm: prev.cpmm.slice() };
                 next.cpmm[idx] = {
@@ -877,28 +1143,28 @@ export async function handleCpmmVaultUpdate(
                   amount_b_whole: amountBWhole,
                   updated_ms: Date.now(),
                 };
-                
+
                 cpmmCache.data = next;
                 cpmmCache.ts = Date.now();
-                
+
                 // Emit update
                 try {
-                  emit('pool-updates', {
-                    source: 'raydium-cpmm',
+                  emit("pool-updates", {
+                    source: "raydium-cpmm",
                     updatedCpmm: 1,
                     sample: { cpmm: [next.cpmm[idx]] },
-                    ts: Date.now()
+                    ts: Date.now(),
                   });
                 } catch {}
-                
+
                 // Schedule graph update for vault balance changes
                 wsDeltaStats.raydium_cpmm.applied += 1;
                 await scheduleCpmmApply(prev);
-                
+
                 // Try to activate pool with new price data
                 const hasValidPrice = processedPrice.priceForward > 0;
-                tryActivatePool(poolId, 'raydium-cpmm' as any, hasValidPrice);
-                
+                tryActivatePool(poolId, "raydium-cpmm" as any, hasValidPrice);
+
                 return { success: true };
               }
             }
@@ -906,17 +1172,19 @@ export async function handleCpmmVaultUpdate(
         }
       }
     }
-    
+
     return { success: true };
   } catch (e) {
-    logCatchDebug('raydiumCpmm.handleVaultUpdate', e, { vault: vaultAddress.slice(0, 8) + '…' });
+    logCatchDebug("raydiumCpmm.handleVaultUpdate", e, {
+      vault: vaultAddress.slice(0, 8) + "…",
+    });
     return { success: false, error: String((e as Error)?.message || e) };
   }
 }
 
 /**
  * Handle Raydium CPMM WebSocket account update
- * 
+ *
  * Main entry point for processing CPMM pool updates from WebSocket.
  */
 export async function handleRaydiumCpmmUpdate(
@@ -926,42 +1194,62 @@ export async function handleRaydiumCpmmUpdate(
 ): Promise<UpdateResult> {
   try {
     wsDecodeStats.raydium_cpmm.attempts += 1;
-    
-    const owner = typeof info.owner === 'string' ? info.owner : info.owner?.toBase58?.() || '';
-    const data = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data ?? []);
-    
+
+    const owner =
+      typeof info.owner === "string"
+        ? info.owner
+        : info.owner?.toBase58?.() || "";
+    const data = Buffer.isBuffer(info.data)
+      ? info.data
+      : Buffer.from(info.data ?? []);
+
     if (!data || data.length === 0) {
-      return { success: false, error: 'no_data', skipped: true };
+      return { success: false, error: "no_data", skipped: true };
     }
 
     // Check if this is a vault update
     const derivedMeta = derivedAccountToPool.get(poolId);
-    if (derivedMeta?.accountType === 'vault') {
-      const result = await handleCpmmVaultUpdate(info, poolId, derivedMeta.poolId);
+    if (derivedMeta?.accountType === "vault") {
+      const result = await handleCpmmVaultUpdate(
+        info,
+        poolId,
+        derivedMeta.poolId
+      );
       // Track successful activity for staleness monitoring (track the actual pool, not vault)
       if (result.success) {
-        recordPoolActivity(derivedMeta.poolId, 'raydium-cpmm', poolId);
+        recordPoolActivity(derivedMeta.poolId, "raydium-cpmm", poolId);
       }
       return result;
     }
 
     // Try to decode as CPMM pool
-    const decoded = await decodeRaydiumCpmmPool(data, poolId, derivedAccountToPool);
+    const decoded = await decodeRaydiumCpmmPool(
+      data,
+      poolId,
+      derivedAccountToPool
+    );
     if (decoded) {
-      const result = await handleCpmmUpdate(info, poolId, derivedAccountToPool, owner);
+      const result = await handleCpmmUpdate(
+        info,
+        poolId,
+        derivedAccountToPool,
+        owner
+      );
       // Track successful activity for staleness monitoring
       if (result.success) {
-        recordPoolActivity(poolId, 'raydium-cpmm', poolId);
+        recordPoolActivity(poolId, "raydium-cpmm", poolId);
       }
       return result;
     }
 
     // Decode failed
     wsDecodeStats.raydium_cpmm.failures += 1;
-    return { success: false, error: 'decode_failed', skipped: true };
+    return { success: false, error: "decode_failed", skipped: true };
   } catch (e) {
     wsDecodeStats.raydium_cpmm.failures += 1;
-    logCatchError('raydiumCpmm.handleUpdate', e, { poolId: poolId.slice(0, 8) + '…' });
+    logCatchError("raydiumCpmm.handleUpdate", e, {
+      poolId: poolId.slice(0, 8) + "…",
+    });
     return { success: false, error: String((e as Error)?.message || e) };
   }
 }

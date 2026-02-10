@@ -43,7 +43,10 @@ import { PUMP_AMM_SDK } from "@pump-fun/pump-swap-sdk";
 import { computePumpswapPoolFees } from "../../pumpswapFees.js";
 import { PublicKey } from "@solana/web3.js";
 // Import centralized decimal resolution with RPC + persistence
-import { resolveDecimalsGuaranteed } from "../../decimals.js";
+import {
+  resolveDecimalsGuaranteed,
+  resolveDecimalsPair,
+} from "../../decimals.js";
 import type {
   DecodedPool,
   UpdateResult,
@@ -68,6 +71,12 @@ const DEFAULT_FEE_BPS = 25;
 
 // Minimum buffer length for basic validation before SDK decode
 const MIN_POOL_BUFFER_LENGTH = 50;
+
+// Anchor discriminator for PumpSwap Pool accounts: sha256("account:Pool")[0..8]
+// Non-pool accounts (global config, fee config) have different discriminators.
+const PUMPSWAP_POOL_DISCRIMINATOR = Buffer.from([
+  241, 154, 109, 4, 17, 177, 109, 188,
+]);
 
 // Pool account layout offsets for protocol_fee_recipient extraction
 // Layout: [discriminator(8), pool_bump(1), index(2), creator(32), base_mint(32),
@@ -118,6 +127,16 @@ export function decodePumpswapPoolState(
 ): PumpswapPoolState | null {
   try {
     if (!data || data.length < MIN_POOL_BUFFER_LENGTH) {
+      return null;
+    }
+
+    // Check discriminator before attempting SDK decode.
+    // In program-subscription mode ALL accounts owned by PumpSwap arrive;
+    // non-pool accounts (global config, fee config) have different discriminators.
+    if (
+      data.length >= 8 &&
+      Buffer.compare(data.subarray(0, 8), PUMPSWAP_POOL_DISCRIMINATOR) !== 0
+    ) {
       return null;
     }
 
@@ -424,41 +443,37 @@ export async function handlePumpswapPoolAccountUpdate(
     // In wss-program mode, program-level subscriptions deliver updates for all pools,
     // including ones not yet in cache. We create a minimal entry so vault updates can find it.
     if (!existingPool) {
-      // Resolve decimals via RPC + persistence (same pattern as meteoraBalanced.ts)
+      // Resolve decimals via batched RPC (single getMultipleAccountsInfo for both mints)
       let decANew = 9;
       let decBNew = 6;
       try {
-        const resultA = await resolveDecimalsGuaranteed(
-          baseMint,
-          poolId,
-          "Pumpswap"
-        );
-        decANew = resultA.decimals;
-        if (resultA.source === "default" && !resultA.validated) {
+        const {
+          decA: rA,
+          decB: rB,
+          sourceA,
+          sourceB,
+          validatedA,
+          validatedB,
+        } = await resolveDecimalsPair(baseMint, quoteMint, poolId, "Pumpswap");
+        decANew = rA;
+        decBNew = rB;
+        if (sourceA === "default" && !validatedA) {
           logger.warn("pumpswap.new_pool.decimals_fallback", {
             pool: poolId.slice(0, 8) + "…",
             mint: baseMint.slice(0, 8) + "…",
             side: "A",
             decimals: decANew,
-            source: resultA.source,
+            source: sourceA,
             cat: "pools",
           });
         }
-      } catch {}
-      try {
-        const resultB = await resolveDecimalsGuaranteed(
-          quoteMint,
-          poolId,
-          "Pumpswap"
-        );
-        decBNew = resultB.decimals;
-        if (resultB.source === "default" && !resultB.validated) {
+        if (sourceB === "default" && !validatedB) {
           logger.warn("pumpswap.new_pool.decimals_fallback", {
             pool: poolId.slice(0, 8) + "…",
             mint: quoteMint.slice(0, 8) + "…",
             side: "B",
             decimals: decBNew,
-            source: resultB.source,
+            source: sourceB,
             cat: "pools",
           });
         }
@@ -501,8 +516,30 @@ export async function handlePumpswapPoolAccountUpdate(
     }
 
     // Get both vault balances from cache
-    const balanceA = vaultBalanceCache.get(vaultA) ?? null;
-    const balanceB = vaultBalanceCache.get(vaultB) ?? null;
+    let balanceA = vaultBalanceCache.get(vaultA) ?? null;
+    let balanceB = vaultBalanceCache.get(vaultB) ?? null;
+
+    // Vault accounts are owned by Token Program, not PumpSwap program,
+    // so they won't arrive via program subscription. Fetch via batched RPC.
+    if (balanceA === null || balanceB === null) {
+      try {
+        const { queueVaultFetch } = await import("./raydiumCpmm.js");
+        if (balanceA === null) {
+          const fetched = await queueVaultFetch(vaultA);
+          if (fetched !== undefined) {
+            vaultBalanceCache.set(vaultA, fetched);
+            balanceA = fetched;
+          }
+        }
+        if (balanceB === null) {
+          const fetched = await queueVaultFetch(vaultB);
+          if (fetched !== undefined) {
+            vaultBalanceCache.set(vaultB, fetched);
+            balanceB = fetched;
+          }
+        }
+      } catch {}
+    }
 
     if (balanceA === null || balanceB === null) {
       // Vault balances not yet available — store the pool entry in cache so vault updates
