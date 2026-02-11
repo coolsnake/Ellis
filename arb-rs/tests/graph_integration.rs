@@ -11,6 +11,19 @@ fn edge(rate: f64, dex: &str) -> EdgeData {
         dex: dex.to_string(),
         pool_id: String::new(),
         liquidity_display: 1.0,
+        native_mint_a: None,
+        native_mint_b: None,
+        native_decimals_a: None,
+        native_decimals_b: None,
+        native_account_a: None,
+        native_account_b: None,
+        native_reserve_a_raw: None,
+        native_reserve_b_raw: None,
+        capacity_input_raw: None,
+        pool_kind: None,
+        slippage_curve: None,
+        source_price_usd: None,
+        target_price_usd: None,
     }
 }
 
@@ -43,6 +56,10 @@ fn near_miss_finds_almost_profitable_triangle() {
         profit_bps: 5,
         net_bps: Some(5),
         est_profit_usd: 1.0,
+        size_usd: None,
+        size_tokens: None,
+        size_tokens_raw: None,
+        start_decimals: None,
         dexes: vec!["X".into(), "Y".into(), "Z".into()],
         hop_dexes: None,
         hop_rates: None,
@@ -59,6 +76,7 @@ fn near_miss_finds_almost_profitable_triangle() {
         bottleneck: None,
         detected_ms: None,
         first_seen_ms: None,
+        last_verified_ms: None,
         detections: None,
         bf_slack_log: None,
         bf_required_rate: None,
@@ -85,6 +103,7 @@ fn near_miss_finds_almost_profitable_triangle() {
             near_miss: None,
             near_miss_shortfall_bps: None,
             near_misses: None,
+            rejected_opportunities: None,
         }),
     };
     assert!(resp.near_items.unwrap()[0].is_near_miss.unwrap());

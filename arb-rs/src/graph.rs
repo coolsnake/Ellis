@@ -91,6 +91,10 @@ impl ArbGraph {
                 }
             }
         }
+        // Sort in reverse order to avoid petgraph swap-remove invalidation:
+        // remove_edge uses swap-remove, moving the last edge into the removed
+        // slot. Removing highest indices first keeps lower indices stable.
+        to_remove.sort_by(|a, b| b.cmp(a));
         for id in to_remove {
             let _ = self.g.remove_edge(id);
         }
@@ -145,6 +149,10 @@ impl ArbGraph {
         }
 
         let n = to_remove.len();
+        // Sort in reverse order to avoid petgraph swap-remove invalidation:
+        // remove_edge uses swap-remove, moving the last edge into the removed
+        // slot. Removing highest indices first keeps lower indices stable.
+        to_remove.sort_by(|a, b| b.cmp(a));
         for idx in to_remove {
             let _ = self.g.remove_edge(idx);
         }
@@ -217,6 +225,10 @@ mod tests {
                 native_reserve_a_raw: None,
                 native_reserve_b_raw: None,
                 pool_kind: None,
+                capacity_input_raw: None,
+                slippage_curve: None,
+                source_price_usd: None,
+                target_price_usd: None,
             },
         );
         g.upsert_edge(
@@ -239,6 +251,10 @@ mod tests {
                 native_reserve_a_raw: None,
                 native_reserve_b_raw: None,
                 pool_kind: None,
+                capacity_input_raw: None,
+                slippage_curve: None,
+                source_price_usd: None,
+                target_price_usd: None,
             },
         );
         assert!(g.g.node_count() >= 2);
@@ -267,6 +283,10 @@ mod tests {
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
             pool_kind: None,
+            capacity_input_raw: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         };
         g.upsert_edge(&dex, "0", "1", e(1.0));
         g.upsert_edge(&dex, "1", "2", e(1.0));
@@ -307,6 +327,10 @@ mod tests {
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
             pool_kind: None,
+            capacity_input_raw: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         };
         let edge_synth = EdgeData {
             rate_effective: 1.0,
@@ -324,6 +348,10 @@ mod tests {
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
             pool_kind: None,
+            capacity_input_raw: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         };
         g.upsert_edge(&dex, "A", "B", edge_pool);
         g.upsert_edge(&dex, "A", "B", edge_synth);

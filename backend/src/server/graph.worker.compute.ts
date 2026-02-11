@@ -3,7 +3,6 @@ import {
   edgeChangedSimple,
   isDexKindAllowed,
   isPoolValidForGraph,
-  enrichPoolLiquidity,
   type EdgeBuildOptions,
 } from "./graph.edges.js";
 import type {
@@ -251,8 +250,6 @@ export function computeIncrementalGraphUpdate(
     if (!isPoolValidForGraph(pool, getUsd, validationConfig)) continue;
 
     if (!changed) continue;
-
-    enrichPoolLiquidity(pool, getUsd);
 
     const newEdges = edgesFromPoolIncremental(pool, getUsd, edgeOptions);
     for (const edge of newEdges) {

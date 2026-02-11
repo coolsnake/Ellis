@@ -42,7 +42,6 @@ import {
   isDexKindAllowed,
   edgesFromPoolIncremental,
   isPoolValidForGraph,
-  enrichPoolLiquidity,
   type EdgeAllow,
 } from "./graph.edges.js";
 export type {
@@ -1214,8 +1213,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
               }
             }
           } catch {}
-
-          enrichPoolLiquidity(p, getUsd);
 
           const newEdges = edgesFromPoolIncremental(
             p as any,

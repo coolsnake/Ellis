@@ -28,9 +28,13 @@ use opportunities::{
 mod graph;
 use graph::{expand_nodes_by_hops, ArbGraph, EdgeData};
 mod algos;
-use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered, detect_negative_cycles_from_anchors, detect_negative_cycles_spfa, detect_negative_cycles_spfa_filtered};
+use algos::{
+    detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered,
+    detect_negative_cycles_from_anchors, detect_negative_cycles_spfa,
+    detect_negative_cycles_spfa_filtered,
+};
 mod edge_selection;
-use edge_selection::{select_best_edge_combination, compute_profit_bps, is_profitable};
+use edge_selection::{compute_profit_bps, is_profitable, select_best_edge_combination};
 mod slippage;
 
 const REJECTED_DEBUG_LIMIT: usize = 15;
@@ -368,7 +372,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let loaded_config = load_config();
-    eprintln!("[arb-rs] Startup config: start_mint_mode={}, enabled={}", loaded_config.start_mint_mode, loaded_config.enabled);
+    eprintln!(
+        "[arb-rs] Startup config: start_mint_mode={}, enabled={}",
+        loaded_config.start_mint_mode, loaded_config.enabled
+    );
     let state = Arc::new(RwLock::new(AppState {
         config: loaded_config,
         opportunities: Vec::new(),
@@ -904,7 +911,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let diff_apply_ms = diff_apply_start.elapsed().as_millis() as u128;
-                
+
                 // Create detection snapshot if live_graph has changed since last snapshot
                 // This implements the double-buffer pattern: updates go to live_graph,
                 // detection runs on an immutable snapshot
@@ -923,11 +930,12 @@ async fn main() -> anyhow::Result<()> {
                         // This ensures the snapshot version matches the actual graph state
                         let snapshot = Arc::new(s.live_graph.clone());
                         s.detection_snapshot = Some(snapshot.clone());
-                        s.detection_snapshot_version.store(live_v, Ordering::Release);
+                        s.detection_snapshot_version
+                            .store(live_v, Ordering::Release);
                         // Track when snapshot was created
                         s.metrics.snapshot_created_ms = now_ms();
                         s.metrics.snapshot_version_lag = 0; // Fresh snapshot
-                        // Commit version for ACK responses
+                                                            // Commit version for ACK responses
                         if let Some(v) = version_to_commit.take() {
                             s.last_graph_version.store(v, Ordering::Release);
                             s.version_changed.notify_waiters();
@@ -946,10 +954,12 @@ async fn main() -> anyhow::Result<()> {
                         // Update version lag metric
                         s.metrics.snapshot_version_lag = live_v.saturating_sub(snap_v);
                         // Return existing snapshot (guaranteed to exist since needs_snapshot was false)
-                        s.detection_snapshot.clone().expect("snapshot must exist when needs_snapshot is false")
+                        s.detection_snapshot
+                            .clone()
+                            .expect("snapshot must exist when needs_snapshot is false")
                     }
                 };
-                
+
                 let detect_start = Instant::now();
                 // Detect cycles (MVP -log weights)
                 // Compare with previous to only push WS updates on change
@@ -1017,14 +1027,22 @@ async fn main() -> anyhow::Result<()> {
                             tracing::debug!(target = "arb_rs", "arb.detect.mode=sol_usdc");
                             use std::collections::HashSet;
                             let mut sol_usdc_set = HashSet::new();
-                            sol_usdc_set.insert("So11111111111111111111111111111111111111112".to_string()); // SOL
-                            sol_usdc_set.insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()); // USDC
-                            detect_negative_cycles_from_anchors(&s.live_graph, &sol_usdc_set, max_hops)
+                            sol_usdc_set
+                                .insert("So11111111111111111111111111111111111111112".to_string()); // SOL
+                            sol_usdc_set
+                                .insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()); // USDC
+                            detect_negative_cycles_from_anchors(
+                                &s.live_graph,
+                                &sol_usdc_set,
+                                max_hops,
+                            )
                         }
                         "anchors" => {
                             // Custom anchors mode - use configured anchor_mints
                             use std::collections::HashSet;
-                            let anchor_set: HashSet<String> = s.config.anchor_mints
+                            let anchor_set: HashSet<String> = s
+                                .config
+                                .anchor_mints
                                 .clone()
                                 .unwrap_or_default()
                                 .into_iter()
@@ -1032,11 +1050,23 @@ async fn main() -> anyhow::Result<()> {
                             if anchor_set.is_empty() {
                                 // Fallback to SOL + USDC if no anchors configured
                                 let mut defaults = HashSet::new();
-                                defaults.insert("So11111111111111111111111111111111111111112".to_string());
-                                defaults.insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string());
-                                detect_negative_cycles_from_anchors(&s.live_graph, &defaults, max_hops)
+                                defaults.insert(
+                                    "So11111111111111111111111111111111111111112".to_string(),
+                                );
+                                defaults.insert(
+                                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+                                );
+                                detect_negative_cycles_from_anchors(
+                                    &s.live_graph,
+                                    &defaults,
+                                    max_hops,
+                                )
                             } else {
-                                detect_negative_cycles_from_anchors(&s.live_graph, &anchor_set, max_hops)
+                                detect_negative_cycles_from_anchors(
+                                    &s.live_graph,
+                                    &anchor_set,
+                                    max_hops,
+                                )
                             }
                         }
                         _ => {
@@ -1045,10 +1075,19 @@ async fn main() -> anyhow::Result<()> {
                             if use_filtered {
                                 // Run both BF and SPFA for filtered detection if run_dual_algo is enabled
                                 if s.config.run_dual_algo {
-                                    let mut combined = detect_negative_cycles_spfa_filtered(&s.live_graph, &affected_nodes, max_hops);
-                                    let bf_cycles = detect_negative_cycles_filtered(&s.live_graph, &affected_nodes, max_hops);
+                                    let mut combined = detect_negative_cycles_spfa_filtered(
+                                        &s.live_graph,
+                                        &affected_nodes,
+                                        max_hops,
+                                    );
+                                    let bf_cycles = detect_negative_cycles_filtered(
+                                        &s.live_graph,
+                                        &affected_nodes,
+                                        max_hops,
+                                    );
                                     // Dedupe by node sequence
-                                    let existing: std::collections::HashSet<Vec<usize>> = combined.iter().map(|c| c.nodes.clone()).collect();
+                                    let existing: std::collections::HashSet<Vec<usize>> =
+                                        combined.iter().map(|c| c.nodes.clone()).collect();
                                     for c in bf_cycles {
                                         if !existing.contains(&c.nodes) {
                                             combined.push(c);
@@ -1056,16 +1095,26 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                     combined
                                 } else if s.config.use_spfa {
-                                    detect_negative_cycles_spfa_filtered(&s.live_graph, &affected_nodes, max_hops)
+                                    detect_negative_cycles_spfa_filtered(
+                                        &s.live_graph,
+                                        &affected_nodes,
+                                        max_hops,
+                                    )
                                 } else {
-                                    detect_negative_cycles_filtered(&s.live_graph, &affected_nodes, max_hops)
+                                    detect_negative_cycles_filtered(
+                                        &s.live_graph,
+                                        &affected_nodes,
+                                        max_hops,
+                                    )
                                 }
                             } else {
                                 // Run both BF and SPFA on full graph if run_dual_algo is enabled
                                 if s.config.run_dual_algo {
-                                    let mut combined = detect_negative_cycles_spfa(&s.live_graph, max_hops);
+                                    let mut combined =
+                                        detect_negative_cycles_spfa(&s.live_graph, max_hops);
                                     let bf_cycles = detect_negative_cycles(&s.live_graph, max_hops);
-                                    let existing: std::collections::HashSet<Vec<usize>> = combined.iter().map(|c| c.nodes.clone()).collect();
+                                    let existing: std::collections::HashSet<Vec<usize>> =
+                                        combined.iter().map(|c| c.nodes.clone()).collect();
                                     for c in bf_cycles {
                                         if !existing.contains(&c.nodes) {
                                             combined.push(c);
@@ -1287,8 +1336,42 @@ async fn main() -> anyhow::Result<()> {
                         let selection = match selection {
                             Some(sel) => sel,
                             None => {
+                                // Diagnose which hop(s) have no valid edges
+                                let node_count = s.live_graph.g.node_count();
+                                let mut missing_hops: Vec<String> = Vec::new();
+                                for i in 0..c.nodes.len() {
+                                    let u_idx = c.nodes[i];
+                                    let v_idx = c.nodes[(i + 1) % c.nodes.len()];
+                                    if u_idx < node_count && v_idx < node_count {
+                                        let u = NodeIndex::new(u_idx);
+                                        let v = NodeIndex::new(v_idx);
+                                        let edge_count: usize =
+                                            s.live_graph.g.edges_connecting(u, v).count();
+                                        let valid_count: usize = s
+                                            .live_graph
+                                            .g
+                                            .edges_connecting(u, v)
+                                            .filter(|e| {
+                                                e.weight().liquidity >= min_edge_liq_threshold
+                                                    && e.weight().rate_effective > 0.0
+                                            })
+                                            .count();
+                                        if valid_count == 0 {
+                                            missing_hops.push(format!(
+                                                "hop {}->{}({}->{}): total={} valid=0",
+                                                u_idx,
+                                                v_idx,
+                                                &labels[i],
+                                                &labels[(i + 1) % labels.len()],
+                                                edge_count
+                                            ));
+                                        }
+                                    }
+                                }
                                 tracing::info!(
                                     nodes = ?c.nodes,
+                                    labels = ?labels,
+                                    missing = ?missing_hops,
                                     "arb.detect.cycle.no_valid_path"
                                 );
                                 rejected_no_edge += 1;
@@ -1300,7 +1383,7 @@ async fn main() -> anyhow::Result<()> {
                         let rate_prod = selection.rate_product;
                         let log_rate_prod = selection.log_rate_product;
                         let min_edge_liquidity = selection.min_liquidity;
-                        
+
                         // Build all required vectors from selected edges
                         let mut link_edges_used: usize = 0;
                         let mut link_penalty_bps_total: i64 = 0;
@@ -1326,16 +1409,14 @@ async fn main() -> anyhow::Result<()> {
                             .or_else(|| if start_is_usdc { Some(1.0) } else { None });
 
                         // Get start token decimals from first edge (for token-based sizing)
-                        let start_decimals: Option<i64> = selection
-                            .edges
-                            .first()
-                            .and_then(|e| e.native_decimals_a);
+                        let start_decimals: Option<i64> =
+                            selection.edges.first().and_then(|e| e.native_decimals_a);
 
                         // Build static hop metadata
                         for (w, edge) in selection.edges.iter().enumerate() {
                             let u_idx = c.nodes[w];
                             let v_idx = c.nodes[(w + 1) % c.nodes.len()];
-                            
+
                             if edge.dex == "Link" {
                                 link_edges_used += 1;
                                 link_penalty_bps_total += edge.fee_bps;
@@ -1343,7 +1424,7 @@ async fn main() -> anyhow::Result<()> {
                             if !edge.dex.is_empty() && edge.dex != "Link" {
                                 dexes_set.insert(edge.dex.clone());
                             }
-                            
+
                             // Track bottleneck (lowest rate edge)
                             if bottleneck
                                 .as_ref()
@@ -1359,7 +1440,7 @@ async fn main() -> anyhow::Result<()> {
                                     edge.fee_bps,
                                 ));
                             }
-                            
+
                             hop_dexes.push(edge.dex.clone());
                             hop_rates.push(edge.rate_effective);
                             hop_pool_ids.push(edge.pool_id.clone());
@@ -1375,29 +1456,32 @@ async fn main() -> anyhow::Result<()> {
                             if let Some(ref s) = edge.capacity_input_raw {
                                 if let Ok(cap_raw) = s.parse::<u128>() {
                                     if cap_raw > 0 {
-                                        let cap_start_raw = if cum_rate <= 0.0 || !cum_rate.is_finite() {
-                                            None
-                                        } else if (cum_rate - 1.0).abs() < 1e-12 {
-                                            // First edge: input = start token
-                                            Some(cap_raw)
-                                        } else {
-                                            let dec_in = edge.native_decimals_a.unwrap_or(9);
-                                            let cap_human =
-                                                (cap_raw as f64) / 10f64.powi(dec_in.max(0) as i32);
-                                            let start_equiv_human = cap_human / cum_rate;
-                                            let scale = 10u128.pow(start_dec);
-                                            let start_equiv_raw =
-                                                (start_equiv_human * (scale as f64)) as u128;
-                                            if start_equiv_raw > 0 {
-                                                Some(start_equiv_raw)
-                                            } else {
+                                        let cap_start_raw =
+                                            if cum_rate <= 0.0 || !cum_rate.is_finite() {
                                                 None
-                                            }
-                                        };
+                                            } else if (cum_rate - 1.0).abs() < 1e-12 {
+                                                // First edge: input = start token
+                                                Some(cap_raw)
+                                            } else {
+                                                let dec_in = edge.native_decimals_a.unwrap_or(9);
+                                                let cap_human = (cap_raw as f64)
+                                                    / 10f64.powi(dec_in.max(0) as i32);
+                                                let start_equiv_human = cap_human / cum_rate;
+                                                let scale = 10u128.pow(start_dec);
+                                                let start_equiv_raw =
+                                                    (start_equiv_human * (scale as f64)) as u128;
+                                                if start_equiv_raw > 0 {
+                                                    Some(start_equiv_raw)
+                                                } else {
+                                                    None
+                                                }
+                                            };
                                         if let Some(cap) = cap_start_raw {
-                                            min_capacity_start_raw = Some(min_capacity_start_raw
-                                                .map(|m| m.min(cap))
-                                                .unwrap_or(cap));
+                                            min_capacity_start_raw = Some(
+                                                min_capacity_start_raw
+                                                    .map(|m| m.min(cap))
+                                                    .unwrap_or(cap),
+                                            );
                                         }
                                     }
                                 }
@@ -1423,8 +1507,11 @@ async fn main() -> anyhow::Result<()> {
                                                 for &sz in sizes {
                                                     if cumulative_rate > 0.0 {
                                                         let start_equiv = sz / cumulative_rate;
-                                                        if start_equiv.is_finite() && start_equiv > 0.0 {
-                                                            size_candidates_tokens.push(start_equiv);
+                                                        if start_equiv.is_finite()
+                                                            && start_equiv > 0.0
+                                                        {
+                                                            size_candidates_tokens
+                                                                .push(start_equiv);
                                                         }
                                                     }
                                                 }
@@ -1435,8 +1522,11 @@ async fn main() -> anyhow::Result<()> {
                                                     if sp > 0.0 {
                                                         for &sz_usd in sizes {
                                                             let start_equiv = sz_usd / sp;
-                                                            if start_equiv.is_finite() && start_equiv > 0.0 {
-                                                                size_candidates_tokens.push(start_equiv);
+                                                            if start_equiv.is_finite()
+                                                                && start_equiv > 0.0
+                                                            {
+                                                                size_candidates_tokens
+                                                                    .push(start_equiv);
                                                             }
                                                         }
                                                     }
@@ -1451,7 +1541,8 @@ async fn main() -> anyhow::Result<()> {
                                 if size_candidates_tokens.is_empty() {
                                     if let Some(list) = &s.config.size_sweep_usd {
                                         if let Some(sp) = start_price_usd {
-                                            size_candidates_tokens = list.iter().map(|usd| usd / sp).collect();
+                                            size_candidates_tokens =
+                                                list.iter().map(|usd| usd / sp).collect();
                                         } else if start_is_usdc {
                                             size_candidates_tokens = list.clone();
                                         }
@@ -1465,7 +1556,8 @@ async fn main() -> anyhow::Result<()> {
                         // With bounded reserves (CLMM) these fractions are of the
                         // active-range depth, not the full vault.
                         {
-                            const RESERVE_FRACS: [f64; 9] = [0.01, 0.03, 0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.0];
+                            const RESERVE_FRACS: [f64; 9] =
+                                [0.01, 0.03, 0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.0];
                             let mut cum_rate_res = 1.0f64;
                             for edge in selection.edges.iter() {
                                 let res_a = slippage::parse_reserve(
@@ -1487,12 +1579,16 @@ async fn main() -> anyhow::Result<()> {
                         size_candidates_tokens.retain(|v| v.is_finite() && *v > 0.0);
                         if let Some(sp) = start_price_usd {
                             if s.config.min_notional_usd > 0.0 {
-                                size_candidates_tokens.retain(|v| *v * sp >= s.config.min_notional_usd);
+                                size_candidates_tokens
+                                    .retain(|v| *v * sp >= s.config.min_notional_usd);
                             }
                         }
                         // Deduplicate and sort for sweep + binary search
-                        size_candidates_tokens.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                        size_candidates_tokens.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON * (*a).max(*b).max(1.0));
+                        size_candidates_tokens
+                            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        size_candidates_tokens.dedup_by(|a, b| {
+                            (*a - *b).abs() < f64::EPSILON * (*a).max(*b).max(1.0)
+                        });
                         if size_candidates_tokens.is_empty() {
                             let default_size = if start_is_usdc {
                                 s.config.quote_size_usd.max(0.0)
@@ -1505,7 +1601,9 @@ async fn main() -> anyhow::Result<()> {
                         }
 
                         // Helper closure: simulate a single size through all hops and return (profit_bps, final_output, hop_outputs)
-                        let simulate_size = |size_tokens: f64, edges: &[crate::edge_selection::SelectedEdge]| -> (f64, f64, Vec<f64>) {
+                        let simulate_size = |size_tokens: f64,
+                                             edges: &[crate::edge_selection::SelectedEdge]|
+                         -> (f64, f64, Vec<f64>) {
                             let mut temp_out = size_tokens;
                             let mut temp_hop_outs: Vec<f64> = Vec::with_capacity(edges.len());
                             for edge in edges.iter() {
@@ -1545,7 +1643,8 @@ async fn main() -> anyhow::Result<()> {
                         let mut best_profit: f64 = f64::NEG_INFINITY;
                         let mut best_idx: usize = 0;
                         for (idx, &size_tokens) in size_candidates_tokens.iter().enumerate() {
-                            let (sim_profit_bps, final_out, temp_hop_outs) = simulate_size(size_tokens, &selection.edges);
+                            let (sim_profit_bps, final_out, temp_hop_outs) =
+                                simulate_size(size_tokens, &selection.edges);
 
                             if sim_profit_bps > best_profit {
                                 best_profit = sim_profit_bps;
@@ -1560,7 +1659,8 @@ async fn main() -> anyhow::Result<()> {
                         // Phase 2: binary search refinement around the best candidate
                         // The profit-vs-size curve is concave (rises then falls), so we
                         // bracket the optimum between the neighbors and bisect.
-                        if s.config.slippage_simulation_enable && size_candidates_tokens.len() >= 2 {
+                        if s.config.slippage_simulation_enable && size_candidates_tokens.len() >= 2
+                        {
                             let lo = if best_idx > 0 {
                                 size_candidates_tokens[best_idx - 1]
                             } else {
@@ -1590,7 +1690,8 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }
                             let refined_size = (a + b) / 2.0;
-                            let (refined_profit, refined_out, refined_hops) = simulate_size(refined_size, &selection.edges);
+                            let (refined_profit, refined_out, refined_hops) =
+                                simulate_size(refined_size, &selection.edges);
                             if refined_profit > best_profit {
                                 // best_profit not read after this point; update chosen outputs
                                 chosen_size_tokens = refined_size;
@@ -1617,7 +1718,11 @@ async fn main() -> anyhow::Result<()> {
                             }
                         } else if min_edge_liquidity.is_finite() && min_edge_liquidity > 0.0 {
                             let cap_tokens = if let Some(sp) = start_price_usd {
-                                if sp > 0.0 { min_edge_liquidity / sp } else { f64::INFINITY }
+                                if sp > 0.0 {
+                                    min_edge_liquidity / sp
+                                } else {
+                                    f64::INFINITY
+                                }
                             } else {
                                 f64::INFINITY
                             };
@@ -1688,7 +1793,8 @@ async fn main() -> anyhow::Result<()> {
                         // Track reserve availability for diagnostic logging (first hop per cycle)
                         if s.config.slippage_simulation_enable {
                             if let Some(edge) = selection.edges.first() {
-                                let has_reserves = edge.native_reserve_a_raw.is_some() && edge.native_reserve_b_raw.is_some();
+                                let has_reserves = edge.native_reserve_a_raw.is_some()
+                                    && edge.native_reserve_b_raw.is_some();
                                 let has_pool_kind = edge.pool_kind.is_some();
                                 tracing::info!(
                                     target = "arb_rs",
@@ -1748,17 +1854,28 @@ async fn main() -> anyhow::Result<()> {
                         }
 
                         // Build anchor set for canonicalization based on current mode
-                        let anchor_set_for_canon: HashSet<String> = match s.config.start_mint_mode.as_str() {
-                            "sol_usdc" => {
-                                let mut set = HashSet::new();
-                                set.insert("So11111111111111111111111111111111111111112".to_string());
-                                set.insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string());
-                                set
-                            }
-                            "anchors" => s.config.anchor_mints.clone().unwrap_or_default().into_iter().collect(),
-                            _ => HashSet::new(), // "any" mode - no anchor preference
-                        };
-                        
+                        let anchor_set_for_canon: HashSet<String> =
+                            match s.config.start_mint_mode.as_str() {
+                                "sol_usdc" => {
+                                    let mut set = HashSet::new();
+                                    set.insert(
+                                        "So11111111111111111111111111111111111111112".to_string(),
+                                    );
+                                    set.insert(
+                                        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+                                    );
+                                    set
+                                }
+                                "anchors" => s
+                                    .config
+                                    .anchor_mints
+                                    .clone()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .collect(),
+                                _ => HashSet::new(), // "any" mode - no anchor preference
+                            };
+
                         // Canonicalize cycle labels - prefer starting from anchor tokens, then lexicographic order
                         let canon = |v: &Vec<String>, anchors: &HashSet<String>| -> Vec<String> {
                             if v.is_empty() {
@@ -1768,7 +1885,7 @@ async fn main() -> anyhow::Result<()> {
                             let mut best_key: Option<String> = None;
                             let mut best_vec: Option<Vec<String>> = None;
                             let mut best_is_anchor = false;
-                            
+
                             for i in 0..n {
                                 let mut r = Vec::with_capacity(n);
                                 for k in 0..n {
@@ -1776,14 +1893,14 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 let starts_with_anchor = anchors.contains(&r[0]);
                                 let key = r.join("->");
-                                
+
                                 // Prefer anchor starts, then lexicographic order within same anchor preference
                                 let is_better = match (starts_with_anchor, best_is_anchor) {
                                     (true, false) => true,  // Anchor beats non-anchor
                                     (false, true) => false, // Non-anchor loses to anchor
                                     _ => best_key.as_ref().map(|s| &key < s).unwrap_or(true), // Same anchor status: lexicographic
                                 };
-                                
+
                                 if is_better {
                                     best_key = Some(key);
                                     best_vec = Some(r);
@@ -1979,7 +2096,11 @@ async fn main() -> anyhow::Result<()> {
                                     net_bps: Some(net_bps),
                                     est_profit_usd: est_profit_usd_val,
                                     size_usd: size_usd_opt,
-                                    size_tokens: if chosen_size_tokens > 0.0 { Some(chosen_size_tokens) } else { None },
+                                    size_tokens: if chosen_size_tokens > 0.0 {
+                                        Some(chosen_size_tokens)
+                                    } else {
+                                        None
+                                    },
                                     size_tokens_raw: chosen_size_raw.clone(),
                                     start_decimals,
                                     dexes: dexes.clone(),
@@ -2076,7 +2197,11 @@ async fn main() -> anyhow::Result<()> {
                             net_bps: Some(net_bps),
                             est_profit_usd: est_profit_usd_val,
                             size_usd: size_usd_opt,
-                            size_tokens: if chosen_size_tokens > 0.0 { Some(chosen_size_tokens) } else { None },
+                            size_tokens: if chosen_size_tokens > 0.0 {
+                                Some(chosen_size_tokens)
+                            } else {
+                                None
+                            },
                             size_tokens_raw: chosen_size_raw,
                             start_decimals,
                             dexes,
@@ -2217,7 +2342,7 @@ async fn main() -> anyhow::Result<()> {
                             }
                             // Compute product and meta using exhaustive edge selection
                             let nlen = nmcy.nodes.len();
-                            
+
                             let selection = select_best_edge_combination(
                                 &s.live_graph,
                                 &nmcy.nodes,
@@ -2245,8 +2370,9 @@ async fn main() -> anyhow::Result<()> {
                             let mut hop_fee_bps: Vec<i64> = Vec::with_capacity(nlen);
                             let mut hop_liq_disp: Vec<f64> = Vec::with_capacity(nlen);
                             let mut hop_outs: Vec<f64> = Vec::with_capacity(nlen);
-                            let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> = None;
-                            
+                            let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> =
+                                None;
+
                             let mut cur_out: f64 =
                                 if labels.first().map(|m| m == &usdc).unwrap_or(false) {
                                     s.config.quote_size_usd.max(0.0)
@@ -2257,7 +2383,7 @@ async fn main() -> anyhow::Result<()> {
                             for (w, edge) in selection.edges.iter().enumerate() {
                                 let u_idx = nmcy.nodes[w];
                                 let v_idx = nmcy.nodes[(w + 1) % nlen];
-                                
+
                                 if edge.dex == "Link" {
                                     link_edges_used += 1;
                                     link_penalty_bps_total += edge.fee_bps;
@@ -2265,7 +2391,7 @@ async fn main() -> anyhow::Result<()> {
                                 if !edge.dex.is_empty() && edge.dex != "Link" {
                                     dexes_set.insert(edge.dex.clone());
                                 }
-                                
+
                                 if bottleneck
                                     .as_ref()
                                     .map(|(_, _, _, r, _, _)| edge.rate_effective < *r)
@@ -2280,13 +2406,13 @@ async fn main() -> anyhow::Result<()> {
                                         edge.fee_bps,
                                     ));
                                 }
-                                
+
                                 hop_dexes.push(edge.dex.clone());
                                 hop_rates.push(edge.rate_effective);
                                 hop_pool_ids.push(edge.pool_id.clone());
                                 hop_fee_bps.push(edge.fee_bps);
                                 hop_liq_disp.push(edge.liquidity_display);
-                                
+
                                 // Compute hop output (with or without slippage simulation)
                                 let next_out = if cur_out.is_finite() {
                                     if s.config.slippage_simulation_enable {
@@ -2530,7 +2656,7 @@ async fn main() -> anyhow::Result<()> {
                                     let mut best_pid: Option<String> = None;
                                     for e in s.live_graph.g.edges_connecting(u, v) {
                                         let wt = e.weight();
-                                        if wt.liquidity <= 0.0 {
+                                        if wt.liquidity < 0.0 {
                                             continue;
                                         }
                                         if let Some(pp) = prev_pid {
@@ -2708,7 +2834,7 @@ async fn main() -> anyhow::Result<()> {
                                 let mut best_meta: Option<(String, f64, i64, String, f64)> = None;
                                 for e in s.live_graph.g.edges_connecting(u, v) {
                                     let wt = e.weight();
-                                    if wt.liquidity <= 0.0 {
+                                    if wt.liquidity < 0.0 {
                                         continue;
                                     }
                                     let r = wt.rate_effective.max(1e-12);
@@ -2848,7 +2974,7 @@ async fn main() -> anyhow::Result<()> {
                                 let mut br = 0.0f64;
                                 for e in s.live_graph.g.edges_connecting(u, v) {
                                     let wt = e.weight();
-                                    if wt.liquidity <= 0.0 {
+                                    if wt.liquidity < 0.0 {
                                         continue;
                                     }
                                     br = br.max(wt.rate_effective.max(1e-12));
@@ -2955,7 +3081,7 @@ async fn main() -> anyhow::Result<()> {
                                     let mut best_meta: Option<(String, f64, i64)> = None;
                                     for e in s.live_graph.g.edges_connecting(u, v) {
                                         let wt = e.weight();
-                                        if wt.liquidity <= 0.0 {
+                                        if wt.liquidity < 0.0 {
                                             continue;
                                         }
                                         let r = wt.rate_effective.max(1e-12);
@@ -3242,7 +3368,7 @@ async fn main() -> anyhow::Result<()> {
                                 let mut br: f64 = 0.0;
                                 for e in s.live_graph.g.edges_connecting(u, v) {
                                     let wt = e.weight();
-                                    if wt.liquidity <= 0.0 {
+                                    if wt.liquidity < 0.0 {
                                         continue;
                                     }
                                     br = br.max(wt.rate_effective.max(1e-12));
@@ -3327,7 +3453,8 @@ async fn main() -> anyhow::Result<()> {
                     const MAX_DETECTION_ENTRIES: usize = 10_000;
                     if sw.detection_counts.len() > MAX_DETECTION_ENTRIES {
                         // Collect entries sorted by timestamp (oldest first)
-                        let mut entries: Vec<(String, u64)> = sw.detection_counts
+                        let mut entries: Vec<(String, u64)> = sw
+                            .detection_counts
                             .iter()
                             .map(|(k, (_, ts))| (k.clone(), *ts))
                             .collect();
@@ -3369,11 +3496,11 @@ async fn main() -> anyhow::Result<()> {
                     // cap_disabled = true means show all opportunities
                     let cap_disabled = max_det == 0;
                     let under_cap = count < max_det;
-                    
+
                     // Always include opportunity for display (executor can filter)
                     // Mark as over_cap if it exceeds detection limit
                     let over_cap = !cap_disabled && !executed && !under_cap;
-                    
+
                     // Set timestamps for new detections
                     if m.first_seen_ms.is_none() {
                         m.first_seen_ms = Some(now_ms_val);
@@ -3384,7 +3511,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     // Store detection count for monitoring
                     m.detections = Some(count as u64);
-                    
+
                     if over_cap {
                         // Log that opportunity hit cap but still include it for monitoring
                         tracing::debug!(
@@ -3395,7 +3522,7 @@ async fn main() -> anyhow::Result<()> {
                             "arb.opportunity: over detection cap (still displayed)"
                         );
                     }
-                    
+
                     merged.push(m);
                 }
                 // Retain prior ones if within adaptive TTL and not duplicated
@@ -3414,7 +3541,7 @@ async fn main() -> anyhow::Result<()> {
                     };
                     // NOTE: We no longer drop opportunities based on detection cap
                     // All opportunities are kept for monitoring; executor can filter
-                    
+
                     // Apply opportunity TTL check
                     // Use first_seen_ms instead of last_verified_ms so opportunities persist
                     // even when they're not detected in subsequent cycles
@@ -3850,11 +3977,17 @@ async fn main() -> anyhow::Result<()> {
                         s.last_graph_version.load(Ordering::Acquire)
                     };
                     let completed_ms = work_ms as u64;
-                    
+
                     // Fire and forget - don't block the loop on backend notification
                     let api_base_clone = api_base.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = notify_backend_detect_complete(&api_base_clone, current_version, completed_ms).await {
+                        if let Err(e) = notify_backend_detect_complete(
+                            &api_base_clone,
+                            current_version,
+                            completed_ms,
+                        )
+                        .await
+                        {
                             tracing::debug!(
                                 error = %e,
                                 version = current_version,
@@ -3964,19 +4097,19 @@ async fn notify_backend_detect_complete(
     let url = format!("{}/arb/detect/complete", api_base.trim_end_matches('/'));
     let client = reqwest::Client::new();
     let timeout = detector_ack_timeout();
-    
+
     let body = serde_json::json!({
         "graphVersion": version,
         "completedMs": completed_ms,
     });
-    
+
     client
         .post(&url)
         .timeout(timeout)
         .json(&body)
         .send()
         .await?;
-    
+
     Ok(())
 }
 
@@ -4537,7 +4670,7 @@ async fn arb_graph_update(
     if !auth_ok(Some(&headers)) {
         return Json(serde_json::json!({"error":"unauthorized"}));
     }
-    
+
     // Check version atomically first (no lock needed for read!)
     if let Some(v) = req.version {
         let current_version = state
@@ -4557,25 +4690,28 @@ async fn arb_graph_update(
             return Json(serde_json::json!({"ok": true, "skipped": true }));
         }
     }
-    
+
     let mut s = state.write().await;
-    
+
     // Apply diffs directly to live_graph (double-buffer pattern)
     // Detection will create a snapshot at start of each cycle
-    
+
     // Track changed mints for scoped detection (used by detection loop)
     let mut changed_mints: Vec<String> = Vec::new();
-    
+
     // Apply removals directly to live_graph
     if let Some(removed) = req.removed_edge_ids {
         let n = removed.len();
         if n > 0 {
             let _ = s.live_graph.remove_edges_by_ids(&removed);
-            tracing::info!(removed = n, "arb.graph.diff: applied removals to live_graph");
+            tracing::info!(
+                removed = n,
+                "arb.graph.diff: applied removals to live_graph"
+            );
         }
         // NO buffering - we applied directly
     }
-    
+
     // Apply additions directly to live_graph using insert_bidirectional_edges
     // to ensure proper rate inversion and bidirectional edge creation
     if let Some(added) = req.added_edges {
@@ -4619,7 +4755,10 @@ async fn arb_graph_update(
             changed_mints.push(e.source.clone());
             changed_mints.push(e.target.clone());
         }
-        tracing::info!(added = n, "arb.graph.diff: applied additions to live_graph (bidirectional)");
+        tracing::info!(
+            added = n,
+            "arb.graph.diff: applied additions to live_graph (bidirectional)"
+        );
     }
 
     // Apply updates directly to live_graph using insert_bidirectional_edges
@@ -4661,12 +4800,16 @@ async fn arb_graph_update(
             changed_mints.push(e.source.clone());
             changed_mints.push(e.target.clone());
         }
-        tracing::info!(updated = n, changed_mints = changed_mints.len(), "arb.graph.diff: applied updates to live_graph (bidirectional)");
+        tracing::info!(
+            updated = n,
+            changed_mints = changed_mints.len(),
+            "arb.graph.diff: applied updates to live_graph (bidirectional)"
+        );
     }
-    
+
     // Increment live_graph_version
     s.live_graph_version.fetch_add(1, Ordering::Release);
-    
+
     // IMMEDIATE VERSION COMMIT: Commit version right away since graph data is already applied.
     // This fixes desync issues where ACKs would timeout during long detection cycles because
     // pending_graph_version was only committed at the start of the next detection iteration.
@@ -4693,12 +4836,12 @@ async fn arb_graph_update(
     if let Some(ts) = req.timestamp {
         s.last_graph_ts.store(ts, Ordering::Release);
     }
-    
+
     // Update metrics
     s.metrics.last_graph_push_rx_ms = now_ms();
     s.metrics.graph_nodes = s.live_graph.g.node_count() as u64;
     s.metrics.graph_edges = s.live_graph.g.edge_count() as u64;
-    
+
     let wake = s.wake.clone();
     let response = serde_json::json!({"ok": true});
     drop(s);
@@ -5237,7 +5380,11 @@ async fn set_config(
     }
     // Handle legacy anchor_start_mode (convert to start_mint_mode)
     if let Some(v) = cfg.anchor_start_mode {
-        s.config.start_mint_mode = if v { "anchors".to_string() } else { "any".to_string() };
+        s.config.start_mint_mode = if v {
+            "anchors".to_string()
+        } else {
+            "any".to_string()
+        };
     }
     // Prefer new start_mint_mode if provided
     if let Some(v) = cfg.start_mint_mode {
@@ -5245,7 +5392,11 @@ async fn set_config(
         if valid_modes.contains(&v.as_str()) {
             s.config.start_mint_mode = v;
         } else {
-            tracing::warn!(target = "arb_rs", "Invalid start_mint_mode: {}, using 'any'", v);
+            tracing::warn!(
+                target = "arb_rs",
+                "Invalid start_mint_mode: {}, using 'any'",
+                v
+            );
             s.config.start_mint_mode = "any".to_string();
         }
     }
@@ -5257,19 +5408,36 @@ async fn set_config(
         // Clamp to reasonable range: 10ms minimum (avoid CPU spin), 5000ms maximum
         let clamped = v.clamp(10, 5000);
         if clamped != v {
-            tracing::warn!(target = "arb_rs", "ws_broadcast_interval_ms clamped from {} to {}", v, clamped);
+            tracing::warn!(
+                target = "arb_rs",
+                "ws_broadcast_interval_ms clamped from {} to {}",
+                v,
+                clamped
+            );
         }
         s.config.ws_broadcast_interval_ms = clamped;
-        tracing::info!(target = "arb_rs", ws_broadcast_interval_ms = clamped, "arb.config.ws_interval_updated");
+        tracing::info!(
+            target = "arb_rs",
+            ws_broadcast_interval_ms = clamped,
+            "arb.config.ws_interval_updated"
+        );
     }
     // Slippage simulation settings
     if let Some(v) = cfg.slippage_simulation_enable {
         s.config.slippage_simulation_enable = v;
-        tracing::info!(target = "arb_rs", slippage_simulation_enable = v, "arb.config.slippage_sim_updated");
+        tracing::info!(
+            target = "arb_rs",
+            slippage_simulation_enable = v,
+            "arb.config.slippage_sim_updated"
+        );
     }
     if let Some(v) = cfg.min_simulated_profit_bps {
         s.config.min_simulated_profit_bps = v;
-        tracing::info!(target = "arb_rs", min_simulated_profit_bps = v, "arb.config.min_sim_profit_updated");
+        tracing::info!(
+            target = "arb_rs",
+            min_simulated_profit_bps = v,
+            "arb.config.min_sim_profit_updated"
+        );
     }
     if let Some(v) = cfg.size_sweep_usd {
         s.config.size_sweep_usd = Some(v.clone());
@@ -5394,7 +5562,13 @@ fn default_config() -> ArbConfig {
                 .unwrap_or(false);
             std::env::var("ARB_START_MINT_MODE")
                 .ok()
-                .unwrap_or_else(|| if legacy { "anchors".to_string() } else { "any".to_string() })
+                .unwrap_or_else(|| {
+                    if legacy {
+                        "anchors".to_string()
+                    } else {
+                        "any".to_string()
+                    }
+                })
         },
         anchor_mints: Some(vec![
             "So11111111111111111111111111111111111111112".to_string(), // SOL
@@ -5490,7 +5664,11 @@ mod tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            capacity_input_raw: None,
             pool_kind: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         };
         s.live_graph.upsert_edge("X", sol, usdc, e(1.0));
         s.live_graph.upsert_edge("X", usdc, usdt, e(1.0));
@@ -5770,7 +5948,10 @@ fn load_config() -> ArbConfig {
                     cfg
                 }
                 Err(e) => {
-                    eprintln!("[arb-rs] Failed to parse config file: {}, using defaults", e);
+                    eprintln!(
+                        "[arb-rs] Failed to parse config file: {}, using defaults",
+                        e
+                    );
                     default_config()
                 }
             }
@@ -6084,6 +6265,7 @@ mod e2e_tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            capacity_input_raw: None,
             pool_kind: None,
             slippage_curve: None,
             source_price_usd: None,
@@ -6240,6 +6422,7 @@ mod e2e_tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            capacity_input_raw: None,
             pool_kind: None,
             slippage_curve: None,
             source_price_usd: None,
@@ -6262,6 +6445,7 @@ mod e2e_tests {
             native_account_b: None,
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
+            capacity_input_raw: None,
             pool_kind: None,
             slippage_curve: None,
             source_price_usd: None,

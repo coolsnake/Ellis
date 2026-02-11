@@ -1,6 +1,6 @@
 use crate::graph::ArbGraph;
-use petgraph::visit::EdgeRef;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 use std::collections::{HashSet, VecDeque};
 
 pub struct DetectedCycle {
@@ -17,7 +17,7 @@ pub fn detect_negative_cycles(g: &ArbGraph, max_hops: usize) -> Vec<DetectedCycl
     }
     // Ensure max_hops is at least 2 and not larger than graph
     let max_hops = max_hops.max(2).min(n);
-    
+
     let mut dist = vec![0.0f64; n];
     let mut pred: Vec<Option<usize>> = vec![None; n];
     // Relax edges V-1 times
@@ -58,15 +58,15 @@ pub fn detect_negative_cycles(g: &ArbGraph, max_hops: usize) -> Vec<DetectedCycl
 }
 
 /// SPFA (Shortest Path Faster Algorithm) based negative cycle detection.
-/// 
+///
 /// SPFA is an optimization of Bellman-Ford that uses a queue to process only
 /// nodes whose distances have been updated. This is typically O(E) on average
 /// for sparse graphs but degrades to O(VE) in worst case.
-/// 
+///
 /// The algorithm detects negative cycles by counting relaxations per node.
 /// If a node is relaxed more than n times, there must be a negative cycle.
-/// 
-/// Additionally uses SLF (Small Label First) optimization: when a node is 
+///
+/// Additionally uses SLF (Small Label First) optimization: when a node is
 /// added to the queue, if its distance is smaller than the front of the queue,
 /// push it to the front instead of the back.
 pub fn detect_negative_cycles_spfa(g: &ArbGraph, max_hops: usize) -> Vec<DetectedCycle> {
@@ -74,45 +74,45 @@ pub fn detect_negative_cycles_spfa(g: &ArbGraph, max_hops: usize) -> Vec<Detecte
     if n == 0 {
         return vec![];
     }
-    
+
     let max_hops = max_hops.max(2).min(n);
-    
+
     // Distance and predecessor arrays
     let mut dist = vec![0.0f64; n];
     let mut pred: Vec<Option<usize>> = vec![None; n];
-    
+
     // SPFA bookkeeping
     let mut in_queue = vec![false; n];
     let mut relax_count = vec![0usize; n];
     let mut queue: VecDeque<usize> = VecDeque::with_capacity(n);
-    
+
     // Initialize: all nodes start in queue with distance 0
     // This is equivalent to starting from a virtual super-source
     for i in 0..n {
         queue.push_back(i);
         in_queue[i] = true;
     }
-    
+
     let mut cycles = Vec::new();
-    
+
     while let Some(u) = queue.pop_front() {
         in_queue[u] = false;
-        
+
         // Skip nodes already confirmed in a cycle - they have unbounded negative distance
         if relax_count[u] > n {
             continue;
         }
-        
+
         // Process all outgoing edges from u
         for e in g.g.edges(NodeIndex::new(u)) {
             let v = e.target().index();
             let w = -(e.weight().rate_effective.max(1e-12)).ln();
-            
+
             if dist[u] + w < dist[v] - 1e-12 {
                 dist[v] = dist[u] + w;
                 pred[v] = Some(u);
                 relax_count[v] += 1;
-                
+
                 // Negative cycle detected if relaxed > n times
                 if relax_count[v] > n {
                     // Extract cycle starting from v
@@ -126,7 +126,7 @@ pub fn detect_negative_cycles_spfa(g: &ArbGraph, max_hops: usize) -> Vec<Detecte
                     // Don't re-queue v - it's in a cycle with unbounded negative distance
                     continue;
                 }
-                
+
                 if !in_queue[v] {
                     // SLF optimization: if new distance is smaller than front, push to front
                     if !queue.is_empty() && dist[v] < dist[*queue.front().unwrap()] {
@@ -139,7 +139,7 @@ pub fn detect_negative_cycles_spfa(g: &ArbGraph, max_hops: usize) -> Vec<Detecte
             }
         }
     }
-    
+
     cycles
 }
 
@@ -154,39 +154,39 @@ pub fn detect_negative_cycles_spfa_filtered(
     if n == 0 || nodes.is_empty() {
         return vec![];
     }
-    
+
     let max_hops = max_hops.max(2).min(n);
-    
+
     // Pre-filter edges to only those with both endpoints in nodes
-    let filtered_edges: Vec<(usize, usize, f64)> = g.g
-        .edge_references()
-        .filter_map(|e| {
-            let u = e.source().index();
-            let v = e.target().index();
-            if nodes.contains(&u) && nodes.contains(&v) {
-                Some((u, v, e.weight().rate_effective))
-            } else {
-                None
-            }
-        })
-        .collect();
-    
+    let filtered_edges: Vec<(usize, usize, f64)> =
+        g.g.edge_references()
+            .filter_map(|e| {
+                let u = e.source().index();
+                let v = e.target().index();
+                if nodes.contains(&u) && nodes.contains(&v) {
+                    Some((u, v, e.weight().rate_effective))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
     if filtered_edges.is_empty() {
         return vec![];
     }
-    
+
     // Build adjacency list from filtered edges for efficient iteration
     let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
     for &(u, v, rate) in &filtered_edges {
         adj[u].push((v, rate));
     }
-    
+
     let mut dist = vec![0.0f64; n];
     let mut pred: Vec<Option<usize>> = vec![None; n];
     let mut in_queue = vec![false; n];
     let mut relax_count = vec![0usize; n];
     let mut queue: VecDeque<usize> = VecDeque::new();
-    
+
     // Only initialize nodes that are in the subgraph
     for &node in nodes {
         if node < n {
@@ -194,25 +194,25 @@ pub fn detect_negative_cycles_spfa_filtered(
             in_queue[node] = true;
         }
     }
-    
+
     let mut cycles = Vec::new();
-    
+
     while let Some(u) = queue.pop_front() {
         in_queue[u] = false;
-        
+
         // Skip nodes already confirmed in a cycle
         if relax_count[u] > nodes.len() {
             continue;
         }
-        
+
         for &(v, rate) in &adj[u] {
             let w = -(rate.max(1e-12)).ln();
-            
+
             if dist[u] + w < dist[v] - 1e-12 {
                 dist[v] = dist[u] + w;
                 pred[v] = Some(u);
                 relax_count[v] += 1;
-                
+
                 if relax_count[v] > nodes.len() {
                     let extracted = extract_cycle_from_node(v, &pred, max_hops);
                     if !extracted.is_empty() {
@@ -224,7 +224,7 @@ pub fn detect_negative_cycles_spfa_filtered(
                     // Don't re-queue - cycle detected
                     continue;
                 }
-                
+
                 if !in_queue[v] {
                     if !queue.is_empty() && dist[v] < dist[*queue.front().unwrap()] {
                         queue.push_front(v);
@@ -236,7 +236,7 @@ pub fn detect_negative_cycles_spfa_filtered(
             }
         }
     }
-    
+
     cycles
 }
 
@@ -307,9 +307,9 @@ fn extract_cycle_from_node(start: usize, pred: &[Option<usize>], max_hops: usize
 /// Only edges whose endpoints are both in `nodes` are considered. This is useful to scope
 /// detection work to areas impacted by recent graph diffs.
 pub fn detect_negative_cycles_filtered(
-    g: &ArbGraph, 
+    g: &ArbGraph,
     nodes: &HashSet<usize>,
-    max_hops: usize
+    max_hops: usize,
 ) -> Vec<DetectedCycle> {
     let n = g.g.node_count();
     if n == 0 || nodes.is_empty() {
@@ -375,33 +375,33 @@ pub fn detect_negative_cycles_filtered(
 pub fn detect_negative_cycles_from_anchors(
     g: &ArbGraph,
     anchor_mints: &HashSet<String>,
-    max_hops: usize
+    max_hops: usize,
 ) -> Vec<DetectedCycle> {
     let n = g.g.node_count();
     if n == 0 || anchor_mints.is_empty() {
         return vec![];
     }
-    
+
     // Convert anchor mints to node indices
     let anchor_indices: HashSet<usize> = anchor_mints
         .iter()
         .filter_map(|mint| g.map.get(mint).map(|idx| idx.index()))
         .collect();
-    
+
     if anchor_indices.is_empty() {
         return vec![];
     }
-    
+
     let max_hops = max_hops.max(2).min(n);
     let mut all_cycles = Vec::new();
     let mut seen_cycles: HashSet<String> = HashSet::new();
-    
+
     // Run Bellman-Ford starting from each anchor
     for &anchor_idx in &anchor_indices {
         let mut dist = vec![f64::INFINITY; n];
         let mut pred: Vec<Option<usize>> = vec![None; n];
         dist[anchor_idx] = 0.0;
-        
+
         // Relax edges V-1 times
         for _ in 0..(n - 1) {
             let mut updated = false;
@@ -419,19 +419,19 @@ pub fn detect_negative_cycles_from_anchors(
                 break;
             }
         }
-        
+
         // Find cycles that start from this anchor
         // Only consider edges where source is reachable from anchor
         for e in g.g.edge_references() {
             let u = e.source().index();
             let v = e.target().index();
             let w = -(e.weight().rate_effective.max(1e-12)).ln();
-            
+
             // Only process if u is reachable from anchor and forms a negative cycle
             if dist[u] != f64::INFINITY && dist[u] + w < dist[v] - 1e-12 {
                 // Found a negative cycle - use Floyd's algorithm to extract it properly
                 let cycle = extract_cycle_from_node(v, &pred, max_hops);
-                
+
                 if !cycle.is_empty() {
                     // Check if cycle contains the anchor
                     if let Some(anchor_pos) = cycle.iter().position(|&node| node == anchor_idx) {
@@ -439,9 +439,13 @@ pub fn detect_negative_cycles_from_anchors(
                         let mut rotated_cycle = Vec::new();
                         rotated_cycle.extend_from_slice(&cycle[anchor_pos..]);
                         rotated_cycle.extend_from_slice(&cycle[..anchor_pos]);
-                        
+
                         // Deduplicate by canonical string representation
-                        let cycle_key = rotated_cycle.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("->");
+                        let cycle_key = rotated_cycle
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join("->");
                         if !seen_cycles.contains(&cycle_key) {
                             seen_cycles.insert(cycle_key);
                             all_cycles.push(DetectedCycle {
@@ -454,7 +458,7 @@ pub fn detect_negative_cycles_from_anchors(
             }
         }
     }
-    
+
     all_cycles
 }
 
@@ -772,6 +776,10 @@ mod tests {
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
             pool_kind: None,
+            capacity_input_raw: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         }
     }
 
@@ -851,7 +859,10 @@ mod tests {
         g.upsert_edge("D", "A", "B", mk_edge("D", 0.9));
         g.upsert_edge("D", "B", "A", mk_edge("D", 0.9));
         let cycles = detect_negative_cycles_spfa(&g, 4);
-        assert!(cycles.is_empty(), "SPFA should not detect false positive cycles");
+        assert!(
+            cycles.is_empty(),
+            "SPFA should not detect false positive cycles"
+        );
     }
 
     #[test]
@@ -862,24 +873,30 @@ mod tests {
         g.upsert_edge("D", "A", "B", mk_edge("D", 2.0));
         g.upsert_edge("D", "B", "A", mk_edge("D", 0.6));
         g.upsert_edge("D", "B", "C", mk_edge("D", 1.0));
-        
+
         let ia = g.map.get("A").unwrap().index();
         let ib = g.map.get("B").unwrap().index();
         let ic = g.map.get("C").unwrap().index();
-        
+
         // Scope to A and B - should find cycle
         let mut ab: HashSet<usize> = HashSet::new();
         ab.insert(ia);
         ab.insert(ib);
         let c_ab = detect_negative_cycles_spfa_filtered(&g, &ab, 4);
-        assert!(!c_ab.is_empty(), "SPFA filtered should find cycle in A-B scope");
-        
+        assert!(
+            !c_ab.is_empty(),
+            "SPFA filtered should find cycle in A-B scope"
+);
+
         // Scope to A and C - no cycle
         let mut ac: HashSet<usize> = HashSet::new();
         ac.insert(ia);
         ac.insert(ic);
         let c_ac = detect_negative_cycles_spfa_filtered(&g, &ac, 4);
-        assert!(c_ac.is_empty(), "SPFA filtered should not find cycle in A-C scope");
+        assert!(
+            c_ac.is_empty(),
+            "SPFA filtered should not find cycle in A-C scope"
+        );
     }
 
     #[test]
@@ -895,6 +912,9 @@ mod tests {
             g.upsert_edge(dex, &b, &a, mk_edge(dex, 1.0));
         }
         let cycles = detect_negative_cycles_spfa(&g, 4);
-        assert!(cycles.is_empty(), "SPFA should terminate and find no cycles in neutral graph");
+        assert!(
+            cycles.is_empty(),
+            "SPFA should terminate and find no cycles in neutral graph"
+        );
     }
 }

@@ -25,9 +25,7 @@ pub fn compute_rate_product_stable(rates: &[f64]) -> (f64, f64) {
         return (1.0, 0.0);
     }
 
-    let log_sum: f64 = rates.iter()
-        .map(|r| r.max(1e-12).ln())
-        .sum();
+    let log_sum: f64 = rates.iter().map(|r| r.max(1e-12).ln()).sum();
 
     let product = log_sum.exp();
     (product, log_sum)
@@ -172,7 +170,7 @@ pub fn select_best_edge_combination(
         let mut hop_edges: Vec<EdgeCandidate> = graph
             .g
             .edges_connecting(u, v)
-            .filter(|e| e.weight().liquidity > min_liquidity_threshold)
+            .filter(|e| e.weight().liquidity >= min_liquidity_threshold)
             .filter(|e| e.weight().rate_effective > 0.0)
             .map(|e| EdgeCandidate {
                 data: SelectedEdge::from(e.weight()),
@@ -222,11 +220,14 @@ pub fn select_best_edge_combination(
 
         for (hop, &edge_idx) in indices.iter().enumerate() {
             let pool_id = &edges_per_hop[hop][edge_idx].data.pool_id;
-            
+
             // Skip empty pool_ids (Link edges don't have real pool_ids)
             if !pool_id.is_empty() {
                 // Strip #rev suffix to treat forward/reverse as same pool
-                let base_pool_id = pool_id.strip_suffix("#rev").unwrap_or(pool_id.as_str()).to_string();
+                let base_pool_id = pool_id
+                    .strip_suffix("#rev")
+                    .unwrap_or(pool_id.as_str())
+                    .to_string();
                 if !pool_ids_seen.insert(base_pool_id) {
                     has_duplicate_pool = true;
                     break;
@@ -332,10 +333,9 @@ pub fn cycle_has_valid_path(
         let u = NodeIndex::new(u_idx);
         let v = NodeIndex::new(v_idx);
 
-        let has_valid_edge = graph
-            .g
-            .edges_connecting(u, v)
-            .any(|e| e.weight().liquidity > min_liquidity_threshold && e.weight().rate_effective > 0.0);
+        let has_valid_edge = graph.g.edges_connecting(u, v).any(|e| {
+            e.weight().liquidity >= min_liquidity_threshold && e.weight().rate_effective > 0.0
+        });
 
         if !has_valid_edge {
             return false;
@@ -363,7 +363,7 @@ pub fn best_rate_between(
     graph
         .g
         .edges_connecting(u, v)
-        .filter(|e| e.weight().liquidity > min_liquidity_threshold)
+        .filter(|e| e.weight().liquidity >= min_liquidity_threshold)
         .map(|e| e.weight().rate_effective.max(1e-12))
         .fold(0.0f64, f64::max)
 }
@@ -390,6 +390,10 @@ mod tests {
             native_reserve_a_raw: None,
             native_reserve_b_raw: None,
             pool_kind: None,
+            capacity_input_raw: None,
+            slippage_curve: None,
+            source_price_usd: None,
+            target_price_usd: None,
         }
     }
 
@@ -524,8 +528,8 @@ mod tests {
         // Create a cycle where the same pool (P1) would be used on multiple hops
         // This is impossible to execute atomically
         // A -> B via P1, B -> C via P1 (same pool!), C -> A via P3
-        g.upsert_edge("D1", "A", "B", make_edge(1.5, 1000.0, "D1", "P1"));  // Best rate for A->B
-        g.upsert_edge("D1", "B", "C", make_edge(1.5, 1000.0, "D1", "P1"));  // Same pool P1!
+        g.upsert_edge("D1", "A", "B", make_edge(1.5, 1000.0, "D1", "P1")); // Best rate for A->B
+        g.upsert_edge("D1", "B", "C", make_edge(1.5, 1000.0, "D1", "P1")); // Same pool P1!
         g.upsert_edge("D1", "C", "A", make_edge(0.5, 1000.0, "D1", "P3"));
 
         let a = g.map.get("A").unwrap().index();
@@ -557,7 +561,10 @@ mod tests {
         let c = g.map.get("C").unwrap().index();
 
         let result = select_best_edge_combination(&g, &[a, b, c], 0.0, 10000, 5);
-        assert!(result.is_some(), "Should find valid combination using P2 instead of P1");
+        assert!(
+            result.is_some(),
+            "Should find valid combination using P2 instead of P1"
+        );
 
         let sel = result.unwrap();
         // Should use P2 for A->B (even though P1 has better rate) to avoid duplicate
@@ -582,6 +589,9 @@ mod tests {
 
         // Should return None because P1 and P1#rev are the same pool
         let result = select_best_edge_combination(&g, &[a, b, c], 0.0, 10000, 5);
-        assert!(result.is_none(), "Should reject cycle with P1 and P1#rev as duplicate");
+        assert!(
+            result.is_none(),
+            "Should reject cycle with P1 and P1#rev as duplicate"
+        );
     }
 }
