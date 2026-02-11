@@ -308,24 +308,21 @@ export function computeIncrementalGraphUpdate(
     }
   }
 
-  // Capture pre-prune sets for diff tracking
-  const prePruneNodeIds = new Set(nodesMap.keys());
-  const prePruneEdgeIds = new Set(edgesMap.keys());
+  // Build full snapshot BEFORE pruning — this preserves dead-end edges so they
+  // survive across incremental update cycles and can be promoted to arb-rs when
+  // new pools increase their node degree above the prune threshold.
+  const version = (previousSnapshot?.version || 0) + 1;
+  const timestamp = timestampMs || Date.now();
 
-  pruneDeadEndNodes(nodesMap, edgesMap, request.pruneMinDegree ?? 2);
+  const fullSnapshot: GraphSnapshot = {
+    version,
+    timestamp,
+    nodes: Array.from(nodesMap.values()),
+    edges: Array.from(edgesMap.values()),
+  };
 
-  // Track nodes removed by pruning
-  for (const id of prePruneNodeIds) {
-    if (!nodesMap.has(id)) removedNodeIds.push(id);
-  }
-  // Track edges removed by pruning (beyond those already tracked from pool removal)
-  for (const eid of prePruneEdgeIds) {
-    if (!edgesMap.has(eid) && !removedEdgeIds.includes(eid)) {
-      removedEdgeIds.push(eid);
-    }
-  }
-
-  const changed = Boolean(
+  // Check if anything changed before pruning (pre-prune changes)
+  const prePruneChanged = Boolean(
     addedEdges.length ||
       updatedEdges.length ||
       removedEdgeIds.length ||
@@ -333,42 +330,79 @@ export function computeIncrementalGraphUpdate(
       removedNodeIds.length
   );
 
-  const stats = {
-    addedEdges: addedEdges.length,
-    updatedEdges: updatedEdges.length,
-    removedEdges: removedEdgeIds.length,
-    addedNodes: addedNodes.length,
-    removedNodes: removedNodeIds.length,
-  };
+  // Clone maps for pruning so the full snapshot stays intact
+  const prunedNodesMap = new Map(nodesMap);
+  const prunedEdgesMap = new Map(edgesMap);
 
-  if (!changed) {
-    return { changed: false, stats };
+  pruneDeadEndNodes(
+    prunedNodesMap,
+    prunedEdgesMap,
+    request.pruneMinDegree ?? 2
+  );
+
+  // Track nodes/edges removed by pruning for the diff sent to arb-rs/frontend
+  const prunedRemovedNodeIds = [...removedNodeIds];
+  const prunedRemovedEdgeIds = [...removedEdgeIds];
+  for (const id of nodesMap.keys()) {
+    if (!prunedNodesMap.has(id)) prunedRemovedNodeIds.push(id);
+  }
+  for (const eid of edgesMap.keys()) {
+    if (!prunedEdgesMap.has(eid) && !prunedRemovedEdgeIds.includes(eid)) {
+      prunedRemovedEdgeIds.push(eid);
+    }
   }
 
-  const version = (previousSnapshot?.version || 0) + 1;
-  const timestamp = timestampMs || Date.now();
+  // Filter added/updated edges to only those that survived pruning
+  const prunedAddedEdges = addedEdges.filter((e) => prunedEdgesMap.has(e.id));
+  const prunedUpdatedEdges = updatedEdges.filter((e) =>
+    prunedEdgesMap.has(e.id)
+  );
+  const prunedAddedNodes = addedNodes.filter((n) => prunedNodesMap.has(n.id));
+
+  const changed = Boolean(
+    prunedAddedEdges.length ||
+      prunedUpdatedEdges.length ||
+      prunedRemovedEdgeIds.length ||
+      prunedAddedNodes.length ||
+      prunedRemovedNodeIds.length
+  );
+
+  const stats = {
+    addedEdges: prunedAddedEdges.length,
+    updatedEdges: prunedUpdatedEdges.length,
+    removedEdges: prunedRemovedEdgeIds.length,
+    addedNodes: prunedAddedNodes.length,
+    removedNodes: prunedRemovedNodeIds.length,
+  };
+
+  // Even if pruned diff has no changes, the full snapshot may have changed
+  // (dead-end edges updated). Always return fullSnapshot for backend state.
+  if (!changed && !prePruneChanged) {
+    return { changed: false, stats };
+  }
 
   const snapshot: GraphSnapshot = {
     version,
     timestamp,
-    nodes: Array.from(nodesMap.values()),
-    edges: Array.from(edgesMap.values()),
+    nodes: Array.from(prunedNodesMap.values()),
+    edges: Array.from(prunedEdgesMap.values()),
   };
 
   const diff: GraphDiff = {
     version,
     timestamp,
-    addedNodes,
+    addedNodes: prunedAddedNodes,
     updatedNodes: [],
-    removedNodeIds,
-    addedEdges,
-    updatedEdges,
-    removedEdgeIds,
+    removedNodeIds: prunedRemovedNodeIds,
+    addedEdges: prunedAddedEdges,
+    updatedEdges: prunedUpdatedEdges,
+    removedEdgeIds: prunedRemovedEdgeIds,
   };
 
   return {
-    changed: true,
+    changed: changed || prePruneChanged,
     snapshot,
+    fullSnapshot,
     diff,
     stats,
   };

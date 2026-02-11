@@ -25,7 +25,12 @@ export interface GraphIncrementalStats {
 
 export interface GraphIncrementalResult {
   changed: boolean;
+  /** Pruned snapshot (dead-end edges removed) — for arb-rs and frontend */
   snapshot?: GraphSnapshot;
+  /** Full snapshot (all edges retained) — for backend state tracking so dead-end
+   *  edges survive across incremental updates and can be promoted when new pools
+   *  increase their degree. Falls back to `snapshot` if not set. */
+  fullSnapshot?: GraphSnapshot;
   diff?: GraphDiff;
   stats: GraphIncrementalStats;
 }

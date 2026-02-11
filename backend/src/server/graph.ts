@@ -320,10 +320,10 @@ async function rebuildGraphNowInternal(
           reason: "no_retained_pools",
         });
       } catch {}
-      // Set lastSnapshot even when empty — prevents null-stuck loop where
-      // every applyPoolUpdates call triggers a rebuild that returns without
-      // ever setting lastSnapshot, discarding all incremental updates.
-      if (next) lastSnapshot = next;
+      // lastSnapshot is already set inside rebuildGraphNowInternal (to the full
+      // unpruned snapshot). Only set it here as a fallback when rebuild returned
+      // something but lastSnapshot is still null (shouldn't normally happen).
+      if (next && !lastSnapshot) lastSnapshot = next;
       lastRebuildMs = nowMs;
       lastRebuildHadChanges = false;
       return;
@@ -341,8 +341,9 @@ async function rebuildGraphNowInternal(
     lastRebuildMs = nowMs;
     lastRebuildHadChanges = changed;
 
-    // Update lastSnapshot atomically (already within lock context)
-    lastSnapshot = next;
+    // lastSnapshot is already set to the full (unpruned) snapshot inside
+    // rebuildGraphNowInternal. Don't overwrite with the pruned return value.
+    // 'next' (pruned) is still used below for diff/emit/push to arb-rs.
 
     if (io) {
       if (!prev)
@@ -627,17 +628,28 @@ export async function applyPoolUpdates(
         });
       } catch {}
 
-      if (!result?.changed || !result.snapshot || !result.diff) {
+      if (!result?.changed) {
         return;
       }
 
-      // CHANGED: Update lastSnapshot atomically within lock
-      lastSnapshot = result.snapshot;
+      // Use full (unpruned) snapshot for backend state so dead-end edges survive
+      // across incremental updates. Pruned snapshot/diff go to arb-rs and frontend.
+      if (result.fullSnapshot) lastSnapshot = result.fullSnapshot;
+      else if (result.snapshot) lastSnapshot = result.snapshot;
+
+      // If the pruned snapshot/diff are empty (only dead-end edges changed),
+      // we've updated lastSnapshot but have nothing to push downstream.
+      if (!result.snapshot || !result.diff) {
+        return;
+      }
+
       const diff = result.diff;
       const ch =
         (result.stats?.addedEdges || 0) +
         (result.stats?.updatedEdges || 0) +
         (result.stats?.removedEdges || 0);
+      // Skip downstream push if pruned diff has no actual changes
+      if (ch === 0) return;
       const nowMs = Date.now();
       const shouldRebase =
         diffSinceRebase >= REBASE_DIFF_THRESHOLD ||
@@ -1563,22 +1575,31 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         });
       } catch {}
 
+      // Build full snapshot BEFORE pruning — dead-end edges are retained in
+      // lastSnapshot so they survive incremental updates and can be promoted
+      // to arb-rs when new pools increase their node degree.
+      const snapshotVersion = (lastSnapshot?.version || 0) + 1;
+      const snapshotTimestamp = Date.now();
+
+      const fullSnapshot: GraphSnapshot = {
+        version: snapshotVersion,
+        timestamp: snapshotTimestamp,
+        nodes: Object.values(nodesMap),
+        edges: Object.values(edgesMap),
+      };
+
       // Dead-end pruning: iteratively remove nodes with degree < minDegree.
-      // Subsumes orphan cleanup (degree-0) and removes dead-ends (degree-1)
-      // that can never participate in arbitrage cycles.
+      // Pruned snapshot is sent to arb-rs; full snapshot is kept as lastSnapshot.
       const pruneMinDeg = CONFIG.system.graphPruneDeadEnds
         ? CONFIG.system.graphPruneMinDegree
         : 1;
-      const nodeMap = new Map(Object.entries(nodesMap));
-      const edgeMap = new Map(Object.entries(edgesMap));
-      const pruneResult = pruneDeadEndNodes(nodeMap, edgeMap, pruneMinDeg);
-      // Write back removals to the Record objects
-      for (const key of Object.keys(nodesMap)) {
-        if (!nodeMap.has(key)) delete nodesMap[key];
-      }
-      for (const key of Object.keys(edgesMap)) {
-        if (!edgeMap.has(key)) delete edgesMap[key];
-      }
+      const prunedNodeMap = new Map(Object.entries(nodesMap));
+      const prunedEdgeMap = new Map(Object.entries(edgesMap));
+      const pruneResult = pruneDeadEndNodes(
+        prunedNodeMap,
+        prunedEdgeMap,
+        pruneMinDeg
+      );
       if (pruneResult.prunedNodes > 0 || pruneResult.prunedEdges > 0) {
         try {
           logger.info("graph.cleanup.dead_end_prune", {
@@ -1591,10 +1612,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       }
 
       const snapshot: GraphSnapshot = {
-        version: (lastSnapshot?.version || 0) + 1,
-        timestamp: Date.now(),
-        nodes: Object.values(nodesMap),
-        edges: Object.values(edgesMap),
+        version: snapshotVersion,
+        timestamp: snapshotTimestamp,
+        nodes: Array.from(prunedNodeMap.values()),
+        edges: Array.from(prunedEdgeMap.values()),
       };
 
       // DIAGNOSTIC: Log final edge breakdown by DEX
@@ -1641,7 +1662,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         });
       }
 
-      lastSnapshot = snapshot;
+      // Store full (unpruned) snapshot as lastSnapshot for incremental diffs.
+      // Pruned snapshot is used for arb-rs push and frontend display.
+      lastSnapshot = fullSnapshot;
       lastAt = now;
       try {
         logger.debug("graph.tvl.stats", {
@@ -1655,8 +1678,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         });
       } catch {}
       logger.info("graph.snapshot built", {
-        nodes: snapshot.nodes.length,
-        edges: snapshot.edges.length,
+        nodes: fullSnapshot.nodes.length,
+        edges: fullSnapshot.edges.length,
+        prunedNodes: snapshot.nodes.length,
+        prunedEdges: snapshot.edges.length,
       });
       return snapshot;
     } finally {
