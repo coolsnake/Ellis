@@ -395,10 +395,14 @@ export const CONFIG = {
       (process.env.UNIVERSE_PREFILTER_ORCA || "false") === "true",
     // Enable websocket subscriptions for pool state changes
     enablePoolWs: process.env.ENABLE_POOL_WS !== "false",
-    // Pool subscription mode: 'wss' (WebSocket RPC), 'grpc' (Yellowstone gRPC), or 'disabled'
+    // Pool subscription mode: 'wss' | 'wss-program' | 'grpc' | 'grpc-program' | 'disabled'
     poolSubscriptionMode:
-      (process.env.POOL_SUBSCRIPTION_MODE as "wss" | "grpc" | "disabled") ||
-      "wss",
+      (process.env.POOL_SUBSCRIPTION_MODE as
+        | "wss"
+        | "wss-program"
+        | "grpc"
+        | "grpc-program"
+        | "disabled") || "wss",
     // Pool activation mode: 'immediate' (all pools in graph), 'lazy' (only after first WS update),
     // or 'hybrid' (RPC prefetch + subscribe)
     poolActivationMode:

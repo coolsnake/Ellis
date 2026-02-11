@@ -62,6 +62,8 @@ import {
   isRaydiumCpmmOwner,
   isOrcaOwner,
   isMeteoraOwner,
+  isPumpswapOwner,
+  isMeteoraBalancedOwner,
   RAYDIUM_PROGRAMS,
   RAYDIUM_CPMM_PROGRAM_ID,
   ORCA_PROGRAM,
@@ -2054,7 +2056,7 @@ export async function retargetPoolWebsockets(): Promise<{
   }
 
   // For gRPC mode, use the gRPC retarget function
-  if (subscriptionMode === "grpc") {
+  if (subscriptionMode === "grpc" || subscriptionMode === "grpc-program") {
     try {
       const success = await retargetGrpcSubscriptions();
       if (success) {
@@ -2375,7 +2377,10 @@ function runWebsocketRefreshLoop(): void {
   // Auto-start timers/WS when allowed by config and graph readiness
 
   // Check for gRPC mode - if enabled, use gRPC streaming instead of WSS
-  if (subscriptionMode === "grpc" && wsEnabled) {
+  if (
+    (subscriptionMode === "grpc" || subscriptionMode === "grpc-program") &&
+    wsEnabled
+  ) {
     (async () => {
       try {
         if (!isGrpcConfigured()) {
@@ -2386,12 +2391,23 @@ function runWebsocketRefreshLoop(): void {
           });
           // Fall through to WSS mode below
         } else {
-          const success = await startGrpcSubscriptions();
+          let success: boolean;
+          if (subscriptionMode === "grpc-program") {
+            const { startGrpcProgramSubscriptions } = await import(
+              "./pools/grpc/index.js"
+            );
+            success = await startGrpcProgramSubscriptions();
+          } else {
+            success = await startGrpcSubscriptions();
+          }
           if (success) {
-            logger.info("pools.grpc.started", { mode: "grpc", cat: "grpc" });
+            logger.info("pools.grpc.started", {
+              mode: subscriptionMode,
+              cat: "grpc",
+            });
             emit("log", {
               level: "info",
-              message: "Pool subscriptions started via gRPC",
+              message: `Pool subscriptions started via ${subscriptionMode}`,
               timestamp: new Date().toISOString(),
               context: { cat: "grpc" },
             });
@@ -2642,6 +2658,107 @@ function runWebsocketRefreshLoop(): void {
             }
           } catch {}
         }
+
+        // ── Dynamic vault subscription for program-mode pool discovery ──
+        // When in wss-program or grpc-program mode, vault accounts (SPL Token)
+        // never arrive via DEX program subscriptions. After a vault-dependent
+        // pool (CPMM, PumpSwap, DAMM v1) is first decoded, this function
+        // subscribes to its vault accounts so pricing updates flow in real-time.
+        const maybeSubscribeVaults = async (
+          poolId: string,
+          vaultA: string | undefined,
+          vaultB: string | undefined,
+          source: "raydium-cpmm" | "pumpswap" | "meteora_balanced"
+        ) => {
+          if (
+            subscriptionMode !== "wss-program" &&
+            subscriptionMode !== "grpc-program"
+          )
+            return;
+          if (!vaultA || !vaultB) return;
+          if (poolsWithDerivedAccounts.has(poolId)) return;
+          poolsWithDerivedAccounts.add(poolId);
+
+          const vaults: Array<{
+            addr: string;
+            side: "A" | "B";
+            other: string;
+          }> = [
+            { addr: vaultA, side: "A", other: vaultB },
+            { addr: vaultB, side: "B", other: vaultA },
+          ];
+
+          for (const { addr, side, other } of vaults) {
+            if (derivedAccountToPool.has(addr)) continue;
+            derivedAccountToPool.set(addr, {
+              poolId,
+              accountType: "vault",
+              vaultSide: side,
+              otherVault: other,
+            });
+            targetedSourceByAccount.set(addr, source);
+
+            // Subscribe via WSS (onAccountChange) for wss-program mode
+            if (subscriptionMode === "wss-program") {
+              try {
+                const vpk = new web3.PublicKey(addr);
+                const id = await subscribeAccountWithRetry(vpk, handle);
+                subs.push({ kind: "account", id });
+              } catch (err: any) {
+                logger.warn("pools.ws vault.dynamic_subscribe.failed", {
+                  vault: addr.slice(0, 8) + "…",
+                  pool: poolId.slice(0, 8) + "…",
+                  side,
+                  source,
+                  error: String(err?.message || err),
+                  cat: "pools",
+                });
+              }
+            }
+          }
+
+          // Subscribe via gRPC for grpc-program mode (batched)
+          if (subscriptionMode === "grpc-program") {
+            try {
+              const { addGrpcVaultAccounts } = await import(
+                "./pools/grpc/index.js"
+              );
+              await addGrpcVaultAccounts([vaultA, vaultB], {
+                poolId,
+                dex: source,
+                vaultA,
+                vaultB,
+              });
+            } catch (err: any) {
+              logger.warn("pools.ws vault.grpc_subscribe.failed", {
+                pool: poolId.slice(0, 8) + "…",
+                source,
+                error: String(err?.message || err),
+                cat: "pools",
+              });
+            }
+          }
+
+          // Pre-fetch vault balances so pricing is available immediately
+          try {
+            const { queueVaultFetch } = await import(
+              "./pools/websockets/decoders/raydiumCpmm.js"
+            );
+            await Promise.all([
+              queueVaultFetch(vaultA),
+              queueVaultFetch(vaultB),
+            ]);
+          } catch {}
+
+          logger.info("pools.ws vault.dynamic_subscribe.ok", {
+            pool: poolId.slice(0, 8) + "…",
+            vaultA: vaultA.slice(0, 8) + "…",
+            vaultB: vaultB.slice(0, 8) + "…",
+            source,
+            mode: subscriptionMode,
+            cat: "pools",
+          });
+        };
 
         const handle = async (pk: any, info: any) => {
           try {
@@ -3197,11 +3314,19 @@ function runWebsocketRefreshLoop(): void {
                 } else if (owner === ownerRayCpmm) {
                   wsCounts["raydium-cpmm"] =
                     (wsCounts["raydium-cpmm"] || 0) + 1;
-                  await handleRaydiumCpmmUpdate(
+                  const cpmmResult = await handleRaydiumCpmmUpdate(
                     accountInfo,
                     pk58,
                     derivedAccountToPool
                   );
+                  if (cpmmResult?.pool) {
+                    void maybeSubscribeVaults(
+                      pk58,
+                      cpmmResult.pool.native_account_a,
+                      cpmmResult.pool.native_account_b,
+                      "raydium-cpmm"
+                    );
+                  }
                   return;
                 } else if (owner === ownerOrca) {
                   wsCounts.orca += 1;
@@ -3224,22 +3349,45 @@ function runWebsocketRefreshLoop(): void {
                     pk
                   );
                   return;
-                } else if (mapped === "pumpswap") {
+                } else if (mapped === "pumpswap" || isPumpswapOwner(owner)) {
                   wsCounts.pumpswap = (wsCounts.pumpswap || 0) + 1;
-                  await handlePumpswapUpdate(
+                  const pumpResult = await handlePumpswapUpdate(
                     accountInfo,
                     pk58,
                     derivedAccountToPool
                   );
+                  if (pumpResult?.pool) {
+                    void maybeSubscribeVaults(
+                      pk58,
+                      pumpResult.pool.native_account_a,
+                      pumpResult.pool.native_account_b,
+                      "pumpswap"
+                    );
+                  }
                   return;
-                } else if (mapped === "meteora_balanced") {
+                } else if (
+                  mapped === "meteora_balanced" ||
+                  isMeteoraBalancedOwner(owner)
+                ) {
                   wsCounts.meteora_balanced =
                     (wsCounts.meteora_balanced || 0) + 1;
-                  await handleMeteoraBalancedUpdate(
+                  const metbalResult = await handleMeteoraBalancedUpdate(
                     accountInfo,
                     pk58,
                     derivedAccountToPool
                   );
+                  // Only subscribe vaults for DAMM v1 — v2 uses sqrtPrice (self-contained)
+                  if (
+                    metbalResult?.pool &&
+                    owner === METEORA_BALANCED_V1_PROGRAM
+                  ) {
+                    void maybeSubscribeVaults(
+                      pk58,
+                      metbalResult.pool.native_account_a,
+                      metbalResult.pool.native_account_b,
+                      "meteora_balanced"
+                    );
+                  }
                   return;
                 }
                 // Fall through to inline handlers for unknown sources
@@ -5848,7 +5996,8 @@ function runWebsocketRefreshLoop(): void {
         };
         const subscribeProgramWithRetry = async (
           programPk: any,
-          cb: (ch: any) => void
+          cb: (ch: any) => void,
+          filters?: any[]
         ): Promise<number> => {
           const maxAttempts = Math.max(
             1,
@@ -5887,7 +6036,8 @@ function runWebsocketRefreshLoop(): void {
                         try {
                           cb(ch);
                         } catch {}
-                      }
+                      },
+                      filters
                     );
 
                   return subscriptionId;
@@ -7091,14 +7241,39 @@ function runWebsocketRefreshLoop(): void {
           const { PUMPSWAP_PROGRAM_ID: _pumpProg } = await import(
             "./pools/pumpswap.js"
           );
-          const programs: Array<{ name: string; pk: any }> = [
-            { name: "raydium-amm", pk: rayAmm },
-            { name: "raydium-clmm", pk: rayClmm },
-            { name: "raydium-cpmm", pk: rayCpmm },
-            { name: "orca-whirlpool", pk: orcaProg },
+          const { getWssFiltersForProgram } = await import(
+            "./pools/websockets/filters.js"
+          );
+          const programs: Array<{ name: string; pk: any; filters: any[] }> = [
+            {
+              name: "raydium-amm",
+              pk: rayAmm,
+              filters: getWssFiltersForProgram(rayAmm.toBase58()),
+            },
+            {
+              name: "raydium-clmm",
+              pk: rayClmm,
+              filters: getWssFiltersForProgram(rayClmm.toBase58()),
+            },
+            {
+              name: "raydium-cpmm",
+              pk: rayCpmm,
+              filters: getWssFiltersForProgram(rayCpmm.toBase58()),
+            },
+            {
+              name: "orca-whirlpool",
+              pk: orcaProg,
+              filters: getWssFiltersForProgram(orcaProg.toBase58()),
+            },
             {
               name: "meteora-dlmm",
               pk: new web3.PublicKey(
+                String(
+                  (CONFIG as any)?.meteora?.programId ||
+                    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+                ).trim()
+              ),
+              filters: getWssFiltersForProgram(
                 String(
                   (CONFIG as any)?.meteora?.programId ||
                     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
@@ -7108,10 +7283,12 @@ function runWebsocketRefreshLoop(): void {
             {
               name: "meteora-damm-v1",
               pk: new web3.PublicKey(METEORA_BALANCED_V1_PROGRAM),
+              filters: getWssFiltersForProgram(METEORA_BALANCED_V1_PROGRAM),
             },
             {
               name: "meteora-damm-v2",
               pk: new web3.PublicKey(METEORA_BALANCED_V2_PROGRAM),
+              filters: getWssFiltersForProgram(METEORA_BALANCED_V2_PROGRAM),
             },
             {
               name: "pumpswap-bonding",
@@ -7121,17 +7298,33 @@ function runWebsocketRefreshLoop(): void {
                     "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
                 ).trim()
               ),
+              filters: getWssFiltersForProgram(
+                String(
+                  (CONFIG as any)?.pumpswap?.bondingCurveProgramId ||
+                    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+                ).trim()
+              ),
             },
-            { name: "pumpswap-amm", pk: new web3.PublicKey(_pumpProg) },
+            {
+              name: "pumpswap-amm",
+              pk: new web3.PublicKey(_pumpProg),
+              filters: getWssFiltersForProgram(_pumpProg),
+            },
           ];
-          for (const { name, pk } of programs) {
+          for (const { name, pk, filters } of programs) {
             try {
-              const id = await subscribeProgramWithRetry(pk, (ch: any) =>
-                handle(ch.accountId, ch.accountInfo)
+              const id = await subscribeProgramWithRetry(
+                pk,
+                (ch: any) => handle(ch.accountId, ch.accountInfo),
+                filters
               );
               subs.push({ kind: "program", id });
               logger.info("pools.ws.program.subscribed", {
                 program: name,
+                filterCount: filters.length,
+                filterTypes: filters.map((f: any) =>
+                  "memcmp" in f ? "memcmp" : "dataSize"
+                ),
                 cat: "pools",
               });
             } catch (err: any) {
@@ -8938,13 +9131,11 @@ function runWebsocketRefreshLoop(): void {
                   ? ((staleCount / totalAttached) * 100).toFixed(1) + "%"
                   : "0%",
               byDex,
-              sample: stalePools
-                .slice(0, 5)
-                .map((p) => ({
-                  id: p.poolId.slice(0, 8) + "…",
-                  dex: p.dex,
-                  ageMs: p.ageMs,
-                })),
+              sample: stalePools.slice(0, 5).map((p) => ({
+                id: p.poolId.slice(0, 8) + "…",
+                dex: p.dex,
+                ageMs: p.ageMs,
+              })),
               cat: "pools",
             });
 
