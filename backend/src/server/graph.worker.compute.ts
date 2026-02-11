@@ -340,24 +340,27 @@ export function computeIncrementalGraphUpdate(
     request.pruneMinDegree ?? 2
   );
 
-  // Track nodes/edges removed by pruning for the diff sent to arb-rs/frontend
-  const prunedRemovedNodeIds = [...removedNodeIds];
-  const prunedRemovedEdgeIds = [...removedEdgeIds];
-  for (const id of nodesMap.keys()) {
-    if (!prunedNodesMap.has(id)) prunedRemovedNodeIds.push(id);
-  }
-  for (const eid of edgesMap.keys()) {
-    if (!prunedEdgesMap.has(eid) && !prunedRemovedEdgeIds.includes(eid)) {
-      prunedRemovedEdgeIds.push(eid);
-    }
-  }
-
-  // Filter added/updated edges to only those that survived pruning
+  // For the pruned diff sent to arb-rs/frontend:
+  // - Only report genuinely removed edges (pool disappeared), NOT pruning-only removals.
+  //   Pruned dead-end edges were never sent downstream, so removing them would be noise.
+  //   When a dead-end edge gains enough connections to survive pruning, it will appear
+  //   as "added" in the pruned diff — no need to track its removal/re-addition.
+  // - Filter added/updated to only edges that survived pruning.
   const prunedAddedEdges = addedEdges.filter((e) => prunedEdgesMap.has(e.id));
   const prunedUpdatedEdges = updatedEdges.filter((e) =>
     prunedEdgesMap.has(e.id)
   );
   const prunedAddedNodes = addedNodes.filter((n) => prunedNodesMap.has(n.id));
+  // Only include genuine removals (pool dropped / dex-kind disallowed) that were
+  // also present in the pruned output previously. Since we don't track the prior
+  // pruned set, use removedEdgeIds (pre-prune removals) filtered to those NOT in
+  // the full snapshot (truly gone, not just pruned).
+  const prunedRemovedEdgeIds = removedEdgeIds.filter(
+    (eid) => !edgesMap.has(eid)
+  );
+  const prunedRemovedNodeIds = removedNodeIds.filter(
+    (nid) => !nodesMap.has(nid)
+  );
 
   const changed = Boolean(
     prunedAddedEdges.length ||
