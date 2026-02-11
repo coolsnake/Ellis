@@ -211,16 +211,6 @@ async function decodeRaydiumClmm(
     };
   }
 
-  if (lookup.decimalsA == null || lookup.decimalsB == null) {
-    return {
-      poolId: lookup.poolId,
-      dexHint: "raydium",
-      success: false,
-      skipReason: "decimals_pending",
-      rawBufferIndex: idx,
-    };
-  }
-
   const sdk = await getRaydiumSdk();
   let state: any;
   try {
@@ -249,6 +239,19 @@ async function decodeRaydiumClmm(
       dexHint: "raydium",
       success: false,
       error: "missing_mints",
+      rawBufferIndex: idx,
+    };
+  }
+
+  // Check decimals AFTER extracting mints so we can return them for resolution
+  if (lookup.decimalsA == null || lookup.decimalsB == null) {
+    return {
+      poolId: lookup.poolId,
+      dexHint: "raydium",
+      success: false,
+      skipReason: "decimals_pending",
+      mintA,
+      mintB,
       rawBufferIndex: idx,
     };
   }
@@ -356,16 +359,6 @@ async function decodeRaydiumAmmV4(
     };
   }
 
-  if (lookup.decimalsA == null || lookup.decimalsB == null) {
-    return {
-      poolId: lookup.poolId,
-      dexHint: "raydium",
-      success: false,
-      skipReason: "decimals_pending",
-      rawBufferIndex: idx,
-    };
-  }
-
   const sdk = await getRaydiumSdk();
   let state: any;
   try {
@@ -390,6 +383,18 @@ async function decodeRaydiumAmmV4(
       dexHint: "raydium",
       success: false,
       error: "missing_mints",
+      rawBufferIndex: idx,
+    };
+  }
+
+  if (lookup.decimalsA == null || lookup.decimalsB == null) {
+    return {
+      poolId: lookup.poolId,
+      dexHint: "raydium",
+      success: false,
+      skipReason: "decimals_pending",
+      mintA,
+      mintB,
       rawBufferIndex: idx,
     };
   }
@@ -532,6 +537,8 @@ async function decodeRaydiumCpmm(
       dexHint: "raydium-cpmm",
       success: false,
       skipReason: "decimals_pending",
+      mintA,
+      mintB,
       rawBufferIndex: idx,
     };
   }
@@ -643,16 +650,6 @@ async function decodeOrca(
     };
   }
 
-  if (lookup.decimalsA == null || lookup.decimalsB == null) {
-    return {
-      poolId: lookup.poolId,
-      dexHint: "orca",
-      success: false,
-      skipReason: "decimals_pending",
-      rawBufferIndex: idx,
-    };
-  }
-
   if (data.length < 300) {
     return {
       poolId: lookup.poolId,
@@ -664,6 +661,7 @@ async function decodeOrca(
   }
 
   // Manual decode — no SDK dependency, fastest path
+  // Parse mints BEFORE decimals check so we can return them for resolution
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let offset = 8; // skip discriminator
   offset += 32; // skip whirlpoolsConfig
@@ -709,6 +707,19 @@ async function decodeOrca(
       dexHint: "orca",
       success: false,
       error: "missing_mints",
+      rawBufferIndex: idx,
+    };
+  }
+
+  // Check decimals AFTER extracting mints so we can return them for resolution
+  if (lookup.decimalsA == null || lookup.decimalsB == null) {
+    return {
+      poolId: lookup.poolId,
+      dexHint: "orca",
+      success: false,
+      skipReason: "decimals_pending",
+      mintA: tokenMintA,
+      mintB: tokenMintB,
       rawBufferIndex: idx,
     };
   }
@@ -804,16 +815,6 @@ async function decodeMeteoraDlmm(
 ): Promise<DecodedPoolResult> {
   const idx = 0;
 
-  if (lookup.decimalsA == null || lookup.decimalsB == null) {
-    return {
-      poolId: lookup.poolId,
-      dexHint: "meteora",
-      success: false,
-      skipReason: "decimals_pending",
-      rawBufferIndex: idx,
-    };
-  }
-
   // Lazy-load Meteora DLMM program for Anchor decoding
   if (!meteoraDlmmProgram) {
     try {
@@ -879,6 +880,19 @@ async function decodeMeteoraDlmm(
       dexHint: "meteora",
       success: false,
       error: "missing_mints",
+      rawBufferIndex: idx,
+    };
+  }
+
+  // Check decimals AFTER extracting mints so we can return them for resolution
+  if (lookup.decimalsA == null || lookup.decimalsB == null) {
+    return {
+      poolId: lookup.poolId,
+      dexHint: "meteora",
+      success: false,
+      skipReason: "decimals_pending",
+      mintA: tokenXMint,
+      mintB: tokenYMint,
       rawBufferIndex: idx,
     };
   }
@@ -1043,6 +1057,8 @@ async function decodePumpswap(
       dexHint: "pumpswap",
       success: false,
       skipReason: "decimals_pending",
+      mintA,
+      mintB,
       rawBufferIndex: idx,
     };
   }
@@ -1264,6 +1280,8 @@ async function decodeMeteoraBalancedV1(
       dexHint: "meteora_balanced",
       success: false,
       skipReason: "decimals_pending",
+      mintA,
+      mintB,
       rawBufferIndex: idx,
     };
   }
@@ -1425,6 +1443,8 @@ function decodeMeteoraBalancedV2(
       dexHint: "meteora_balanced",
       success: false,
       skipReason: "decimals_pending",
+      mintA,
+      mintB,
       rawBufferIndex: idx,
     };
   }

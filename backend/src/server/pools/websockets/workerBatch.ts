@@ -400,11 +400,15 @@ async function applyDecodedBatch(
         // Handle specific skip reasons
         if (result.skipReason === "decimals_pending") {
           // Queue background RPC resolution — next event will have decimals cached
+          // Prefer mints extracted from the buffer by the worker (available even
+          // when the pool isn't in cache yet), fall back to cached lookup mints.
           const lookup = originalEvents[result.rawBufferIndex]?.lookup;
-          if (lookup?.cachedMintA && lookup?.cachedMintB) {
+          const mintA = result.mintA || lookup?.cachedMintA;
+          const mintB = result.mintB || lookup?.cachedMintB;
+          if (mintA && mintB) {
             tryResolveDecimalsPairCached(
-              lookup.cachedMintA,
-              lookup.cachedMintB,
+              mintA,
+              mintB,
               result.poolId,
               result.dexHint
             );

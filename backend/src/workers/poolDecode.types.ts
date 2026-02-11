@@ -124,6 +124,11 @@ export interface DecodedPoolResult {
   /** Structured skip reason (e.g. 'decimals_pending', 'discriminator_mismatch') */
   skipReason?: string;
 
+  /** Extracted mints when decode was partially successful (e.g. decimals_pending).
+   *  Allows the main thread to resolve decimals for the next event. */
+  mintA?: string;
+  mintB?: string;
+
   /** Index into original batch (for buffer retrieval on fallback) */
   rawBufferIndex: number;
 }
