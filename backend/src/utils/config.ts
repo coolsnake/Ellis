@@ -408,6 +408,12 @@ export const CONFIG = {
     poolActivationMode:
       (process.env.POOL_ACTIVATION_MODE as "immediate" | "lazy" | "hybrid") ||
       "immediate",
+    // Worker thread decode pipeline: offload SDK buffer parsing to worker threads
+    enableWorkerDecode: process.env.ENABLE_WORKER_DECODE !== "false",
+    wsWorkerBatchWindowMs: Number(process.env.WS_WORKER_BATCH_WINDOW_MS || 10),
+    wsWorkerMaxBatchSize: Number(process.env.WS_WORKER_MAX_BATCH_SIZE || 200),
+    wsWorkerConcurrency: Number(process.env.WS_WORKER_CONCURRENCY || 2),
+    wsWorkerTimeoutMs: Number(process.env.WS_WORKER_TIMEOUT_MS || 5000),
     // gRPC stream configuration (Yellowstone/Shyft)
     grpc: {
       endpoint: process.env.GRPC_ENDPOINT || "",

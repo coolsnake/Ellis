@@ -1,72 +1,179 @@
-
 export const poolsMetrics: {
-    raydium: {
-        fetches: number; lastMs: number; lastAmm: number; lastClmm: number;
-        filteredAmm: number; filteredClmm: number; universe: string; zeroOverlapSkips: number;
-        scannedPoolAccs: number; updatedFromPoolAccs: number; scannedVaults: number; updatedFromVaults: number;
-        ownerClmmCount: number; ownerAmmCount: number; http429: number; backoffMs: number; apiBatches: number; apiBatchSizeAvg: number;
-        detailBatches: number; detailFailures: number;
-    };
-    orca: { fetches: number; lastMs: number; lastAmm: number; lastClmm: number; detailBatches: number; detailFailures: number };
-    meteora: { fetches: number; lastMs: number; lastClmm: number; detailBatches: number; detailFailures: number };
-    meteora_balanced: { fetches: number; lastMs: number; lastAmm: number };
-    pumpswap: { fetches: number; lastMs: number; lastAmm: number; enrichmentSuccess: number; enrichmentFail: number; enrichmentMs: number };
+  raydium: {
+    fetches: number;
+    lastMs: number;
+    lastAmm: number;
+    lastClmm: number;
+    filteredAmm: number;
+    filteredClmm: number;
+    universe: string;
+    zeroOverlapSkips: number;
+    scannedPoolAccs: number;
+    updatedFromPoolAccs: number;
+    scannedVaults: number;
+    updatedFromVaults: number;
+    ownerClmmCount: number;
+    ownerAmmCount: number;
+    http429: number;
+    backoffMs: number;
+    apiBatches: number;
+    apiBatchSizeAvg: number;
+    detailBatches: number;
+    detailFailures: number;
+  };
+  orca: {
+    fetches: number;
+    lastMs: number;
+    lastAmm: number;
+    lastClmm: number;
+    detailBatches: number;
+    detailFailures: number;
+  };
+  meteora: {
+    fetches: number;
+    lastMs: number;
+    lastClmm: number;
+    detailBatches: number;
+    detailFailures: number;
+  };
+  meteora_balanced: { fetches: number; lastMs: number; lastAmm: number };
+  pumpswap: {
+    fetches: number;
+    lastMs: number;
+    lastAmm: number;
+    enrichmentSuccess: number;
+    enrichmentFail: number;
+    enrichmentMs: number;
+  };
 } = {
-    raydium: {
-        fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0,
-        filteredAmm: 0, filteredClmm: 0, universe: '', zeroOverlapSkips: 0,
-        scannedPoolAccs: 0, updatedFromPoolAccs: 0, scannedVaults: 0, updatedFromVaults: 0,
-        ownerClmmCount: 0, ownerAmmCount: 0, http429: 0, backoffMs: 0, apiBatches: 0, apiBatchSizeAvg: 0,
-        detailBatches: 0, detailFailures: 0,
-    },
-    orca: { fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0, detailBatches: 0, detailFailures: 0 },
-    meteora: { fetches: 0, lastMs: 0, lastClmm: 0, detailBatches: 0, detailFailures: 0 },
-    meteora_balanced: { fetches: 0, lastMs: 0, lastAmm: 0 },
-    pumpswap: { fetches: 0, lastMs: 0, lastAmm: 0, enrichmentSuccess: 0, enrichmentFail: 0, enrichmentMs: 0 },
+  raydium: {
+    fetches: 0,
+    lastMs: 0,
+    lastAmm: 0,
+    lastClmm: 0,
+    filteredAmm: 0,
+    filteredClmm: 0,
+    universe: "",
+    zeroOverlapSkips: 0,
+    scannedPoolAccs: 0,
+    updatedFromPoolAccs: 0,
+    scannedVaults: 0,
+    updatedFromVaults: 0,
+    ownerClmmCount: 0,
+    ownerAmmCount: 0,
+    http429: 0,
+    backoffMs: 0,
+    apiBatches: 0,
+    apiBatchSizeAvg: 0,
+    detailBatches: 0,
+    detailFailures: 0,
+  },
+  orca: {
+    fetches: 0,
+    lastMs: 0,
+    lastAmm: 0,
+    lastClmm: 0,
+    detailBatches: 0,
+    detailFailures: 0,
+  },
+  meteora: {
+    fetches: 0,
+    lastMs: 0,
+    lastClmm: 0,
+    detailBatches: 0,
+    detailFailures: 0,
+  },
+  meteora_balanced: { fetches: 0, lastMs: 0, lastAmm: 0 },
+  pumpswap: {
+    fetches: 0,
+    lastMs: 0,
+    lastAmm: 0,
+    enrichmentSuccess: 0,
+    enrichmentFail: 0,
+    enrichmentMs: 0,
+  },
 };
 
 export function getPoolsMetrics(): any {
-    return poolsMetrics;
+  return poolsMetrics;
 }
 
 // Type for WebSocket stats keys
 // - Raydium split into AMM, CLMM, CPMM
 // - Meteora split into DLMM, DAMM_v1, DAMM_v2 (CP-AMM)
-export type WsStatsDex = 
-  | 'raydium_amm' | 'raydium_clmm' | 'raydium_cpmm' 
-  | 'orca' 
-  | 'meteora_dlmm' | 'meteora_damm_v1' | 'meteora_damm_v2'
-  | 'pumpswap';
+export type WsStatsDex =
+  | "raydium_amm"
+  | "raydium_clmm"
+  | "raydium_cpmm"
+  | "orca"
+  | "meteora_dlmm"
+  | "meteora_damm_v1"
+  | "meteora_damm_v2"
+  | "pumpswap";
 
-export const wsDeltaStats: Record<WsStatsDex, { decoded: number; applied: number; skipped: number; skipReasons?: Record<string, number> }> = {
-    raydium_amm: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
-    raydium_clmm: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
-    raydium_cpmm: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
-    orca: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
-    meteora_dlmm: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
-    meteora_damm_v1: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
-    meteora_damm_v2: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
-    pumpswap: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+export const wsDeltaStats: Record<
+  WsStatsDex,
+  {
+    decoded: number;
+    applied: number;
+    skipped: number;
+    skipReasons?: Record<string, number>;
+  }
+> = {
+  raydium_amm: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  raydium_clmm: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  raydium_cpmm: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  orca: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  meteora_dlmm: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  meteora_damm_v1: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  meteora_damm_v2: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  pumpswap: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
 };
 
-export const wsDecodeStats: Record<WsStatsDex, { attempts: number; successes: number; failures: number }> = {
-    raydium_amm: { attempts: 0, successes: 0, failures: 0 },
-    raydium_clmm: { attempts: 0, successes: 0, failures: 0 },
-    raydium_cpmm: { attempts: 0, successes: 0, failures: 0 },
-    orca: { attempts: 0, successes: 0, failures: 0 },
-    meteora_dlmm: { attempts: 0, successes: 0, failures: 0 },
-    meteora_damm_v1: { attempts: 0, successes: 0, failures: 0 },
-    meteora_damm_v2: { attempts: 0, successes: 0, failures: 0 },
-    pumpswap: { attempts: 0, successes: 0, failures: 0 },
+export const wsDecodeStats: Record<
+  WsStatsDex,
+  { attempts: number; successes: number; failures: number }
+> = {
+  raydium_amm: { attempts: 0, successes: 0, failures: 0 },
+  raydium_clmm: { attempts: 0, successes: 0, failures: 0 },
+  raydium_cpmm: { attempts: 0, successes: 0, failures: 0 },
+  orca: { attempts: 0, successes: 0, failures: 0 },
+  meteora_dlmm: { attempts: 0, successes: 0, failures: 0 },
+  meteora_damm_v1: { attempts: 0, successes: 0, failures: 0 },
+  meteora_damm_v2: { attempts: 0, successes: 0, failures: 0 },
+  pumpswap: { attempts: 0, successes: 0, failures: 0 },
 };
 
 export function incrementSkipReason(dex: WsStatsDex, reason: string): void {
-    const stats = wsDeltaStats[dex];
-    if (!stats.skipReasons) stats.skipReasons = {};
-    stats.skipReasons[reason] = (stats.skipReasons[reason] || 0) + 1;
+  const stats = wsDeltaStats[dex];
+  if (!stats.skipReasons) stats.skipReasons = {};
+  stats.skipReasons[reason] = (stats.skipReasons[reason] || 0) + 1;
 }
 
+// Worker thread decode pipeline metrics
+export const wsWorkerStats = {
+  batchesSent: 0,
+  batchesCompleted: 0,
+  batchesFailed: 0,
+  eventsSent: 0,
+  eventsDecoded: 0,
+  eventsSkipped: 0,
+  totalDecodeTimeMs: 0,
+  totalApplyTimeMs: 0,
+  fallbackEvents: 0,
+};
+
 // Debug counters use simplified keys (combined for backward compatibility in debug mode)
-export type WsDebugDex = 'raydium' | 'orca' | 'meteora' | 'pumpswap';
-export const wsDebugCounters: Record<WsDebugDex, number> = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0 };
-export const wsTargetDebugCounters: Record<WsDebugDex, number> = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0 };
+export type WsDebugDex = "raydium" | "orca" | "meteora" | "pumpswap";
+export const wsDebugCounters: Record<WsDebugDex, number> = {
+  raydium: 0,
+  orca: 0,
+  meteora: 0,
+  pumpswap: 0,
+};
+export const wsTargetDebugCounters: Record<WsDebugDex, number> = {
+  raydium: 0,
+  orca: 0,
+  meteora: 0,
+  pumpswap: 0,
+};

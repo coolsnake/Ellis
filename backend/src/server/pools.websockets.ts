@@ -41,6 +41,7 @@ import {
   incrementSkipReason,
   wsDebugCounters,
   wsTargetDebugCounters,
+  wsWorkerStats,
 } from "./pools.metrics.js";
 import { isValidPublicKey } from "../execution/builder/utils.js";
 
@@ -73,6 +74,13 @@ import type {
   AccountInfo as DecoderAccountInfo,
   DerivedAccountInfo,
 } from "./pools/websockets/decoders/types.js";
+// Worker thread decode pipeline
+import {
+  initWorkerDecode,
+  isWorkerDecodeEnabled,
+  enqueueForWorkerDecode,
+  classifyDex,
+} from "./pools/websockets/workerBatch.js";
 // gRPC streaming support (Yellowstone/Shyft)
 import {
   startGrpcSubscriptions,
@@ -1886,6 +1894,10 @@ export function startPoolWebsocketsOnlyOnce(): void {
   try {
     enablePoolWebsocketRefreshes();
   } catch {}
+  // Initialize worker decode pipeline (no-ops if disabled via config)
+  try {
+    initWorkerDecode();
+  } catch {}
   runWebsocketRefreshLoop();
 }
 
@@ -3301,6 +3313,38 @@ function runWebsocketRefreshLoop(): void {
                   lamports: info.lamports ?? 0,
                   owner: info.owner,
                 };
+
+                // ── Worker thread decode interception ──
+                // When enabled, offload pure SDK decode to a worker thread.
+                // Vault updates (derivedAccountToPool path) stay on main thread.
+                if (isWorkerDecodeEnabled()) {
+                  const dexHint = classifyDex(
+                    owner,
+                    ownerRayAmm,
+                    ownerRayClmm,
+                    ownerRayCpmm,
+                    ownerOrca,
+                    ownerMeteora
+                  );
+                  if (dexHint) {
+                    // Increment raw event count for the dex
+                    const countKey =
+                      dexHint === "raydium-cpmm"
+                        ? "raydium-cpmm"
+                        : dexHint === "meteora_balanced"
+                        ? "meteora_balanced"
+                        : dexHint;
+                    wsCounts[countKey] = (wsCounts[countKey] || 0) + 1;
+                    enqueueForWorkerDecode(
+                      accountInfo.data as Buffer,
+                      pk58,
+                      owner,
+                      dexHint
+                    );
+                    return; // Main thread freed immediately
+                  }
+                  // dexHint null → vault/derived account update, fall through to main-thread decoders
+                }
 
                 // Route to appropriate decoder based on owner or mapped source
                 if (owner === ownerRayAmm || owner === ownerRayClmm) {
@@ -9332,6 +9376,19 @@ function runWebsocketRefreshLoop(): void {
                   logData.attached.meteora_balanced =
                     attachedMeteoraBalancedPools;
               }
+            }
+
+            // Include worker decode stats if pipeline is active
+            if (wsWorkerStats.batchesSent > 0) {
+              logData.worker = {
+                batches: `${wsWorkerStats.batchesCompleted}/${wsWorkerStats.batchesSent}`,
+                events: `${wsWorkerStats.eventsDecoded}/${wsWorkerStats.eventsSent}`,
+                skipped: wsWorkerStats.eventsSkipped,
+                fallback: wsWorkerStats.fallbackEvents,
+                decodeMs: Math.round(wsWorkerStats.totalDecodeTimeMs),
+                applyMs: Math.round(wsWorkerStats.totalApplyTimeMs),
+                failed: wsWorkerStats.batchesFailed,
+              };
             }
 
             logger.info("pools.ws aggregate", logData);
