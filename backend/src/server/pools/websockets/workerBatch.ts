@@ -371,6 +371,29 @@ async function applyDecodedBatch(
   const { executionCache } = await import("../../../execution/cache.js");
   const { tryResolveDecimalsPairCached } = await import("../decimals.js");
 
+  // Determine which dexes have successful results so we can snapshot BEFORE mutating
+  const affectedDexes = new Set<DexHint>();
+  for (const result of response.results) {
+    if (result.success && result.pool && result.pool.price_a_per_b > 0) {
+      affectedDexes.add(result.dexHint);
+    }
+  }
+
+  // Snapshot affected caches BEFORE applying any mutations
+  // This is critical: applyPoolUpdates diffs prev vs next to find changes
+  const caches = await import("../../pools.cache.js");
+  const preSnapshots = new Map<DexHint, any>();
+  for (const dex of affectedDexes) {
+    const cache = getCacheForDexSync(dex, caches);
+    if (cache?.data) {
+      try {
+        preSnapshots.set(dex, structuredClone(cache.data));
+      } catch {
+        // structuredClone may fail on certain data; skip graph update for this dex
+      }
+    }
+  }
+
   for (const result of response.results) {
     try {
       if (!result.success) {
@@ -415,7 +438,7 @@ async function applyDecodedBatch(
         continue;
       }
 
-      // Apply to pool cache
+      // Apply to pool cache (mutates the live cache)
       await applyToPoolCache(pool, result.dexHint);
 
       // Apply to execution cache
@@ -442,13 +465,17 @@ async function applyDecodedBatch(
       }
 
       // Activity tracking
-      const lookup = originalEvents[result.rawBufferIndex]?.lookup;
       recordPoolActivity(result.poolId, pool.dex as any, result.poolId);
-
-      // Schedule graph update (debounced per-dex)
-      await scheduleGraphUpdate(result.dexHint);
     } catch (err) {
       logCatchError("worker.decode.apply", err);
+    }
+  }
+
+  // Schedule graph updates for each affected dex using the pre-mutation snapshots
+  for (const dex of affectedDexes) {
+    const prev = preSnapshots.get(dex);
+    if (prev) {
+      scheduleGraphUpdate(dex, prev);
     }
   }
 }
@@ -586,22 +613,35 @@ function applyStructuralData(
 // ── Internal: Graph update scheduling (debounced per-dex) ──────────────────
 
 const graphUpdateTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+// Store the earliest pre-mutation snapshot per dex for the pending timer
+const pendingSnapshots: Map<string, any> = new Map();
 const GRAPH_UPDATE_DEBOUNCE_MS = 50;
 
-async function scheduleGraphUpdate(dexHint: DexHint): Promise<void> {
+function scheduleGraphUpdate(dexHint: DexHint, prevSnapshot: any): void {
+  // Keep the EARLIEST snapshot — subsequent batches within the debounce window
+  // should diff against the state before any of them mutated the cache
+  if (!pendingSnapshots.has(dexHint)) {
+    pendingSnapshots.set(dexHint, prevSnapshot);
+  }
+
   if (graphUpdateTimers.has(dexHint)) return; // Already scheduled
 
   graphUpdateTimers.set(
     dexHint,
     setTimeout(async () => {
       graphUpdateTimers.delete(dexHint);
+      const prev = pendingSnapshots.get(dexHint);
+      pendingSnapshots.delete(dexHint);
       try {
         const gmod: any = await import("../../graph.js");
         const cache = await getCacheForDex(dexHint);
-        if (cache?.data && typeof gmod?.applyPoolUpdates === "function") {
-          // Take a snapshot of current state as baseline for diff
-          // The graph module will diff against its internal state
-          await gmod.applyPoolUpdates(cache.data, cache.data, {
+        if (
+          prev &&
+          cache?.data &&
+          typeof gmod?.applyPoolUpdates === "function"
+        ) {
+          // prev = snapshot BEFORE mutations, cache.data = live state AFTER mutations
+          await gmod.applyPoolUpdates(prev, cache.data, {
             pushToArb: false,
           });
         }
