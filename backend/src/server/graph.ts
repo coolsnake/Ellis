@@ -320,6 +320,10 @@ async function rebuildGraphNowInternal(
           reason: "no_retained_pools",
         });
       } catch {}
+      // Set lastSnapshot even when empty — prevents null-stuck loop where
+      // every applyPoolUpdates call triggers a rebuild that returns without
+      // ever setting lastSnapshot, discarding all incremental updates.
+      if (next) lastSnapshot = next;
       lastRebuildMs = nowMs;
       lastRebuildHadChanges = false;
       return;
@@ -521,7 +525,9 @@ export async function applyPoolUpdates(
       if (!lastSnapshot) {
         // Use internal rebuild when already in lock context
         await rebuildGraphNowInternal(undefined);
-        return;
+        if (!lastSnapshot) return; // Rebuild failed or pools empty, nothing we can do
+        // Fall through: apply the current update against the new snapshot
+        // instead of discarding it
       }
 
       // Apply lazy activation filter to both prev and next
@@ -539,6 +545,10 @@ export async function applyPoolUpdates(
 
       const priceStore = await import("./priceStore.js");
       const edgeAllow = await loadEdgeAllow();
+
+      // Re-check after awaits: clearGraphCache() can null lastSnapshot outside the lock
+      if (!lastSnapshot) return;
+
       const priceMap = buildPriceMap(
         priceStore,
         lastSnapshot,
@@ -701,16 +711,19 @@ export async function applyPoolUpdates(
           cat: "graph",
         });
       } catch {}
-      // FIX: Don't rebuild on every error - avoid deadlocks and excessive rebuilds
-      // Log the error but don't cascade rebuilds which can cause deadlocks
+      // Attempt recovery: rebuildGraphNowInternal is safe here because we're
+      // already inside applyUpdateWithLock (the old rebuildGraphNow deadlocked
+      // because it tried to re-acquire the lock).
       try {
         logger.warn("graph.incremental.error_recovery", {
           error: String(e?.message || e),
-          will_rebuild: false, // Changed: don't auto-rebuild on errors to prevent cascading rebuilds
+          will_rebuild: true,
           cat: "graph",
         });
       } catch {}
-      // REMOVED: await rebuildGraphNow(undefined); - this was causing deadlocks and excessive rebuilds
+      try {
+        await rebuildGraphNowInternal(undefined, { source: "error_recovery" });
+      } catch {}
     }
   });
 }
@@ -920,13 +933,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             });
           } catch {}
           if (lastSnapshot) return lastSnapshot;
-          // Return an empty snapshot without updating lastSnapshot to avoid starting empty loop
-          return {
-            version: lastSnapshot?.version || 0,
+          // Set lastSnapshot to empty snapshot — a null lastSnapshot causes
+          // applyPoolUpdates to discard all incremental updates and loop on rebuilds.
+          // An empty snapshot is safe: incremental updates will add edges to it.
+          const empty = {
+            version: 0,
             timestamp: Date.now(),
             nodes: [],
             edges: [],
           } as GraphSnapshot;
+          lastSnapshot = empty;
+          return empty;
         }
       } catch {}
       // Pools are already filtered by TVL in refreshAllSources - skip duplicate filtering

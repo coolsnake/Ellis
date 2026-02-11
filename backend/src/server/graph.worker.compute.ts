@@ -146,6 +146,22 @@ export function computeIncrementalGraphUpdate(
   } = request;
 
   const prevSnapshot = previousSnapshot;
+  // Safety net: if previousSnapshot is null/undefined (e.g. cleared during WS retarget),
+  // return no-change instead of crashing on .edges access
+  if (!prevSnapshot || !Array.isArray(prevSnapshot.edges)) {
+    return {
+      changed: false,
+      snapshot: undefined,
+      diff: undefined,
+      stats: {
+        addedEdges: 0,
+        updatedEdges: 0,
+        removedEdges: 0,
+        addedNodes: 0,
+        removedNodes: 0,
+      },
+    };
+  }
   const edgesMap = new Map<string, GraphEdge>(
     prevSnapshot.edges.map((e) => [String(e.id), { ...e }])
   );
