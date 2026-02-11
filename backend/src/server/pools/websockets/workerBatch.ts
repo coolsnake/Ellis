@@ -488,7 +488,16 @@ async function applyToPoolCache(
 ): Promise<void> {
   const caches = await import("../../pools.cache.js");
   const cache = getCacheForDexSync(dexHint, caches);
-  if (!cache?.data) return;
+  if (!cache) return;
+
+  // Initialize cache.data if it hasn't been set yet (HTTP fetch hasn't run)
+  if (!cache.data) {
+    if (dexHint === "raydium-cpmm") {
+      cache.data = { cpmm: [] };
+    } else {
+      cache.data = { amm: [], clmm: [], cpmm: [] };
+    }
+  }
 
   const arrayName =
     pool.pool_kind === "clmm"
@@ -499,8 +508,12 @@ async function applyToPoolCache(
       ? "cpmm"
       : "amm";
 
-  const arr = (cache.data as any)[arrayName];
-  if (!arr) return;
+  let arr = (cache.data as any)[arrayName];
+  // Create the array if it doesn't exist on this cache type
+  if (!arr) {
+    (cache.data as any)[arrayName] = [];
+    arr = (cache.data as any)[arrayName];
+  }
 
   const idx = arr.findIndex((p: any) => p.id === pool.id);
   if (idx >= 0) {
