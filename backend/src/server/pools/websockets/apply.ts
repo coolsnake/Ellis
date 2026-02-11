@@ -1,7 +1,15 @@
 /**
- * Debounced graph update application
+ * DEPRECATED — This shared scheduleDexApply is not wired up.
+ * setGetCurrentCacheFn() is never called, so getCurrentCacheFn is always null
+ * and the debounced apply silently no-ops.
  *
- * Schedules and debounces DEX-specific graph updates to prevent excessive rebuilds
+ * Each decoder defines its own local scheduleDexApply instead:
+ *   - decoders/pumpswap.ts (50ms debounce)
+ *   - decoders/raydium.ts (50ms debounce)
+ *   - decoders/raydiumCpmm.ts (50ms debounce, named scheduleCpmmApply)
+ *   - decoders/orca.ts (50ms debounce)
+ *   - decoders/meteora.ts (50ms debounce)
+ *   - decoders/meteoraBalanced.ts (50ms debounce)
  */
 
 import { logger } from "../../../utils/logger.js";

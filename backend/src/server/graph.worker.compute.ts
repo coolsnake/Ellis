@@ -113,9 +113,9 @@ function poolChanged(prev: Pool | undefined, next: Pool): boolean {
     if (((prev as any).tvl_usd || 0) !== ((next as any).tvl_usd || 0))
       return true;
   }
-  const nextMs = Number((next as any)?.updated_ms || 0);
-  const prevMs = Number((prev as any)?.updated_ms || 0);
-  if (nextMs > 0 && prevMs > 0 && nextMs > prevMs) return true;
+  // NOTE: updated_ms fallback removed — decoders always set updated_ms = Date.now()
+  // on every decode, so this caused every pool to appear "changed" even when
+  // price/reserves were identical. The field-level checks above are sufficient.
   return false;
 }
 

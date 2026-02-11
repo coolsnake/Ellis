@@ -187,6 +187,12 @@ let pumpswapApplyState: {
 const DEBOUNCE_MS = 50;
 
 /**
+ * Guard against duplicate pool creation when multiple WS events arrive
+ * for the same pool before the first one finishes writing to cache.
+ */
+const poolCreationInFlight = new Set<string>();
+
+/**
  * Schedule debounced graph update for Pumpswap
  */
 async function scheduleDexApply(
@@ -465,6 +471,13 @@ export async function handlePumpswapPoolAccountUpdate(
       const decANew = cachedDec.decA;
       const decBNew = cachedDec.decB;
 
+      // Guard: prevent duplicate creation while another event is still processing this pool
+      if (poolCreationInFlight.has(poolId)) {
+        incrementSkipReason("pumpswap", "creation_in_flight");
+        return { success: false, error: "creation_in_flight", skipped: true };
+      }
+      poolCreationInFlight.add(poolId);
+
       // Build a synthetic existingPool so the rest of the handler can proceed uniformly
       existingPool = {
         id: poolId,
@@ -552,6 +565,8 @@ export async function handlePumpswapPoolAccountUpdate(
         cat: "pools",
       });
       // Don't activate - no valid pricing yet. Pool sits in cache for future updates.
+      // Clear creation guard — pool is now in cache, future events will find it via findPoolInCache
+      poolCreationInFlight.delete(poolId);
       wsDeltaStats.pumpswap.skipped += 1;
       incrementSkipReason("pumpswap", "awaiting_vault_balances");
       return {
@@ -791,6 +806,8 @@ export async function handlePumpswapPoolAccountUpdate(
     const delta = diffNormalizedPools(prev, next);
     pumpswapCache.data = next;
     pumpswapCache.ts = Date.now();
+    // Clear creation guard — pool is now in cache
+    poolCreationInFlight.delete(poolId);
 
     const hasDelta =
       delta.amm.length ||
@@ -869,6 +886,8 @@ export async function handlePumpswapPoolAccountUpdate(
 
     return { success: true, pool: item as DecodedPool, delta };
   } catch (e) {
+    // Safety net: clear creation guard on any error to prevent permanent blockage
+    poolCreationInFlight.delete(poolId);
     wsDecodeStats.pumpswap.failures += 1;
     logCatchError("pumpswap.handlePoolAccountUpdate", e, {
       pool: poolId.slice(0, 8) + "…",
