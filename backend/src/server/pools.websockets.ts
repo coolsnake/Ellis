@@ -7311,7 +7311,75 @@ function runWebsocketRefreshLoop(): void {
               filters: getWssFiltersForProgram(_pumpProg),
             },
           ];
-          for (const { name, pk, filters } of programs) {
+
+          // ── Filter programs by enabledDexSources config ──
+          const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+
+          const isProgramEnabled = (programName: string): boolean => {
+            switch (programName) {
+              case "raydium-amm": {
+                const r = configSources.raydium;
+                if (r === false) return false;
+                if (r && typeof r === "object") return r.amm !== false;
+                return true;
+              }
+              case "raydium-clmm": {
+                const r = configSources.raydium;
+                if (r === false) return false;
+                if (r && typeof r === "object") return r.clmm !== false;
+                return true;
+              }
+              case "raydium-cpmm": {
+                const r = configSources.raydium;
+                if (r === false) return false;
+                if (r && typeof r === "object") return r.cpmm !== false;
+                // CPMM defaults to disabled when raydium is plain `true`
+                // (matches frontend default: enabledDexSources_raydium_cpmm = false)
+                return false;
+              }
+              case "orca-whirlpool": {
+                const o = configSources.orca;
+                if (o === false) return false;
+                if (o && typeof o === "object") return o.clmm !== false;
+                return true;
+              }
+              case "meteora-dlmm": {
+                return configSources.meteora !== false;
+              }
+              case "meteora-damm-v1": {
+                const mb = configSources.meteora_balanced;
+                if (mb === false) return false;
+                if (mb && typeof mb === "object") return mb.v1 !== false;
+                return true;
+              }
+              case "meteora-damm-v2": {
+                const mb = configSources.meteora_balanced;
+                if (mb === false) return false;
+                if (mb && typeof mb === "object") return mb.v2 !== false;
+                return true;
+              }
+              case "pumpswap-bonding":
+              case "pumpswap-amm": {
+                return configSources.pumpswap !== false;
+              }
+              default:
+                return true;
+            }
+          };
+
+          const enabledPrograms = programs.filter(({ name }) => {
+            const enabled = isProgramEnabled(name);
+            if (!enabled) {
+              logger.info("pools.ws.program.skipped", {
+                program: name,
+                reason: "disabled_in_source_control",
+                cat: "pools",
+              });
+            }
+            return enabled;
+          });
+
+          for (const { name, pk, filters } of enabledPrograms) {
             try {
               const id = await subscribeProgramWithRetry(
                 pk,
@@ -7337,6 +7405,8 @@ function runWebsocketRefreshLoop(): void {
           }
           logger.info("pools.ws.program.mode.active", {
             totalPrograms: subs.length,
+            skipped: programs.length - enabledPrograms.length,
+            enabledDexSources: configSources,
             cat: "pools",
           });
 

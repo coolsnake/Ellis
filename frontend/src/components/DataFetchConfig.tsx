@@ -1289,9 +1289,10 @@ export const DataFetchConfig: React.FC<Props> = ({
           <div className="bg-gray-700 rounded p-4">
             <h3 className="text-lg font-semibold mb-3">DEX Source Control</h3>
             <p className="text-xs text-gray-300 mb-3">
-              Control which DEX fetchers run during pool refresh. Disable
-              sources to reduce API load or focus on specific DEXes during
-              testing.
+              Control which DEX sources are active. Applies to both per-pool
+              (wss) and program-level (wss-program) subscriptions. Disable
+              sources to reduce RPC load or isolate specific DEXes during
+              debugging. Save and Retarget WS to apply changes.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Raydium */}
