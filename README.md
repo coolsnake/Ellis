@@ -1,4 +1,4 @@
-# Lockstone
+# Ellis
 
 A high-performance Solana arbitrage detection and execution system. Lockstone identifies profitable trading cycles across multiple DEXs and executes atomic multi-hop swaps using flash loans.
 
