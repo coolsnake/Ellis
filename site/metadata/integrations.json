@@ -1,7 +1,0 @@
-[
-  { "name": "Jupiter", "settings": ["rateLimit", "routeConstraints"], "links": ["../user-guide/arbitrage.md"] },
-  { "name": "Raydium", "settings": ["AMM/CLMM toggle", "pool filters"], "links": ["../user-guide/arbitrage.md"] },
-  { "name": "Orca", "settings": ["HTTP retry", "normalization"], "links": ["../user-guide/arbitrage.md"] },
-  { "name": "Meteora", "settings": ["resolver toggle", "pool filters"], "links": ["../user-guide/arbitrage.md"] },
-  { "name": "Drift", "settings": ["risk caps", "order types"], "links": ["../user-guide/drift.md"] }
-]

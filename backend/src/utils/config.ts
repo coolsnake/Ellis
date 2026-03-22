@@ -21,9 +21,13 @@ const CONSOLIDATED_LOG_PATH =
   resolve(LOG_DIR, "consolidated-session.json");
 
 // Derive RPC URL and extract API key (used for Sender when not explicitly provided)
-const RPC_URL =
-  process.env.SOLANA_RPC_URL ||
-  "https://mainnet.helius-rpc.com/?api-key=4673beb7-dcca-4942-91ac-c69babdf1f02";
+const RPC_URL = process.env.SOLANA_RPC_URL || "";
+if (!RPC_URL) {
+  console.error(
+    "ERROR: SOLANA_RPC_URL environment variable is required. " +
+      "Please set it to your Solana RPC endpoint (e.g., from Helius, QuickNode, or Alchemy)."
+  );
+}
 function extractApiKeyFromUrl(url: string): string {
   try {
     const u = new URL(String(url));

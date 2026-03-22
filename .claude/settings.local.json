@@ -13,7 +13,11 @@
       "Bash(ls:*)",
       "mcp__acp__Bash",
       "mcp__acp__Edit",
-      "mcp__acp__Write"
+      "mcp__acp__Write",
+      "Bash(git -C \"D:\\\\lawprojects\\\\lockstone-dev\" log --all --full-history -S \"4673beb7-dcca-4942-91ac-c69babdf1f02\" --oneline)",
+      "Bash(git -C \"D:\\\\lawprojects\\\\lockstone-dev\" ls-files:*)",
+      "Bash(git rm:*)",
+      "Bash(grep:*)"
     ]
   }
 }
